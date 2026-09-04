@@ -82,8 +82,9 @@ horizon: {kind: stationary, discount: rho, window: 8.0, nodes: 24}
   strategy (a symmetric equilibrium): only the first is solved for.
 * **Horizon.** `stationary` with `discount`, `window` (lag window L), `nodes` per
   panel and optional `unit`/`unit_range`/`breakpoints` (panels are aligned to the
-  delays automatically); or `finite` with `window` = T and `nodes` = number of
-  time cells.
+  delays automatically); or `finite` with `window` = T and `nodes` per side of
+  each piece of the triangle (12 is usually converged; 6-8 when delays cut the
+  domain into small pieces); `finite_cells` selects the first-order cell scheme.
 * Coefficients may be numbers or expressions in the parameters (`"sqrt(p1)"`).
 
 The same structure is available from Python through `ModelBuilder` (see
@@ -105,8 +106,17 @@ strategy is recovered by projecting the resulting action kernel on the agent's
 closed-loop rows, and the equilibrium is the fixed point of the best-response map
 (damped iteration, then Newton-Krylov).
 
-Finite horizon: the same construction on uniform time cells with predictable
-controls (first order in the cell length).
+Finite horizon: the same construction on a piecewise-spectral triangle.  Kernels
+K(t, s) live in (time, shock-age) coordinates on the domain cut by the delays:
+rectangles where the age panel lies below the time panel, Duffy-mapped triangles
+where they coincide, Chebyshev nodes on each piece.  Kernels are analytic on each
+piece, so 12 nodes per side already give the Chapter 1 equilibrium to eight digits,
+and delays and delayed observations are exact.  Every operator (state propagation,
+action from a map, response to an action, discounted continuation, projection on
+the observation history) is a line integral built by Gauss quadrature split at
+the piece boundaries; their quadrature structure is cached once per model, so a
+best response is a few sparse products and one dense solve.  A first-order
+uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
 
 ## Validation
 
@@ -117,7 +127,7 @@ controls (first order in the cell length).
 | 3 | two-player stationary tracking game | `solve_spectral` | 1e-11 at L = 10 (1e-5 at L = 3, window truncation) |
 | 4 | Kyle-Back, one trader, rho = 0 and 0.5 | `kb_spectral_q` | 1e-4 at 24 nodes, 1e-5 at 48 |
 | 5 | purchase-order market on a 3-cycle with delay | `spectral_market` sweep | 0.5% (quote maps), 1-5% (order maps) |
-| 1 | finite-horizon two-player game | `spec_ch1` | first-order convergence, cost 0.4% at 40 cells |
+| 1 | finite-horizon two-player game | `spec_ch1` | converged at 12 nodes per side (cost stable to 1e-8 from 12 to 20); kernels within 1e-3 of the reference except on the diagonal, where the reference's own README reports weakly determined modes; the cell scheme's Richardson limit agrees with the spectral engine there to 1e-3 |
 
 Kyle-Back with two traders: the reference grid solver (`kb_multi.py`), Richardson-
 extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
@@ -128,4 +138,4 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
 
 Scalar states and controls (write vector models as several scalars); no exact
 (noise-free) observation of a state that is not itself a channel; means (targets,
-linear loss terms) are not yet solved; the finite-horizon scheme is first order.
+linear loss terms) are not yet solved.

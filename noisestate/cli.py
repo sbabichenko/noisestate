@@ -9,16 +9,23 @@ import sys
 import numpy as np
 import yaml
 
+from . import solve as _solve
 from .spec import Model
 from .stationary import Result, StationarySolver
+from .finite_spectral import SpectralResult
 
 
-def result_to_dict(res: Result) -> dict:
+def result_to_dict(res) -> dict:
     c = res.compiled
+    if isinstance(res, SpectralResult):
+        grid = {"kind": "finite_triangle", "breakpoints": [float(b) for b in c.g.bp], "nodes_per_side": c.g.nt,
+                "t": c.g.t.tolist(), "age": c.g.a.tolist(), "s": c.g.s.tolist()}
+    else:
+        grid = {"kind": "stationary", "breakpoints": [float(b) for b in c.grid.breakpoints], "nodes_per_panel": c.grid.n,
+                "ages": c.grid.nodes.tolist()}
     out = {
         "model": res.model.name, "converged": bool(res.converged), "residual": res.residual,
-        "evaluations": res.iterations, "seconds": res.seconds,
-        "grid": {"breakpoints": [float(b) for b in c.grid.breakpoints], "nodes_per_panel": c.grid.n, "ages": c.grid.nodes.tolist()},
+        "evaluations": res.iterations, "seconds": res.seconds, "grid": grid,
         "discount": c.rho, "channels": c.channels,
         "kernels": {}, "maps": {}, "foc": {}, "costs": {k: float(v) for k, v in res.costs.items()},
     }
@@ -27,16 +34,17 @@ def result_to_dict(res: Result) -> dict:
     for a in res.model.agents:
         g = res.maps[a.name]
         out["maps"][a.name] = {u: {r.name: g[ui, ri].tolist() for ri, r in enumerate(a.signals)} for ui, u in enumerate(a.controls)}
-        if a.name in res.foc:
+        if getattr(res, "foc", None) and a.name in res.foc:
             out["foc"][a.name] = {u: {part: {ch: arr[:, k].tolist() for k, ch in enumerate(c.channels)}
                                       for part, arr in dec.items()} for u, dec in res.foc[a.name].items()}
     return out
 
 
-def save_result(res: Result, path: str) -> None:
+def save_result(res, path: str) -> None:
     d = result_to_dict(res)
     if path.endswith(".npz"):
-        flat = {"ages": res.compiled.grid.nodes}
+        c = res.compiled
+        flat = ({"t": c.g.t, "age": c.g.a} if isinstance(res, SpectralResult) else {"ages": c.grid.nodes})
         for name in res.compiled.prim:
             flat[f"kernel/{name}"] = res.kernel(name)
         for a in res.model.agents:
@@ -47,11 +55,26 @@ def save_result(res: Result, path: str) -> None:
             json.dump(d, fh)
 
 
-def plot_result(res: Result, path: str) -> None:
+def plot_result(res, path: str) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     c = res.compiled
+    if isinstance(res, SpectralResult):
+        # finite horizon: plot each kernel as a function of shock time s at a few dates t
+        names = res.model.state_names + res.model.control_names
+        fig, axes = plt.subplots(len(names), len(c.channels), figsize=(3.6 * len(c.channels), 2.5 * len(names)), squeeze=False)
+        for i, name in enumerate(names):
+            for k, ch in enumerate(c.channels):
+                ax = axes[i, k]
+                for t in np.linspace(0.2, 1.0, 5) * c.T:
+                    s = np.linspace(0, t, 200)
+                    ax.plot(s, res.evaluate(name, ch, np.full_like(s, t), s), lw=1, label=f"t={t:.2f}")
+                ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name} on {ch}", fontsize=9); ax.set_xlabel("shock time s")
+                if i == 0 and k == 0:
+                    ax.legend(fontsize=6, frameon=False)
+        fig.suptitle(f"{res.model.name}  (residual {res.residual:.1e})", fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
+        return
     controls = res.model.control_names
     states = res.model.state_names
     names = states + controls
@@ -109,10 +132,7 @@ def main(argv=None) -> int:
     if args.window:
         d.setdefault("horizon", {})["window"] = args.window
     m = Model.from_dict(d)
-    if m.horizon.kind != "stationary":
-        print("only the stationary solver is available in this version", file=sys.stderr)
-        return 2
-    res = StationarySolver(m, verbose=args.verbose).solve(tol=args.tol)
+    res = _solve(m, verbose=args.verbose, tol=args.tol)
     print(res.summary())
     if args.out:
         save_result(res, args.out)

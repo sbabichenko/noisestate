@@ -229,8 +229,8 @@ class Model:
             shapes = {(len(a.controls), len(a.signals)) for a in ag}
             if len(shapes) != 1:
                 raise ValueError(f"tied agents {group} must have the same numbers of controls and signal rows")
-        if self.horizon.kind not in ("stationary", "finite"):
-            raise ValueError("horizon.kind must be 'stationary' or 'finite'")
+        if self.horizon.kind not in ("stationary", "finite", "finite_cells"):
+            raise ValueError("horizon.kind must be 'stationary', 'finite' (spectral triangle) or 'finite_cells'")
 
     # ------------------------------------------------------- construction
     @classmethod
