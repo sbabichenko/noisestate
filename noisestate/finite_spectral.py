@@ -518,8 +518,8 @@ class SpectralFiniteSolver:
         G = np.einsum("ink,jnk,n->ij", zeta, zeta, w)
         return float(0.5 * np.sum(Q * G))
 
-    def solve(self, init=None, tol: float = 1e-10, damping: float = 0.5, pre_iterations: int = 10,
-              max_newton: int = 30, pre_tol: float = 1e-3, variable: str = "actions") -> SpectralResult:
+    def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, pre_iterations: int = 10,
+              max_newton: int = 8, pre_tol: float = 1e-3, variable: str = "actions") -> SpectralResult:
         """variable="actions": iterate on the agents' action kernels, raw maps derived by projection
         (robust where early-time maps are ill-determined).  variable="maps": iterate on raw maps."""
         t0 = time.time()
