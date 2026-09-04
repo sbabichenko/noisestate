@@ -159,3 +159,21 @@ def test_cli_reports_model_errors_as_messages(tmp_path, capsys):
     d = _ch3(); d["horizon"]["kind"] = "finite"; d["horizon"]["window"] = 1.0; d["horizon"]["nodes"] = 8
     good = tmp_path / "good.yaml"; yaml.safe_dump(d, open(good, "w"))
     assert main(["solve", str(good)]) == 0 and "discounted cost" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="slow (~2 min); set NOISESTATE_SLOW=1")
+def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
+    """One agent with a delayed noisy observation: the stationary kernels (window 6) against the
+    spectral finite engine at t = 6 of T = 12, where the terminal effect has died out.  (At t = 7 of
+    T = 8 the two differ by 8% on the control, delayed or not: that is the horizon, not the delay.)"""
+    base = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
+            "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.5}, "noise": {"w1": 1.0}, "delay": 0.5}},
+                             "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}}}
+    import copy
+    st = copy.deepcopy(base); st["horizon"] = {"kind": "stationary", "window": 6.0, "nodes": 16}; rs = ns.solve(st).check()
+    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 12.0, "nodes": 6, "breakpoints": [0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}
+    rf = ns.solve(fi).check()
+    for name in ("X", "D"):
+        for ch in ("w0", "w1"):
+            ks = rs.kernel(name, ch); kf = rf.evaluate(name, ch, 6.0 + 0 * rs.ages, 6.0 - rs.ages)
+            assert np.abs(ks - kf).max() < 5e-3 * max(1.0, np.abs(ks).max()), (name, ch)

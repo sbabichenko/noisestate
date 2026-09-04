@@ -168,7 +168,9 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
 * A signal row with a positive `delay` is uninformative about shocks younger than the delay; the
   map on that row is set to zero at ages above `window - delay`, where it reads nothing within the
   window.  The equilibrium does not depend on the window once the kernels have decayed (Chapter 3
-  game with one row delayed by 0.5: costs agree to 1e-6 between windows 6 and 10).
+  game with one row delayed by 0.5: costs agree to 1e-6 between windows 6 and 10), and it agrees
+  with the finite-horizon engine in the interior of a long horizon to 2e-3 of the kernel peak
+  (one agent with a delayed observation; `NOISESTATE_SLOW=1` runs the check).
 * Costs are integrated with exact Gram matrices, so a converged best response is optimal against
   every feasible perturbation to round-off; `tests/test_properties.py` checks this on both engines
   without any reference solution, together with the equivalence of the two iteration variables
