@@ -247,7 +247,25 @@ class AgeGrid:
 
     def conv_op(self, y: np.ndarray) -> np.ndarray:
         """Matrix C with (C g)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel y."""
-        return np.einsum("aij,j->ai", self.conv_tensor, y)
+        return self.conv_ops(y[:, None])[0]
+
+    def conv_ops(self, Y: np.ndarray) -> np.ndarray:
+        """Batched conv_op: Y (N, m) -> (m, N, N), one BLAS product instead of m contractions."""
+        T = self.conv_tensor
+        N = self.N
+        if not hasattr(self, "_conv_flat"):
+            self._conv_flat = T.reshape(N * N, N)                   # [(a, i), j]
+        return (self._conv_flat @ Y).reshape(N, N, -1).transpose(2, 0, 1)
+
+    def corr_ops(self, W: np.ndarray, rho: float = 0.0) -> np.ndarray:
+        """Batched corr_op: W (N, m) -> (m, N, N)."""
+        key = float(rho)
+        cache = getattr(self, "_corr_flat", {})
+        if key not in cache:
+            T = self.corr_tensor(rho)
+            cache[key] = np.ascontiguousarray(T.transpose(0, 2, 1)).reshape(self.N * self.N, self.N)   # [(a, j), i]
+            self._corr_flat = cache
+        return (cache[key] @ W).reshape(self.N, self.N, -1).transpose(2, 0, 1)
 
     def conv_op_left(self, g: np.ndarray) -> np.ndarray:
         """Matrix C with (C y)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel g."""
@@ -255,7 +273,7 @@ class AgeGrid:
 
     def corr_op(self, w: np.ndarray, rho: float = 0.0) -> np.ndarray:
         """Matrix C with (C z)(a) = int_0^{L-a} e^{-rho s} w(s) z(a+s) ds for fixed w."""
-        return np.einsum("aij,i->aj", self.corr_tensor(rho), w)
+        return self.corr_ops(w[:, None], rho)[0]
 
     def corr_op_right(self, z: np.ndarray, rho: float = 0.0) -> np.ndarray:
         """Matrix C with (C w)(a) = int_0^{L-a} e^{-rho s} w(s) z(a+s) ds for fixed z."""

@@ -227,6 +227,7 @@ class StationarySolver:
         self.verbose = verbose
         self.naive_observers = naive_observers or {}
         self._rphys: Dict[str, np.ndarray] = {}
+        self._qa: Dict[str, np.ndarray] = {}
         c = self.c
         self.shapes = {a.name: (len(a.controls), len(a.signals), c.N) for a in model.agents}
 
@@ -282,8 +283,7 @@ class StationarySolver:
         c = self.c; N, nW = c.N, c.nW; nR = len(rows)
         Gk = np.zeros((nW, N, nR * N))
         for r in range(nR):
-            for k in range(nW):
-                Gk[k, :, r * N:(r + 1) * N] += c.grid.conv_op(rows[r][:, k])
+            Gk[:, :, r * N:(r + 1) * N] += c.grid.conv_ops(rows[r])           # all channels at once
             for (k, d) in inst[r]:
                 Gk[k, :, r * N:(r + 1) * N] += d.w * c.shift(d.age)
         return Gk
@@ -295,9 +295,7 @@ class StationarySolver:
         out = []
         for ui, u in enumerate(agent.controls):
             Ru = R[:, ui].reshape(len(c.prim), N)
-            Cu = np.zeros((n_prim, N))
-            for p in range(len(c.prim)):
-                Cu[p * N:(p + 1) * N] = c.grid.conv_op(Ru[p])
+            Cu = c.grid.conv_ops(Ru.T).reshape(n_prim, N)            # all primaries at once
             Cu[c.block(u)] = np.eye(N)
             out.append(Cu)
         return out
@@ -310,25 +308,31 @@ class StationarySolver:
         c = self.c; N = c.N; n_prim = len(c.prim) * N
         atoms, Q, q = c.loss[agent.name]
         atom_ops = [c.atom_op(at) for at in atoms]
-        AO = np.concatenate(atom_ops, axis=0)
-        QZ = np.kron(Q, np.eye(N))
+        if agent.name not in self._qa:                    # (Q zeta) as an operator on the primary kernels: map-independent
+            AO = np.concatenate(atom_ops, axis=0)
+            self._qa[agent.name] = np.kron(Q, np.eye(N)) @ AO
+        QA = self._qa[agent.name]
         Fu, Fphys = [], []
         for ui, u in enumerate(agent.controls):
             op = np.zeros((N, n_prim)); op_phys = np.zeros((N, n_prim))
             if (u, 0.0) in atoms:
                 j0 = atoms.index((u, 0.0))
-                op += QZ[j0 * N:(j0 + 1) * N] @ AO; op_phys += QZ[j0 * N:(j0 + 1) * N] @ AO
+                op += QA[j0 * N:(j0 + 1) * N]; op_phys += QA[j0 * N:(j0 + 1) * N]
             if not agent.myopic:
+                # impulse responses of every loss atom, batched: (N, m) for R and for Rphys
+                Rj = np.stack([atom_ops[j] @ R[:, ui] for j in range(len(atoms))], axis=1)
+                Rjp = np.stack([atom_ops[j] @ Rphys[:, ui] for j in range(len(atoms))], axis=1)
+                CR = c.grid.corr_ops(Rj, c.rho); CRp = c.grid.corr_ops(Rjp, c.rho)
                 for j, at in enumerate(atoms):
                     name, lag = at
-                    Qj = QZ[j * N:(j + 1) * N] @ AO
+                    Qj = QA[j * N:(j + 1) * N]
                     if name in agent.controls:
                         if name == u and lag > 0:          # delayed read of the control itself
                             op += np.exp(-c.rho * lag) * c.shift(-lag) @ Qj
                             op_phys += np.exp(-c.rho * lag) * c.shift(-lag) @ Qj
                         continue                            # own reactions: envelope
-                    op += c.grid.corr_op(atom_ops[j] @ R[:, ui], c.rho) @ Qj
-                    op_phys += c.grid.corr_op(atom_ops[j] @ Rphys[:, ui], c.rho) @ Qj
+                    op += CR[j] @ Qj
+                    op_phys += CRp[j] @ Qj
             Fu.append(op); Fphys.append(op_phys)
         return Fu, Fphys
 
@@ -337,8 +341,8 @@ class StationarySolver:
         c = self.c; N, nW = c.N, c.nW; nR = len(rows)
         H = np.zeros((nR * N, nW * N))
         for r in range(nR):
-            for k in range(nW):
-                H[r * N:(r + 1) * N, k * N:(k + 1) * N] += c.grid.corr_op(rows[r][:, k], 0.0)
+            ops = c.grid.corr_ops(rows[r], 0.0)                                  # (nW, N, N)
+            H[r * N:(r + 1) * N] += ops.transpose(1, 0, 2).reshape(N, nW * N)
             for (k, d) in inst[r]:
                 H[r * N:(r + 1) * N, k * N:(k + 1) * N] += d.w * c.shift(-d.age)
         return H
@@ -388,10 +392,9 @@ class StationarySolver:
             for vi in range(nU):
                 FR = Fu[ui] @ Resp[vi]                                       # channel-independent factor
                 colsl = slice(vi * nR * N, (vi + 1) * nR * N)
-                for k in range(nW):
-                    Amat[rowsl, colsl] += H[:, k * N:(k + 1) * N] @ (FR @ Gk[k])
-            for k in range(nW):
-                bvec[rowsl] += H[:, k * N:(k + 1) * N] @ (Fu[ui] @ Zpass[:, k])
+                FRG = (FR @ Gk).reshape(nW * N, nR * N)                      # FR applied per channel, stacked
+                Amat[rowsl, colsl] += H @ FRG                                # one product over all channels
+            bvec[rowsl] += H @ (Fu[ui] @ Zpass).T.reshape(-1)
         gamma = np.linalg.solve(Amat, -bvec).reshape(nU, nR, N)
         cact = np.zeros((nU, N, nW))
         for ui in range(nU):
@@ -444,9 +447,16 @@ class StationarySolver:
         return new
 
     def maps_from_kernels(self, Z: np.ndarray) -> Dict[str, np.ndarray]:
-        """Raw maps that reproduce given closed-loop primary kernels Z (n_prim N, nW)."""
-        return {a.name: self._project_maps(a, Z, np.stack([Z[self.c.block(u)] for u in a.controls]))
-                for a in self.model.agents}
+        """Raw maps that reproduce given closed-loop primary kernels Z (n_prim N, nW); tied agents
+        share the representative's projection."""
+        maps = {}
+        for a in self.model.agents:
+            if self.c.rep[a.name] == a.name:
+                maps[a.name] = self._project_maps(a, Z, np.stack([Z[self.c.block(u)] for u in a.controls]))
+        for a in self.model.agents:
+            if a.name not in maps:
+                maps[a.name] = maps[self.c.rep[a.name]]
+        return maps
 
     # ------------------------------------------------------ fixed point
     def response_map(self, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
