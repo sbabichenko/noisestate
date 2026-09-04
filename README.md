@@ -145,7 +145,7 @@ uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
 |---|---|---|---|
 | 3 | two-player stationary tracking game | `solve_spectral` | 1e-11 at L = 10 (1e-5 at L = 3, window truncation) |
 | 4 | Kyle-Back, one trader, rho = 0 and 0.5 | `kb_spectral_q` | 1e-4 at 24 nodes, 1e-5 at 48 |
-| 5 | purchase-order market on a 3-cycle with delay | `spectral_market` sweep | 0.5% (quote maps), 1-5% (order maps) |
+| 5 | purchase-order market on a 3-cycle with delay | `spectral_market` sweep | 0.5% (quote maps), 1-5% (order maps); 19 s, 47 evaluations |
 | 1 + delays | control lag and a delayed observation, finite horizon | cell scheme, Richardson-extrapolated | cost within 1e-4, kernels within 1e-3 at smooth ages; exact zero response before the observation delay |
 | 1 | finite-horizon two-player game | `spec_ch1` | converged at 12 nodes per side (cost stable to 1e-8 from 12 to 20); kernels within 1e-3 of the reference except on the diagonal, where the reference's own README reports weakly determined modes; the cell scheme's Richardson limit agrees with the spectral engine there to 1e-3 |
 

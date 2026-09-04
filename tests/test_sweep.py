@@ -1,4 +1,4 @@
-import os, time, numpy as np
+import os
 from noisestate.sweep import sweep, result_to_dict
 HERE = os.path.dirname(os.path.abspath(__file__))
 

@@ -523,6 +523,10 @@ class SpectralFiniteSolver:
                 if a.name not in acts:
                     acts[a.name] = acts[self.c.rep[a.name]]
             return acts
+        if variable == "actions" and self.model.ties:
+            # tied agents' action kernels differ by a channel permutation the symmetry implies; raw maps
+            # (on each agent's own rows) carry over verbatim, so iterate on maps when ties are present
+            variable = "maps"
         if variable == "actions":
             acts0 = init if init is not None else {a.name: np.zeros(shapes[a.name]) for a in self.model.agents}
             z = packa(acts0)

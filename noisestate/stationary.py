@@ -494,6 +494,10 @@ class StationarySolver:
                 if a.name not in acts:
                     acts[a.name] = acts[self.c.rep[a.name]]
             return acts
+        if variable == "actions" and self.model.ties:
+            # tied agents' action kernels differ by a channel permutation the symmetry implies; raw maps
+            # (on each agent's own rows) carry over verbatim, so iterate on maps when ties are present
+            variable = "maps"
         if variable == "actions":
             if init is not None and all(v.ndim == 3 and v.shape[1] == self.c.N and v.shape[2] == self.c.nW for v in init.values()):
                 acts0 = init
@@ -508,6 +512,8 @@ class StationarySolver:
                 return packa(self.response_actions(unpacka(zz))) - zz
         else:
             maps = init if init is not None else self.zero_maps()
+            if init is not None and all(v.ndim == 3 and v.shape[2] == self.c.nW for v in init.values()):
+                maps = self.maps_from_kernels(self.world_from_actions(init))      # actions given: project
             z = self.pack(maps)
 
             def F(zz):
