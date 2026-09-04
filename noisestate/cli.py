@@ -10,17 +10,18 @@ import yaml
 
 from . import solve as _solve
 from .spec import Model
-from .finite_spectral import SpectralResult
-from .sweep import result_to_dict, sweep
+from .results import TriangleResult, CellResult
+from .sweep import sweep
 
 
 def save_result(res, path: str) -> None:
-    d = result_to_dict(res)
+    d = res.to_dict()
     if path.endswith(".npz"):
         c = res.compiled
-        flat = ({"t": c.g.t, "age": c.g.a} if isinstance(res, SpectralResult) else {"ages": c.grid.nodes})
-        for name in res.compiled.prim:
-            flat[f"kernel/{name}"] = res.kernel(name)
+        flat = {"grid/" + k: np.asarray(v) for k, v in res.grid_info().items() if isinstance(v, list)}
+        for name in c.prim:
+            for ch in res.channels:
+                flat[f"kernel/{name}/{ch}"] = res.kernel(name, ch)
         for a in res.model.agents:
             flat[f"map/{a.name}"] = res.maps[a.name]
         np.savez(path, **flat)
@@ -34,7 +35,20 @@ def plot_result(res, path: str) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     c = res.compiled
-    if isinstance(res, SpectralResult):
+    if isinstance(res, CellResult):
+        names = res.model.state_names + res.model.control_names; N = c.N; h = c.h
+        fig, axes = plt.subplots(len(names), len(c.channels), figsize=(3.6 * len(c.channels), 2.5 * len(names)), squeeze=False)
+        for i, name in enumerate(names):
+            for k, ch in enumerate(c.channels):
+                ax = axes[i, k]; K = res.kernel(name, ch)
+                for t_i in np.linspace(N // 5, N - 1, 5).astype(int):
+                    ax.plot(np.arange(t_i) * h, K[t_i, :t_i], lw=1, label=f"t={t_i * h:.2f}")
+                ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name} on {ch}", fontsize=9); ax.set_xlabel("shock time s")
+                if i == 0 and k == 0:
+                    ax.legend(fontsize=6, frameon=False)
+        fig.suptitle(f"{res.model.name}  (residual {res.residual:.1e})", fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
+        return
+    if isinstance(res, TriangleResult):
         # finite horizon: plot each kernel as a function of shock time s at a few dates t
         names = res.model.state_names + res.model.control_names
         fig, axes = plt.subplots(len(names), len(c.channels), figsize=(3.6 * len(c.channels), 2.5 * len(names)), squeeze=False)
@@ -97,7 +111,7 @@ def main(argv=None) -> int:
         rows = sweep(d, args.param, [float(x) for x in args.values.split(",")], verbose=args.verbose)
         with open(args.out, "w") as fh:
             json.dump([{"value": r["value"], "converged": r["converged"], "evaluations": r["evaluations"],
-                        "seconds": r["seconds"], "result": result_to_dict(r["result"])} for r in rows], fh)
+                        "seconds": r["seconds"], "result": r["result"].to_dict()} for r in rows], fh)
         print("wrote", args.out, f"({len(rows)} points, {sum(r['seconds'] for r in rows):.1f}s)")
         return 0 if all(r["converged"] for r in rows) else 1
     if args.cmd == "validate":

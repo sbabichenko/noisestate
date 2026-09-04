@@ -20,14 +20,14 @@ refine N or Richardson-extrapolate for high accuracy.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, lgmres
 
 from .accel import solve_fixed_point
 from .compile import compile_structure
+from .results import CellResult as FiniteResult
 from .spec import Agent, Atom, Model
 
 
@@ -168,47 +168,6 @@ class FiniteCompiled:
                 S = Y
             out.append(S)
         return out
-
-
-@dataclass
-class FiniteResult:
-    model: Model
-    compiled: FiniteCompiled
-    maps: Dict[str, np.ndarray]
-    Z: np.ndarray                      # (n_prim, N, nW*N)
-    converged: bool
-    residual: float
-    iterations: int
-    seconds: float
-    costs: Dict[str, float] = field(default_factory=dict)
-    history: List[float] = field(default_factory=list)
-    message: str = ""
-
-    def check(self):
-        """Return self, or raise ConvergenceError if the solve did not reach its tolerance."""
-        if not self.converged:
-            from .accel import ConvergenceError
-            raise ConvergenceError(f"{self.model.name}: residual {self.residual:.2e} ({self.message})")
-        return self
-
-    @property
-    def times(self) -> np.ndarray:
-        return self.compiled.times
-
-    def kernel(self, name: str, channel: str) -> np.ndarray:
-        """K[i, j]: response of `name` at cell i to a unit increment of `channel` in cell j."""
-        c = self.compiled
-        k = c.channels.index(channel)
-        K = c.expr_kernel(self.Z, c.model.expand({name: 1.0}))
-        return K[:, k * c.N:(k + 1) * c.N]
-
-    def summary(self) -> str:
-        c = self.compiled
-        lines = [f"{self.model.name}: {'converged' if self.converged else 'NOT converged (' + self.message + ')'} residual {self.residual:.2e} "
-                 f"in {self.iterations} evaluations, {self.seconds:.1f}s; {c.N} cells on [0, {c.T}], rho={c.rho}"]
-        for a in self.model.agents:
-            lines.append(f"  {a.name}: E[cost] = {self.costs.get(a.name, float('nan')):+.6f}")
-        return "\n".join(lines)
 
 
 class FiniteSolver:

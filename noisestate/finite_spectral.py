@@ -13,13 +13,13 @@ node; Newton-Krylov fixed point over all raw maps.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from .accel import solve_fixed_point
 from .compile import compile_structure
+from .results import TriangleResult as SpectralResult
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
 
@@ -255,51 +255,6 @@ class SpectralCompiled:
                 rhs -= (-M[np.ix_(idx, jdx)]) @ Z[jdx]        # (I - M) has -M off the diagonal blocks
             Z[idx] = np.linalg.solve(np.eye(len(idx)) - M[np.ix_(idx, idx)], rhs)
         return Z
-
-
-@dataclass
-class SpectralResult:
-    model: Model
-    compiled: SpectralCompiled
-    maps: Dict[str, np.ndarray]
-    Z: np.ndarray
-    converged: bool
-    residual: float
-    iterations: int
-    seconds: float
-    costs: Dict[str, float] = field(default_factory=dict)
-    history: List[float] = field(default_factory=list)
-    message: str = ""
-
-    def check(self):
-        """Return self, or raise ConvergenceError if the solve did not reach its tolerance."""
-        if not self.converged:
-            from .accel import ConvergenceError
-            raise ConvergenceError(f"{self.model.name}: residual {self.residual:.2e} ({self.message})")
-        return self
-
-    @property
-    def grid(self) -> TriangleGrid:
-        return self.compiled.g
-
-    def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
-        c = self.compiled
-        K = c.expr_op(c.model.expand({name: 1.0})) @ self.Z
-        return K if channel is None else K[:, c.channels.index(channel)]
-
-    def evaluate(self, name: str, channel: str, t, s) -> np.ndarray:
-        """Kernel value at (t, s) points (response at t to a unit shock at s)."""
-        t = np.asarray(t, dtype=float); s = np.asarray(s, dtype=float)
-        return self.grid.interp(t, t - s) @ self.kernel(name, channel)
-
-    def summary(self) -> str:
-        c = self.compiled
-        lines = [f"{self.model.name}: {'converged' if self.converged else 'NOT converged (' + self.message + ')'} residual {self.residual:.2e} "
-                 f"in {self.iterations} evaluations, {self.seconds:.1f}s; triangle grid {c.g.P} panels, "
-                 f"{len(c.g.pieces)} pieces x {c.g.nt}x{c.g.na} nodes = {c.N} nodes on [0, {c.T}], rho={c.rho}"]
-        for a in self.model.agents:
-            lines.append(f"  {a.name}: E[cost] = {self.costs.get(a.name, float('nan')):+.8f}")
-        return "\n".join(lines)
 
 
 class SpectralFiniteSolver:

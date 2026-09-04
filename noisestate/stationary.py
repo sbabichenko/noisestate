@@ -19,7 +19,6 @@ the best-response map over all raw maps.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -27,6 +26,7 @@ import numpy as np
 from .grid import AgeGrid
 from .accel import solve_fixed_point
 from .compile import compile_structure
+from .results import StationaryResult as Result
 from .spec import Agent, Atom, Model
 
 
@@ -165,55 +165,6 @@ class Compiled:
                             B[bl, col] += w * (self.shift(age) @ gur)
         Z = np.linalg.solve(np.eye(n) - M, B)
         return Z
-
-
-# ------------------------------------------------------------------ results
-@dataclass
-class Result:
-    model: Model
-    compiled: Compiled
-    maps: Dict[str, np.ndarray]                 # raw maps g[agent] (n_ctrl, n_rows, N)
-    Z: np.ndarray                               # closed-loop primary kernels (n_prim N, nW)
-    converged: bool
-    residual: float
-    iterations: int
-    seconds: float
-    foc: Dict[str, dict] = field(default_factory=dict)   # per agent: decomposition of the FOC kernels
-    costs: Dict[str, float] = field(default_factory=dict)
-    history: List[float] = field(default_factory=list)
-    message: str = ""
-
-    def check(self):
-        """Return self, or raise ConvergenceError if the solve did not reach its tolerance."""
-        if not self.converged:
-            from .accel import ConvergenceError
-            raise ConvergenceError(f"{self.model.name}: residual {self.residual:.2e} ({self.message})")
-        return self
-
-    @property
-    def ages(self) -> np.ndarray:
-        return self.compiled.grid.nodes
-
-    def kernel(self, name: str, lag: float = 0.0) -> np.ndarray:
-        """Closed-loop kernel of a quantity: array (N, nW), one column per channel."""
-        c = self.compiled
-        expr = c.model.expand({f"{name}@{lag}" if lag else name: 1.0})
-        return c.expr_op(expr) @ self.Z
-
-    def action_kernel(self, control: str) -> np.ndarray:
-        return self.Z[self.compiled.block(control)]
-
-    def summary(self) -> str:
-        c = self.compiled
-        lines = [f"{self.model.name}: {'converged' if self.converged else 'NOT converged (' + self.message + ')'} "
-                 f"residual {self.residual:.2e} in {self.iterations} evaluations, {self.seconds:.1f}s; "
-                 f"grid {c.grid.P} panels x {c.grid.n} nodes on [0, {c.grid.L}], rho={c.rho}"]
-        for a in self.model.agents:
-            lines.append(f"  {a.name}: E[loss] = {self.costs.get(a.name, float('nan')):+.6f}")
-            for u in a.controls:
-                k = self.action_kernel(u)
-                lines.append(f"    {u}(0+) on channels: " + ", ".join(f"{ch}={k[0, j]:+.4f}" for j, ch in enumerate(c.channels)))
-        return "\n".join(lines)
 
 
 # ------------------------------------------------------------------- solver
