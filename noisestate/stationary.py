@@ -490,12 +490,31 @@ class StationarySolver:
         Z = self.c.closed_loop(maps)
         res = Result(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
                      iterations=evals[0], seconds=time.time() - t0, history=hist, message=message)
-        # decomposition and costs
+        # decomposition, costs, and how well the raw rows represent each best response
         for a in self.model.agents:
-            _, out = self.best_response(a, maps, want_decomp=True)
+            g, out = self.best_response(a, maps, want_decomp=True)
             res.foc[a.name] = out["decomp"]
             res.costs[a.name] = self.expected_loss(a, Z)
+            res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
         return res
+
+    def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
+        """Relative residual of the best-response action kernels after projection on the agent's raw
+        rows.  Zero in exact arithmetic; on the grid it measures how well products of kernels are
+        resolved, so a value above about 1e-6 means the equilibrium is under-resolved: raise
+        horizon.nodes."""
+        c = self.c; nW = c.nW; nR = len(agent.signals)
+        rows, inst = [], []
+        for r in range(nR):
+            reg, deltas = c.row_seen(agent.name, r, set())
+            rows.append(reg @ Zfull)
+            inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
+        Bk = self._row_operator(rows, inst)
+        worst = 0.0
+        for ui in range(len(agent.controls)):
+            recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(nW)], axis=1)
+            worst = max(worst, float(np.abs(recon - actions[ui]).max() / max(1e-300, np.abs(actions[ui]).max())))
+        return worst
 
     def expected_loss(self, agent: Agent, Z: np.ndarray) -> float:
         c = self.c

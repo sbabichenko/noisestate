@@ -99,6 +99,7 @@ def main(argv=None) -> int:
     s.add_argument("--window", type=float, help="override the lag window L")
     s.add_argument("--param", action="append", default=[], help="override a parameter, k=v (repeatable)")
     s.add_argument("--tol", type=float, default=1e-10)
+    s.add_argument("--stability", action="store_true", help="also report the stability of the equilibrium under best-response dynamics")
     s.add_argument("-v", "--verbose", action="store_true")
     v = sub.add_parser("validate", help="parse and validate a model file, print its structure")
     v.add_argument("model")
@@ -135,6 +136,8 @@ def main(argv=None) -> int:
         d.setdefault("horizon", {})["window"] = args.window
     m = Model.from_dict(d)
     res = _solve(m, verbose=args.verbose, tol=args.tol)
+    if args.stability:
+        res.stability()
     print(res.summary())
     if args.out:
         save_result(res, args.out)

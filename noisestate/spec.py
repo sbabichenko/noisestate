@@ -445,4 +445,5 @@ class ModelBuilder:
         return Model.from_dict(self.d)
 
     def to_dict(self) -> dict:
-        return self.d
+        import copy
+        return copy.deepcopy(self.d)          # a copy: mutating it must not alter the builder

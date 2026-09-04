@@ -22,6 +22,7 @@ def _feasible_perturbation(S, agent, Zpass, rng):
 def test_stationary_best_response_is_optimal_kyle_back():
     d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml"))
     S = StationarySolver(ns.Model.from_dict(d)); res = S.solve().check()
+    assert res.resolution_ok and max(res.representation_error.values()) < 1e-9     # well-resolved reference models
     a = S.model.agents[1]; c = S.c; nW = c.nW
     g, out = S.best_response(a, res.maps)
     Zp = c.closed_loop(res.maps, excluded=a.name, impulse_controls=a.controls); Zpass, R = Zp[:, :nW], Zp[:, nW:]

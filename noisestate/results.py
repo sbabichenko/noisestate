@@ -39,7 +39,16 @@ class BaseResult:
     costs: Dict[str, float] = field(default_factory=dict)
     history: List[float] = field(default_factory=list)
     message: str = ""
+    representation_error: Dict[str, float] = field(default_factory=dict)   # agent -> relative residual, see resolution_ok
     kind: str = "base"
+
+    RESOLUTION_TOL = 1e-6
+
+    @property
+    def resolution_ok(self) -> bool:
+        """False when the grid is too coarse for the equilibrium it reports (representation error of a
+        best response on the raw rows above RESOLUTION_TOL); raise horizon.nodes and re-solve."""
+        return all(v <= self.RESOLUTION_TOL for v in self.representation_error.values())
 
     # ----------------------------------------------------------- common
     def check(self):
@@ -64,7 +73,65 @@ class BaseResult:
         raise NotImplementedError
 
     def _status(self) -> str:
-        return "converged" if self.converged else f"NOT converged ({self.message})"
+        s = "converged" if self.converged else f"NOT converged ({self.message})"
+        if self.representation_error and not self.resolution_ok:
+            s += f"; UNDER-RESOLVED (representation error {max(self.representation_error.values()):.1e}: raise horizon.nodes)"
+        rep = getattr(self, "stability_report", None)
+        if rep:
+            s += f"; best-response dynamics {'stable' if rep['stable'] else 'UNSTABLE'} (spectral radius {rep['radius']:.3f}"
+            s += ", untied game)" if rep["untied"] else ")"
+        return s
+
+    def stability(self, untied: bool = True, k: int = 2, eps: float = 1e-6, tol: float = 1e-3,
+                  max_evaluations: int = 200) -> dict:
+        """Stability of this equilibrium under best-response dynamics: the eigenvalues of largest
+        modulus of the Jacobian of the best-response map at the equilibrium, by Arnoldi iteration on
+        finite differences.  A spectral radius below one means small deviations by any agent die out
+        under naive best-response adjustment (tatonnement-stable); above one, they grow, and the
+        equilibrium is one that adjustment dynamics would not find.  With untied=True (default) a
+        tied model is assessed on the untied game, so asymmetric deviations are allowed.
+        Returns {"radius", "eigenvalues", "stable", "evaluations", "untied"}; also stored in
+        self.stability_report."""
+        import numpy as np
+        from scipy.sparse.linalg import LinearOperator, eigs
+        from .sweep import make_solver
+        model = self.model
+        if untied and model.ties:
+            d = model.to_dict(); d["ties"] = []
+            model = Model.from_dict(d)
+        S = make_solver(model)
+        maps = {a.name: np.array(self.maps[a.name], copy=True) for a in model.agents}
+        z0 = S.pack(maps)
+        F0 = S.pack(S.response_map(S.unpack(z0)))
+        scale = max(1.0, float(np.linalg.norm(z0)))
+        count = [1]
+
+        def matvec(v):
+            v = np.asarray(v, dtype=float).ravel()
+            nv = np.linalg.norm(v)
+            if nv == 0:
+                return np.zeros_like(v)
+            h = eps * scale / nv
+            count[0] += 1
+            return (S.pack(S.response_map(S.unpack(z0 + h * v))) - F0) / h
+        n = z0.size
+        kk = max(1, min(k, n - 2))
+        op = LinearOperator((n, n), matvec=matvec, dtype=float)
+        rng = np.random.default_rng(0)
+        try:
+            vals = eigs(op, k=kk, which="LM", tol=tol, maxiter=max_evaluations, v0=rng.standard_normal(n),
+                        return_eigenvectors=False)
+        except Exception:                                   # ARPACK did not settle: fall back to power iteration
+            v = rng.standard_normal(n); lam = 0.0
+            for _ in range(30):
+                w = matvec(v); lam = np.linalg.norm(w) / np.linalg.norm(v); v = w / max(np.linalg.norm(w), 1e-300)
+            vals = np.array([lam])
+        radius = float(np.max(np.abs(vals)))
+        rep = {"radius": radius, "eigenvalues": [complex(x) for x in np.asarray(vals)], "stable": bool(radius < 1.0),
+               "evaluations": int(count[0]), "untied": bool(untied and self.model.ties),
+               "fixed_point_residual": float(np.linalg.norm(F0 - z0) / scale)}
+        self.stability_report = rep
+        return rep
 
     def to_dict(self) -> dict:
         """JSON-serialisable view: grid, kernels per quantity and channel, raw maps, costs, and the
@@ -75,6 +142,12 @@ class BaseResult:
                "message": self.message, "grid": self.grid_info(), "discount": float(c.rho),
                "channels": self.channels, "kernels": {}, "maps": {}, "foc": {},
                "costs": {k: float(v) for k, v in self.costs.items()}}
+        out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
+        out["resolution_ok"] = bool(self.resolution_ok)
+        rep = getattr(self, "stability_report", None)
+        if rep:
+            out["stability"] = {"radius": rep["radius"], "stable": rep["stable"], "untied": rep["untied"],
+                                "eigenvalues": [[x.real, x.imag] for x in rep["eigenvalues"]]}
         for name in c.prim:
             out["kernels"][name] = {ch: self.kernel(name, ch).tolist() for ch in self.channels}
         for a in self.model.agents:

@@ -539,4 +539,22 @@ class SpectralFiniteSolver:
                              iterations=evals[0], seconds=time.time() - t0, history=hist, message=message)
         for a in self.model.agents:
             res.costs[a.name] = self.expected_cost(a, Z)
+            g, out = self.best_response(a, maps)
+            res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
         return res
+
+    def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
+        """Relative residual of the best-response action after projection on the raw rows (see the
+        stationary engine); above about 1e-6 the triangle is under-resolved: raise horizon.nodes."""
+        c = self.c; nW = c.nW; nR = len(agent.signals)
+        rows, inst = [], []
+        for r in range(nR):
+            reg, deltas = c.row_op(agent.name, r, set())
+            rows.append(reg @ Zfull)
+            inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
+        Bk = self._row_operator(agent, rows, inst)
+        worst = 0.0
+        for ui in range(len(agent.controls)):
+            recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(nW)], axis=1)
+            worst = max(worst, float(np.abs(recon - actions[ui]).max() / max(1e-300, np.abs(actions[ui]).max())))
+        return worst
