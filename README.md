@@ -250,10 +250,19 @@ The checks:
   is a floor on the representation error that node refinement lowers only slowly (2e-3 on the
   Chapter 3 game with one row delayed by 0.5, 2e-3 on the Chapter 5 example), so `UNDER-RESOLVED`
   overstates the problem for such models: costs converge (5e-5 between 24 and 40 nodes) and the
-  stationary and finite engines agree.  Giving the lower copy the left limit (zero) is the right
-  convention but, applied to the shift alone, breaks the convolution tensors' assumptions and the
-  fixed point diverges; the fix needs the same convention in the convolution and correlation
-  quadrature.
+  stationary and finite engines agree to 2e-3.  The same artefact is why the raw-map iteration
+  (`variable="maps"`) stalls near a residual of 1e-6 on models with delayed rows while the
+  action-kernel iteration converges: the best-response action carries a spurious response to
+  shocks younger than the delay that no causal map of the rows can reproduce, so the map
+  fixed-point function is noisy at that level.  Giving the lower copy of the node its left limit
+  (zero) makes each best response exactly causal and cuts its representation error by an order of
+  magnitude, but it also exposes a genuinely weakly identified direction at the start of the
+  delayed row's map (a singular value of 8e-3 where the artefact had supplied a spurious 0.9): the
+  map's value at short lags acts on the action only over the sliver of ages just above the delay.
+  A least-squares cutoff that removes that direction gives a sane equilibrium whose costs then
+  depend on the cutoff at the 1e-2 level, so a principled regularisation (or a parametrisation of
+  the delayed map on the row's own time axis) is needed before the convention can change; the
+  shipped results keep the current convention, which the finite engine shares.
 
 * The Chapter 5 cycle-market example has a second-order curvature of -3e-5 (relative to the
   largest) in the firms' best response at 6 and 8 nodes per panel, in the map on the order rows at

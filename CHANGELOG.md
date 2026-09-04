@@ -33,6 +33,11 @@
   `expected_cost` on every engine (`expected_loss` kept as an alias on the stationary one).
 - The C++ replica, its test and reference output, the patches and the comparison scripts moved to
   `extras/` (outside the wheel); the slow tests run in a scheduled CI job.
+- The map projection of the spectral finite engine uses one ridge for every time row, relative to
+  the best-identified row (a ridge relative to a row's own tiny Gram regularised nothing).
+- The raw-map stall on models with delayed rows is diagnosed (README, known open items): the
+  jump-interpolation artefact makes the best-response action slightly non-causal, which no map of
+  the rows can reproduce; the action-kernel iteration is unaffected.
 - The delayed-row least-squares cutoff is documented as immaterial (costs move by 1e-7 across
   cutoffs 1e-9 to 1e-6), and the jump-interpolation floor on the representation error for
   delayed rows and lagged control reads is recorded as a known open item.

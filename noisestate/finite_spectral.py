@@ -263,6 +263,7 @@ class SpectralCompiled:
 
 
 class SpectralFiniteSolver(EngineBase):
+    MAP_RIDGE = 1e-13      # ridge of the per-time-row map projection, relative to the best-identified row's Gram
     RIDGE = 1e-11          # relative Tikhonov term on the best-response system: needed with delayed rows, 2e-13 effect without
 
     def __init__(self, model: Model, verbose: bool = False):
@@ -381,16 +382,22 @@ class SpectralFiniteSolver(EngineBase):
         rows, inst = self._seen_rows(agent, Zfull, set())
         Bk = self._row_operator(agent, rows, inst)
         gmap = np.zeros((nU, nR, N))
+        systems = []
         for (p, idx) in c.trows:
             tv = g.t[idx[0]]
             w = g.row_weights(tv, side=(-1 if tv >= g.bp[p + 1] - 1e-12 else +1))[idx]
             cols = np.concatenate([r * N + idx for r in range(nR)])
             Bsub = Bk[:, idx][:, :, cols]
             G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
-            tr = np.trace(G)
-            if tr <= 0:
+            systems.append((idx, w, Bsub, G))
+        # one ridge for every time row, relative to the best-identified row: just after a delay a row's
+        # history is short and its Gram tiny, and a ridge relative to that row's own Gram regularises
+        # nothing, leaving the map there to round-off (the map iteration then stalls near 1e-6)
+        scale = max((np.trace(G) / G.shape[0] for (_, _, _, G) in systems if np.trace(G) > 0), default=0.0)
+        for (idx, w, Bsub, G) in systems:
+            if np.trace(G) <= 0:
                 continue
-            G += 1e-13 * tr / G.shape[0] * np.eye(G.shape[0])
+            G = G + self.MAP_RIDGE * scale * np.eye(G.shape[0])
             for ui in range(nU):
                 rhs = sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW))
                 sol = np.linalg.solve(G, rhs)
