@@ -22,12 +22,19 @@ from .compile import compile_structure
 from .results import TriangleResult as SpectralResult
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
+from .grid_cache import triangle_grid
 
 
 class SpectralCompiled:
     def __init__(self, model: Model):
         model.validate()
         self.model = model
+        for a in model.agents:
+            for term in a.loss:
+                for atom in term[1:]:
+                    if any(l < 0 for (n, l) in model.expand({atom: 1.0})):
+                        raise NotImplementedError(f"agent {a.name}: lead atoms in loss terms ({atom}) are not supported by "
+                                                  "the finite-horizon engines yet; the stationary engine supports them")
         hz = model.horizon
         self.T = float(hz.window)
         lags = model.all_lags()
@@ -36,7 +43,7 @@ class SpectralCompiled:
             if not any(abs(l - b) < 1e-9 * max(1.0, self.T) for b in bp):
                 raise ValueError(f"lag {l} is not a breakpoint of the time/age partition {bp}; set horizon.unit "
                                  "so that every lag is a multiple of it")
-        self.g = TriangleGrid(bp, hz.nodes, hz.nodes)
+        self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes)   # shared
         g = self.g
         self.N = g.N
         self.rho = float(hz.discount)
@@ -45,8 +52,6 @@ class SpectralCompiled:
         self.prim, self.index, self.nX, self.nU = st.prim, st.index, st.nX, st.nU
         self.A, self.state_inputs, self.sigma = st.A, st.state_inputs, st.sigma
         self.rows, self.loss, self.rep, self.reps = st.rows, st.loss, st.rep, st.reps
-        self._read_cache: Dict[Tuple[float, float], np.ndarray] = {}
-        self._paths: Dict[tuple, object] = {}
         # state propagation operators (eigen-decomposition of A)
         if self.nX:
             # state propagation e^{A(t-r)} along the Volterra path; entrywise weights from expm, which
@@ -90,8 +95,9 @@ class SpectralCompiled:
         limits chosen by the node's position in its piece; zero where the read age is
         negative (for da > 0 this is exact on delay-aligned pieces)."""
         key = (round(dt, 12), round(da, 12))
-        if key in self._read_cache:
-            return self._read_cache[key]
+        cache = self.g.__dict__.setdefault("_read_cache", {})
+        if key in cache:
+            return cache[key]
         g = self.g
         if dt == 0.0 and da == 0.0:
             M = np.eye(self.N)
@@ -99,7 +105,7 @@ class SpectralCompiled:
             M = g.interp(g.t - dt, g.a - da, side_t=g.side_t, side_a=g.side_a)
             if da > 0:
                 M[g.a0 < da - 1e-12] = 0.0
-        self._read_cache[key] = M
+        cache[key] = M
         return M
 
     def block(self, name: str) -> slice:
@@ -139,10 +145,11 @@ class SpectralCompiled:
     # Each family of line integrals is a cached quadrature structure (triangle.LinePath);
     # an operator for a given known kernel is then two sparse products.
     def _path(self, key, **kw):
-        if key not in self._paths:
+        cache = self.g.__dict__.setdefault("_paths", {})
+        if key not in cache:
             g = self.g
-            self._paths[key] = g.path(g.t, g.a, **kw)
-        return self._paths[key]
+            cache[key] = g.path(g.t, g.a, **kw)
+        return cache[key]
 
     def conv_left(self, gker: np.ndarray, delay: float) -> np.ndarray:
         """(C y)(t, s) = int_{s+delay}^{t} g(t, t - u) y(u, s) du  for a fixed map kernel g."""
@@ -430,21 +437,25 @@ class SpectralFiniteSolver:
             for ui, u in enumerate(a.controls):
                 Z[c.block(u)] = actions[a.name][ui]
         if c.nX:
-            if any(nm in c.model.state_names for _, (nm, _), _ in c.state_inputs):
-                raise NotImplementedError("lagged state inputs: use variable='maps'")
             EA = c.expA(c.g.a)
-            X = np.zeros((c.nX, N, nW))
+            X0 = np.zeros((c.nX * N, nW))                                       # homogeneous part, (comp, node)
             for k in range(nW):
                 for i in range(c.nX):
-                    X[i, :, k] += EA[:, i, :] @ c.sigma[:, k]
-            inp = np.zeros((c.nX, N, nW))
+                    X0[i * N:(i + 1) * N, k] = EA[:, i, :] @ c.sigma[:, k]
+            inp = np.zeros((c.nX * N, nW)); Lx = np.zeros((c.nX * N, c.nX * N))
             for si, (nm, lag), coef in c.state_inputs:
-                inp[si] += coef * (c.read(lag, lag) @ Z[c.block(nm)])
+                if nm in c.model.state_names:
+                    j = c.model.state_names.index(nm)
+                    Lx[si * N:(si + 1) * N, j * N:(j + 1) * N] += coef * c.read(lag, lag)
+                else:
+                    inp[si * N:(si + 1) * N] += coef * (c.read(lag, lag) @ Z[c.block(nm)])
+            V = np.zeros((c.nX * N, c.nX * N))
             for i in range(c.nX):
                 for j in range(c.nX):
-                    X[i] += c.Vol[i, j] @ inp[j]
-            for i in range(c.nX):
-                Z[c.block(c.prim[i])] = X[i]
+                    V[i * N:(i + 1) * N, j * N:(j + 1) * N] = c.Vol[i, j]
+            rhs = X0 + V @ inp
+            X = np.linalg.solve(np.eye(c.nX * N) - V @ Lx, rhs) if Lx.any() else rhs
+            Z[:c.nX * N] = X
         return Z
 
     def maps_from_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:

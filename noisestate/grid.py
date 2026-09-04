@@ -143,6 +143,13 @@ class AgeGrid:
         M[self.nodes - tau > self.L + 1e-14] = 0.0
         return M
 
+    def shift_cached(self, tau: float) -> np.ndarray:
+        key = round(float(tau), 12)
+        cache = self.__dict__.setdefault("_shift_cache", {})
+        if key not in cache:
+            cache[key] = self.shift(key)
+        return cache[key]
+
     def evaluate(self, f: np.ndarray, points) -> np.ndarray:
         return self.interp(points) @ f
 

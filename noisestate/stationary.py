@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .grid import AgeGrid
+from .grid_cache import age_grid
 from .accel import solve_fixed_point
 from .compile import compile_structure
 from .results import StationaryResult as Result
@@ -47,7 +48,7 @@ class Compiled:
         for l in lags:
             if not any(abs(l - b) < 1e-12 for b in bp):
                 raise ValueError(f"lag {l} is not a panel breakpoint; set horizon.unit so every lag is a multiple")
-        self.grid = AgeGrid(bp, hz.nodes)
+        self.grid = age_grid(tuple(round(float(b), 12) for b in bp), hz.nodes)   # shared, with its operator caches
         self.N = self.grid.N
         self.rho = float(hz.discount)
         st = compile_structure(model)
@@ -55,16 +56,12 @@ class Compiled:
         self.prim, self.index, self.nX, self.nU = st.prim, st.index, st.nX, st.nU
         self.A, self.state_inputs, self.sigma = st.A, st.state_inputs, st.sigma
         self.rows, self.loss, self.rep, self.reps = st.rows, st.loss, st.rep, st.reps
-        self._shift_cache: Dict[float, np.ndarray] = {}
         self._atom_cache: Dict[tuple, np.ndarray] = {}
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
 
     # ------------------------------------------------------------- operators
     def shift(self, tau: float) -> np.ndarray:
-        key = round(float(tau), 12)
-        if key not in self._shift_cache:
-            self._shift_cache[key] = self.grid.shift(key)
-        return self._shift_cache[key]
+        return self.grid.shift_cached(tau)
 
     def block(self, name: str) -> slice:
         i = self.index[name]
@@ -283,6 +280,18 @@ class StationarySolver:
                         continue                            # own reactions: envelope
                     op += CR[j] @ Qj
                     op_phys += CRp[j] @ Qj
+                    if lag < 0:
+                        # a lead: flows at dates t - |lag| <= tau < t also read the quantity after t, so the
+                        # derivative of the discounted objective has a further term over those past dates:
+                        #   int_0^{|lag|} e^{rho v} r(|lag| - v) (Q zeta)_j(a - v) dv   (convolution with k(v))
+                        for (Rsrc, target) in ((R, "op"), (Rphys, "op_phys")):
+                            rx = Rsrc[c.block(name), ui]
+                            v = c.grid.nodes
+                            kv = np.exp(c.rho * v) * (c.grid.interp(-lag - v) @ rx) * (v <= -lag + 1e-12)
+                            if target == "op":
+                                op += c.grid.conv_op(kv) @ Qj
+                            else:
+                                op_phys += c.grid.conv_op(kv) @ Qj
             Fu.append(op); Fphys.append(op_phys)
         return Fu, Fphys
 
@@ -374,14 +383,18 @@ class StationarySolver:
             for ui, u in enumerate(a.controls):
                 Z[c.block(u)] = actions[a.name][ui]
         if c.nX:
-            if any(nm in c.model.state_names for _, (nm, _), _ in c.state_inputs):
-                raise NotImplementedError("lagged state inputs: use variable='maps'")
             perm = np.arange(c.nX * N).reshape(N, c.nX).T.reshape(-1)
             PX, P0X = c.Pin[perm], c.P0[perm]
-            U = np.zeros((c.nX * N, nW))
+            U = np.zeros((c.nX * N, nW))                       # inputs from controls
+            Lx = np.zeros((c.nX * N, c.nX * N))                # inputs from lagged states (linear in X)
             for i, (nm, lag), coef in c.state_inputs:
-                U[i::c.nX] += coef * (c.shift(lag) @ Z[c.block(nm)])
-            X = PX @ U + P0X @ c.sigma
+                if nm in c.model.state_names:
+                    j = c.model.state_names.index(nm)
+                    Lx[i::c.nX, j * N:(j + 1) * N] += coef * c.shift(lag)     # input (node, comp i) <- X block j
+                else:
+                    U[i::c.nX] += coef * (c.shift(lag) @ Z[c.block(nm)])
+            rhs = PX @ U + P0X @ c.sigma
+            X = np.linalg.solve(np.eye(c.nX * N) - PX @ Lx, rhs) if Lx.any() else rhs
             Z[:c.nX * N] = X
         return Z
 

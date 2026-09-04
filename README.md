@@ -170,4 +170,12 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
 
 Scalar states and controls (write vector models as several scalars); no exact
 (noise-free) observation of a state that is not itself a channel; means (targets,
-linear loss terms) are not yet solved.
+linear loss terms) are not yet solved.  Lead atoms (`X@-0.5`) in loss terms are
+supported by the stationary engine (its first-order condition carries the extra
+term from flows before *t* that read the quantity after *t*) and rejected by the
+finite-horizon engines for now.  With lagged *state* feedback in a drift
+(`X@0.5` in the drift of `X`), the map and action-kernel iterations agree only to
+first order in the node count (1.6e-5 at 24 nodes per panel on the Chapter 3 game);
+the action-kernel path is the default and the more accurate one.  A game can have
+several equilibria: `ties` selects the symmetric one, an untied solve from a zero
+start may land on another.

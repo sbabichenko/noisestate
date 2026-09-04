@@ -35,6 +35,12 @@ class FiniteCompiled:
     def __init__(self, model: Model):
         model.validate()
         self.model = model
+        for a in model.agents:
+            for term in a.loss:
+                for atom in term[1:]:
+                    if any(l < 0 for (n, l) in model.expand({atom: 1.0})):
+                        raise NotImplementedError(f"agent {a.name}: lead atoms in loss terms ({atom}) are not supported by "
+                                                  "the finite-horizon engines yet; the stationary engine supports them")
         hz = model.horizon
         self.T = float(hz.window)
         self.N = int(hz.nodes)
