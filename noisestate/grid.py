@@ -117,7 +117,8 @@ class AgeGrid:
         """Matrix I with (I f)(points) = interpolant of f; zero outside [0, L]."""
         pts = np.atleast_1d(np.asarray(points, dtype=float))
         I = np.zeros((len(pts), self.N))
-        inside = (pts >= -1e-14) & (pts <= self.L + 1e-14)
+        eps = 1e-14 * max(1.0, self.L)
+        inside = (pts >= -eps) & (pts <= self.L + eps)
         p = self.panel_index(np.clip(pts, 0.0, self.L), side)
         for q in range(self.P):
             sel = np.where(inside & (p == q))[0]
@@ -136,11 +137,11 @@ class AgeGrid:
             return np.eye(self.N)
         if tau > 0:
             M = self.interp(self.nodes - tau, side=+1)
-            M[self.nodes < tau - 1e-14] = 0.0
+            M[self.nodes < tau - 1e-14 * max(1.0, self.L)] = 0.0
             # a node exactly at tau sees the right limit f(0+)
             return M
         M = self.interp(self.nodes - tau, side=-1)
-        M[self.nodes - tau > self.L + 1e-14] = 0.0
+        M[self.nodes - tau > self.L * (1 + 1e-14)] = 0.0
         return M
 
     def shift_cached(self, tau: float) -> np.ndarray:
@@ -202,7 +203,7 @@ class AgeGrid:
         Equals the homogeneous propagation of v started at the breakpoint tau (must be a breakpoint)."""
         A = np.atleast_2d(np.asarray(A, dtype=float))
         m = A.shape[0]
-        idx = np.where(np.abs(self.breakpoints - tau) < 1e-12)[0]
+        idx = np.where(np.abs(self.breakpoints - tau) < 1e-12 * max(1.0, self.L))[0]
         if len(idx) == 0:
             raise ValueError(f"jump age {tau} is not a panel breakpoint {self.breakpoints}")
         p0 = int(idx[0])

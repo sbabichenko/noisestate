@@ -282,6 +282,8 @@ class FiniteSolver:
             gvec, info = lgmres(op, -b, x0=x0, rtol=1e-12, atol=0, maxiter=400)
             if info != 0:
                 gvec, info = lgmres(op, -b, x0=gvec, rtol=1e-12, atol=0, maxiter=1000)
+            if info != 0:
+                raise RuntimeError(f"cell engine: the best-response linear solve did not converge (lgmres info {info})")
             self._warm[agent.name] = gvec.copy()
         gam = np.zeros((nU, nR, N, N)); gam[:, :, tri] = gvec.reshape(nU, nR, nfree)
         cact = action_from_gamma(gam)

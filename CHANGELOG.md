@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1 (2026-09-04) — review fixes
+
+- Sweeping a `Model` object re-parametrises its source; ties require structural identity, not
+  matching shapes; parameters may be expressions in earlier parameters.
+- Coefficient expressions are parsed by an AST whitelist; `eval` is gone.
+- One result interface (`BaseResult`: `check`, `kernel`, `to_dict`, `grid_info`, `summary`);
+  `noisestate.solve` validates its options; `ConvergenceError` and `sweep` are exported; the CLI
+  works on every engine.
+- Lead atoms in stationary losses get their past-date term; the finite engines reject leads;
+  lagged state feedback works in the action-kernel path.
+- Grids and their operator caches are shared across compiles (sweeps, sliders).
+- Spectral engine: delays must be breakpoints; `expm`-based propagation for defective state
+  matrices.  Epsilons scale with the window.  matplotlib is optional (`noisestate[plot]`).
+
 ## 0.2.0 (2026-09-04) — stability
 
 - Model files are validated strictly: unknown keys at any level, channels that nothing loads, and
