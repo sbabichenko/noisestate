@@ -222,7 +222,25 @@ class SpectralCompiled:
                             continue
                         for (age, w) in dl:
                             B[bl, col] += w * (self.read(0.0, age) @ gker)
-        return np.linalg.solve(np.eye(n) - M, B)
+        return self._solve_causal(M, B)
+
+    def _solve_causal(self, M: np.ndarray, B: np.ndarray) -> np.ndarray:
+        """Solve (I - M) Z = B exploiting causality: a kernel value at time panel p depends only on
+        values at panels <= p, so with nodes grouped by panel the system is block lower triangular
+        and is solved by block forward substitution (one dense solve per panel)."""
+        N = self.N
+        if not hasattr(self, "_panel_idx"):
+            panel = np.concatenate([np.full(pc.n, pc.p) for pc in self.g.pieces])
+            self._panel_idx = [np.concatenate([q * N + np.where(panel == p)[0] for q in range(len(self.prim))])
+                               for p in range(self.g.P)]
+        Z = np.zeros_like(B)
+        for p, idx in enumerate(self._panel_idx):
+            rhs = B[idx].copy()
+            for q in range(p):
+                jdx = self._panel_idx[q]
+                rhs -= (-M[np.ix_(idx, jdx)]) @ Z[jdx]        # (I - M) has -M off the diagonal blocks
+            Z[idx] = np.linalg.solve(np.eye(len(idx)) - M[np.ix_(idx, idx)], rhs)
+        return Z
 
 
 @dataclass

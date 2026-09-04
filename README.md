@@ -90,6 +90,21 @@ horizon: {kind: stationary, discount: rho, window: 8.0, nodes: 24}
 The same structure is available from Python through `ModelBuilder` (see
 `examples/make_ch5_cycle_market.py`, which builds an N-firm cycle in a loop).
 
+## Sweeps and interactive use
+
+```python
+from noisestate.sweep import sweep, result_to_dict
+rows = sweep("examples/ch4_kyle_back.yaml", "eps", [0.2, 0.1, 0.05, 0.02])   # each point warm-started
+rows[-1]["result"].summary(); result_to_dict(rows[-1]["result"])             # JSON-ready
+```
+
+`noisestate sweep model.yaml eps 0.2,0.1,0.05 -o sweep.json` does the same from the shell.  Each
+point starts from a secant extrapolation of the previous two equilibria in the parameter, which is
+what carries the Kyle-Back sweep down to a trading cost of 0.01 where a plain restart fails.  A
+warm-started point costs a handful of best responses, which is what a slider in a front end needs;
+`result_to_dict` is the payload such a front end would render (grid, kernels per quantity and
+channel, raw maps, costs, and the first-order-condition decomposition).
+
 ## How it works
 
 Stationary form: every process is a kernel in shock age on `[0, L]`, stored at
@@ -104,11 +119,11 @@ continuation through the physical state and through the other agents' reactions)
 affine in the unknown, and the best response is a single linear solve.  The raw
 strategy is recovered by projecting the resulting action kernel on the agent's
 closed-loop rows, and the equilibrium is the fixed point of the best-response map
-(the stationary engine uses damped iteration then Newton-Krylov; the finite-horizon
-engines iterate on the action kernels with Tikhonov-regularised Anderson
+(all engines iterate on the action kernels with Tikhonov-regularised Anderson
 acceleration, the outer solver of the Chapter 5 market solver, and derive the raw
-maps by projection, which keeps ill-determined early-time maps from feeding noise
-back into the iteration).
+maps by projection; a Newton-Krylov polish runs if Anderson stalls.  `solve(method=
+"newton", variable="maps")` selects the older damped-iteration-plus-Newton loop on
+raw maps).
 
 Finite horizon: the same construction on a piecewise-spectral triangle.  Kernels
 K(t, s) live in (time, shock-age) coordinates on the domain cut by the delays:

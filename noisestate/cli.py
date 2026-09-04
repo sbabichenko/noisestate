@@ -11,31 +11,7 @@ import yaml
 from . import solve as _solve
 from .spec import Model
 from .finite_spectral import SpectralResult
-
-
-def result_to_dict(res) -> dict:
-    c = res.compiled
-    if isinstance(res, SpectralResult):
-        grid = {"kind": "finite_triangle", "breakpoints": [float(b) for b in c.g.bp], "nodes_per_side": c.g.nt,
-                "t": c.g.t.tolist(), "age": c.g.a.tolist(), "s": c.g.s.tolist()}
-    else:
-        grid = {"kind": "stationary", "breakpoints": [float(b) for b in c.grid.breakpoints], "nodes_per_panel": c.grid.n,
-                "ages": c.grid.nodes.tolist()}
-    out = {
-        "model": res.model.name, "converged": bool(res.converged), "residual": res.residual,
-        "evaluations": res.iterations, "seconds": res.seconds, "grid": grid,
-        "discount": c.rho, "channels": c.channels,
-        "kernels": {}, "maps": {}, "foc": {}, "costs": {k: float(v) for k, v in res.costs.items()},
-    }
-    for name in c.prim:
-        out["kernels"][name] = {ch: res.kernel(name)[:, k].tolist() for k, ch in enumerate(c.channels)}
-    for a in res.model.agents:
-        g = res.maps[a.name]
-        out["maps"][a.name] = {u: {r.name: g[ui, ri].tolist() for ri, r in enumerate(a.signals)} for ui, u in enumerate(a.controls)}
-        if getattr(res, "foc", None) and a.name in res.foc:
-            out["foc"][a.name] = {u: {part: {ch: arr[:, k].tolist() for k, ch in enumerate(c.channels)}
-                                      for part, arr in dec.items()} for u, dec in res.foc[a.name].items()}
-    return out
+from .sweep import result_to_dict, sweep
 
 
 def save_result(res, path: str) -> None:
@@ -109,10 +85,21 @@ def main(argv=None) -> int:
     s.add_argument("-v", "--verbose", action="store_true")
     v = sub.add_parser("validate", help="parse and validate a model file, print its structure")
     v.add_argument("model")
+    w = sub.add_parser("sweep", help="solve along one parameter with warm starts; write a JSON list")
+    w.add_argument("model"); w.add_argument("param"); w.add_argument("values", help="comma-separated values")
+    w.add_argument("-o", "--out", required=True, help="output .json")
+    w.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
 
     with open(args.model) as fh:
         d = yaml.safe_load(fh)
+    if args.cmd == "sweep":
+        rows = sweep(d, args.param, [float(x) for x in args.values.split(",")], verbose=args.verbose)
+        with open(args.out, "w") as fh:
+            json.dump([{"value": r["value"], "converged": r["converged"], "evaluations": r["evaluations"],
+                        "seconds": r["seconds"], "result": result_to_dict(r["result"])} for r in rows], fh)
+        print("wrote", args.out, f"({len(rows)} points, {sum(r['seconds'] for r in rows):.1f}s)")
+        return 0 if all(r["converged"] for r in rows) else 1
     if args.cmd == "validate":
         m = Model.from_dict(d)
         print(f"{m.name}: {len(m.channels)} channels, {len(m.states)} states, {len(m.definitions)} definitions, "

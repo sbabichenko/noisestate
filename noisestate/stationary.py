@@ -65,6 +65,7 @@ class Compiled:
         self.rows, self.loss, self.rep, self.reps = st.rows, st.loss, st.rep, st.reps
         self.ctrl_agent = {u: a for a in model.agents for u in a.controls}
         self._shift_cache: Dict[float, np.ndarray] = {}
+        self._atom_cache: Dict[tuple, np.ndarray] = {}
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
 
     # ------------------------------------------------------------- operators
@@ -79,11 +80,14 @@ class Compiled:
         return slice(i * self.N, (i + 1) * self.N)
 
     def atom_op(self, atom: Atom) -> np.ndarray:
-        """N x (n_prim N) matrix giving the kernel of `name@lag` from the primary vector."""
-        name, lag = atom
-        M = np.zeros((self.N, len(self.prim) * self.N))
-        M[:, self.block(name)] = self.shift(lag)
-        return M
+        """N x (n_prim N) matrix giving the kernel of `name@lag` from the primary vector (cached)."""
+        key = (atom[0], round(float(atom[1]), 12))
+        if key not in self._atom_cache:
+            name, lag = atom
+            M = np.zeros((self.N, len(self.prim) * self.N))
+            M[:, self.block(name)] = self.shift(lag)
+            self._atom_cache[key] = M
+        return self._atom_cache[key]
 
     def expr_op(self, expr: Dict[Atom, float]) -> np.ndarray:
         M = np.zeros((self.N, len(self.prim) * self.N))
@@ -222,6 +226,7 @@ class StationarySolver:
         self.model = model
         self.verbose = verbose
         self.naive_observers = naive_observers or {}
+        self._rphys: Dict[str, np.ndarray] = {}
         c = self.c
         self.shapes = {a.name: (len(a.controls), len(a.signals), c.N) for a in model.agents}
 
@@ -366,7 +371,9 @@ class StationarySolver:
         Zpass, R = Zp[:, :nW], Zp[:, nW:]
         R = self._impulse_responses(agent, maps, R)
         Zpass = self._passive_world(agent, maps, Zpass, R)
-        Rphys = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
+        if agent.name not in self._rphys:                                   # map-independent: cache
+            self._rphys[agent.name] = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
+        Rphys = self._rphys[agent.name]
         # operators: gamma -> action, action -> world, world -> FOC, FOC -> projection
         ytil, yinst = self._passive_rows(agent, Zpass)
         Gk = self._row_operator(ytil, yinst)
@@ -405,6 +412,37 @@ class StationarySolver:
         return g, out
 
     # ------------------------------------------------ maps from kernels
+    def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
+        """Closed-loop primary kernels (n_prim N, nW) when every agent's action kernels (nU, N, nW) are
+        given: the states follow from the propagator, no strategy maps needed."""
+        c = self.c; N, nW = c.N, c.nW
+        Z = np.zeros((len(c.prim) * N, nW))
+        for a in self.model.agents:
+            for ui, u in enumerate(a.controls):
+                Z[c.block(u)] = actions[a.name][ui]
+        if c.nX:
+            if any(nm in c.model.state_names for _, (nm, _), _ in c.state_inputs):
+                raise NotImplementedError("lagged state inputs: use variable='maps'")
+            perm = np.arange(c.nX * N).reshape(N, c.nX).T.reshape(-1)
+            PX, P0X = c.Pin[perm], c.P0[perm]
+            U = np.zeros((c.nX * N, nW))
+            for i, (nm, lag), coef in c.state_inputs:
+                U[i::c.nX] += coef * (c.shift(lag) @ Z[c.block(nm)])
+            X = PX @ U + P0X @ c.sigma
+            Z[:c.nX * N] = X
+        return Z
+
+    def response_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        maps = self.maps_from_kernels(self.world_from_actions(actions))
+        new = {}
+        for a in self.model.agents:
+            if self.c.rep[a.name] == a.name:
+                new[a.name] = self.best_response(a, maps)[1]["action"]
+        for a in self.model.agents:
+            if a.name not in new:
+                new[a.name] = new[self.c.rep[a.name]]
+        return new
+
     def maps_from_kernels(self, Z: np.ndarray) -> Dict[str, np.ndarray]:
         """Raw maps that reproduce given closed-loop primary kernels Z (n_prim N, nW)."""
         return {a.name: self._project_maps(a, Z, np.stack([Z[self.c.block(u)] for u in a.controls]))
@@ -424,22 +462,52 @@ class StationarySolver:
         return new
 
     def solve(self, init: Optional[Dict[str, np.ndarray]] = None, tol: float = 1e-10, damping: float = 0.3,
-              pre_iterations: int = 20, max_newton: int = 60, pre_tol: float = 1e-3) -> Result:
+              pre_iterations: int = 20, max_newton: int = 60, pre_tol: float = 1e-3, method: str = "anderson",
+              variable: str = "actions") -> Result:
+        """method: "newton" (damped pre-phase, then Newton-Krylov) or "anderson" (regularised Anderson,
+        Newton polish).  variable: "maps" iterates on the raw strategies; "actions" on the action
+        kernels (raw maps by projection), which is better conditioned when strategies are weakly
+        identified.  init: maps or actions accordingly."""
         t0 = time.time()
-        maps = init if init is not None else self.zero_maps()
-        z = self.pack(maps)
-        hist = []
-        evals = [0]
+        hist, evals = [], [0]
+        shapes_a = {a.name: (len(a.controls), self.c.N, self.c.nW) for a in self.model.agents}
+        reps = self.c.reps
 
-        def F(zz):
-            evals[0] += 1
-            return self.pack(self.response_map(self.unpack(zz))) - zz
+        def packa(acts):
+            return np.concatenate([acts[n].reshape(-1) for n in reps])
 
-        # damped pre-phase
+        def unpacka(zz):
+            acts, pos = {}, 0
+            for n in reps:
+                size = int(np.prod(shapes_a[n])); acts[n] = zz[pos:pos + size].reshape(shapes_a[n]); pos += size
+            for a in self.model.agents:
+                if a.name not in acts:
+                    acts[a.name] = acts[self.c.rep[a.name]]
+            return acts
+        if variable == "actions":
+            if init is not None and all(v.ndim == 3 and v.shape[1] == self.c.N and v.shape[2] == self.c.nW for v in init.values()):
+                acts0 = init
+            elif init is not None:                       # maps given: convert to actions
+                Z0 = self.c.closed_loop(init); acts0 = {a.name: np.stack([Z0[self.c.block(u)] for u in a.controls]) for a in self.model.agents}
+            else:
+                acts0 = {a.name: np.zeros(shapes_a[a.name]) for a in self.model.agents}
+            z = packa(acts0)
+
+            def F(zz):
+                evals[0] += 1
+                return packa(self.response_actions(unpacka(zz))) - zz
+        else:
+            maps = init if init is not None else self.zero_maps()
+            z = self.pack(maps)
+
+            def F(zz):
+                evals[0] += 1
+                return self.pack(self.response_map(self.unpack(zz))) - zz
+
         z, resid, nev, converged = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
-                                                     max_newton=max_newton, method="newton", pre_iterations=pre_iterations, pre_tol=pre_tol)
+                                                     max_newton=max_newton, method=method, pre_iterations=pre_iterations, pre_tol=pre_tol)
         hist.append(resid)
-        maps = self.unpack(z)
+        maps = self.maps_from_kernels(self.world_from_actions(unpacka(z))) if variable == "actions" else self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = Result(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
                      iterations=evals[0], seconds=time.time() - t0, history=hist)
