@@ -171,13 +171,14 @@ class TriangleGrid:
             bp.pop(-2)
         return bp
 
-    def mass_matrix(self, weight_t: Optional[Callable] = None) -> np.ndarray:
-        """Exact Gram matrix M_ij = int_0^T w(t) int_0^t l_i l_j da dt of the nodal basis
+    def mass_matrix(self, rho: float = 0.0) -> np.ndarray:
+        """Exact Gram matrix M_ij = int_0^T e^{-rho t} int_0^t l_i l_j da dt of the nodal basis
         (tensor Gauss quadrature on every piece; Duffy Jacobian on the triangles)."""
-        key = ("mass_matrix", None if weight_t is None else id(weight_t))
+        key = ("mass_matrix", round(float(rho), 12))
         cache = getattr(self, "_mm_cache", {})
         if key in cache:
             return cache[key]
+        weight_t = (lambda t: np.exp(-rho * t)) if rho else None
         M = np.zeros((self.N, self.N))
         xg, wg = legendre.leggauss(max(self.nt, self.na) + 2)
         for pc in self.pieces:

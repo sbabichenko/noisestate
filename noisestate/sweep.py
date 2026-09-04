@@ -59,6 +59,8 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], s
     small trading cost); "previous" starts from the last equilibrium.
     Returns [{"value", "result", "seconds", "evaluations", "converged"}] in the given order."""
     base = _load_dict(model)
+    if param not in (base.get("params") or {}):
+        raise ValueError(f"{param!r} is not a parameter of the model (params: {sorted((base.get('params') or {}))})")
     rows: List[dict] = []
     prev = prev2 = None
     for v in values:

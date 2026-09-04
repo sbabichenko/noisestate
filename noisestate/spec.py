@@ -16,6 +16,7 @@ E int e^{-rho t} loss_t dt (rho = 0 is average cost).
 """
 from __future__ import annotations
 
+import ast
 import math
 import re
 from dataclasses import dataclass, field
@@ -44,15 +45,51 @@ def parse_atom(s: str, params: Dict[str, float]) -> Atom:
         raise ValueError(f"unknown lag parameter {lag!r} in atom {s!r}")
 
 
+_FUNCS = {"sqrt": math.sqrt, "exp": math.exp, "log": math.log, "sin": math.sin, "cos": math.cos,
+          "tanh": math.tanh, "abs": abs, "min": min, "max": max}
+_CONSTS = {"pi": math.pi, "e": math.e}
+_BINOPS = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b, ast.Mult: lambda a, b: a * b,
+           ast.Div: lambda a, b: a / b, ast.Pow: lambda a, b: a ** b}
+_UNOPS = {ast.UAdd: lambda a: a, ast.USub: lambda a: -a}
+
+
+def safe_eval(expr: str, params: Dict[str, float]) -> float:
+    """Evaluate an arithmetic expression over the parameters: numbers, + - * / **, unary signs,
+    the functions sqrt exp log sin cos tanh abs min max, and the constants pi and e.  Anything
+    else (attribute access, subscripts, names that are not parameters, calls to other functions)
+    is rejected, so model files from untrusted sources cannot run code."""
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"cannot parse coefficient {expr!r}: {exc.msg}") from None
+
+    def ev(node):
+        if isinstance(node, ast.Expression):
+            return ev(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            return float(node.value)
+        if isinstance(node, ast.Name):
+            if node.id in params:
+                return float(params[node.id])
+            if node.id in _CONSTS:
+                return _CONSTS[node.id]
+            raise ValueError(f"unknown parameter {node.id!r} in coefficient {expr!r}")
+        if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
+            return _BINOPS[type(node.op)](ev(node.left), ev(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in _UNOPS:
+            return _UNOPS[type(node.op)](ev(node.operand))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FUNCS and not node.keywords:
+            return float(_FUNCS[node.func.id](*[ev(a) for a in node.args]))
+        raise ValueError(f"unsupported expression in coefficient {expr!r}: {ast.dump(node)[:60]}")
+    return float(ev(tree))
+
+
 def eval_coef(c: Number, params: Dict[str, float]) -> float:
+    if isinstance(c, bool):
+        raise ValueError(f"coefficient must be a number or an expression, got {c!r}")
     if isinstance(c, (int, float)):
         return float(c)
-    ns = {k: v for k, v in params.items()}
-    ns.update({n: getattr(math, n) for n in ("sqrt", "exp", "log", "pi", "e", "sin", "cos", "tanh")})
-    try:
-        return float(eval(str(c), {"__builtins__": {}}, ns))
-    except Exception as exc:
-        raise ValueError(f"cannot evaluate coefficient {c!r}: {exc}") from exc
+    return safe_eval(str(c), params)
 
 
 def parse_expr(spec, params: Dict[str, float]) -> Dict[str, float]:
@@ -101,7 +138,7 @@ class Agent:
 
 @dataclass
 class Horizon:
-    kind: str = "stationary"          # "stationary" | "finite"
+    kind: str = "stationary"          # "stationary" | "finite" (spectral triangle) | "finite_cells"
     discount: float = 0.0
     window: float = 8.0               # L for stationary; T for finite
     breakpoints: Optional[List[float]] = None
@@ -120,6 +157,7 @@ class Model:
     definitions: List[Definition] = field(default_factory=list)
     ties: List[List[str]] = field(default_factory=list)      # groups of agents sharing one strategy
     params: Dict[str, float] = field(default_factory=dict)
+    source: Optional[dict] = field(default=None, repr=False)  # the file structure with its expressions, if built from one
 
     # ------------------------------------------------------------ lookups
     @property
@@ -185,6 +223,39 @@ class Model:
                             lags.add(abs(l))
         return sorted(lags)
 
+    def _agent_signature(self, a: "Agent"):
+        """Structure of an agent's problem up to relabelling of its own controls, rows, channels and of
+        the other agents' controls: what a tie must preserve."""
+        own = {u: f"own{i}" for i, u in enumerate(a.controls)}
+        others = set(self.control_names) - set(a.controls)
+        # states referenced by one agent only are that agent's private states: compared by role, not name
+        users: Dict[str, set] = {}
+        for ag in self.agents:
+            exprs = [self.expand(r.drift) for r in ag.signals] + [self.expand({s: 1.0}) for t in ag.loss for s in t[1:]]
+            for e in exprs:
+                for (n, l) in e:
+                    if n in self.state_names:
+                        users.setdefault(n, set()).add(ag.name)
+
+        def cls(name):
+            if name in own:
+                return own[name]
+            if name in others:
+                return "other_control"
+            if len(users.get(name, set())) <= 1:
+                return "private_state"
+            return "state:" + name
+
+        def canon(expr):
+            return tuple(sorted((cls(n), round(l, 9), round(c, 9)) for (n, l), c in expr.items()))
+        rows = tuple((canon(self.expand(r.drift)), tuple(sorted(round(v, 9) for v in r.noise.values())), round(r.delay, 9))
+                     for r in a.signals)
+        loss = []
+        for term in a.loss:
+            ex = [canon(self.expand({s: 1.0})) for s in term[1:]]
+            loss.append((round(float(term[0]), 9), tuple(sorted(ex))))
+        return (len(a.controls), a.myopic, rows, tuple(sorted(loss)))
+
     # --------------------------------------------------------- validation
     def validate(self) -> None:
         names = self.state_names + self.control_names + self.def_names
@@ -226,9 +297,11 @@ class Model:
                 if n not in agent_names:
                     raise ValueError(f"tie group names unknown agent {n}")
             ag = [next(a for a in self.agents if a.name == n) for n in group]
-            shapes = {(len(a.controls), len(a.signals)) for a in ag}
-            if len(shapes) != 1:
-                raise ValueError(f"tied agents {group} must have the same numbers of controls and signal rows")
+            sigs = [self._agent_signature(a) for a in ag]
+            for a, sig in zip(ag[1:], sigs[1:]):
+                if sig != sigs[0]:
+                    raise ValueError(f"tied agents {group[0]} and {a.name} are not structurally identical "
+                                     f"(same rows, losses and coefficients up to relabelling); untie them or fix the model")
         used = {ch for s in self.states for ch in s.noise} | {ch for a in self.agents for r in a.signals for ch in r.noise}
         unused = [ch for ch in self.channels if ch not in used]
         if unused:
@@ -238,6 +311,13 @@ class Model:
             missing = [u for u in a.controls if u not in atoms]
             if missing:
                 raise ValueError(f"agent {a.name}: control(s) {missing} do not enter its loss; the best response would be undetermined")
+        hz = self.horizon
+        if hz.nodes < 2:
+            raise ValueError("horizon.nodes must be at least 2")
+        if not hz.window > 0:
+            raise ValueError("horizon.window must be positive")
+        if hz.discount < 0:
+            raise ValueError("horizon.discount must be non-negative")
         if self.horizon.kind not in ("stationary", "finite", "finite_cells"):
             raise ValueError("horizon.kind must be 'stationary', 'finite' (spectral triangle) or 'finite_cells'")
 
@@ -258,8 +338,13 @@ class Model:
         if bad:
             raise ValueError(f"unknown key(s) {bad} in {what}{where}; allowed: {sorted(allowed)}")
 
-    def to_dict(self) -> dict:
-        """The file structure of this model (coefficients numeric); from_dict(to_dict()) round-trips."""
+    def to_dict(self, numeric: bool = False) -> dict:
+        """The file structure of this model.  When the model was built from a file or dict, that
+        source (with its parameter expressions) is returned, so re-parametrising it works; with
+        numeric=True, or when there is no source, coefficients are returned as numbers."""
+        if self.source is not None and not numeric:
+            import copy
+            return copy.deepcopy(self.source)
         d = {"name": self.name, "params": dict(self.params), "channels": list(self.channels),
              "states": {s.name: {"drift": dict(s.drift), "noise": dict(s.noise)} for s in self.states},
              "definitions": {x.name: dict(x.expr) for x in self.definitions},
@@ -283,11 +368,9 @@ class Model:
             cls._check_keys("agent", v or {}, cls._KEYS["agent"], f" '{k}'")
             for rk, rv in (v.get("signals") or {}).items():
                 cls._check_keys("signal", rv or {}, cls._KEYS["signal"], f" '{k}.{rk}'")
-        params = {k: float(v) for k, v in (d.get("params") or {}).items()}
-        # allow parameters defined in terms of earlier ones
-        for k, v in (d.get("params") or {}).items():
-            if isinstance(v, str):
-                params[k] = eval_coef(v, params)
+        params: Dict[str, float] = {}
+        for k, v in (d.get("params") or {}).items():          # a parameter may be an expression in earlier ones
+            params[k] = eval_coef(v, params)
         hz = d.get("horizon") or {}
         horizon = Horizon(kind=hz.get("kind", "stationary"),
                           discount=eval_coef(hz.get("discount", 0.0), params),
@@ -311,9 +394,10 @@ class Model:
                 loss.append([eval_coef(term[0], params)] + [str(x) for x in term[1:]])
             agents.append(Agent(name=k, controls=list(v.get("controls") or []), signals=rows, loss=loss,
                                 myopic=bool(v.get("myopic", False))))
+        import copy
         m = cls(name=d.get("name", "model"), channels=list(d.get("channels") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
-                params=params)
+                params=params, source=copy.deepcopy(d))
         m.validate()
         return m
 

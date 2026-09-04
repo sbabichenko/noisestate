@@ -32,6 +32,10 @@ class SpectralCompiled:
         self.T = float(hz.window)
         lags = model.all_lags()
         bp = list(hz.breakpoints) if hz.breakpoints else TriangleGrid.breakpoints(self.T, lags, hz.unit)
+        for l in lags:
+            if not any(abs(l - b) < 1e-9 * max(1.0, self.T) for b in bp):
+                raise ValueError(f"lag {l} is not a breakpoint of the time/age partition {bp}; set horizon.unit "
+                                 "so that every lag is a multiple of it")
         self.g = TriangleGrid(bp, hz.nodes, hz.nodes)
         g = self.g
         self.N = g.N
@@ -45,18 +49,16 @@ class SpectralCompiled:
         self._paths: Dict[tuple, object] = {}
         # state propagation operators (eigen-decomposition of A)
         if self.nX:
-            lam, V = np.linalg.eig(self.A); W = np.linalg.inv(V)
-            self._lam, self._V, self._W = lam, V, W
-            ops = {}
-            for l in set(np.round(lam, 12)):
-                ops[l] = g.line_op(g.t, g.a, r_lo=g.s, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
-                                   weight_fn=lambda k, r, l=l: np.exp(l * (g.t[k] - r)))
-            self.Vol = np.zeros((self.nX, self.nX, self.N, self.N), dtype=complex)
-            for i in range(self.nX):
-                for j in range(self.nX):
-                    for m_ in range(self.nX):
-                        self.Vol[i, j] += V[i, m_] * W[m_, j] * ops[np.round(lam[m_], 12)]
-            self.Vol = self.Vol.real
+            # state propagation e^{A(t-r)} along the Volterra path; entrywise weights from expm, which
+            # is exact for defective A too (an eigen-decomposition would not be)
+            lp = g.path(g.t, g.a, r_lo=g.s, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]))
+            self.Vol = np.zeros((self.nX, self.nX, self.N, self.N))
+            if lp.rows is not None:
+                d = g.t[lp.rows] - lp.r
+                E = self._expm_batch(d)                                        # (nq, nX, nX)
+                for i in range(self.nX):
+                    for j in range(self.nX):
+                        self.Vol[i, j] = lp.apply(E[:, i, j])
         # time rows (for per-time projections)
         rows = {}
         for pc in g.pieces:
@@ -66,10 +68,22 @@ class SpectralCompiled:
         self.trows: List[Tuple[int, np.ndarray]] = [(k[0], np.concatenate(v)) for k, v in sorted(rows.items())]
 
     # ------------------------------------------------------------ reads
+    def _expm_batch(self, ds: np.ndarray) -> np.ndarray:
+        """e^{A d} for every d in ds: (len, nX, nX).  Uses the eigen-decomposition when it is well
+        conditioned, otherwise expm per distinct d."""
+        from scipy.linalg import expm
+        A = self.A
+        lam, V = np.linalg.eig(A)
+        if np.linalg.cond(V) < 1e8:
+            W = np.linalg.inv(V)
+            return np.einsum("im,km,mj->kij", V, np.exp(np.outer(ds, lam)), W).real
+        uniq, inv = np.unique(np.round(ds, 12), return_inverse=True)
+        Es = np.stack([expm(A * d) for d in uniq])
+        return Es[inv]
+
     def expA(self, ages: np.ndarray) -> np.ndarray:
         """e^{A a} at the given ages: (len, nX, nX)."""
-        E = np.einsum("im,km,mj->kij", self._V, np.exp(np.outer(ages, self._lam)), self._W)
-        return E.real
+        return self._expm_batch(np.asarray(ages, dtype=float))
 
     def read(self, dt: float, da: float) -> np.ndarray:
         """Matrix reading a kernel at (t - dt, a - da) from nodal values, with one-sided
@@ -508,8 +522,7 @@ class SpectralFiniteSolver:
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])                  # (m, N, nW)
         if not hasattr(self, "_mass_rho"):
-            rho = c.rho
-            self._mass_rho = c.g.mass_matrix(weight_t=(lambda t: np.exp(-rho * t)) if rho else None)
+            self._mass_rho = c.g.mass_matrix(rho=c.rho)
         G = np.einsum("ink,nm,jmk->ij", zeta, self._mass_rho, zeta)
         return float(0.5 * np.sum(Q * G))
 

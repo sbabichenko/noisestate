@@ -106,6 +106,4 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
         msg.append(f"newton polish stopped without converging after {cnt[0]} evaluations (residual {r2:.2e})")
         if r2 < rn:
             z, rn = z2, r2
-    except (ValueError, np.linalg.LinAlgError) as e:
-        msg.append(f"newton polish failed: {type(e).__name__}: {e}")
     return z, rn, ev + cnt[0], rn <= tol, "; ".join(msg)
