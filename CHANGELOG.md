@@ -26,6 +26,14 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Finite engine: the map entries a delayed row cannot identify are removed from the FOC system and
+  the map projection (the stationary engine's keep mask) instead of being regularised by a ridge;
+  the fixed-point map is smooth again and the delayed Chapter 1 example converges to 1e-12 in 13
+  evaluations where it stalled at 1e-8.  Costs unchanged to 1e-12.
+- Anderson mixing detects a stall (no 30% improvement over 20 iterations) and stops with a message;
+  within two decades of the tolerance the Newton polish is skipped.
+- Triangle path quadrature builds its interpolation sparsely: a 12-node delay-cut grid compiles in
+  seconds instead of minutes.
 - The two spectral engines' best response is one function on `EngineBase`, written against a
   seven-operation kernel algebra each compiled model supplies; the FOC decomposition and the
   second-order check are now on the finite engine too (its discounted objective is a quadratic

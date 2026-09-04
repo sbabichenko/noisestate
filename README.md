@@ -203,7 +203,7 @@ The checks:
   is the verdict for the spectral engines, and the summary says `NOT RESOLVED`.  The cell engine
   is first order, so it reports the changes without a verdict.  On the finite engine with delays
   the refinement rebuilds the delay-cut triangle's quadrature and can take far longer than the
-  solve (the delayed Chapter 1 example: 6 s to solve, over 10 minutes to refine).
+  solve; the delayed Chapter 1 example refines from 8 to 12 nodes per side in about a minute.
 * Stationary results carry `res.window_tail`, the largest change of a kernel over the last tenth
   of the window relative to that kernel's peak; above 2% the summary says `WINDOW TOO SHORT`,
   because the equilibrium solved is that of the model truncated at `horizon.window`.  A kernel that
@@ -264,9 +264,11 @@ The checks:
   (`variable="maps"`) stalls near a residual of 1e-6 on models with delayed rows while the
   action-kernel iteration converges: the best-response action carries a spurious response to
   shocks younger than the delay that no causal map of the rows can reproduce, so the map
-  fixed-point function is noisy at that level; in action space the floor is near 1e-8, which is
-  the finite engine's default tolerance, so on the delayed Chapter 1 example the evaluation count
-  is erratic and `tol=3e-8` converges in 16 evaluations.  Giving the lower copy of the node its left limit
+  fixed-point function is noisy at that level.  (The finite engine had a second, larger source of
+  noise, now removed: it regularised the exact null directions of a delayed row's map with a ridge
+  instead of removing them, which made its fixed-point map noisy at 1e-8; with the same keep mask
+  as the stationary engine it converges to 1e-12 in 13 evaluations on the delayed Chapter 1
+  example.)  Giving the lower copy of the node its left limit
   (zero) makes each best response exactly causal and cuts its representation error by an order of
   magnitude, but it also exposes a genuinely weakly identified direction at the start of the
   delayed row's map (a singular value of 8e-3 where the artefact had supplied a spurious 0.9): the

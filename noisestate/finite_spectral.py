@@ -303,7 +303,6 @@ class SpectralFiniteSolver(EngineBase):
     RESULT = TriangleResult
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
     MAP_RIDGE = 1e-13      # ridge of the per-time-row map projection, relative to the row's own Gram
-    RIDGE = 1e-11          # relative Tikhonov term on the best-response system: needed with delayed rows, 2e-13 effect without
 
     def __init__(self, model: Model, verbose: bool = False):
         super().__init__(model, verbose)
@@ -311,9 +310,28 @@ class SpectralFiniteSolver(EngineBase):
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
 
     # ------------------------------------------------ best-response pieces
+    def _identified(self, agent: Agent) -> np.ndarray:
+        """A row observed with delay d carries nothing about shocks younger than d, so the map on it at
+        (t, b) reads nothing for b > t - d: those entries are removed from every solve and left at zero.
+        With them in, the FOC system has exact null directions, and a ridge over them makes the
+        fixed-point map noisy at the 1e-8 level (the residual floor this engine used to have)."""
+        c = self.c; g = c.g; N = c.N
+        keep = np.ones(len(agent.signals) * N, dtype=bool)
+        for r in range(len(agent.signals)):
+            d = c.rows[agent.name][r][3]
+            if d > 0:
+                keep[r * N:(r + 1) * N] = g.a <= g.t - d + 1e-12
+        return keep
+
     def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
-        scale = np.abs(Amat).max()
-        return np.linalg.solve(Amat + self.RIDGE * scale * np.eye(Amat.shape[0]), -bvec)
+        keep = np.tile(self._identified(agent), len(agent.controls))
+        gamma = np.zeros(Amat.shape[0])
+        A = Amat[np.ix_(keep, keep)]
+        try:
+            gamma[keep] = np.linalg.solve(A, -bvec[keep])
+        except np.linalg.LinAlgError:
+            gamma[keep] = np.linalg.lstsq(A, -bvec[keep], rcond=1e-10)[0]
+        return gamma
 
     def _project(self, agent: Agent, Zfull: np.ndarray, cact: np.ndarray) -> np.ndarray:
         return self.maps_from_world(agent, Zfull, cact)
@@ -326,23 +344,22 @@ class SpectralFiniteSolver(EngineBase):
         rows, inst = self._seen_rows(agent, Zfull, set())
         Bk = self._row_operator(agent, rows, inst)
         gmap = np.zeros((nU, nR, N))
-        systems = []
+        keep = self._identified(agent)
         for (p, idx) in c.trows:
             tv = g.t[idx[0]]
             w = g.row_weights(tv, side=(-1 if tv >= g.bp[p + 1] - 1e-12 else +1))[idx]
             cols = np.concatenate([r * N + idx for r in range(nR)])
+            cols = cols[keep[cols]]                                 # only the entries this time row identifies
+            if cols.size == 0:
+                continue
             Bsub = Bk[:, idx][:, :, cols]
             G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
-            systems.append((idx, w, Bsub, G))
-        for (idx, w, Bsub, G) in systems:
             if np.trace(G) <= 0:
                 continue
             G = G + self.MAP_RIDGE * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
             for ui in range(nU):
                 rhs = sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW))
-                sol = np.linalg.solve(G, rhs)
-                for r in range(nR):
-                    gmap[ui, r, idx] = sol[r * len(idx):(r + 1) * len(idx)]
+                gmap[ui].reshape(-1)[cols] = np.linalg.solve(G, rhs)
         return gmap
 
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
