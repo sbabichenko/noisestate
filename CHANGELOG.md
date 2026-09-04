@@ -20,6 +20,19 @@
   `second_order` and `stability` report whether their eigensolver converged and which method
   produced the number.  The singular-system message names lagged-only own quadratic terms.
 - CLI catches every model-level error class.
+- Simplification: `solve()` has one outer method (Anderson mixing, then a Newton-Krylov polish);
+  `method`, `pre_iterations`, `pre_tol`, the sweep `predictor` switch, the `L`/`T` aliases of
+  `window`, the `Result`/`SpectralResult`/`FiniteResult` aliases, `sweep.result_to_dict`, the
+  `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
+  `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
+  Chapter 1 finite model where action kernels converge.
+- `res.diagnose()`: every check as one row; `summary()` and `to_dict()["diagnostics"]` are built
+  from it, and the thresholds are class constants.
+- Shared plumbing: `_seen_rows`, `_passive_rows`, `_representation_error` and the lead rejection
+  live in one place; `_row_operator`/`_projection_operator` take the agent on every engine;
+  `expected_cost` on every engine (`expected_loss` kept as an alias on the stationary one).
+- The C++ replica, its test and reference output, the patches and the comparison scripts moved to
+  `extras/` (outside the wheel); the slow tests run in a scheduled CI job.
 - The delayed-row least-squares cutoff is documented as immaterial (costs move by 1e-7 across
   cutoffs 1e-9 to 1e-6), and the jump-interpolation floor on the representation error for
   delayed rows and lagged control reads is recorded as a known open item.

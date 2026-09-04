@@ -28,7 +28,7 @@ from .grid_cache import age_grid
 from .accel import solve_fixed_point
 from .engine import EngineBase
 from .compile import compile_structure
-from .results import StationaryResult as Result
+from .results import StationaryResult
 from .spec import Agent, Atom, Model
 
 
@@ -105,6 +105,8 @@ class Compiled:
             if E[k] != 0.0:
                 deltas.setdefault(ch, []).append((delay, E[k]))
         return regular, deltas
+
+    row = row_seen                                        # the engines' common name
 
     def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
                     impulse_controls: Sequence = ()):
@@ -213,18 +215,7 @@ class StationarySolver(EngineBase):
         return Zpass
 
     # ------------------------------------------------ best-response pieces
-    def _passive_rows(self, agent: Agent, Zpass: np.ndarray):
-        """Seen signal rows of `agent` in its passive world: regular kernels (N, nW) per row and the
-        instantaneous entries [(channel, age, weight)] per row."""
-        c = self.c
-        ytil, yinst = [], []
-        for r in range(len(agent.signals)):
-            regular, deltas = c.row_seen(agent.name, r, set(agent.controls))
-            ytil.append(regular @ Zpass)
-            yinst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
-        return ytil, yinst
-
-    def _row_operator(self, rows, inst):
+    def _row_operator(self, agent: Agent, rows, inst):
         """Per channel, the operator mapping stacked row kernels gamma (nR N) to the action kernel:
         c_k = sum_r (Conv[y_rk] + E_rk S_delta) gamma_r."""
         c = self.c; N, nW = c.N, c.nW; nR = len(rows)
@@ -295,7 +286,7 @@ class StationarySolver(EngineBase):
             Fu.append(op); Fphys.append(op_phys)
         return Fu, Fphys
 
-    def _projection_operator(self, rows, inst):
+    def _projection_operator(self, agent: Agent, rows, inst):
         """H (nR N x nW N): E[phi_t dY_r(t-b)] for every row r and age b, from the FOC kernels."""
         c = self.c; N, nW = c.N, c.nW; nR = len(rows)
         H = np.zeros((nR * N, nW * N))
@@ -310,12 +301,8 @@ class StationarySolver(EngineBase):
         """Raw maps (nU, nR, N) reproducing the action kernels `actions` (nU, N, nW) on the agent's
         closed-loop seen rows, by weighted least squares."""
         c = self.c; N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
-        rows, inst = [], []
-        for r in range(nR):
-            regular, deltas = c.row_seen(agent.name, r, set())
-            rows.append(regular @ Z)
-            inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
-        Bk = self._row_operator(rows, inst)
+        rows, inst = self._seen_rows(agent, Z, set())
+        Bk = self._row_operator(agent, rows, inst)
         W = c.grid.mass
         keep = self._identified(agent)                                       # delayed rows: zero where they read nothing
         Gram = sum((Bk[k] * W[:, None]).T @ Bk[k] for k in range(nW))[np.ix_(keep, keep)]
@@ -352,10 +339,10 @@ class StationarySolver(EngineBase):
         Rphys = self._rphys[agent.name]
         # operators: gamma -> action, action -> world, world -> FOC, FOC -> projection
         ytil, yinst = self._passive_rows(agent, Zpass)
-        Gk = self._row_operator(ytil, yinst)
+        Gk = self._row_operator(agent, ytil, yinst)
         Resp = self._response_operators(agent, R)
         Fu, Fphys = self._foc_operators(agent, R, Rphys)
-        H = self._projection_operator(ytil, yinst)
+        H = self._projection_operator(agent, ytil, yinst)
         # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp_v Gk gamma_v)) = 0 for all controls
         nG = nU * nR * N
         Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
@@ -497,12 +484,12 @@ class StationarySolver(EngineBase):
 
     # ------------------------------------------------------ fixed point
     def solve(self, init: Optional[Dict[str, np.ndarray]] = None, tol: float = 1e-10, damping: float = 0.3,
-              pre_iterations: int = 20, max_newton: int = 60, pre_tol: float = 1e-3, method: str = "anderson",
-              variable: str = "actions") -> Result:
-        """method: "newton" (damped pre-phase, then Newton-Krylov) or "anderson" (regularised Anderson,
-        Newton polish).  variable: "maps" iterates on the raw strategies; "actions" on the action
-        kernels (raw maps by projection), which is better conditioned when strategies are weakly
-        identified.  init: maps or actions accordingly."""
+              max_newton: int = 60, variable: str = "actions") -> StationaryResult:
+        """Anderson mixing (damping = the mixing weight; 0.3 is needed on Kyle-Back, 0.5 fails), then a
+        Newton-Krylov polish if it stalls.  variable: "maps" iterates on the raw strategies; "actions"
+        on the action kernels (raw maps by projection), better conditioned when strategies are weakly
+        identified; with ties the raw maps are used regardless (tied agents' action kernels differ by
+        a channel permutation).  init: maps or actions, either is accepted."""
         t0 = time.time()
         hist, evals = [], [0]
         shapes_a = self.action_shapes
@@ -533,46 +520,31 @@ class StationarySolver(EngineBase):
                 return self.pack(self.response_map(self.unpack(zz))) - zz
 
         z, resid, nev, converged, message = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
-                                                     max_newton=max_newton, method=method, pre_iterations=pre_iterations, pre_tol=pre_tol)
+                                                     max_newton=max_newton)
         hist.append(resid)
         maps = self.maps_from_actions(unpacka(z)) if variable == "actions" else self.unpack(z)
         Z = self.c.closed_loop(maps)
-        res = Result(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
+        res = StationaryResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
                      iterations=evals[0], seconds=time.time() - t0, history=hist, message=message,
                      solver_class=type(self), solver_kw=self.solver_kw,
-                     solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "method": method, "variable": variable})
+                     solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable})
         # decomposition, costs, and how well the raw rows represent each best response
         for a in self.model.agents:
             g, out = self.best_response(a, maps, want_decomp=True)
             res.foc[a.name] = out["decomp"]
-            res.costs[a.name] = self.expected_loss(a, Z)
+            res.costs[a.name] = self.expected_cost(a, Z)
             if out["second_order"] is not None:
                 res.second_order[a.name] = out["second_order"]
             res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
         return res
 
-    def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
-        """Relative residual of the best-response action kernels after projection on the agent's raw
-        rows.  Zero in exact arithmetic; on the grid it measures how well products of kernels are
-        resolved, so a value above about 1e-6 means the equilibrium is under-resolved: raise
-        horizon.nodes."""
-        c = self.c; nW = c.nW; nR = len(agent.signals)
-        rows, inst = [], []
-        for r in range(nR):
-            reg, deltas = c.row_seen(agent.name, r, set())
-            rows.append(reg @ Zfull)
-            inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
-        Bk = self._row_operator(rows, inst)
-        worst = 0.0
-        for ui in range(len(agent.controls)):
-            recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(nW)], axis=1)
-            worst = max(worst, float(np.abs(recon - actions[ui]).max() / max(1e-300, np.abs(actions[ui]).max())))
-        return worst
-
-    def expected_loss(self, agent: Agent, Z: np.ndarray) -> float:
+    def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
+        """Stationary flow loss per unit time of the agent in the world Z (exact Gram quadrature)."""
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])          # (m, N, nW)
         M = c.grid.mass_matrix                                        # exact <l_i, l_j>
         G = np.einsum("ink,nm,jmk->ij", zeta, M, zeta)                # <zeta_i, zeta_j> over ages and channels
         return float(0.5 * np.sum(Q * G))
+
+    expected_loss = expected_cost                       # the older name

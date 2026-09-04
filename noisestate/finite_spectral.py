@@ -19,8 +19,8 @@ import numpy as np
 
 from .accel import solve_fixed_point
 from .engine import EngineBase
-from .compile import compile_structure
-from .results import TriangleResult as SpectralResult
+from .compile import compile_structure, reject_leads
+from .results import TriangleResult
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
 from .grid_cache import triangle_grid
@@ -30,12 +30,7 @@ class SpectralCompiled:
     def __init__(self, model: Model):
         model.validate()
         self.model = model
-        for a in model.agents:
-            for term in a.loss:
-                for atom in term[1:]:
-                    if any(l < 0 for (n, l) in model.expand({atom: 1.0})):
-                        raise NotImplementedError(f"agent {a.name}: lead atoms in loss terms ({atom}) are not supported by "
-                                                  "the finite-horizon engines yet; the stationary engine supports them")
+        reject_leads(model, 'spectral finite engine')
         hz = model.horizon
         self.T = float(hz.window)
         lags = model.all_lags()
@@ -191,6 +186,8 @@ class SpectralCompiled:
         return lp.with_known(yker)
 
     # ------------------------------------------------------- closed loop
+    row = row_op                                          # the engines' common name
+
     def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None, impulse_controls=()):
         """maps[agent]: (n_ctrl, n_rows, N) nodal raw maps g(t, b).  Columns: Brownian channels,
         then one impulse column per control in impulse_controls (unit mass at the shock time).
@@ -266,24 +263,15 @@ class SpectralCompiled:
 
 
 class SpectralFiniteSolver(EngineBase):
-    def __init__(self, model: Model, verbose: bool = False, ridge: float = 1e-11):
+    RIDGE = 1e-11          # relative Tikhonov term on the best-response system: needed with delayed rows, 2e-13 effect without
+
+    def __init__(self, model: Model, verbose: bool = False):
         self.c = SpectralCompiled(model)
         self.model = model
         self.verbose = verbose
-        self.ridge = ridge
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
 
     # ------------------------------------------------ best-response pieces
-    def _passive_rows(self, agent: Agent, Zpass: np.ndarray):
-        """Seen rows in the passive world: regular kernels (N, nW) and instantaneous entries [(k, age, w)]."""
-        c = self.c
-        ytil, yinst = [], []
-        for r in range(len(agent.signals)):
-            reg, deltas = c.row_op(agent.name, r, set(agent.controls))
-            ytil.append(reg @ Zpass)
-            yinst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
-        return ytil, yinst
-
     def _row_operator(self, agent: Agent, rows, inst):
         """Per channel, the operator (N x nR N) from stacked row kernels gamma to the action kernel."""
         c = self.c; N, nW = c.N, c.nW; nR = len(rows)
@@ -373,7 +361,7 @@ class SpectralFiniteSolver(EngineBase):
             for k in range(nW):
                 bvec[rowsl] += H[:, k * N:(k + 1) * N] @ (Fu[ui] @ Zpass[:, k])
         scale = np.abs(Amat).max()
-        gamma = np.linalg.solve(Amat + self.ridge * scale * np.eye(nG), -bvec).reshape(nU, nR, N)
+        gamma = np.linalg.solve(Amat + self.RIDGE * scale * np.eye(nG), -bvec).reshape(nU, nR, N)
         cact = np.zeros((nU, N, nW))
         for ui in range(nU):
             for k in range(nW):
@@ -390,11 +378,7 @@ class SpectralFiniteSolver(EngineBase):
         primary kernels Zfull: one weighted least-squares projection per time row."""
         c = self.c; g = c.g; N, nW = c.N, c.nW
         nR, nU = len(agent.signals), len(agent.controls)
-        rows, inst = [], []
-        for r in range(nR):
-            reg, deltas = c.row_op(agent.name, r, set())
-            rows.append(reg @ Zfull)
-            inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
+        rows, inst = self._seen_rows(agent, Zfull, set())
         Bk = self._row_operator(agent, rows, inst)
         gmap = np.zeros((nU, nR, N))
         for (p, idx) in c.trows:
@@ -458,7 +442,7 @@ class SpectralFiniteSolver(EngineBase):
         return float(0.5 * np.sum(Q * G))
 
     def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, max_newton: int = 8,
-              variable: str = "actions") -> SpectralResult:
+              variable: str = "actions") -> TriangleResult:
         """variable="actions": iterate on the agents' action kernels, raw maps derived by projection
         (robust where early-time maps are ill-determined).  variable="maps": iterate on raw maps.
         init: action kernels (nU, N, nW) or raw maps (nU, nR, N) per agent; either is accepted and
@@ -497,28 +481,12 @@ class SpectralFiniteSolver(EngineBase):
         hist.append(resid)
         maps = self.maps_from_actions(unpacka(z)) if variable == "actions" else self.unpack(z)
         Z = self.c.closed_loop(maps)
-        res = SpectralResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
+        res = TriangleResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
                              iterations=evals[0], seconds=time.time() - t0, history=hist, message=message,
-                             solver_class=type(self), solver_kw={"verbose": self.verbose, "ridge": self.ridge},
+                             solver_class=type(self), solver_kw={"verbose": self.verbose},
                              solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable})
         for a in self.model.agents:
             res.costs[a.name] = self.expected_cost(a, Z)
             g, out = self.best_response(a, maps)
             res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
         return res
-
-    def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
-        """Relative residual of the best-response action after projection on the raw rows (see the
-        stationary engine); above about 1e-6 the triangle is under-resolved: raise horizon.nodes."""
-        c = self.c; nW = c.nW; nR = len(agent.signals)
-        rows, inst = [], []
-        for r in range(nR):
-            reg, deltas = c.row_op(agent.name, r, set())
-            rows.append(reg @ Zfull)
-            inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
-        Bk = self._row_operator(agent, rows, inst)
-        worst = 0.0
-        for ui in range(len(agent.controls)):
-            recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(nW)], axis=1)
-            worst = max(worst, float(np.abs(recon - actions[ui]).max() / max(1e-300, np.abs(actions[ui]).max())))
-        return worst

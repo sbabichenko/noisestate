@@ -96,16 +96,16 @@ The same structure is available from Python through `ModelBuilder` (see
 ## Sweeps and interactive use
 
 ```python
-from noisestate.sweep import sweep, result_to_dict
+from noisestate import sweep
 rows = sweep("examples/ch4_kyle_back.yaml", "eps", [0.2, 0.1, 0.05, 0.02])   # each point warm-started
-rows[-1]["result"].summary(); result_to_dict(rows[-1]["result"])             # JSON-ready
+rows[-1]["result"].summary(); rows[-1]["result"].to_dict()                   # JSON-ready
 ```
 
 `noisestate sweep model.yaml eps 0.2,0.1,0.05 -o sweep.json` does the same from the shell.  Each
 point starts from a secant extrapolation of the previous two equilibria in the parameter, which is
 what carries the Kyle-Back sweep down to a trading cost of 0.01 where a plain restart fails.  A
 warm-started point costs a handful of best responses, which is what a slider in a front end needs;
-`result_to_dict` is the payload such a front end would render (grid, kernels per quantity and
+`to_dict()` is the payload such a front end would render (grid, kernels per quantity and
 channel, raw maps, costs, and the first-order-condition decomposition).
 
 ## How it works
@@ -124,9 +124,12 @@ strategy is recovered by projecting the resulting action kernel on the agent's
 closed-loop rows, and the equilibrium is the fixed point of the best-response map
 (all engines iterate on the action kernels with Tikhonov-regularised Anderson
 acceleration, the outer solver of the Chapter 5 market solver, and derive the raw
-maps by projection; a Newton-Krylov polish runs if Anderson stalls.  `solve(method=
-"newton", variable="maps")` selects the older damped-iteration-plus-Newton loop on
-raw maps).
+maps by projection; a Newton-Krylov polish runs if Anderson stalls.  `solve(variable=
+"maps")` iterates on the raw maps instead, which is what happens with ties in any case).
+Both variables are kept because each fails somewhere the other does not: on the delayed
+Chapter 1 finite model the raw maps stall at a residual of 9e-7 after 313 evaluations
+where the action kernels converge in 16; with ties only the raw maps carry over between
+tied agents.
 
 Finite horizon: the same construction on a piecewise-spectral triangle.  Kernels
 K(t, s) live in (time, shock-age) coordinates on the domain cut by the delays:
@@ -155,7 +158,7 @@ uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
 Kyle-Back with two traders: the reference grid solver (`kb_multi.py`), Richardson-
 extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
 `kb_spectral_q` differs by 2-6% and its solution is not a best response to itself
-(see `tests/test_ch4.py` for the diagnostics).
+(the replica of the defect and its reference output are in `extras/`).
 
 ## Stability guarantees
 
@@ -179,8 +182,10 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
 
 ### Guards against misleading results
 
-A converged solve is a solution of the discretised, truncated model.  Four checks say how far that
-is from the model you wrote:
+A converged solve is a solution of the discretised, truncated model.  `res.diagnose()` lists every
+check as a row `{name, value, threshold, ok, flag, advice}` (ok is None where a check gives no
+verdict); `summary()` prints the rows that fail and `to_dict()["diagnostics"]` carries them all.
+The checks:
 
 * `noisestate solve model.yaml --refine` (or `solve(..., refine=True)`, `res.refine()`) re-solves
   on a grid with 1.5 times the nodes (twice the cells for the cell engine) and reports the change
@@ -249,10 +254,12 @@ is from the model you wrote:
 
 * The Chapter 5 cycle-market example has a second-order curvature of -3e-5 (relative to the
   largest) in the firms' best response at 6 and 8 nodes per panel, in the map on the order rows at
-  ages 8 to 16.  Whether this is the window truncation of the objective or a genuine flat
-  direction of the firm's problem through the other firms' reactions has not been established;
-  the flag threshold of 1e-4 lets it pass, and the value is reported.  Things to try: more nodes
-  on the geometric panels, a longer window with a shift-invert eigensolver, a positive `rP`.
+  ages 8 to 16; the two-firm variant on a window of 6 (`tests/test_stability.py`) has -6.7e-4 at
+  6 nodes and -2.1e-3 at 14, and is flagged `NOT A MINIMUM`.  Whether this is the window
+  truncation of the objective or a genuine flat direction of the firm's problem through the other
+  firms' reactions has not been established; the flag threshold of 1e-4 lets the shipped example
+  pass, and the value is reported.  Things to try: more nodes on the geometric panels, a longer
+  window with a shift-invert eigensolver, a positive `rP`.
 
 ## Limits
 

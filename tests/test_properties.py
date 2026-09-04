@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..",
 
 def _feasible_perturbation(S, agent, Zpass, rng):
     ytil, yinst = S._passive_rows(agent, Zpass)
-    Gk = S._row_operator(ytil, yinst)
+    Gk = S._row_operator(agent, ytil, yinst)
     gam = rng.standard_normal(Gk.shape[2])
     return np.stack([Gk[k] @ gam for k in range(S.c.nW)], axis=1)
 
@@ -51,7 +51,7 @@ def test_spectral_finite_best_response_is_optimal():
 
 def test_map_and_action_iterations_agree():
     m = ns.load(os.path.join(EX, "ch4_kyle_back.yaml"))
-    ra = StationarySolver(m).solve(variable="actions").check(); rm = StationarySolver(m).solve(variable="maps", method="newton").check()
+    ra = StationarySolver(m).solve(variable="actions").check(); rm = StationarySolver(m).solve(variable="maps").check()
     assert np.abs(ra.action_kernel("D1") - rm.action_kernel("D1")).max() < 1e-8
 
 

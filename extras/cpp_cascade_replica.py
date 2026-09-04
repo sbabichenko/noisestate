@@ -14,8 +14,8 @@ import json
 
 import numpy as np
 
-from .spec import Model
-from .stationary import StationarySolver
+from noisestate.spec import Model
+from noisestate.stationary import StationarySolver
 
 
 class CppCascadeReplica(StationarySolver):

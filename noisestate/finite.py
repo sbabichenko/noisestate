@@ -27,8 +27,8 @@ from scipy.sparse.linalg import LinearOperator, lgmres
 
 from .accel import solve_fixed_point
 from .engine import EngineBase
-from .compile import compile_structure
-from .results import CellResult as FiniteResult
+from .compile import compile_structure, reject_leads
+from .results import CellResult
 from .spec import Agent, Atom, Model
 
 
@@ -36,12 +36,7 @@ class FiniteCompiled:
     def __init__(self, model: Model):
         model.validate()
         self.model = model
-        for a in model.agents:
-            for term in a.loss:
-                for atom in term[1:]:
-                    if any(l < 0 for (n, l) in model.expand({atom: 1.0})):
-                        raise NotImplementedError(f"agent {a.name}: lead atoms in loss terms ({atom}) are not supported by "
-                                                  "the finite-horizon engines yet; the stationary engine supports them")
+        reject_leads(model, 'cell engine')
         hz = model.horizon
         self.T = float(hz.window)
         self.N = int(hz.nodes)
@@ -305,7 +300,7 @@ class FiniteSolver(EngineBase):
         G = np.einsum("itc,jtc,t->ij", zeta, zeta, disc) * c.h * c.h    # sum_t h e^{-rho t} sum_j h zeta zeta
         return float(0.5 * np.sum(Q * G))
 
-    def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, max_newton: int = 60) -> FiniteResult:
+    def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, max_newton: int = 60) -> CellResult:
         """Anderson on the raw maps, then a Newton-Krylov polish.  init: raw maps."""
         t0 = time.time()
         if init is not None:
@@ -325,7 +320,7 @@ class FiniteSolver(EngineBase):
         hist.append(resid)
         maps = self.unpack(z)
         Z = self.c.closed_loop(maps)
-        res = FiniteResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
+        res = CellResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
                            iterations=evals[0], seconds=time.time() - t0, history=hist, message=message,
                            solver_class=type(self), solver_kw={"verbose": self.verbose},
                            solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton})

@@ -9,9 +9,6 @@ from .finite import FiniteSolver
 from .finite_spectral import SpectralFiniteSolver
 from .sweep import sweep, make_solver, ENGINES
 
-# backwards-compatible aliases
-Result, SpectralResult, FiniteResult = StationaryResult, TriangleResult, CellResult
-
 __all__ = ["Model", "ModelBuilder", "ConvergenceError", "BaseResult", "StationaryResult", "TriangleResult",
            "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "load", "solve", "sweep",
            "read_yaml", "read_json", "make_solver", "ENGINES", "Result", "SpectralResult", "FiniteResult"]

@@ -1,8 +1,8 @@
 """Parameter sweeps with warm starts, and JSON-ready results.
 
-    from noisestate.sweep import sweep, result_to_dict
+    from noisestate import sweep
     rows = sweep("examples/ch4_kyle_back.yaml", "eps", [0.2, 0.1, 0.05, 0.02])
-    rows[0]["result"].summary(); rows[0]["seconds"]
+    rows[0]["result"].summary(); rows[0]["result"].to_dict(); rows[0]["seconds"]
 
 Each point starts from the previous point's equilibrium (raw maps for the stationary engine,
 action kernels for the spectral finite engine), which is what makes a slider in an interactive
@@ -58,12 +58,11 @@ def warm_start(prev) -> Optional[dict]:
     return prev.maps
 
 
-def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], solver_kw: Optional[dict] = None,
-          solve_kw: Optional[dict] = None, verbose: bool = False, predictor: str = "secant") -> List[dict]:
+def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iterable[float], solver_kw: Optional[dict] = None,
+          solve_kw: Optional[dict] = None, verbose: bool = False) -> List[dict]:
     """Solve the model at each value of `param` (a key of `params`), warm-starting each point from
-    the previous one.  predictor="secant" starts from the linear extrapolation of the last two
-    equilibria in the parameter (a tangent predictor; markedly more robust at hard points such as a
-    small trading cost); "previous" starts from the last equilibrium.
+    the linear extrapolation of the last two equilibria in the parameter (a secant predictor;
+    markedly more robust at hard points such as a small trading cost).
     Returns [{"value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the given
     order; "change" is the relative change of the raw maps from the previous point (on the same grid)
     and "jump" flags a change more than five times the sweep's median (a possible branch jump)."""
@@ -81,7 +80,7 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], s
         init = None
         if prev is not None and S.same_grid(prev.compiled):
             w1 = warm_start(prev)
-            if predictor == "secant" and prev2 is not None and S.same_grid(prev2.compiled):
+            if prev2 is not None and S.same_grid(prev2.compiled):
                 w0 = warm_start(prev2); e1, e0 = rows[-1]["value"], rows[-2]["value"]
                 if abs(e1 - e0) > 0:
                     init = {k: w1[k] + (w1[k] - w0[k]) * (float(v) - e1) / (e1 - e0) for k in w1}
@@ -108,8 +107,3 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], s
         if verbose and r["jump"]:
             print(f"  {param} = {r['value']:g}: change {r['change']:.2g} against a typical {med:.2g}: possible branch jump", flush=True)
     return rows
-
-
-def result_to_dict(res) -> dict:
-    """JSON-serialisable view of a result (same as res.to_dict())."""
-    return res.to_dict()

@@ -118,31 +118,64 @@ class BaseResult:
     def _kernel_change(self, fine) -> float:
         raise NotImplementedError
 
-    def _status(self) -> str:
-        s = "converged" if self.converged else f"NOT converged ({self.message})"
-        if self.representation_error and not self.resolution_ok:
-            s += f"; UNDER-RESOLVED (representation error {max(self.representation_error.values()):.1e}: raise horizon.nodes)"
-        bad = [a for a, so in self.second_order.items() if so["ok"] is False]
-        if bad:
-            s += (f"; NOT A MINIMUM (the best response of {bad} is a saddle: its loss is not convex in its own strategy, "
-                  f"smallest curvature {min(self.second_order[a]['min'] for a in bad):.1e} of the largest)")
-        if self.refinement:
-            s += (f"; refinement to {self.refinement['nodes']} nodes moves costs by {self.refinement['cost_change']:.1e} and kernels by "
-                  f"{self.refinement['kernel_change']:.1e}" + ("" if self.refinement["resolved"] in (True, None) else " (NOT RESOLVED)"))
-        unsettled = [a for a, so in self.second_order.items() if so.get("converged") is False]
-        if unsettled:
-            s += f"; second-order check did not converge for {unsettled}"
-        tail = getattr(self, "window_tail", None)
-        if tail is not None and tail > self.WINDOW_TAIL_TOL:
-            s += f"; WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window)"
-        rep = getattr(self, "stability_report", None)
-        if rep:
-            s += f"; best-response dynamics {'stable' if rep['stable'] else 'UNSTABLE'} (spectral radius {rep['radius']:.3f}"
-            s += (", untied game" if rep["untied"] else "") + (f", by {rep['method']}" if rep["method"] != "arnoldi" else "") + ")"
-        return s
+    REFINE_COST_TOL, REFINE_KERNEL_TOL = 1e-6, 1e-5
 
-    def stability(self, untied: bool = True, k: int = 2, eps: float = 1e-6, tol: float = 1e-3,
-                  max_evaluations: int = 200) -> dict:
+    def diagnose(self) -> List[dict]:
+        """Every check this result carries, as rows {name, value, threshold, ok, flag, advice}: ok is
+        True/False, or None when the check gives no verdict (not computed, or not applicable).  The
+        summary prints the rows that fail; to_dict() carries them all.  The thresholds are the class
+        constants named in each row."""
+        rows = []
+
+        def row(name, value, threshold, ok, flag, advice=""):
+            rows.append({"name": name, "value": value, "threshold": threshold, "ok": ok, "flag": flag, "advice": advice})
+        row("converged", float(self.residual), self.solve_kw.get("tol"), bool(self.converged),
+            "NOT converged", self.message)
+        rep = max(self.representation_error.values()) if self.representation_error else None
+        row("resolution", rep, self.RESOLUTION_TOL, self.resolution_ok,
+            f"UNDER-RESOLVED (representation error {rep:.1e}: raise horizon.nodes)" if rep is not None else "", "raise horizon.nodes")
+        tail = getattr(self, "window_tail", None)
+        if tail is not None:
+            row("window", float(tail), self.WINDOW_TAIL_TOL, bool(tail <= self.WINDOW_TAIL_TOL),
+                f"WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window)",
+                "raise horizon.window")
+        for a, so in self.second_order.items():
+            if so.get("converged") is False:
+                row(f"second_order:{a}", None, None, None, f"second-order check did not converge for {a!r}", so.get("message", ""))
+            else:
+                row(f"second_order:{a}", so["min"], -self.solver_class.SECOND_ORDER_TOL if self.solver_class is not None else None, so["ok"],
+                    f"NOT A MINIMUM (the best response of {a!r} is a saddle: its loss is not convex in its own strategy, "
+                    f"smallest curvature {so['min']:.1e} of the largest)", "the loss is not convex in the agent's own strategy")
+        if self.refinement:
+            f = self.refinement
+            row("refinement", {"cost_change": f["cost_change"], "kernel_change": f["kernel_change"], "nodes": f["nodes"]},
+                {"cost_change": self.REFINE_COST_TOL, "kernel_change": self.REFINE_KERNEL_TOL}, f["resolved"],
+                f"refinement to {f['nodes']} nodes moves costs by {f['cost_change']:.1e} and kernels by {f['kernel_change']:.1e}"
+                + ("" if f["resolved"] in (True, None) else " (NOT RESOLVED)"), "raise horizon.nodes")
+        st = getattr(self, "stability_report", None)
+        if st:
+            row("stability", float(st["radius"]), 1.0, bool(st["stable"]),
+                f"best-response dynamics {'stable' if st['stable'] else 'UNSTABLE'} (spectral radius {st['radius']:.3f}"
+                + (", untied game" if st["untied"] else "") + (f", by {st['method']}" if st["method"] != "arnoldi" else "") + ")",
+                "naive best-response adjustment would not find this equilibrium")
+        return rows
+
+    def _status(self) -> str:
+        """One line: the outcome, then every check that failed or has no verdict, and the informational
+        rows (refinement, stability) whenever they were computed."""
+        rows = self.diagnose()
+        parts = []
+        for d in rows:
+            if d["name"] == "converged":
+                parts.append("converged" if d["ok"] else f"NOT converged ({d['advice']})")
+            elif d["name"] in ("refinement", "stability") or d["ok"] is False or (d["ok"] is None and d["name"].startswith("second_order")):
+                if d["flag"]:
+                    parts.append(d["flag"])
+        return "; ".join(parts)
+
+    STABILITY_K, STABILITY_EPS, STABILITY_TOL, STABILITY_MAX_EVALUATIONS = 2, 1e-6, 1e-3, 200
+
+    def stability(self, untied: bool = True) -> dict:
         """Stability of this equilibrium under best-response dynamics: the eigenvalues of largest
         modulus of the Jacobian of the best-response map at the equilibrium, by Arnoldi iteration on
         finite differences.  A spectral radius below one means small deviations by any agent die out
@@ -152,6 +185,7 @@ class BaseResult:
         Returns {"radius", "eigenvalues", "stable", "evaluations", "untied"}; also stored in
         self.stability_report."""
         from scipy.sparse.linalg import LinearOperator, eigs
+        k, eps, tol, max_evaluations = self.STABILITY_K, self.STABILITY_EPS, self.STABILITY_TOL, self.STABILITY_MAX_EVALUATIONS
         model = self.model
         if untied and model.ties:
             d = model.to_dict(); d["ties"] = []
@@ -207,6 +241,7 @@ class BaseResult:
                "channels": self.channels, "kernels": {}, "maps": {}, "foc": {},
                "costs": {k: float(v) for k, v in self.costs.items()}}
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
+        out["diagnostics"] = [{k: (None if v is None else v) for k, v in d.items()} for d in self.diagnose()]
         out["resolution_ok"] = None if self.resolution_ok is None else bool(self.resolution_ok)
         out["cost_kind"] = self.cost_kind
         out["second_order"] = {a: dict(so) for a, so in self.second_order.items()}

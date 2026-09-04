@@ -95,6 +95,39 @@ class EngineBase:
             return g1 is g2
         return self.c.N == other.N and abs(self.c.h - other.h) < 1e-12
 
+    # ------------------------------------------------------ seen rows
+    def _seen_rows(self, agent: Agent, Z: np.ndarray, excluded: set):
+        """The agent's signal rows in the world Z: regular kernels (one array per row) and the
+        instantaneous entries [(channel index, age, weight)] per row.  Controls in `excluded` are
+        switched off (their impulses come through impulse channels instead)."""
+        c = self.c; rows, inst = [], []
+        for r in range(len(agent.signals)):
+            regular, deltas = c.row(agent.name, r, excluded)
+            rows.append(regular @ Z)
+            inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
+        return rows, inst
+
+    def _passive_rows(self, agent: Agent, Zpass: np.ndarray):
+        """The rows in the agent's passive world (its own strategy off)."""
+        return self._seen_rows(agent, Zpass, set(agent.controls))
+
+    def _row_operator(self, agent: Agent, rows, inst):
+        """Per channel, the operator from stacked row kernels gamma to the action kernel."""
+        raise NotImplementedError
+
+    def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
+        """Relative residual of the best-response action kernels after projection on the agent's raw
+        rows.  Zero in exact arithmetic; on the grid it measures how well products of kernels are
+        resolved, so a value above about 1e-6 means the equilibrium is under-resolved: raise
+        horizon.nodes (see the README's known open item on lagged reads)."""
+        rows, inst = self._seen_rows(agent, Zfull, set())
+        Bk = self._row_operator(agent, rows, inst)
+        worst = 0.0
+        for ui in range(len(agent.controls)):
+            recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(self.c.nW)], axis=1)
+            worst = max(worst, float(np.abs(recon - actions[ui]).max() / max(1e-300, np.abs(actions[ui]).max())))
+        return worst
+
     # ------------------------------------------------------ fixed points
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray]):
         """(raw map, {"action": ..., "Zfull": ..., ...}) of the agent against `maps`."""

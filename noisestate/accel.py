@@ -9,14 +9,13 @@ This is the outer solver used by the Chapter 5 spectral market solver.
 """
 from __future__ import annotations
 
-from typing import Callable, List, Optional
+from typing import Callable, List
 
 import numpy as np
 
 
 def anderson(F: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, tol: float = 1e-10, M: int = 6,
-             beta: float = 0.5, maxiter: int = 200, reg: float = 1e-8, verbose: bool = False,
-             callback: Optional[Callable] = None):
+             beta: float = 0.5, maxiter: int = 200, reg: float = 1e-8, verbose: bool = False):
     """Solve F(x) = 0 for the residual F(x) = G(x) - x of a fixed-point map G.
     Returns (x, residual_norm_relative, evaluations, converged)."""
     x = np.array(x0, dtype=float)
@@ -52,8 +51,6 @@ def anderson(F: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, tol: float =
         x, r, rn = x_new, r_new, rn_new
         if rn < best_rn:
             best_x, best_rn = x.copy(), rn
-        if callback is not None:
-            callback(k, rn)
     return best_x, best_rn, evals, best_rn < tol
 
 
@@ -62,33 +59,16 @@ class ConvergenceError(RuntimeError):
 
 
 def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping: float = 0.5,
-                      anderson_iters: int = 150, max_newton: int = 30, M: int = 6, method: str = "anderson",
-                      pre_iterations: int = 20, pre_tol: float = 1e-3):
-    """method="anderson": Anderson, then a Newton-Krylov polish if it stalls above tol.
-    method="newton": a few damped steps, then Newton-Krylov.
-    Returns (z, rel_residual, evaluations, converged, message); converged means rel_residual <= tol."""
-    from scipy.optimize import newton_krylov
-    from scipy.optimize import NoConvergence
+                      anderson_iters: int = 150, max_newton: int = 30, M: int = 6):
+    """Regularised Anderson mixing on the residual F(z) = G(z) - z, then a Newton-Krylov polish if it
+    stalls above tol.  Returns (z, residual, evaluations, converged, message), where the residual is
+    norm(F(z)) / max(1, norm(z)) and converged means residual <= tol."""
+    from scipy.optimize import newton_krylov, NoConvergence
     msg = []
-    if method == "anderson":
-        z, rn, ev, ok = anderson(F, z0, tol=tol, M=M, beta=damping, maxiter=anderson_iters, verbose=verbose)
-        msg.append(f"anderson: {ev} evaluations, residual {rn:.2e}")
-        if ok or max_newton <= 0:
-            return z, rn, ev, rn <= tol, "; ".join(msg)
-    elif method == "newton":
-        z = np.array(z0, dtype=float); ev = 0; rn = np.inf
-        for it in range(pre_iterations):
-            r = F(z); ev += 1; rn = float(np.linalg.norm(r) / max(1.0, np.linalg.norm(z)))
-            if verbose:
-                print(f"  pre {it:3d} rel resid {rn:.3e}", flush=True)
-            if rn < pre_tol:
-                break
-            z = z + damping * r
-        msg.append(f"damped: {ev} evaluations, residual {rn:.2e}")
-        if rn <= tol:
-            return z, rn, ev, True, "; ".join(msg)
-    else:
-        raise ValueError(f"unknown method {method!r}; use 'anderson' or 'newton'")
+    z, rn, ev, ok = anderson(F, z0, tol=tol, M=M, beta=damping, maxiter=anderson_iters, verbose=verbose)
+    msg.append(f"anderson: {ev} evaluations, residual {rn:.2e}")
+    if ok or max_newton <= 0:
+        return z, rn, ev, rn <= tol, "; ".join(msg)
     cnt = [0]
 
     def Fc(x):

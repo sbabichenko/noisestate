@@ -1,5 +1,10 @@
 name: tests
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,5 +18,14 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "${{ matrix.python-version }}"}
       - run: pip install -e ".[dev]" ${{ matrix.pins }}
-      - run: python -m pyflakes noisestate tests examples tools
+      - run: python -m pyflakes noisestate tests examples extras
       - run: python -m pytest -q tests
+  slow:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -e ".[dev]"
+      - run: NOISESTATE_SLOW=1 python -m pytest -q tests -k "slow or ch5 or interior"

@@ -15,19 +15,10 @@ from .sweep import sweep
 
 
 def save_result(res, path: str) -> None:
-    d = res.to_dict()
-    if path.endswith(".npz"):
-        c = res.compiled
-        flat = {"grid/" + k: np.asarray(v) for k, v in res.grid_info().items() if isinstance(v, list)}
-        for name in c.prim:
-            for ch in res.channels:
-                flat[f"kernel/{name}/{ch}"] = res.kernel(name, ch)
-        for a in res.model.agents:
-            flat[f"map/{a.name}"] = res.maps[a.name]
-        np.savez(path, **flat)
-    else:
-        with open(path, "w") as fh:
-            json.dump(d, fh)
+    """Write the result's JSON payload (res.to_dict())."""
+    with open(path, "w") as fh:
+        json.dump(res.to_dict(), fh)
+
 
 
 def plot_result(res, path: str) -> None:
@@ -93,7 +84,7 @@ def main(argv=None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("solve", help="solve a model file (YAML)")
     s.add_argument("model")
-    s.add_argument("-o", "--out", help="write results (.json or .npz)")
+    s.add_argument("-o", "--out", help="write the result as JSON")
     s.add_argument("--plot", help="write a kernel plot (.pdf/.png)")
     s.add_argument("--nodes", type=int, help="override nodes per panel (stationary) or per side of each piece (finite)")
     s.add_argument("--window", type=float, help="override the lag window L")

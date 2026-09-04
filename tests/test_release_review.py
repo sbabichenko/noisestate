@@ -101,7 +101,7 @@ def test_sharp_optimality_the_projected_foc_vanishes_only_at_the_equilibrium():
         if a.name not in S._rphys:
             S._rphys[a.name] = c.closed_loop(S.zero_maps(), excluded=None, impulse_controls=a.controls)[:, nW:]
         Fu, _ = S._foc_operators(a, R, S._rphys[a.name])
-        ytil, yinst = S._passive_rows(a, Zpass); H = S._projection_operator(ytil, yinst)
+        ytil, yinst = S._passive_rows(a, Zpass); H = S._projection_operator(a, ytil, yinst)
         Z = c.closed_loop(maps)
         worst = 0.0
         for ui in range(len(a.controls)):

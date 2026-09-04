@@ -419,7 +419,7 @@ class Model:
     # ------------------------------------------------------- construction
     _KEYS = {
         "model": {"name", "params", "channels", "states", "definitions", "agents", "ties", "horizon"},
-        "horizon": {"kind", "discount", "window", "L", "T", "breakpoints", "unit", "unit_range", "nodes"},
+        "horizon": {"kind", "discount", "window", "breakpoints", "unit", "unit_range", "nodes"},
         "state": {"drift", "noise"},
         "agent": {"controls", "signals", "loss", "myopic"},
         "signal": {"drift", "noise", "delay"},
@@ -454,10 +454,9 @@ class Model:
                 seen[k] = eval_coef(v, seen)
             hout = {}
             for k, v in horizon.items():
-                key = k if k in hsrc else next((al for al in ("L", "T") if k == "window" and al in hsrc), k)
-                if key in hsrc and (hsrc[key] == v or (isinstance(hsrc[key], str) and abs(eval_coef(hsrc[key], seen) - v) <= 1e-12 * max(1.0, abs(v)))
-                                    or (isinstance(v, float) and not isinstance(hsrc[key], (list, str, bool)) and abs(float(hsrc[key]) - v) <= 1e-12 * max(1.0, abs(v)))):
-                    hout[key] = hsrc[key]
+                if k in hsrc and (hsrc[k] == v or (isinstance(hsrc[k], str) and abs(eval_coef(hsrc[k], seen) - v) <= 1e-12 * max(1.0, abs(v)))
+                                  or (isinstance(v, float) and not isinstance(hsrc[k], (list, str, bool)) and abs(float(hsrc[k]) - v) <= 1e-12 * max(1.0, abs(v)))):
+                    hout[k] = hsrc[k]                     # unchanged: keep the source's spelling (an expression)
                 else:
                     hout[k] = v
             d["horizon"] = hout
@@ -498,9 +497,6 @@ class Model:
         bad = sorted(set(fields) - self._KEYS["horizon"])
         if bad:
             raise ValueError(f"unknown horizon field(s) {bad}")
-        for k in ("L", "T"):
-            if "window" in fields:
-                d["horizon"].pop(k, None)
         d["horizon"].update(fields)
         return Model.from_dict(d)
 
@@ -539,7 +535,7 @@ class Model:
         hz = d.get("horizon") or {}
         horizon = Horizon(kind=hz.get("kind", "stationary"),
                           discount=eval_coef(hz.get("discount", 0.0), params),
-                          window=eval_coef(hz.get("window", hz.get("L", hz.get("T", 8.0))), params),
+                          window=eval_coef(hz.get("window", 8.0), params),
                           breakpoints=[eval_coef(b, params) for b in hz["breakpoints"]] if hz.get("breakpoints") else None,
                           unit=eval_coef(hz["unit"], params) if hz.get("unit") is not None else None,
                           unit_range=eval_coef(hz["unit_range"], params) if hz.get("unit_range") is not None else None,

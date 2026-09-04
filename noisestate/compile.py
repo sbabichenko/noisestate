@@ -97,3 +97,12 @@ def compile_structure(model: Model) -> Structure:
     reps = [a.name for a in model.agents if rep[a.name] == a.name]
     return Structure(model=model, channels=channels, prim=prim, index=index, nX=nX, nU=nU, A=A,
                      state_inputs=state_inputs, sigma=sigma, rows=rows, loss=loss, rep=rep, reps=reps)
+
+
+def reject_leads(model: Model, engine: str) -> None:
+    """The finite-horizon engines do not carry the past-date term a lead needs."""
+    for a in model.agents:
+        for term in a.loss:
+            for atom in term[1:]:
+                if any(l < 0 for (n, l) in model.expand({atom: 1.0})):
+                    raise NotImplementedError(f"{engine}: lead atoms ({atom}) in losses are supported by the stationary engine only")
