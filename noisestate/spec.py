@@ -258,6 +258,21 @@ class Model:
         if bad:
             raise ValueError(f"unknown key(s) {bad} in {what}{where}; allowed: {sorted(allowed)}")
 
+    def to_dict(self) -> dict:
+        """The file structure of this model (coefficients numeric); from_dict(to_dict()) round-trips."""
+        d = {"name": self.name, "params": dict(self.params), "channels": list(self.channels),
+             "states": {s.name: {"drift": dict(s.drift), "noise": dict(s.noise)} for s in self.states},
+             "definitions": {x.name: dict(x.expr) for x in self.definitions},
+             "agents": {}, "ties": [list(g) for g in self.ties],
+             "horizon": {"kind": self.horizon.kind, "discount": self.horizon.discount, "window": self.horizon.window,
+                         "nodes": self.horizon.nodes, "breakpoints": self.horizon.breakpoints, "unit": self.horizon.unit,
+                         "unit_range": self.horizon.unit_range}}
+        for a in self.agents:
+            d["agents"][a.name] = {"controls": list(a.controls), "myopic": a.myopic,
+                                   "signals": {r.name: {"drift": dict(r.drift), "noise": dict(r.noise), "delay": r.delay} for r in a.signals},
+                                   "loss": [list(t) for t in a.loss]}
+        return d
+
     @classmethod
     def from_dict(cls, d: dict) -> "Model":
         cls._check_keys("model", d, cls._KEYS["model"])
