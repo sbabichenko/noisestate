@@ -25,17 +25,16 @@ import numpy as np
 from .grid import AgeGrid
 from .grid_cache import age_grid
 from .engine import EngineBase
-from .compile import compile_structure
+from .compile import CompiledBase
 from .results import StationaryResult
 from .spec import Agent, Atom, Model
 
 
-class Compiled:
+class Compiled(CompiledBase):
     """Grid, index maps and constant operators for a stationary model."""
 
     def __init__(self, model: Model):
-        model.validate()
-        self.model = model
+        super().__init__(model)
         hz = model.horizon
         lags = model.all_lags()
         if hz.breakpoints:
@@ -51,11 +50,6 @@ class Compiled:
         self.grid = age_grid(tuple(round(float(b), 12) for b in bp), hz.nodes)   # shared, with its operator caches
         self.N = self.grid.N
         self.rho = float(hz.discount)
-        st = compile_structure(model)
-        self.channels, self.nW = st.channels, st.nW
-        self.prim, self.index, self.nX, self.nU = st.prim, st.index, st.nX, st.nU
-        self.A, self.state_inputs, self.sigma = st.A, st.state_inputs, st.sigma
-        self.rows, self.loss, self.rep, self.reps = st.rows, st.loss, st.rep, st.reps
         self._atom_cache: Dict[tuple, np.ndarray] = {}
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
 

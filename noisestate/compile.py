@@ -38,6 +38,19 @@ class Structure:
         return len(self.channels)
 
 
+class CompiledBase:
+    """What every engine's compiled model starts from: the validated model and its Structure, whose
+    fields are adopted as attributes (c.rows, c.loss, c.rep, ...)."""
+    FIELDS = ("channels", "nW", "prim", "index", "nX", "nU", "A", "state_inputs", "sigma", "rows", "loss", "rep", "reps")
+
+    def __init__(self, model: Model):
+        model.validate()
+        self.model = model
+        self.st = compile_structure(model)
+        for k in self.FIELDS:
+            setattr(self, k, getattr(self.st, k))
+
+
 def compile_structure(model: Model) -> Structure:
     model.validate()
     channels = list(model.channels)

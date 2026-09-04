@@ -14,20 +14,21 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
+from functools import cached_property
+
 import numpy as np
 
 from .engine import EngineBase
-from .compile import compile_structure, reject_leads
+from .compile import CompiledBase, reject_leads
 from .results import TriangleResult
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
 from .grid_cache import triangle_grid
 
 
-class SpectralCompiled:
+class SpectralCompiled(CompiledBase):
     def __init__(self, model: Model):
-        model.validate()
-        self.model = model
+        super().__init__(model)
         reject_leads(model, 'spectral finite engine')
         hz = model.horizon
         self.T = float(hz.window)
@@ -41,11 +42,6 @@ class SpectralCompiled:
         g = self.g
         self.N = g.N
         self.rho = float(hz.discount)
-        st = compile_structure(model)
-        self.channels, self.nW = st.channels, st.nW
-        self.prim, self.index, self.nX, self.nU = st.prim, st.index, st.nX, st.nU
-        self.A, self.state_inputs, self.sigma = st.A, st.state_inputs, st.sigma
-        self.rows, self.loss, self.rep, self.reps = st.rows, st.loss, st.rep, st.reps
         # state propagation operators (matrix exponentials of A)
         if self.nX:
             # state propagation e^{A(t-r)} along the Volterra path; entrywise weights from expm, which
@@ -89,7 +85,7 @@ class SpectralCompiled:
         limits chosen by the node's position in its piece; zero where the read age is
         negative (for da > 0 this is exact on delay-aligned pieces)."""
         key = (round(dt, 12), round(da, 12))
-        cache = self.g.__dict__.setdefault("_read_cache", {})
+        cache = self.g.read_cache
         if key in cache:
             return cache[key]
         g = self.g
@@ -138,12 +134,16 @@ class SpectralCompiled:
     # ------------------------------------------------------ line operators
     # Each family of line integrals is a cached quadrature structure (triangle.LinePath);
     # an operator for a given known kernel is then two sparse products.
+    @cached_property
+    def _panel_idx(self):
+        """Indices of every primary's unknowns on each time panel, in block order."""
+        panel = np.concatenate([np.full(pc.n, pc.p) for pc in self.g.pieces])
+        return [np.concatenate([q * self.N + np.where(panel == p)[0] for q in range(len(self.prim))]) for p in range(self.g.P)]
+
     def _path(self, key, **kw):
-        cache = self.g.__dict__.setdefault("_paths", {})
-        if key not in cache:
-            g = self.g
-            cache[key] = g.path(g.t, g.a, **kw)
-        return cache[key]
+        if key not in self.g.paths:
+            self.g.paths[key] = self.g.path(self.g.t, self.g.a, **kw)
+        return self.g.paths[key]
 
     def conv_left(self, gker: np.ndarray, delay: float) -> np.ndarray:
         """(C y)(t, s) = int_{s+delay}^{t} g(t, t - u) y(u, s) du  for a fixed map kernel g."""
@@ -245,11 +245,6 @@ class SpectralCompiled:
         """Solve (I - M) Z = B exploiting causality: a kernel value at time panel p depends only on
         values at panels <= p, so with nodes grouped by panel the system is block lower triangular
         and is solved by block forward substitution (one dense solve per panel)."""
-        N = self.N
-        if not hasattr(self, "_panel_idx"):
-            panel = np.concatenate([np.full(pc.n, pc.p) for pc in self.g.pieces])
-            self._panel_idx = [np.concatenate([q * N + np.where(panel == p)[0] for q in range(len(self.prim))])
-                               for p in range(self.g.P)]
         Z = np.zeros_like(B)
         for p, idx in enumerate(self._panel_idx):
             rhs = B[idx].copy()
@@ -444,9 +439,7 @@ class SpectralFiniteSolver(EngineBase):
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])                  # (m, N, nW)
-        if not hasattr(self, "_mass_rho"):
-            self._mass_rho = c.g.mass_matrix(rho=c.rho)
-        G = np.einsum("ink,nm,jmk->ij", zeta, self._mass_rho, zeta)
+        G = np.einsum("ink,nm,jmk->ij", zeta, c.g.mass_matrix(rho=c.rho), zeta)
         return float(0.5 * np.sum(Q * G))
 
     def _finish(self, res) -> None:

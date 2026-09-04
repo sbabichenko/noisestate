@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import Callable, List, Optional
 
+from functools import cached_property
+
 import numpy as np
 from numpy.polynomial import legendre
 
@@ -84,8 +86,10 @@ class TriangleGrid:
         self.side_a = np.concatenate([np.where(np.abs(pc.a - pc.a1) < 1e-13, -1, 1) if not pc.triangle else np.ones(pc.n, dtype=int)
                                       for pc in self.pieces])
         self.side_t = np.concatenate([np.where(np.abs(pc.t - pc.t1) < 1e-13, -1, 1) for pc in self.pieces])
-        self._mass = None
         self._piece_by_pq = {(pc.p, pc.q): pc for pc in self.pieces}
+        self.mass_matrices = {}              # rho -> mass_matrix(rho)
+        self.read_cache = {}                 # (dt, da) -> read matrix (filled by the spectral engine)
+        self.paths = {}                      # key -> LinePath (filled by the spectral engine)
 
     # ------------------------------------------------------------ lookup
     def panel_of(self, x, side=+1):
@@ -146,18 +150,16 @@ class TriangleGrid:
             w[pc.offset:pc.offset + pc.n] += wa @ W
         return w
 
-    @property
+    @cached_property
     def mass(self) -> np.ndarray:
         """Weights (N,) with int_0^T int_0^t f(t, a) da dt = mass @ f."""
-        if self._mass is None:
-            m = np.zeros(self.N)
-            for p in range(self.P):
-                tq, wq = legendre.leggauss(self.nt + 2)
-                lo, hi = self.bp[p], self.bp[p + 1]
-                for x, w in zip(0.5 * (hi - lo) * tq + 0.5 * (hi + lo), 0.5 * (hi - lo) * wq):
-                    m += w * self.row_weights(x)
-            self._mass = m
-        return self._mass
+        m = np.zeros(self.N)
+        for p in range(self.P):
+            tq, wq = legendre.leggauss(self.nt + 2)
+            lo, hi = self.bp[p], self.bp[p + 1]
+            for x, w in zip(0.5 * (hi - lo) * tq + 0.5 * (hi + lo), 0.5 * (hi - lo) * wq):
+                m += w * self.row_weights(x)
+        return m
 
     # ------------------------------------------------------ helpers
     @staticmethod
@@ -174,10 +176,9 @@ class TriangleGrid:
     def mass_matrix(self, rho: float = 0.0) -> np.ndarray:
         """Exact Gram matrix M_ij = int_0^T e^{-rho t} int_0^t l_i l_j da dt of the nodal basis
         (tensor Gauss quadrature on every piece; Duffy Jacobian on the triangles)."""
-        key = ("mass_matrix", round(float(rho), 12))
-        cache = getattr(self, "_mm_cache", {})
-        if key in cache:
-            return cache[key]
+        key = round(float(rho), 12)
+        if key in self.mass_matrices:
+            return self.mass_matrices[key]
         weight_t = (lambda t: np.exp(-rho * t)) if rho else None
         M = np.zeros((self.N, self.N))
         xg, wg = legendre.leggauss(max(self.nt, self.na) + 2)
@@ -194,7 +195,7 @@ class TriangleGrid:
                 I = self.interp(np.full_like(aq, t), aq)
                 w = wt * aw * (weight_t(t) if weight_t is not None else 1.0)
                 M += (I * w[:, None]).T @ I
-        cache[key] = M; self._mm_cache = cache
+        self.mass_matrices[key] = M
         return M
 
     # ---------------------------------------------------------- line ops

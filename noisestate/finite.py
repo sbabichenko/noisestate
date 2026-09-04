@@ -25,15 +25,14 @@ import numpy as np
 from scipy.sparse.linalg import LinearOperator, lgmres
 
 from .engine import EngineBase
-from .compile import compile_structure, reject_leads
+from .compile import CompiledBase, reject_leads
 from .results import CellResult
 from .spec import Agent, Atom, Model
 
 
-class FiniteCompiled:
+class FiniteCompiled(CompiledBase):
     def __init__(self, model: Model):
-        model.validate()
-        self.model = model
+        super().__init__(model)
         reject_leads(model, 'cell engine')
         hz = model.horizon
         self.T = float(hz.window)
@@ -41,11 +40,7 @@ class FiniteCompiled:
         self.h = self.T / self.N
         self.rho = float(hz.discount)
         self.times = np.arange(self.N) * self.h
-        st = compile_structure(model)
-        self.channels, self.nW = st.channels, st.nW
-        self.prim, self.index, self.nX, self.nU = st.prim, st.index, st.nX, st.nU
-        self.A, self.state_inputs, self.sigma = st.A, st.state_inputs, st.sigma
-        self.rows, self.loss, self.rep, self.reps = st.rows, st.loss, st.rep, st.reps
+        st = self.st
         # observation delays in cells
         self.rows = {a: [(n, d, E, int(round(delay / self.h))) for (n, d, E, delay) in rr] for a, rr in st.rows.items()}
         for l in model.all_lags():

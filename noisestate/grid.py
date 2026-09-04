@@ -24,6 +24,8 @@ spectrally accurate for kernels that are smooth within panels.
 """
 from __future__ import annotations
 
+from functools import cached_property
+
 import numpy as np
 from numpy.polynomial import legendre
 
@@ -100,8 +102,9 @@ class AgeGrid:
         self.panel_of_node = np.repeat(np.arange(self.P), self.n)
         self._bw = bary_weights(self.n)
         self.mass = np.concatenate([clenshaw_curtis(self.n, bp[p], bp[p + 1]) for p in range(self.P)])
-        self._conv = None
-        self._corr = {}
+        self._corr = {}                      # rho -> corr_tensor
+        self._corr_flat = {}                 # rho -> corr_tensor as [(a, j), i]
+        self._shift_cache = {}               # tau -> shift matrix
 
     # ------------------------------------------------------------ basics
     def panel_index(self, a: np.ndarray, side: int = +1) -> np.ndarray:
@@ -146,28 +149,25 @@ class AgeGrid:
 
     def shift_cached(self, tau: float) -> np.ndarray:
         key = round(float(tau), 12)
-        cache = self.__dict__.setdefault("_shift_cache", {})
-        if key not in cache:
-            cache[key] = self.shift(key)
-        return cache[key]
+        if key not in self._shift_cache:
+            self._shift_cache[key] = self.shift(key)
+        return self._shift_cache[key]
 
     def evaluate(self, f: np.ndarray, points) -> np.ndarray:
         return self.interp(points) @ f
 
-    @property
+    @cached_property
     def mass_matrix(self) -> np.ndarray:
         """Exact Gram matrix M_ij = int_0^L l_i(a) l_j(a) da of the nodal basis (Gauss quadrature,
         exact for products of two interpolants; the lumped `mass` is exact only for one)."""
-        if not hasattr(self, "_mass_matrix"):
-            M = np.zeros((self.N, self.N))
-            xg, wg = legendre.leggauss(self.n + 2)
-            for p in range(self.P):
-                lo, hi = self.breakpoints[p], self.breakpoints[p + 1]
-                xs = 0.5 * (hi - lo) * xg + 0.5 * (hi + lo); ws = 0.5 * (hi - lo) * wg
-                I = self.interp(xs, side=+1)
-                M += (I * ws[:, None]).T @ I
-            self._mass_matrix = M
-        return self._mass_matrix
+        M = np.zeros((self.N, self.N))
+        xg, wg = legendre.leggauss(self.n + 2)
+        for p in range(self.P):
+            lo, hi = self.breakpoints[p], self.breakpoints[p + 1]
+            xs = 0.5 * (hi - lo) * xg + 0.5 * (hi + lo); ws = 0.5 * (hi - lo) * wg
+            I = self.interp(xs, side=+1)
+            M += (I * ws[:, None]).T @ I
+        return M
 
     # ---------------------------------------------------------- propagator
     def propagator(self, A: np.ndarray):
@@ -230,23 +230,21 @@ class AgeGrid:
             ws.append(0.5 * (e1 - e0) * wg)
         return np.concatenate(xs), np.concatenate(ws)
 
-    @property
+    @cached_property
     def conv_tensor(self) -> np.ndarray:
         """T[a, i, j] = int_0^a l_i(b) l_j(a - b) db  (node a)."""
-        if self._conv is None:
-            T = np.zeros((self.N, self.N, self.N))
-            bp = list(self.breakpoints)
-            m = self.n + 2
-            for k, a in enumerate(self.nodes):
-                if a <= 1e-14:
-                    continue
-                cuts = bp + [a - b for b in bp]
-                xs, ws = self._gauss_pieces(0.0, a, cuts, m)
-                Li = self.interp(xs, side=+1)          # l_i(b)
-                Lj = self.interp(a - xs, side=-1)      # l_j(a-b): approach from the left
-                T[k] = (Li * ws[:, None]).T @ Lj
-            self._conv = T
-        return self._conv
+        T = np.zeros((self.N, self.N, self.N))
+        bp = list(self.breakpoints)
+        m = self.n + 2
+        for k, a in enumerate(self.nodes):
+            if a <= 1e-14:
+                continue
+            cuts = bp + [a - b for b in bp]
+            xs, ws = self._gauss_pieces(0.0, a, cuts, m)
+            Li = self.interp(xs, side=+1)          # l_i(b)
+            Lj = self.interp(a - xs, side=-1)      # l_j(a-b): approach from the left
+            T[k] = (Li * ws[:, None]).T @ Lj
+        return T
 
     def corr_tensor(self, rho: float = 0.0) -> np.ndarray:
         """T[a, i, j] = int_0^{L-a} e^{-rho s} l_i(s) l_j(a + s) ds  (node a)."""
@@ -274,21 +272,20 @@ class AgeGrid:
 
     def conv_ops(self, Y: np.ndarray) -> np.ndarray:
         """Batched conv_op: Y (N, m) -> (m, N, N), one BLAS product instead of m contractions."""
-        T = self.conv_tensor
         N = self.N
-        if not hasattr(self, "_conv_flat"):
-            self._conv_flat = T.reshape(N * N, N)                   # [(a, i), j]
         return (self._conv_flat @ Y).reshape(N, N, -1).transpose(2, 0, 1)
+
+    @cached_property
+    def _conv_flat(self) -> np.ndarray:
+        return self.conv_tensor.reshape(self.N * self.N, self.N)              # [(a, i), j]
 
     def corr_ops(self, W: np.ndarray, rho: float = 0.0) -> np.ndarray:
         """Batched corr_op: W (N, m) -> (m, N, N)."""
         key = float(rho)
-        cache = getattr(self, "_corr_flat", {})
-        if key not in cache:
+        if key not in self._corr_flat:
             T = self.corr_tensor(rho)
-            cache[key] = np.ascontiguousarray(T.transpose(0, 2, 1)).reshape(self.N * self.N, self.N)   # [(a, j), i]
-            self._corr_flat = cache
-        return (cache[key] @ W).reshape(self.N, self.N, -1).transpose(2, 0, 1)
+            self._corr_flat[key] = np.ascontiguousarray(T.transpose(0, 2, 1)).reshape(self.N * self.N, self.N)   # [(a, j), i]
+        return (self._corr_flat[key] @ W).reshape(self.N, self.N, -1).transpose(2, 0, 1)
 
     def conv_op_left(self, g: np.ndarray) -> np.ndarray:
         """Matrix C with (C y)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel g."""
