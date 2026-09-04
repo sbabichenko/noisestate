@@ -154,6 +154,18 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
 `kb_spectral_q` differs by 2-6% and its solution is not a best response to itself
 (see `tests/test_ch4.py` for the diagnostics).
 
+## Stability guarantees
+
+* A model file with a misspelled key, an unused channel, or a control that does not enter its
+  owner's loss is rejected with a message naming the offending item.
+* `converged` means the relative residual is at or below `tol`; `res.message` says what the outer
+  solver did, `res.summary()` shows it when the solve did not converge, and `res.check()` raises
+  `ConvergenceError` so a pipeline cannot use a failed solve by accident.
+* Costs are integrated with exact Gram matrices, so a converged best response is optimal against
+  every feasible perturbation to round-off; `tests/test_properties.py` checks this on both engines
+  without any reference solution, together with the equivalence of the two iteration variables
+  and invariance to channel relabelling and agent order.
+
 ## Limits
 
 Scalar states and controls (write vector models as several scalars); no exact

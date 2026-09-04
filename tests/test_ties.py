@@ -1,10 +1,10 @@
 """A tied symmetric game must reproduce the untied solution (catches channel-permutation mistakes)."""
-import os, numpy as np, yaml
+import os, numpy as np
 import noisestate as ns
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def test_tied_symmetric_game_matches_untied():
-    d = yaml.safe_load(open(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml")))
+    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml"))
     d["params"]["p2"] = d["params"]["p1"]; d["params"]["r2"] = d["params"]["r1"]
     free = ns.solve(ns.Model.from_dict(d))
     d["ties"] = [["player1", "player2"]]

@@ -182,6 +182,14 @@ class FiniteResult:
     seconds: float
     costs: Dict[str, float] = field(default_factory=dict)
     history: List[float] = field(default_factory=list)
+    message: str = ""
+
+    def check(self):
+        """Return self, or raise ConvergenceError if the solve did not reach its tolerance."""
+        if not self.converged:
+            from .accel import ConvergenceError
+            raise ConvergenceError(f"{self.model.name}: residual {self.residual:.2e} ({self.message})")
+        return self
 
     @property
     def times(self) -> np.ndarray:
@@ -196,7 +204,7 @@ class FiniteResult:
 
     def summary(self) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {'converged' if self.converged else 'NOT converged'} residual {self.residual:.2e} "
+        lines = [f"{self.model.name}: {'converged' if self.converged else 'NOT converged (' + self.message + ')'} residual {self.residual:.2e} "
                  f"in {self.iterations} evaluations, {self.seconds:.1f}s; {c.N} cells on [0, {c.T}], rho={c.rho}"]
         for a in self.model.agents:
             lines.append(f"  {a.name}: E[cost] = {self.costs.get(a.name, float('nan')):+.6f}")
@@ -356,13 +364,13 @@ class FiniteSolver:
             evals[0] += 1
             return self.pack(self.response_map(self.unpack(zz))) - zz
 
-        z, resid, nev, converged = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
+        z, resid, nev, converged, message = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
                                                      max_newton=max_newton)
         hist.append(resid)
         maps = self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = FiniteResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                           iterations=evals[0], seconds=time.time() - t0, history=hist)
+                           iterations=evals[0], seconds=time.time() - t0, history=hist, message=message)
         for a in self.model.agents:
             res.costs[a.name] = self.expected_cost(a, Z)
         return res

@@ -229,12 +229,45 @@ class Model:
             shapes = {(len(a.controls), len(a.signals)) for a in ag}
             if len(shapes) != 1:
                 raise ValueError(f"tied agents {group} must have the same numbers of controls and signal rows")
+        used = {ch for s in self.states for ch in s.noise} | {ch for a in self.agents for r in a.signals for ch in r.noise}
+        unused = [ch for ch in self.channels if ch not in used]
+        if unused:
+            raise ValueError(f"channel(s) {unused} are never loaded by a state or a signal row (misspelled?)")
+        for a in self.agents:
+            atoms = {n for term in a.loss for atom in term[1:] for (n, l) in self.expand({atom: 1.0})}
+            missing = [u for u in a.controls if u not in atoms]
+            if missing:
+                raise ValueError(f"agent {a.name}: control(s) {missing} do not enter its loss; the best response would be undetermined")
         if self.horizon.kind not in ("stationary", "finite", "finite_cells"):
             raise ValueError("horizon.kind must be 'stationary', 'finite' (spectral triangle) or 'finite_cells'")
 
     # ------------------------------------------------------- construction
+    _KEYS = {
+        "model": {"name", "params", "channels", "states", "definitions", "agents", "ties", "horizon"},
+        "horizon": {"kind", "discount", "window", "L", "T", "breakpoints", "unit", "unit_range", "nodes"},
+        "state": {"drift", "noise"},
+        "agent": {"controls", "signals", "loss", "myopic"},
+        "signal": {"drift", "noise", "delay"},
+    }
+
+    @staticmethod
+    def _check_keys(what: str, d: dict, allowed: set, where: str = "") -> None:
+        if not isinstance(d, dict):
+            raise ValueError(f"{what}{where} must be a mapping, got {type(d).__name__}")
+        bad = sorted(set(d) - allowed)
+        if bad:
+            raise ValueError(f"unknown key(s) {bad} in {what}{where}; allowed: {sorted(allowed)}")
+
     @classmethod
     def from_dict(cls, d: dict) -> "Model":
+        cls._check_keys("model", d, cls._KEYS["model"])
+        cls._check_keys("horizon", d.get("horizon") or {}, cls._KEYS["horizon"])
+        for k, v in (d.get("states") or {}).items():
+            cls._check_keys("state", v or {}, cls._KEYS["state"], f" '{k}'")
+        for k, v in (d.get("agents") or {}).items():
+            cls._check_keys("agent", v or {}, cls._KEYS["agent"], f" '{k}'")
+            for rk, rv in (v.get("signals") or {}).items():
+                cls._check_keys("signal", rv or {}, cls._KEYS["signal"], f" '{k}.{rk}'")
         params = {k: float(v) for k, v in (d.get("params") or {}).items()}
         # allow parameters defined in terms of earlier ones
         for k, v in (d.get("params") or {}).items():

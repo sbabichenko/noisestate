@@ -190,6 +190,14 @@ class Result:
     foc: Dict[str, dict] = field(default_factory=dict)   # per agent: decomposition of the FOC kernels
     costs: Dict[str, float] = field(default_factory=dict)
     history: List[float] = field(default_factory=list)
+    message: str = ""
+
+    def check(self):
+        """Return self, or raise ConvergenceError if the solve did not reach its tolerance."""
+        if not self.converged:
+            from .accel import ConvergenceError
+            raise ConvergenceError(f"{self.model.name}: residual {self.residual:.2e} ({self.message})")
+        return self
 
     @property
     def ages(self) -> np.ndarray:
@@ -206,7 +214,7 @@ class Result:
 
     def summary(self) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {'converged' if self.converged else 'NOT converged'} "
+        lines = [f"{self.model.name}: {'converged' if self.converged else 'NOT converged (' + self.message + ')'} "
                  f"residual {self.residual:.2e} in {self.iterations} evaluations, {self.seconds:.1f}s; "
                  f"grid {c.grid.P} panels x {c.grid.n} nodes on [0, {c.grid.L}], rho={c.rho}"]
         for a in self.model.agents:
@@ -520,13 +528,13 @@ class StationarySolver:
                 evals[0] += 1
                 return self.pack(self.response_map(self.unpack(zz))) - zz
 
-        z, resid, nev, converged = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
+        z, resid, nev, converged, message = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
                                                      max_newton=max_newton, method=method, pre_iterations=pre_iterations, pre_tol=pre_tol)
         hist.append(resid)
         maps = self.maps_from_kernels(self.world_from_actions(unpacka(z))) if variable == "actions" else self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = Result(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                     iterations=evals[0], seconds=time.time() - t0, history=hist)
+                     iterations=evals[0], seconds=time.time() - t0, history=hist, message=message)
         # decomposition and costs
         for a in self.model.agents:
             _, out = self.best_response(a, maps, want_decomp=True)
@@ -538,6 +546,6 @@ class StationarySolver:
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])          # (m, N, nW)
-        W = c.grid.mass
-        G = np.einsum("ink,jnk,n->ij", zeta, zeta, W)                # <zeta_i, zeta_j>
+        M = c.grid.mass_matrix                                        # exact <l_i, l_j>
+        G = np.einsum("ink,nm,jmk->ij", zeta, M, zeta)                # <zeta_i, zeta_j> over ages and channels
         return float(0.5 * np.sum(Q * G))

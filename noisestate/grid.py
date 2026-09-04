@@ -47,8 +47,8 @@ def bary_rows(pts: np.ndarray, xs: np.ndarray, w: np.ndarray) -> np.ndarray:
     exact = np.abs(d) < 1e-13 * max(1.0, float(np.abs(xs).max()))
     with np.errstate(divide="ignore", invalid="ignore"):
         r = w[None, :] / d
-    r[exact] = 0.0
-    out = r / r.sum(axis=1, keepdims=True)
+        r[exact] = 0.0
+        out = r / r.sum(axis=1, keepdims=True)
     rows = np.where(exact.any(axis=1))[0]
     out[rows] = 0.0
     out[rows, np.argmax(exact[rows], axis=1)] = 1.0
@@ -145,6 +145,21 @@ class AgeGrid:
 
     def evaluate(self, f: np.ndarray, points) -> np.ndarray:
         return self.interp(points) @ f
+
+    @property
+    def mass_matrix(self) -> np.ndarray:
+        """Exact Gram matrix M_ij = int_0^L l_i(a) l_j(a) da of the nodal basis (Gauss quadrature,
+        exact for products of two interpolants; the lumped `mass` is exact only for one)."""
+        if not hasattr(self, "_mass_matrix"):
+            M = np.zeros((self.N, self.N))
+            xg, wg = legendre.leggauss(self.n + 2)
+            for p in range(self.P):
+                lo, hi = self.breakpoints[p], self.breakpoints[p + 1]
+                xs = 0.5 * (hi - lo) * xg + 0.5 * (hi + lo); ws = 0.5 * (hi - lo) * wg
+                I = self.interp(xs, side=+1)
+                M += (I * ws[:, None]).T @ I
+            self._mass_matrix = M
+        return self._mass_matrix
 
     # ---------------------------------------------------------- propagator
     def propagator(self, A: np.ndarray):

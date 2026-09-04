@@ -171,6 +171,31 @@ class TriangleGrid:
             bp.pop(-2)
         return bp
 
+    def mass_matrix(self, weight_t: Optional[Callable] = None) -> np.ndarray:
+        """Exact Gram matrix M_ij = int_0^T w(t) int_0^t l_i l_j da dt of the nodal basis
+        (tensor Gauss quadrature on every piece; Duffy Jacobian on the triangles)."""
+        key = ("mass_matrix", None if weight_t is None else id(weight_t))
+        cache = getattr(self, "_mm_cache", {})
+        if key in cache:
+            return cache[key]
+        M = np.zeros((self.N, self.N))
+        xg, wg = legendre.leggauss(max(self.nt, self.na) + 2)
+        for pc in self.pieces:
+            tq = 0.5 * (pc.t1 - pc.t0) * xg + 0.5 * (pc.t1 + pc.t0); tw = 0.5 * (pc.t1 - pc.t0) * wg
+            for t, wt in zip(tq, tw):
+                if pc.triangle:
+                    lo, hi = pc.t0, t
+                else:
+                    lo, hi = pc.a0, pc.a1
+                if hi - lo <= 1e-14:
+                    continue
+                aq = 0.5 * (hi - lo) * xg + 0.5 * (hi + lo); aw = 0.5 * (hi - lo) * wg
+                I = self.interp(np.full_like(aq, t), aq)
+                w = wt * aw * (weight_t(t) if weight_t is not None else 1.0)
+                M += (I * w[:, None]).T @ I
+        cache[key] = M; self._mm_cache = cache
+        return M
+
     # ---------------------------------------------------------- line ops
     def path(self, out_t, out_a, r_lo, r_hi, point_fn: Callable, known_fn: Optional[Callable] = None,
              extra_cuts: Optional[Callable] = None, m: Optional[int] = None, side_t=+1, side_a=+1) -> "LinePath":

@@ -1,10 +1,10 @@
-import numpy as np, yaml, os
+import numpy as np, os
 import noisestate as ns
 from noisestate.finite_spectral import SpectralFiniteSolver
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def test_block_forward_substitution_matches_dense_solve():
-    d = yaml.safe_load(open(os.path.join(HERE, "..", "examples", "ch1_delayed_finite.yaml"))); d["horizon"]["nodes"] = 5
+    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_delayed_finite.yaml")); d["horizon"]["nodes"] = 5
     S = SpectralFiniteSolver(ns.Model.from_dict(d)); c = S.c
     n = len(c.prim) * c.N
     rng = np.random.default_rng(3)

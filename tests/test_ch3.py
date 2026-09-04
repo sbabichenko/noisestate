@@ -1,4 +1,4 @@
-import json, os, numpy as np
+import os, numpy as np
 import noisestate as ns
 
 REFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs")
@@ -6,7 +6,7 @@ REF = os.path.join(REFS, "ch3_p3_p10_r1_r1.json")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def test_ch3_matches_spectral_solver():
-    ref = json.load(open(REF))
+    ref = ns.read_json(REF)
     res = ns.solve(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml"), verbose=True)
     print(res.summary())
     lag = np.array(ref["lag"]); assert np.allclose(lag, res.ages, atol=1e-12)
@@ -26,9 +26,8 @@ def test_ch3_matches_spectral_solver():
 REF10 = REF.replace("ch3_p3_p10_r1_r1.json", "ch3_L10.json")
 
 def test_ch3_wide_window_agrees_to_machine_precision():
-    import yaml
-    ref = json.load(open(REF10))
-    d = yaml.safe_load(open(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml")))
+    ref = ns.read_json(REF10)
+    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml"))
     d["horizon"]["nodes"] = 64; d["horizon"]["window"] = 10.0
     res = ns.solve(ns.Model.from_dict(d))
     col = lambda dd: np.stack([np.array(dd[f"ch{k}"]) for k in range(3)], axis=1)

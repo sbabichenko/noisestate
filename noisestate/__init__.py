@@ -5,15 +5,25 @@ from .finite import FiniteSolver, FiniteResult
 from .finite_spectral import SpectralFiniteSolver, SpectralResult
 
 __all__ = ["Model", "ModelBuilder", "StationarySolver", "Result", "FiniteSolver", "FiniteResult",
-           "SpectralFiniteSolver", "SpectralResult", "load", "solve"]
+           "SpectralFiniteSolver", "SpectralResult", "load", "solve", "read_yaml", "read_json"]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+
+
+def read_yaml(path: str) -> dict:
+    import yaml
+    with open(path) as fh:
+        return yaml.safe_load(fh)
+
+
+def read_json(path: str):
+    import json
+    with open(path) as fh:
+        return json.load(fh)
 
 
 def load(path: str) -> Model:
-    import yaml
-    with open(path) as fh:
-        return Model.from_dict(yaml.safe_load(fh))
+    return Model.from_dict(read_yaml(path))
 
 
 def solve(model, **kw) -> Result:

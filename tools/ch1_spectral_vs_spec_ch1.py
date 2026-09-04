@@ -1,11 +1,11 @@
 import os
-import sys, time, numpy as np, yaml, noisestate as ns
+import sys, time, numpy as np, noisestate as ns
 from noisestate.finite_spectral import SpectralFiniteSolver
 REFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests", "refs")
 SP = REFS
 ref = np.loadtxt(f"{SP}/ch1_spec_p3_p3.txt"); t_ref, s_ref = ref[:, 2], ref[:, 3]; X_ref = ref[:, 6:9]; D1_ref = ref[:, 9:12]
 n = int(sys.argv[1]) if len(sys.argv) > 1 else 12
-d = yaml.safe_load(open("examples/ch1_two_player_finite.yaml")); d["horizon"]["nodes"] = n
+d = ns.read_yaml("examples/ch1_two_player_finite.yaml"); d["horizon"]["nodes"] = n
 t0 = time.time(); S = SpectralFiniteSolver(ns.Model.from_dict(d), verbose=True); print(f"compiled {time.time()-t0:.1f}s, N={S.c.N}")
 t0 = time.time(); res = S.solve(); print(res.summary(), f"| reference Jvar1 = 0.39664911  ({time.time()-t0:.1f}s)")
 sel = t_ref > 1e-9

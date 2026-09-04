@@ -1,10 +1,10 @@
-import os, numpy as np, yaml
+import os, numpy as np
 import noisestate as ns
 from noisestate.finite_spectral import SpectralFiniteSolver
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def load(nodes):
-    d = yaml.safe_load(open(os.path.join(HERE, "..", "examples", "ch1_two_player_finite.yaml")))
+    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_two_player_finite.yaml"))
     d["horizon"]["nodes"] = nodes
     return ns.Model.from_dict(d)
 

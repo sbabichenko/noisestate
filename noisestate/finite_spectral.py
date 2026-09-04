@@ -255,6 +255,14 @@ class SpectralResult:
     seconds: float
     costs: Dict[str, float] = field(default_factory=dict)
     history: List[float] = field(default_factory=list)
+    message: str = ""
+
+    def check(self):
+        """Return self, or raise ConvergenceError if the solve did not reach its tolerance."""
+        if not self.converged:
+            from .accel import ConvergenceError
+            raise ConvergenceError(f"{self.model.name}: residual {self.residual:.2e} ({self.message})")
+        return self
 
     @property
     def grid(self) -> TriangleGrid:
@@ -272,7 +280,7 @@ class SpectralResult:
 
     def summary(self) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {'converged' if self.converged else 'NOT converged'} residual {self.residual:.2e} "
+        lines = [f"{self.model.name}: {'converged' if self.converged else 'NOT converged (' + self.message + ')'} residual {self.residual:.2e} "
                  f"in {self.iterations} evaluations, {self.seconds:.1f}s; triangle grid {c.g.P} panels, "
                  f"{len(c.g.pieces)} pieces x {c.g.nt}x{c.g.na} nodes = {c.N} nodes on [0, {c.T}], rho={c.rho}"]
         for a in self.model.agents:
@@ -499,8 +507,10 @@ class SpectralFiniteSolver:
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])                  # (m, N, nW)
-        w = c.g.mass * np.exp(-c.rho * c.g.t)
-        G = np.einsum("ink,jnk,n->ij", zeta, zeta, w)
+        if not hasattr(self, "_mass_rho"):
+            rho = c.rho
+            self._mass_rho = c.g.mass_matrix(weight_t=(lambda t: np.exp(-rho * t)) if rho else None)
+        G = np.einsum("ink,nm,jmk->ij", zeta, self._mass_rho, zeta)
         return float(0.5 * np.sum(Q * G))
 
     def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, pre_iterations: int = 10,
@@ -541,13 +551,13 @@ class SpectralFiniteSolver:
             def F(zz):
                 evals[0] += 1
                 return self.pack(self.response_map(self.unpack(zz))) - zz
-        z, resid, nev, converged = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
+        z, resid, nev, converged, message = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
                                                      max_newton=max_newton)
         hist.append(resid)
         maps = self.maps_from_actions(unpacka(z)) if variable == "actions" else self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = SpectralResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                             iterations=evals[0], seconds=time.time() - t0, history=hist)
+                             iterations=evals[0], seconds=time.time() - t0, history=hist, message=message)
         for a in self.model.agents:
             res.costs[a.name] = self.expected_cost(a, Z)
         return res

@@ -57,19 +57,25 @@ def anderson(F: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, tol: float =
     return best_x, best_rn, evals, best_rn < tol
 
 
+class ConvergenceError(RuntimeError):
+    """Raised by Result.check() when a solve did not reach its tolerance."""
+
+
 def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping: float = 0.5,
                       anderson_iters: int = 150, max_newton: int = 30, M: int = 6, method: str = "anderson",
                       pre_iterations: int = 20, pre_tol: float = 1e-3):
     """method="anderson": Anderson, then a Newton-Krylov polish if it stalls above tol.
-    method="newton": a few damped steps, then Newton-Krylov (best for the stationary engine).
-    Returns (z, rel_residual, evaluations, converged)."""
+    method="newton": a few damped steps, then Newton-Krylov.
+    Returns (z, rel_residual, evaluations, converged, message); converged means rel_residual <= tol."""
     from scipy.optimize import newton_krylov
     from scipy.optimize._nonlin import NoConvergence
+    msg = []
     if method == "anderson":
         z, rn, ev, ok = anderson(F, z0, tol=tol, M=M, beta=damping, maxiter=anderson_iters, verbose=verbose)
+        msg.append(f"anderson: {ev} evaluations, residual {rn:.2e}")
         if ok or max_newton <= 0:
-            return z, rn, ev, ok
-    else:
+            return z, rn, ev, rn <= tol, "; ".join(msg)
+    elif method == "newton":
         z = np.array(z0, dtype=float); ev = 0; rn = np.inf
         for it in range(pre_iterations):
             r = F(z); ev += 1; rn = float(np.linalg.norm(r) / max(1.0, np.linalg.norm(z)))
@@ -78,8 +84,11 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
             if rn < pre_tol:
                 break
             z = z + damping * r
-        if rn < tol:
-            return z, rn, ev, True
+        msg.append(f"damped: {ev} evaluations, residual {rn:.2e}")
+        if rn <= tol:
+            return z, rn, ev, True, "; ".join(msg)
+    else:
+        raise ValueError(f"unknown method {method!r}; use 'anderson' or 'newton'")
     cnt = [0]
 
     def Fc(x):
@@ -88,9 +97,15 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
     try:
         z2 = newton_krylov(Fc, z, f_tol=tol * max(1.0, float(np.linalg.norm(z))), maxiter=max_newton,
                            method="lgmres", inner_maxiter=15, verbose=verbose)
-        r2 = np.linalg.norm(F(z2)) / max(1.0, np.linalg.norm(z2)); cnt[0] += 1
+        r2 = float(np.linalg.norm(F(z2)) / max(1.0, np.linalg.norm(z2))); cnt[0] += 1
+        msg.append(f"newton polish: {cnt[0]} evaluations, residual {r2:.2e}")
         if r2 < rn:
             z, rn = z2, r2
-    except (NoConvergence, ValueError):
-        pass
-    return z, rn, ev + cnt[0], rn < 10 * tol
+    except NoConvergence as e:
+        z2 = np.asarray(e.args[0]); r2 = float(np.linalg.norm(F(z2)) / max(1.0, np.linalg.norm(z2))); cnt[0] += 1
+        msg.append(f"newton polish stopped without converging after {cnt[0]} evaluations (residual {r2:.2e})")
+        if r2 < rn:
+            z, rn = z2, r2
+    except (ValueError, np.linalg.LinAlgError) as e:
+        msg.append(f"newton polish failed: {type(e).__name__}: {e}")
+    return z, rn, ev + cnt[0], rn <= tol, "; ".join(msg)

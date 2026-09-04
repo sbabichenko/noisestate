@@ -1,4 +1,5 @@
-import os, sys, yaml
+import noisestate as ns
+import os, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 EX = os.path.join(HERE, "..", "examples")
 
@@ -6,11 +7,10 @@ def test_ch5_example_matches_its_generator():
     sys.path.insert(0, EX)
     from make_ch5_cycle_market import build
     generated = build().to_dict()
-    committed = yaml.safe_load(open(os.path.join(EX, "ch5_cycle_market.yaml")))
+    committed = ns.read_yaml(os.path.join(EX, "ch5_cycle_market.yaml"))
     assert generated == committed, "examples/ch5_cycle_market.yaml is stale: rerun examples/make_ch5_cycle_market.py"
 
 def test_every_example_validates():
-    import noisestate as ns
     for f in sorted(os.listdir(EX)):
         if f.endswith(".yaml"):
             m = ns.load(os.path.join(EX, f)); m.validate()
