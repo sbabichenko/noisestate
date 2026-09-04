@@ -1,6 +1,7 @@
 """noisestate: equilibrium solver for linear-quadratic-Gaussian games with private information."""
 from .spec import Model, ModelBuilder
 from .stationary import StationarySolver, Result
+from .finite import FiniteSolver, FiniteResult
 
 __version__ = "0.1.0"
 
@@ -14,6 +15,7 @@ def load(path: str) -> Model:
 def solve(model, **kw) -> Result:
     if isinstance(model, str):
         model = load(model)
+    verbose = kw.pop("verbose", False)
     if model.horizon.kind == "stationary":
-        return StationarySolver(model, verbose=kw.pop("verbose", False)).solve(**kw)
-    raise NotImplementedError("finite-horizon solver not yet available")
+        return StationarySolver(model, verbose=verbose).solve(**kw)
+    return FiniteSolver(model, verbose=verbose).solve(**kw)

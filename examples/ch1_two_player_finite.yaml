@@ -1,0 +1,18 @@
+# Chapter 1 finite-horizon two-player tracking game (variance part).
+#   dX = (D1 + D2) dt + sigma dW0,  dY_i = sqrt(p_i) X dt + dW_i,
+#   player i minimises E int_0^T (X^2 + r_i D_i^2) dt.
+name: ch1_two_player_finite
+params: {p1: 3.0, p2: 3.0, r1: 0.1, r2: 0.1, sigma: 1.0}
+channels: [w0, w1, w2]
+states:
+  X: {drift: {D1: 1.0, D2: 1.0}, noise: {w0: sigma}}
+agents:
+  player1:
+    controls: [D1]
+    signals: {y1: {drift: {X: "sqrt(p1)"}, noise: {w1: 1.0}}}
+    loss: [[1.0, X, X], [r1, D1, D1]]
+  player2:
+    controls: [D2]
+    signals: {y2: {drift: {X: "sqrt(p2)"}, noise: {w2: 1.0}}}
+    loss: [[1.0, X, X], [r2, D2, D2]]
+horizon: {kind: finite, window: 1.0, nodes: 40}
