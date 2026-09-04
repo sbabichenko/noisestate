@@ -28,6 +28,7 @@ from scipy.optimize._nonlin import NoConvergence
 
 from .grid import AgeGrid
 from .accel import solve_fixed_point
+from .compile import compile_structure
 from .spec import Agent, Atom, Model, parse_atom
 
 
@@ -59,69 +60,14 @@ class Compiled:
         self.grid = AgeGrid(bp, hz.nodes)
         self.N = self.grid.N
         self.rho = float(hz.discount)
-        self.channels = list(model.channels)
-        self.nW = len(self.channels)
-        self.prim = model.state_names + model.control_names       # primary quantities
-        self.nX = len(model.state_names)
-        self.nU = len(model.control_names)
-        self.index = {n: i for i, n in enumerate(self.prim)}
+        st = compile_structure(model); self.st = st
+        self.channels, self.nW = st.channels, st.nW
+        self.prim, self.index, self.nX, self.nU = st.prim, st.index, st.nX, st.nU
+        self.A, self.state_inputs, self.sigma = st.A, st.state_inputs, st.sigma
+        self.rows, self.loss, self.rep, self.reps = st.rows, st.loss, st.rep, st.reps
         self.ctrl_agent = {u: a for a in model.agents for u in a.controls}
         self._shift_cache: Dict[float, np.ndarray] = {}
-        # state dynamics: A (nX x nX) contemporaneous, plus per-atom inputs
-        self.A = np.zeros((self.nX, self.nX))
-        self.state_inputs: List[Tuple[int, Atom, float]] = []   # (state index, atom, coef) for controls/lagged
-        for i, s in enumerate(model.states):
-            for (n, l), c in model.expand(s.drift).items():
-                if n in model.state_names and l == 0:
-                    self.A[i, model.state_names.index(n)] += c
-                else:
-                    self.state_inputs.append((i, (n, l), c))
-        self.sigma = np.zeros((self.nX, self.nW))
-        for i, s in enumerate(model.states):
-            for ch, c in s.noise.items():
-                self.sigma[i, self.channels.index(ch)] = c
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
-        # per agent: row structure and loss form
-        self.rows: Dict[str, List[Tuple[str, dict, np.ndarray, float]]] = {}
-        for a in model.agents:
-            rr = []
-            for r in a.signals:
-                E = np.zeros(self.nW)
-                for ch, c in r.noise.items():
-                    E[self.channels.index(ch)] = c
-                rr.append((r.name, model.expand(r.drift), E, float(r.delay)))
-            self.rows[a.name] = rr
-        self.loss: Dict[str, Tuple[List[Atom], np.ndarray, np.ndarray]] = {}
-        for a in model.agents:
-            atoms: List[Atom] = []
-            terms = []
-            for term in a.loss:
-                coef = float(term[0])
-                ex = [model.expand({s: 1.0}) for s in term[1:]]
-                for e in ex:
-                    for k in e:
-                        if k not in atoms:
-                            atoms.append(k)
-                terms.append((coef, ex))
-            m = len(atoms)
-            Q = np.zeros((m, m)); q = np.zeros(m)
-            for coef, ex in terms:
-                if len(ex) == 1:
-                    for k, c in ex[0].items():
-                        q[atoms.index(k)] += coef * c
-                else:
-                    for k1, c1 in ex[0].items():
-                        for k2, c2 in ex[1].items():
-                            i, j = atoms.index(k1), atoms.index(k2)
-                            Q[i, j] += coef * c1 * c2
-                            Q[j, i] += coef * c1 * c2     # so that loss = 1/2 z'Qz + q'z
-            self.loss[a.name] = (atoms, Q, q)
-        # tie groups -> representative
-        self.rep: Dict[str, str] = {a.name: a.name for a in model.agents}
-        for group in model.ties:
-            for n in group:
-                self.rep[n] = group[0]
-        self.reps = [a.name for a in model.agents if self.rep[a.name] == a.name]
 
     # ------------------------------------------------------------- operators
     def shift(self, tau: float) -> np.ndarray:
@@ -271,11 +217,13 @@ class Result:
 
 # ------------------------------------------------------------------- solver
 class StationarySolver:
-    def __init__(self, model: Model, verbose: bool = False, nonreactors: Optional[Dict[str, List[str]]] = None):
+    def __init__(self, model: Model, verbose: bool = False, naive_observers: Optional[Dict[str, List[str]]] = None):
+        """naive_observers: {agent: [observers]} lists agents whose strategies do NOT react to that agent's
+        deviations (Chapter 6's naive observers); every other observer is privy and reacts through its map."""
         self.c = Compiled(model)
         self.model = model
         self.verbose = verbose
-        self.nonreactors = nonreactors or {}     # agent -> agents whose maps ignore its deviations (naive observers)
+        self.naive_observers = naive_observers or {}
         c = self.c
         self.shapes = {a.name: (len(a.controls), len(a.signals), c.N) for a in model.agents}
 
@@ -299,6 +247,20 @@ class StationarySolver:
     def zero_maps(self) -> Dict[str, np.ndarray]:
         return {a.name: np.zeros(self.shapes[a.name]) for a in self.model.agents}
 
+    # -------------------------------------------- overridable model pieces
+    def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
+        """Responses of the primary kernels to a unit impulse of each of the agent's controls, with the
+        agent's own reaction switched off.  Naive observers do not react to this agent."""
+        naive = self.naive_observers.get(agent.name, [])
+        if not naive:
+            return R
+        mz = {k: (np.zeros_like(v) if k in naive else v) for k, v in maps.items()}
+        return self.c.closed_loop(mz, excluded=agent.name, impulse_controls=agent.controls)[:, self.c.nW:]
+
+    def _passive_world(self, agent: Agent, maps, Zpass: np.ndarray, R: np.ndarray) -> np.ndarray:
+        """The agent's passive world (its own strategy off); subclasses may replace it (see diagnostics.py)."""
+        return Zpass
+
     # ------------------------------------------------------ best response
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
         c = self.c
@@ -308,14 +270,8 @@ class StationarySolver:
         # passive world + impulse responses (own reactions off)
         Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
         Zpass, R = Zp[:, :nW], Zp[:, nW:]                                  # R: (n_prim N, nU)
-        if getattr(self, "reaction_hook", None) is not None:
-            R = self.reaction_hook(agent, maps)                       # experiment hook: alternative reaction model
-        if getattr(self, "passive_hook", None) is not None:
-            Zpass = self.passive_hook(agent, maps, Zpass, R)          # experiment hook: alternative passive world
-        frozen = self.nonreactors.get(agent.name, [])
-        if frozen:
-            mz = {k: (np.zeros_like(v) if k in frozen else v) for k, v in maps.items()}
-            R = c.closed_loop(mz, excluded=agent.name, impulse_controls=agent.controls)[:, nW:]
+        R = self._impulse_responses(agent, maps, R)
+        Zpass = self._passive_world(agent, maps, Zpass, R)
         # passive rows: regular kernels per channel (N, nW) and instantaneous entries
         ytil, yinst = [], []
         for r in range(nR):

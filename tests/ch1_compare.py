@@ -1,7 +1,9 @@
+import os
 """Compare the finite-horizon engine with spec_ch1's spectral solution (first-order scheme: expect O(h))."""
 import sys, time, numpy as np, yaml, noisestate as ns
 from noisestate.finite import FiniteSolver
-SP = "/tmp/scratch"
+REFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs")
+SP = REFS
 ref = np.loadtxt(f"{SP}/ch1_spec_p3_p3.txt")
 t_ref, s_ref = ref[:, 2], ref[:, 3]; X_ref = ref[:, 6:9]; D1_ref = ref[:, 9:12]
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 40

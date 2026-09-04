@@ -1,5 +1,9 @@
 """Finite-horizon equilibrium in noise-state linear strategies (uniform time cells).
 
+CROSS-CHECK ENGINE.  The production finite-horizon engine is finite_spectral.py; this first-order
+scheme is kept as an independent discretisation for validation (Richardson-extrapolated), selected
+with horizon.kind = "finite_cells".
+
 Time [0, T] is cut into N cells of length h.  Shocks are the cell increments
 dW_j (variance h).  A kernel K[i, j] is the response at cell i (state at t_i,
 control over cell i) to a unit increment in cell j; controls are predictable,
@@ -25,6 +29,7 @@ from scipy.optimize._nonlin import NoConvergence
 from scipy.sparse.linalg import LinearOperator, lgmres
 
 from .accel import solve_fixed_point
+from .compile import compile_structure
 from .spec import Agent, Atom, Model
 
 
@@ -38,65 +43,16 @@ class FiniteCompiled:
         self.h = self.T / self.N
         self.rho = float(hz.discount)
         self.times = np.arange(self.N) * self.h
-        self.channels = list(model.channels)
-        self.nW = len(self.channels)
-        self.prim = model.state_names + model.control_names
-        self.nX, self.nU = len(model.state_names), len(model.control_names)
-        self.index = {n: i for i, n in enumerate(self.prim)}
+        st = compile_structure(model); self.st = st
+        self.channels, self.nW = st.channels, st.nW
+        self.prim, self.index, self.nX, self.nU = st.prim, st.index, st.nX, st.nU
+        self.A, self.state_inputs, self.sigma = st.A, st.state_inputs, st.sigma
+        self.rows, self.loss, self.rep, self.reps = st.rows, st.loss, st.rep, st.reps
+        # observation delays in cells
+        self.rows = {a: [(n, d, E, int(round(delay / self.h))) for (n, d, E, delay) in rr] for a, rr in st.rows.items()}
         for l in model.all_lags():
             if abs(l / self.h - round(l / self.h)) > 1e-9:
                 raise ValueError(f"lag {l} is not a multiple of the cell length {self.h}; choose nodes so that it is")
-        self.A = np.zeros((self.nX, self.nX))
-        self.state_inputs: List[Tuple[int, Atom, float]] = []
-        for i, s in enumerate(model.states):
-            for (n, l), c in model.expand(s.drift).items():
-                if n in model.state_names and l == 0:
-                    self.A[i, model.state_names.index(n)] += c
-                else:
-                    self.state_inputs.append((i, (n, l), c))
-        self.sigma = np.zeros((self.nX, self.nW))
-        for i, s in enumerate(model.states):
-            for ch, c in s.noise.items():
-                self.sigma[i, self.channels.index(ch)] = c
-        self.rows: Dict[str, List[Tuple[str, dict, np.ndarray, int]]] = {}
-        for a in model.agents:
-            rr = []
-            for r in a.signals:
-                E = np.zeros(self.nW)
-                for ch, c in r.noise.items():
-                    E[self.channels.index(ch)] = c
-                rr.append((r.name, model.expand(r.drift), E, int(round(r.delay / self.h))))
-            self.rows[a.name] = rr
-        self.loss: Dict[str, Tuple[List[Atom], np.ndarray, np.ndarray]] = {}
-        for a in model.agents:
-            atoms: List[Atom] = []
-            terms = []
-            for term in a.loss:
-                coef = float(term[0])
-                ex = [model.expand({s: 1.0}) for s in term[1:]]
-                for e in ex:
-                    for k in e:
-                        if k not in atoms:
-                            atoms.append(k)
-                terms.append((coef, ex))
-            m = len(atoms)
-            Q = np.zeros((m, m)); q = np.zeros(m)
-            for coef, ex in terms:
-                if len(ex) == 1:
-                    for k, c in ex[0].items():
-                        q[atoms.index(k)] += coef * c
-                else:
-                    for k1, c1 in ex[0].items():
-                        for k2, c2 in ex[1].items():
-                            i, j = atoms.index(k1), atoms.index(k2)
-                            Q[i, j] += coef * c1 * c2
-                            Q[j, i] += coef * c1 * c2
-            self.loss[a.name] = (atoms, Q, q)
-        self.rep: Dict[str, str] = {a.name: a.name for a in model.agents}
-        for group in model.ties:
-            for n in group:
-                self.rep[n] = group[0]
-        self.reps = [a.name for a in model.agents if self.rep[a.name] == a.name]
 
     # kernels are arrays K[prim, i, col]; lagged atom = shift along i
     def lag_cells(self, lag: float) -> int:

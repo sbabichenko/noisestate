@@ -1,6 +1,8 @@
+import os
 import sys, time, numpy as np, yaml, noisestate as ns
 from noisestate.finite_spectral import SpectralFiniteSolver
-SP = "/tmp/scratch"
+REFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs")
+SP = REFS
 ref = np.loadtxt(f"{SP}/ch1_spec_p3_p3.txt"); t_ref, s_ref = ref[:, 2], ref[:, 3]; X_ref = ref[:, 6:9]; D1_ref = ref[:, 9:12]
 n = int(sys.argv[1]) if len(sys.argv) > 1 else 12
 d = yaml.safe_load(open("examples/ch1_two_player_finite.yaml")); d["horizon"]["nodes"] = n

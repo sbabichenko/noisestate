@@ -252,7 +252,7 @@ class TriangleGrid:
         lp = self.path(out_t, out_a, r_lo, r_hi, point_fn, None, extra_cuts, m, side_t, side_a)
         if lp.rows is None:
             return np.zeros((len(np.atleast_1d(out_t)), self.N))
-        w = lp.w.copy().astype(complex if False else float)
+        w = lp.w.astype(float)
         if weight_fn is not None:
             wf = np.empty(len(lp.r), dtype=complex)
             for k in np.unique(lp.rows):

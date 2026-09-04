@@ -11,7 +11,6 @@ import yaml
 
 from . import solve as _solve
 from .spec import Model
-from .stationary import Result, StationarySolver
 from .finite_spectral import SpectralResult
 
 

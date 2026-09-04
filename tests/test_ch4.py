@@ -1,7 +1,9 @@
+import os
 import json, os, numpy as np, pytest, yaml
 import noisestate as ns
 
-SP = "/tmp/scratch"
+REFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs")
+SP = REFS
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def two_trader(d):
@@ -22,8 +24,7 @@ CASES = [("ch4_N24_L8_e0.2_r0_q1_g1.json", 0.0, False), ("ch4_N24_L8_e0.2_r0.5_q
 @pytest.mark.parametrize("fname,rho,two", CASES)
 def test_ch4_matches_kb_spectral_q(fname, rho, two):
     path = os.path.join(SP, fname)
-    if not os.path.exists(path):
-        pytest.skip("reference not present")
+    assert os.path.exists(path), path
     ref = json.load(open(path))
     d = yaml.safe_load(open(os.path.join(HERE, "..", "examples", "ch4_kyle_back.yaml")))
     d["params"]["rho"] = rho
@@ -51,3 +52,15 @@ def test_ch4_matches_kb_spectral_q(fname, rho, two):
         mine = I @ res.action_kernel("D1")
         print("vs Richardson limit of kb_multi:", np.abs(mine - rich).max())
         assert np.abs(mine - rich).max() < 2e-3
+
+
+def test_cpp_cascade_replica_reproduces_published_two_trader_solution():
+    """Pins the kb_spectral_q defect: residual-flow policy rows inside a total-flow feedback."""
+    from noisestate.diagnostics import CppCascadeReplica
+    ref = json.load(open(os.path.join(SP, "ch4_N24_L8_e0.2_r0_q1_g1_1.json")))
+    d = two_trader(yaml.safe_load(open(os.path.join(HERE, "..", "examples", "ch4_kyle_back.yaml"))))
+    res = CppCascadeReplica(ns.Model.from_dict(d)).solve()
+    c_ref = np.stack([np.array(ref["traders"][0]["c"][k][0]) for k in range(4)], axis=1)
+    assert res.converged
+    assert np.abs(res.action_kernel("D1") - c_ref).max() < 1e-3
+    assert abs(-res.costs["trader1"] - ref["traders"][0]["flow"]) < 2e-6

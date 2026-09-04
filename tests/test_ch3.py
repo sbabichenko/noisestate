@@ -1,10 +1,11 @@
+import os
 import json, os, numpy as np, pytest
 import noisestate as ns
 
-REF = "/tmp/scratch"
+REFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs")
+REF = os.path.join(REFS, "ch3_p3_p10_r1_r1.json")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-@pytest.mark.skipif(not os.path.exists(REF), reason="reference solution not present")
 def test_ch3_matches_spectral_solver():
     ref = json.load(open(REF))
     res = ns.solve(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml"), verbose=True)
@@ -25,7 +26,6 @@ def test_ch3_matches_spectral_solver():
 
 REF10 = REF.replace("ch3_p3_p10_r1_r1.json", "ch3_L10.json")
 
-@pytest.mark.skipif(not os.path.exists(REF10), reason="reference solution not present")
 def test_ch3_wide_window_agrees_to_machine_precision():
     import yaml
     ref = json.load(open(REF10))
