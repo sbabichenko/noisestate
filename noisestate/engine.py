@@ -18,13 +18,33 @@ from .spec import Agent, Model
 
 
 class EngineBase:
+    """The passive-world best response and the outer fixed point, written once against a small
+    kernel algebra that each compiled model supplies:
+
+        conv_rows(Y, delay)      (N, m) row kernels -> (m, N, N): gamma on a row -> its action
+        instant(age)             (N, N): the instantaneous entry of a row, gamma(. - age)
+        instant_adjoint(age)     (N, N): its adjoint, phi(. + age)
+        response(Ru, own)        (n_prim, N) impulse responses -> (n_prim N, N): action -> world
+        continuation(Rj)         (N, m) -> (m, N, N): discounted continuation through impulse responses
+        own_lag_read(lag)        (N, N): the FOC term of a delayed read of the control itself
+        projection_rows(Y, d)    (N, nW) row kernels -> (N, nW N): E[phi_t dY_r(t - b)]
+
+    The engines keep what genuinely differs: the closed loop, the solve of the FOC system and its
+    regularisation, the projection back to raw maps, and their own extras (decomposition, second
+    order, naive observers)."""
     model: Model
     c: object                       # the compiled model: .reps (tie representatives), .rep (agent -> representative), .N, .nW
     shapes: Dict[str, Tuple[int, ...]]      # agent -> shape of its raw maps
-    solver_kw: dict                 # constructor options, so a result can rebuild the same engine
     RESULT = None                   # the result class
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.5, 60       # solve() defaults; each engine sets its own
     ACTIONS = True                  # whether the engine can iterate on action kernels
+
+    def __init__(self, model: Model, verbose: bool = False, **options):
+        self.model = model
+        self.verbose = verbose
+        self.solver_kw = {"verbose": verbose, **options}   # so a result can rebuild the same engine
+        self._qa: Dict[str, np.ndarray] = {}                # agent -> (Q zeta) as an operator on the primary kernels
+        self._rphys: Dict[str, np.ndarray] = {}             # agent -> physical impulse responses (all reactions off)
 
     # ------------------------------------------------------------ ties
     def _fill_ties(self, d: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
@@ -117,9 +137,135 @@ class EngineBase:
         """The rows in the agent's passive world (its own strategy off)."""
         return self._seen_rows(agent, Zpass, set(agent.controls))
 
+    # ------------------------------------------------- best-response pieces
     def _row_operator(self, agent: Agent, rows, inst):
-        """Per channel, the operator from stacked row kernels gamma to the action kernel."""
+        """Per channel, the operator (N x nR N) mapping stacked row maps gamma to the action kernel:
+        c_k = sum_r (Conv[y_rk] + E_rk S_delta) gamma_r."""
+        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
+        Gk = np.zeros((nW, N, nR * N))
+        for r in range(nR):
+            Gk[:, :, r * N:(r + 1) * N] += c.conv_rows(rows[r], c.rows[agent.name][r][3])
+            for (k, age, w) in inst[r]:
+                Gk[k, :, r * N:(r + 1) * N] += w * c.instant(age)
+        return Gk
+
+    def _response_operators(self, agent: Agent, R: np.ndarray):
+        """Per control, the operator (n_prim N x N) giving the primary kernels' response to that
+        control's action kernel: Z = Zpass + Resp_u c_u, with the own block equal to the action."""
+        c = self.c; N = c.N
+        out = []
+        for ui, u in enumerate(agent.controls):
+            Cu = c.response(R[:, ui].reshape(len(c.prim), N), c.prim.index(u))
+            Cu[c.block(u)] = np.eye(N)
+            out.append(Cu)
+        return out
+
+    def _qa_operator(self, agent: Agent) -> np.ndarray:
+        """(Q zeta) as an operator on the primary kernels: map-independent, cached per agent."""
+        if agent.name not in self._qa:
+            c = self.c; atoms, Q, q = c.loss[agent.name]
+            AO = np.concatenate([c.atom_op(at) for at in atoms], axis=0)
+            self._qa[agent.name] = np.kron(Q, np.eye(c.N)) @ AO
+        return self._qa[agent.name]
+
+    def _foc_operators(self, agent: Agent, R: np.ndarray):
+        """Per control, the operator (N x n_prim N) mapping the primary kernels of one channel to the
+        first-order-condition kernel: instantaneous derivative, discounted continuation through the
+        impulse responses R, delayed reads of own lagged controls, and the past-date term of a lead.
+        Called with the physical impulse responses (all reactions off) for the wedge decomposition."""
+        c = self.c; N = c.N; n_prim = len(c.prim) * N
+        atoms, Q, q = c.loss[agent.name]
+        QA = self._qa_operator(agent)
+        Fu = []
+        for ui, u in enumerate(agent.controls):
+            op = np.zeros((N, n_prim))
+            if (u, 0.0) in atoms:
+                j0 = atoms.index((u, 0.0))
+                op += QA[j0 * N:(j0 + 1) * N]
+            if not agent.myopic:
+                Rj = np.stack([c.atom_op(at) @ R[:, ui] for at in atoms], axis=1)   # impulse responses of every atom
+                CR = c.continuation(Rj)
+                for j, (name, lag) in enumerate(atoms):
+                    Qj = QA[j * N:(j + 1) * N]
+                    if name in agent.controls:
+                        if name == u and lag > 0:          # delayed read of the control itself
+                            op += np.exp(-c.rho * lag) * c.own_lag_read(lag) @ Qj
+                        continue                            # own reactions: envelope
+                    op += CR[j] @ Qj
+                    if lag < 0:
+                        op += self._lead_term(agent, R[:, ui], name, lag) @ Qj
+            Fu.append(op)
+        return Fu
+
+    def _lead_term(self, agent: Agent, Ru: np.ndarray, name: str, lag: float) -> np.ndarray:
+        """The FOC term of a lead (name@lag, lag < 0) from flows before t that read the quantity after t."""
+        raise NotImplementedError("leads are supported by the stationary engine only")
+
+    def _projection_operator(self, agent: Agent, rows, inst):
+        """H (nR N x nW N): E[phi_t dY_r(t - b)] for every row r and lag b, from the FOC kernels."""
+        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
+        H = np.zeros((nR * N, nW * N))
+        for r in range(nR):
+            H[r * N:(r + 1) * N] += c.projection_rows(rows[r], c.rows[agent.name][r][3])
+            for (k, age, w) in inst[r]:
+                H[r * N:(r + 1) * N, k * N:(k + 1) * N] += w * c.instant_adjoint(age)
+        return H
+
+    # ----------------------------------------------------- best response
+    def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
+        """Responses of the primary kernels to a unit impulse of each of the agent's controls, with the
+        agent's own reaction switched off (hook: naive observers)."""
+        return R
+
+    def _passive_world(self, agent: Agent, maps, Zpass: np.ndarray, R: np.ndarray) -> np.ndarray:
+        """The agent's passive world, its own strategy off (hook for diagnostics)."""
+        return Zpass
+
+    def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
+        """gamma solving Amat gamma = -bvec, with the engine's regularisation."""
         raise NotImplementedError
+
+    def _project(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        """Raw maps (nU, nR, N) reproducing the action kernels on the agent's closed-loop rows."""
+        raise NotImplementedError
+
+    def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk) -> None:
+        """Extras the engine adds to the best response when asked (hook)."""
+
+    def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
+        """The agent's best response to `maps`: (raw map, {"gamma", "action", "Zfull", ...}).  The
+        agent's information is the passive signal history, so its first-order condition is affine
+        in its map on the passive rows: one linear solve."""
+        c = self.c; N, nW = c.N, c.nW
+        nR, nU = len(agent.signals), len(agent.controls)
+        Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
+        Zpass, R = Zp[:, :nW], Zp[:, nW:]
+        R = self._impulse_responses(agent, maps, R)
+        Zpass = self._passive_world(agent, maps, Zpass, R)
+        ytil, yinst = self._passive_rows(agent, Zpass)
+        Gk = self._row_operator(agent, ytil, yinst)
+        Resp = self._response_operators(agent, R)
+        Fu = self._foc_operators(agent, R)
+        H = self._projection_operator(agent, ytil, yinst)
+        # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp_v Gk gamma_v)) = 0 for all controls
+        nG = nU * nR * N
+        Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
+        for ui in range(nU):
+            rowsl = slice(ui * nR * N, (ui + 1) * nR * N)
+            for vi in range(nU):
+                FR = Fu[ui] @ Resp[vi]                                       # channel-independent factor
+                FRG = (FR @ Gk).reshape(nW * N, nR * N)                      # FR applied per channel, stacked
+                Amat[rowsl, vi * nR * N:(vi + 1) * nR * N] += H @ FRG        # one product over all channels
+            bvec[rowsl] += H @ (Fu[ui] @ Zpass).T.reshape(-1)
+        gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
+        cact = np.stack([np.stack([Gk[k] @ gamma[ui].reshape(-1) for k in range(nW)], axis=1) for ui in range(nU)])
+        Zfull = Zpass.copy()
+        for ui in range(nU):
+            Zfull += Resp[ui] @ cact[ui]
+        out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
+        if want_decomp:
+            self._decompose(agent, out, Fu, Resp, Gk)
+        return self._project(agent, Zfull, cact), out
 
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
         """Relative residual of the best-response action kernels after projection on the agent's raw
@@ -190,10 +336,6 @@ class EngineBase:
         return {a.name: np.stack([Z[self.c.block(u)] for u in a.controls]) for a in self.model.agents}
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
-        raise NotImplementedError
-
-    def best_response(self, agent: Agent, maps: Dict[str, np.ndarray]):
-        """(raw map, {"action": ..., "Zfull": ..., ...}) of the agent against `maps`."""
         raise NotImplementedError
 
     def maps_from_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:

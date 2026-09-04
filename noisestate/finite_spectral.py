@@ -183,6 +183,46 @@ class SpectralCompiled(CompiledBase):
                         known_fn=lambda k, r: (np.full_like(r, u[k] - delay), u[k] - delay - r))
         return lp.with_known(yker)
 
+    # ------------------------------------------------ kernel algebra (see EngineBase)
+    def conv_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
+        out = np.zeros((Y.shape[1], self.N, self.N))
+        for k in range(Y.shape[1]):
+            if np.abs(Y[:, k]).max() > 0:
+                out[k] = self.conv_right(Y[:, k], delay)
+        return out
+
+    def instant(self, age: float) -> np.ndarray:
+        return self.read(0.0, age)
+
+    def instant_adjoint(self, age: float) -> np.ndarray:
+        return self.read(0.0, -age)
+
+    def response(self, Ru: np.ndarray, own: int) -> np.ndarray:
+        N = self.N; Cu = np.zeros((len(self.prim) * N, N))
+        for p in range(len(self.prim)):
+            if p != own and np.abs(Ru[p]).max() > 0:
+                Cu[p * N:(p + 1) * N] = self.response_op(Ru[p])
+        return Cu
+
+    def continuation(self, Rj: np.ndarray) -> np.ndarray:
+        out = np.zeros((Rj.shape[1], self.N, self.N))
+        for j in range(Rj.shape[1]):
+            if np.abs(Rj[:, j]).max() > 0:
+                out[j] = self.continuation_op(Rj[:, j])
+        return out
+
+    def own_lag_read(self, lag: float) -> np.ndarray:
+        return self.read(-lag, -lag)
+
+    def projection_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
+        N = self.N; H = np.zeros((N, self.nW * N))
+        for k in range(self.nW):
+            yk = Y[:, k]
+            if np.abs(yk).max() > 0:
+                raw = self.read(-delay, -delay) @ yk if delay else yk
+                H[:, k * N:(k + 1) * N] = self.projection_op(raw, delay)
+        return H
+
     # ------------------------------------------------------- closed loop
     row = row_op                                          # the engines' common name
 
@@ -262,113 +302,17 @@ class SpectralFiniteSolver(EngineBase):
     RIDGE = 1e-11          # relative Tikhonov term on the best-response system: needed with delayed rows, 2e-13 effect without
 
     def __init__(self, model: Model, verbose: bool = False):
-        self.solver_kw = {"verbose": verbose}
+        super().__init__(model, verbose)
         self.c = SpectralCompiled(model)
-        self.model = model
-        self.verbose = verbose
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
 
     # ------------------------------------------------ best-response pieces
-    def _row_operator(self, agent: Agent, rows, inst):
-        """Per channel, the operator (N x nR N) from stacked row kernels gamma to the action kernel."""
-        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
-        delays = [c.rows[agent.name][r][3] for r in range(nR)]
-        Gk = np.zeros((nW, N, nR * N))
-        for r in range(nR):
-            for k in range(nW):
-                yk = rows[r][:, k]
-                if np.abs(yk).max() > 0:
-                    Gk[k, :, r * N:(r + 1) * N] += c.conv_right(yk, delays[r])
-            for (k, age, w) in inst[r]:
-                Gk[k, :, r * N:(r + 1) * N] += w * c.read(0.0, age)
-        return Gk
-
-    def _response_operators(self, agent: Agent, R: np.ndarray):
-        c = self.c; N = c.N; n_prim = len(c.prim) * N
-        out = []
-        for ui, u in enumerate(agent.controls):
-            Ru = R[:, ui].reshape(len(c.prim), N)
-            Cu = np.zeros((n_prim, N))
-            for p in range(len(c.prim)):
-                if np.abs(Ru[p]).max() > 0 and c.prim[p] != u:
-                    Cu[p * N:(p + 1) * N] = c.response_op(Ru[p])
-            Cu[c.block(u)] = np.eye(N)
-            out.append(Cu)
-        return out
-
-    def _foc_operators(self, agent: Agent, R: np.ndarray):
-        c = self.c; N = c.N; n_prim = len(c.prim) * N
-        atoms, Q, q = c.loss[agent.name]
-        AO = np.concatenate([c.atom_op(at) for at in atoms], axis=0)
-        QZ = np.kron(Q, np.eye(N))
-        Fu = []
-        for ui, u in enumerate(agent.controls):
-            op = np.zeros((N, n_prim))
-            if (u, 0.0) in atoms:
-                j0 = atoms.index((u, 0.0)); op += QZ[j0 * N:(j0 + 1) * N] @ AO
-            if not agent.myopic:
-                for j, at in enumerate(atoms):
-                    name, lag = at
-                    Qj = QZ[j * N:(j + 1) * N] @ AO
-                    if name in agent.controls:
-                        if name == u and lag > 0:
-                            op += np.exp(-c.rho * lag) * c.read(-lag, -lag) @ Qj
-                        continue
-                    rj = c.atom_op(at) @ R[:, ui]
-                    if np.abs(rj).max() > 0:
-                        op += c.continuation_op(rj) @ Qj
-            Fu.append(op)
-        return Fu
-
-    def _projection_operator(self, agent: Agent, rows, inst):
-        """H (nR N x nW N): E[phi_t dY_r^seen(u)] at every (t, b) node, from the FOC kernels."""
-        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
-        delays = [c.rows[agent.name][r][3] for r in range(nR)]
-        H = np.zeros((nR * N, nW * N))
-        for r in range(nR):
-            for k in range(nW):
-                yk = rows[r][:, k]
-                if np.abs(yk).max() > 0:
-                    raw = c.read(-delays[r], -delays[r]) @ yk if delays[r] else yk
-                    H[r * N:(r + 1) * N, k * N:(k + 1) * N] += c.projection_op(raw, delays[r])
-            for (k, age, w) in inst[r]:
-                H[r * N:(r + 1) * N, k * N:(k + 1) * N] += w * c.read(0.0, -age)
-        return H
-
-    # ------------------------------------------------------ best response
-    def best_response(self, agent: Agent, maps):
-        c = self.c; N, nW = c.N, c.nW
-        nR, nU = len(agent.signals), len(agent.controls)
-        Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
-        Zpass, R = Zp[:, :nW], Zp[:, nW:]
-        ytil, yinst = self._passive_rows(agent, Zpass)
-        Gk = self._row_operator(agent, ytil, yinst)
-        Resp = self._response_operators(agent, R)
-        Fu = self._foc_operators(agent, R)
-        H = self._projection_operator(agent, ytil, yinst)
-        nG = nU * nR * N
-        Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
-        for ui in range(nU):
-            rowsl = slice(ui * nR * N, (ui + 1) * nR * N)
-            for vi in range(nU):
-                FR = Fu[ui] @ Resp[vi]
-                colsl = slice(vi * nR * N, (vi + 1) * nR * N)
-                for k in range(nW):
-                    Amat[rowsl, colsl] += H[:, k * N:(k + 1) * N] @ (FR @ Gk[k])
-            for k in range(nW):
-                bvec[rowsl] += H[:, k * N:(k + 1) * N] @ (Fu[ui] @ Zpass[:, k])
+    def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
         scale = np.abs(Amat).max()
-        gamma = np.linalg.solve(Amat + self.RIDGE * scale * np.eye(nG), -bvec).reshape(nU, nR, N)
-        cact = np.zeros((nU, N, nW))
-        for ui in range(nU):
-            for k in range(nW):
-                cact[ui, :, k] = Gk[k] @ gamma[ui].reshape(-1)
-        Zfull = Zpass.copy()
-        for ui in range(nU):
-            Zfull += Resp[ui] @ cact[ui]
-        gmap = self.maps_from_world(agent, Zfull, cact)
-        return gmap, {"gamma": gamma, "action": cact, "Zfull": Zfull}
+        return np.linalg.solve(Amat + self.RIDGE * scale * np.eye(Amat.shape[0]), -bvec)
 
+    def _project(self, agent: Agent, Zfull: np.ndarray, cact: np.ndarray) -> np.ndarray:
+        return self.maps_from_world(agent, Zfull, cact)
 
     def maps_from_world(self, agent: Agent, Zfull: np.ndarray, cact: np.ndarray) -> np.ndarray:
         """Raw maps of `agent` reproducing its action kernels cact (nU, N, nW) given the closed-loop

@@ -170,10 +170,8 @@ class FiniteSolver(EngineBase):
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 60
     ACTIONS = False
     def __init__(self, model: Model, verbose: bool = False):
-        self.solver_kw = {"verbose": verbose}
+        super().__init__(model, verbose)
         self.c = FiniteCompiled(model)
-        self.model = model
-        self.verbose = verbose
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N, self.c.N) for a in model.agents}
         self._warm = {}                                          # last Krylov solution per agent (warm start)
         N = self.c.N
