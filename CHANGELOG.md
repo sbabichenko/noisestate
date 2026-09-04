@@ -26,6 +26,10 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- One outer solve loop on `EngineBase` (the three engines' copies removed; each contributes its
+  result class, defaults and a `_finish`); `CompiledBase` adopts the structure once; FOC operators
+  built per impulse-response set, the physical set only for the decomposition; one-pass parameter
+  tracking; `res.plot(path)` on every result; caches declared where their objects are built.
 - `res.diagnose()`: every check as one row; `summary()` and `to_dict()["diagnostics"]` are built
   from it, and the thresholds are class constants.
 - Shared plumbing: `_seen_rows`, `_passive_rows`, `_representation_error` and the lead rejection
