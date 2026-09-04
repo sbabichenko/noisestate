@@ -1,4 +1,3 @@
-import os
 import json, os, numpy as np, pytest, yaml
 import noisestate as ns
 

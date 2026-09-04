@@ -17,8 +17,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from scipy.optimize import newton_krylov
-from scipy.optimize._nonlin import NoConvergence
 
 from .accel import solve_fixed_point
 from .compile import compile_structure
@@ -287,31 +285,34 @@ class SpectralFiniteSolver:
     def zero_maps(self):
         return {a.name: np.zeros(self.shapes[a.name]) for a in self.model.agents}
 
-    # ------------------------------------------------------ best response
-    def best_response(self, agent: Agent, maps):
-        c = self.c; g = c.g; N, nW = c.N, c.nW
-        rows = c.rows[agent.name]; nR, nU = len(rows), len(agent.controls)
-        Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
-        Zpass, R = Zp[:, :nW], Zp[:, nW:]
-        # passive seen rows: regular kernels (N, nW) and instantaneous entries [(k, age, w)]
+    # ------------------------------------------------ best-response pieces
+    def _passive_rows(self, agent: Agent, Zpass: np.ndarray):
+        """Seen rows in the passive world: regular kernels (N, nW) and instantaneous entries [(k, age, w)]."""
+        c = self.c
         ytil, yinst = [], []
-        for r in range(nR):
+        for r in range(len(agent.signals)):
             reg, deltas = c.row_op(agent.name, r, set(agent.controls))
             ytil.append(reg @ Zpass)
             yinst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
-        delays = [rows[r][3] for r in range(nR)]
-        # action from gamma: c_u[:, k] = sum_r (Conv[ytil_rk] + E_rk read(0, delay)) gamma_ur
+        return ytil, yinst
+
+    def _row_operator(self, agent: Agent, rows, inst):
+        """Per channel, the operator (N x nR N) from stacked row kernels gamma to the action kernel."""
+        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
+        delays = [c.rows[agent.name][r][3] for r in range(nR)]
         Gk = np.zeros((nW, N, nR * N))
         for r in range(nR):
             for k in range(nW):
-                yk = ytil[r][:, k]
+                yk = rows[r][:, k]
                 if np.abs(yk).max() > 0:
                     Gk[k, :, r * N:(r + 1) * N] += c.conv_right(yk, delays[r])
-            for (k, age, w) in yinst[r]:
+            for (k, age, w) in inst[r]:
                 Gk[k, :, r * N:(r + 1) * N] += w * c.read(0.0, age)
-        # full world from the action: Z = Zpass + sum_u Resp_u c_u, own block := c_u
-        n_prim = len(c.prim) * N
-        Resp = []
+        return Gk
+
+    def _response_operators(self, agent: Agent, R: np.ndarray):
+        c = self.c; N = c.N; n_prim = len(c.prim) * N
+        out = []
         for ui, u in enumerate(agent.controls):
             Ru = R[:, ui].reshape(len(c.prim), N)
             Cu = np.zeros((n_prim, N))
@@ -319,8 +320,11 @@ class SpectralFiniteSolver:
                 if np.abs(Ru[p]).max() > 0 and c.prim[p] != u:
                     Cu[p * N:(p + 1) * N] = c.response_op(Ru[p])
             Cu[c.block(u)] = np.eye(N)
-            Resp.append(Cu)
-        # FOC operators: phi_u = F_u Z (per channel column)
+            out.append(Cu)
+        return out
+
+    def _foc_operators(self, agent: Agent, R: np.ndarray):
+        c = self.c; N = c.N; n_prim = len(c.prim) * N
         atoms, Q, q = c.loss[agent.name]
         AO = np.concatenate([c.atom_op(at) for at in atoms], axis=0)
         QZ = np.kron(Q, np.eye(N))
@@ -330,37 +334,56 @@ class SpectralFiniteSolver:
             if (u, 0.0) in atoms:
                 j0 = atoms.index((u, 0.0)); op += QZ[j0 * N:(j0 + 1) * N] @ AO
             if not agent.myopic:
-                Ru = R[:, ui]
                 for j, at in enumerate(atoms):
                     name, lag = at
+                    Qj = QZ[j * N:(j + 1) * N] @ AO
                     if name in agent.controls:
                         if name == u and lag > 0:
-                            op += np.exp(-c.rho * lag) * c.read(-lag, -lag) @ (QZ[j * N:(j + 1) * N] @ AO)
+                            op += np.exp(-c.rho * lag) * c.read(-lag, -lag) @ Qj
                         continue
-                    rj = c.atom_op(at) @ Ru
+                    rj = c.atom_op(at) @ R[:, ui]
                     if np.abs(rj).max() > 0:
-                        op += c.continuation_op(rj) @ (QZ[j * N:(j + 1) * N] @ AO)
+                        op += c.continuation_op(rj) @ Qj
             Fu.append(op)
-        # projection H (nR N x nW N)
+        return Fu
+
+    def _projection_operator(self, agent: Agent, rows, inst):
+        """H (nR N x nW N): E[phi_t dY_r^seen(u)] at every (t, b) node, from the FOC kernels."""
+        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
+        delays = [c.rows[agent.name][r][3] for r in range(nR)]
         H = np.zeros((nR * N, nW * N))
         for r in range(nR):
             for k in range(nW):
-                yk = ytil[r][:, k]
+                yk = rows[r][:, k]
                 if np.abs(yk).max() > 0:
-                    # ytil is the seen row (already shifted); projection integrates the raw row at u - delay:
-                    H[r * N:(r + 1) * N, k * N:(k + 1) * N] += c.projection_op(c.read(-delays[r], -delays[r]) @ yk if delays[r] else yk, delays[r])
-            for (k, age, w) in yinst[r]:
+                    raw = c.read(-delays[r], -delays[r]) @ yk if delays[r] else yk
+                    H[r * N:(r + 1) * N, k * N:(k + 1) * N] += c.projection_op(raw, delays[r])
+            for (k, age, w) in inst[r]:
                 H[r * N:(r + 1) * N, k * N:(k + 1) * N] += w * c.read(0.0, -age)
+        return H
+
+    # ------------------------------------------------------ best response
+    def best_response(self, agent: Agent, maps):
+        c = self.c; N, nW = c.N, c.nW
+        nR, nU = len(agent.signals), len(agent.controls)
+        Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
+        Zpass, R = Zp[:, :nW], Zp[:, nW:]
+        ytil, yinst = self._passive_rows(agent, Zpass)
+        Gk = self._row_operator(agent, ytil, yinst)
+        Resp = self._response_operators(agent, R)
+        Fu = self._foc_operators(agent, R)
+        H = self._projection_operator(agent, ytil, yinst)
         nG = nU * nR * N
         Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
         for ui in range(nU):
             rowsl = slice(ui * nR * N, (ui + 1) * nR * N)
+            for vi in range(nU):
+                FR = Fu[ui] @ Resp[vi]
+                colsl = slice(vi * nR * N, (vi + 1) * nR * N)
+                for k in range(nW):
+                    Amat[rowsl, colsl] += H[:, k * N:(k + 1) * N] @ (FR @ Gk[k])
             for k in range(nW):
-                Hk = H[:, k * N:(k + 1) * N]
-                bvec[rowsl] += Hk @ (Fu[ui] @ Zpass[:, k])
-                for vi in range(nU):
-                    colsl = slice(vi * nR * N, (vi + 1) * nR * N)
-                    Amat[rowsl, colsl] += Hk @ (Fu[ui] @ (Resp[vi] @ Gk[k]))
+                bvec[rowsl] += H[:, k * N:(k + 1) * N] @ (Fu[ui] @ Zpass[:, k])
         scale = np.abs(Amat).max()
         gamma = np.linalg.solve(Amat + self.ridge * scale * np.eye(nG), -bvec).reshape(nU, nR, N)
         cact = np.zeros((nU, N, nW))
@@ -378,21 +401,13 @@ class SpectralFiniteSolver:
         """Raw maps of `agent` reproducing its action kernels cact (nU, N, nW) given the closed-loop
         primary kernels Zfull: one weighted least-squares projection per time row."""
         c = self.c; g = c.g; N, nW = c.N, c.nW
-        rows = c.rows[agent.name]; nR, nU = len(rows), len(agent.controls)
-        delays = [rows[r][3] for r in range(nR)]
-        yraw, yrinst = [], []
+        nR, nU = len(agent.signals), len(agent.controls)
+        rows, inst = [], []
         for r in range(nR):
             reg, deltas = c.row_op(agent.name, r, set())
-            yraw.append(reg @ Zfull)
-            yrinst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
-        Bk = np.zeros((nW, N, nR * N))
-        for r in range(nR):
-            for k in range(nW):
-                yk = yraw[r][:, k]
-                if np.abs(yk).max() > 0:
-                    Bk[k, :, r * N:(r + 1) * N] += c.conv_right(yk, delays[r])
-            for (k, age, w) in yrinst[r]:
-                Bk[k, :, r * N:(r + 1) * N] += w * c.read(0.0, age)
+            rows.append(reg @ Zfull)
+            inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
+        Bk = self._row_operator(agent, rows, inst)
         gmap = np.zeros((nU, nR, N))
         for (p, idx) in c.trows:
             tv = g.t[idx[0]]

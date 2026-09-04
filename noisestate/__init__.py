@@ -4,6 +4,9 @@ from .stationary import StationarySolver, Result
 from .finite import FiniteSolver, FiniteResult
 from .finite_spectral import SpectralFiniteSolver, SpectralResult
 
+__all__ = ["Model", "ModelBuilder", "StationarySolver", "Result", "FiniteSolver", "FiniteResult",
+           "SpectralFiniteSolver", "SpectralResult", "load", "solve"]
+
 __version__ = "0.1.0"
 
 

@@ -1,4 +1,4 @@
-import os, numpy as np, pytest, yaml
+import os, numpy as np, yaml
 import noisestate as ns
 HERE = os.path.dirname(os.path.abspath(__file__))
 

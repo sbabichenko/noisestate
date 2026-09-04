@@ -41,6 +41,20 @@ def bary_weights(n: int) -> np.ndarray:
     return w
 
 
+def bary_rows(pts: np.ndarray, xs: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """Barycentric interpolation rows: R[i, j] = weight of node xs[j] in the value at pts[i]."""
+    d = pts[:, None] - xs[None, :]
+    exact = np.abs(d) < 1e-13 * max(1.0, float(np.abs(xs).max()))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        r = w[None, :] / d
+    r[exact] = 0.0
+    out = r / r.sum(axis=1, keepdims=True)
+    rows = np.where(exact.any(axis=1))[0]
+    out[rows] = 0.0
+    out[rows, np.argmax(exact[rows], axis=1)] = 1.0
+    return out
+
+
 def clenshaw_curtis(n: int, lo: float, hi: float) -> np.ndarray:
     """Weights integrating a degree n-1 interpolant on Lobatto nodes over [lo, hi]."""
     if n == 1:
@@ -114,16 +128,7 @@ class AgeGrid:
         return I
 
     def _bary_rows(self, pts: np.ndarray, xs: np.ndarray) -> np.ndarray:
-        d = pts[:, None] - xs[None, :]
-        exact = np.abs(d) < 1e-13 * max(1.0, self.L)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            r = self._bw[None, :] / d
-        r[exact] = 0.0
-        out = r / r.sum(axis=1, keepdims=True)
-        rows = np.where(exact.any(axis=1))[0]
-        out[rows] = 0.0
-        out[rows, np.argmax(exact[rows], axis=1)] = 1.0
-        return out
+        return bary_rows(pts, xs, self._bw)
 
     def shift(self, tau: float) -> np.ndarray:
         """Lag (tau>0): f(a-tau) 1{a>=tau}.  Lead (tau<0): f(a+|tau|) 1{a+|tau|<=L}."""

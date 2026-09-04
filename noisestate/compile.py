@@ -9,7 +9,7 @@ agent's loss as a quadratic form over its expanded atoms, and the tie groups.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import numpy as np

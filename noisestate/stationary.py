@@ -23,13 +23,11 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from scipy.optimize import newton_krylov
-from scipy.optimize._nonlin import NoConvergence
 
 from .grid import AgeGrid
 from .accel import solve_fixed_point
 from .compile import compile_structure
-from .spec import Agent, Atom, Model, parse_atom
+from .spec import Agent, Atom, Model
 
 
 # ------------------------------------------------------------------ helpers
@@ -261,165 +259,156 @@ class StationarySolver:
         """The agent's passive world (its own strategy off); subclasses may replace it (see diagnostics.py)."""
         return Zpass
 
-    # ------------------------------------------------------ best response
-    def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
+    # ------------------------------------------------ best-response pieces
+    def _passive_rows(self, agent: Agent, Zpass: np.ndarray):
+        """Seen signal rows of `agent` in its passive world: regular kernels (N, nW) per row and the
+        instantaneous entries [(channel, Delta)] per row."""
         c = self.c
-        N, nW = c.N, c.nW
-        rows = c.rows[agent.name]
-        nR, nU = len(rows), len(agent.controls)
-        # passive world + impulse responses (own reactions off)
-        Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
-        Zpass, R = Zp[:, :nW], Zp[:, nW:]                                  # R: (n_prim N, nU)
-        R = self._impulse_responses(agent, maps, R)
-        Zpass = self._passive_world(agent, maps, Zpass, R)
-        # passive rows: regular kernels per channel (N, nW) and instantaneous entries
         ytil, yinst = [], []
-        for r in range(nR):
+        for r in range(len(agent.signals)):
             regular, deltas = c.row_seen(agent.name, r, set(agent.controls))
             ytil.append(regular @ Zpass)
             yinst.append([(c.channels.index(src), d) for src, dl in deltas.items() if src in c.channels for d in dl])
-        # action kernels from gamma: c_u[:, k] = sum_r (Conv[ytil_r,k] + E_rk S_delta) gamma_ur
-        # Build G_k: (N, nR N) per channel, shared across controls
+        return ytil, yinst
+
+    def _row_operator(self, rows, inst):
+        """Per channel, the operator mapping stacked row kernels gamma (nR N) to the action kernel:
+        c_k = sum_r (Conv[y_rk] + E_rk S_delta) gamma_r."""
+        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
         Gk = np.zeros((nW, N, nR * N))
         for r in range(nR):
             for k in range(nW):
-                Gk[k, :, r * N:(r + 1) * N] += c.grid.conv_op(ytil[r][:, k])
-            for (k, d) in yinst[r]:
+                Gk[k, :, r * N:(r + 1) * N] += c.grid.conv_op(rows[r][:, k])
+            for (k, d) in inst[r]:
                 Gk[k, :, r * N:(r + 1) * N] += d.w * c.shift(d.age)
-        # full world primary kernels as affine in gamma: Z = Zpass + sum_u Conv[R_u] c_u, then own block := c_u
-        n_prim = len(c.prim) * N
-        # per control u and channel k: Z[:, k] = Zpass[:, k] + Ru_conv @ c_u[:, k]
-        Ru_conv = []
+        return Gk
+
+    def _response_operators(self, agent: Agent, R: np.ndarray):
+        """Per control, the operator (n_prim N x N) giving the primary kernels' response to that
+        control's action kernel: Z = Zpass + Resp_u c_u, with the own block equal to the action."""
+        c = self.c; N = c.N; n_prim = len(c.prim) * N
+        out = []
         for ui, u in enumerate(agent.controls):
             Ru = R[:, ui].reshape(len(c.prim), N)
             Cu = np.zeros((n_prim, N))
             for p in range(len(c.prim)):
                 Cu[p * N:(p + 1) * N] = c.grid.conv_op(Ru[p])
-            Cu[c.block(u)] = np.eye(N)     # own control kernel is the action itself
-            Ru_conv.append(Cu)
-        # unknown vector gamma: (nU, nR, N) flattened
-        nG = nU * nR * N
-        # affine map gamma -> Z_k (n_prim N) for each channel: Z_k = Zpass_k + sum_u Ru_conv[u] @ Gk[k] @ gamma_u
-        # FOC kernels per control u and channel k, affine in gamma
+            Cu[c.block(u)] = np.eye(N)
+            out.append(Cu)
+        return out
+
+    def _foc_operators(self, agent: Agent, R: np.ndarray, Rphys: np.ndarray):
+        """Per control, operators (N x n_prim N) mapping the primary kernels of one channel to the
+        first-order-condition kernel: instantaneous derivative, discounted continuation through the
+        impulse responses, delayed reads of own lagged controls.  Also the physical-only version
+        (all reactions off) for the wedge decomposition."""
+        c = self.c; N = c.N; n_prim = len(c.prim) * N
         atoms, Q, q = c.loss[agent.name]
-        atom_ops = [c.atom_op(at) for at in atoms]                          # N x n_prim N
-        AO = np.concatenate(atom_ops, axis=0)                               # (m N) x (n_prim N), zeta stacked
-        m = len(atoms)
-        QZ = np.kron(Q, np.eye(N))                                          # (mN x mN): (Q zeta)
-        # instantaneous derivative wrt u: row selector of atom (u, 0)
-        Fu_ops = []     # per control: operator (N x n_prim N) mapping Z_k -> phi_u,k  (regular continuation included)
-        Fu_phys = []    # physical part (all reactions off), for the decomposition
-        if want_decomp or True:
-            Zphys = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
+        atom_ops = [c.atom_op(at) for at in atoms]
+        AO = np.concatenate(atom_ops, axis=0)
+        QZ = np.kron(Q, np.eye(N))
+        Fu, Fphys = [], []
         for ui, u in enumerate(agent.controls):
-            op = np.zeros((N, n_prim))
-            op_phys = np.zeros((N, n_prim))
+            op = np.zeros((N, n_prim)); op_phys = np.zeros((N, n_prim))
             if (u, 0.0) in atoms:
                 j0 = atoms.index((u, 0.0))
-                op += (QZ[j0 * N:(j0 + 1) * N] @ AO)
-                op_phys += (QZ[j0 * N:(j0 + 1) * N] @ AO)
+                op += QZ[j0 * N:(j0 + 1) * N] @ AO; op_phys += QZ[j0 * N:(j0 + 1) * N] @ AO
             if not agent.myopic:
-                # regular continuation: sum_j corr(r_uj, rho) (Q zeta)_j
-                Ru = R[:, ui]
-                Rp = Zphys[:, ui]
                 for j, at in enumerate(atoms):
                     name, lag = at
+                    Qj = QZ[j * N:(j + 1) * N] @ AO
                     if name in agent.controls:
-                        # own controls: no reaction (envelope); a lagged read of u itself is a delta at s = lag
-                        if name == u and lag > 0:
-                            op += np.exp(-c.rho * lag) * c.shift(-lag) @ (QZ[j * N:(j + 1) * N] @ AO)
-                            op_phys += np.exp(-c.rho * lag) * c.shift(-lag) @ (QZ[j * N:(j + 1) * N] @ AO)
-                        continue
-                    r_j = atom_ops[j] @ Ru
-                    r_jp = atom_ops[j] @ Rp
-                    op += c.grid.corr_op(r_j, c.rho) @ (QZ[j * N:(j + 1) * N] @ AO)
-                    op_phys += c.grid.corr_op(r_jp, c.rho) @ (QZ[j * N:(j + 1) * N] @ AO)
-            Fu_ops.append(op); Fu_phys.append(op_phys)
-        # projection operator H: (nR N) x (nW N) acting on phi stacked by channel
+                        if name == u and lag > 0:          # delayed read of the control itself
+                            op += np.exp(-c.rho * lag) * c.shift(-lag) @ Qj
+                            op_phys += np.exp(-c.rho * lag) * c.shift(-lag) @ Qj
+                        continue                            # own reactions: envelope
+                    op += c.grid.corr_op(atom_ops[j] @ R[:, ui], c.rho) @ Qj
+                    op_phys += c.grid.corr_op(atom_ops[j] @ Rphys[:, ui], c.rho) @ Qj
+            Fu.append(op); Fphys.append(op_phys)
+        return Fu, Fphys
+
+    def _projection_operator(self, rows, inst):
+        """H (nR N x nW N): E[phi_t dY_r(t-b)] for every row r and age b, from the FOC kernels."""
+        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
         H = np.zeros((nR * N, nW * N))
         for r in range(nR):
             for k in range(nW):
-                H[r * N:(r + 1) * N, k * N:(k + 1) * N] += c.grid.corr_op(ytil[r][:, k], 0.0)
-            for (k, d) in yinst[r]:
+                H[r * N:(r + 1) * N, k * N:(k + 1) * N] += c.grid.corr_op(rows[r][:, k], 0.0)
+            for (k, d) in inst[r]:
                 H[r * N:(r + 1) * N, k * N:(k + 1) * N] += d.w * c.shift(-d.age)
-        # assemble linear system A gamma = -b:  H phi_u = 0 for each u
+        return H
+
+    def _project_maps(self, agent: Agent, Z: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        """Raw maps (nU, nR, N) reproducing the action kernels `actions` (nU, N, nW) on the agent's
+        closed-loop seen rows, by weighted least squares."""
+        c = self.c; N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
+        rows, inst = [], []
+        for r in range(nR):
+            regular, deltas = c.row_seen(agent.name, r, set())
+            rows.append(regular @ Z)
+            inst.append([(c.channels.index(src), d) for src, dl in deltas.items() if src in c.channels for d in dl])
+        Bk = self._row_operator(rows, inst)
+        W = c.grid.mass
+        Gram = sum((Bk[k] * W[:, None]).T @ Bk[k] for k in range(nW))
+        Gram += 1e-14 * np.trace(Gram) / Gram.shape[0] * np.eye(nR * N)
+        g = np.zeros((nU, nR, N))
+        for ui in range(nU):
+            rhs = sum((Bk[k] * W[:, None]).T @ actions[ui, :, k] for k in range(nW))
+            g[ui] = np.linalg.solve(Gram, rhs).reshape(nR, N)
+        return g
+
+    # ------------------------------------------------------ best response
+    def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
+        c = self.c; N, nW = c.N, c.nW
+        nR, nU = len(agent.signals), len(agent.controls)
+        # passive world (own strategy off) and impulse responses (own reaction off)
+        Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
+        Zpass, R = Zp[:, :nW], Zp[:, nW:]
+        R = self._impulse_responses(agent, maps, R)
+        Zpass = self._passive_world(agent, maps, Zpass, R)
+        Rphys = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
+        # operators: gamma -> action, action -> world, world -> FOC, FOC -> projection
+        ytil, yinst = self._passive_rows(agent, Zpass)
+        Gk = self._row_operator(ytil, yinst)
+        Resp = self._response_operators(agent, R)
+        Fu, Fphys = self._foc_operators(agent, R, Rphys)
+        H = self._projection_operator(ytil, yinst)
+        # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp_v Gk gamma_v)) = 0 for all controls
+        nG = nU * nR * N
         Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
         for ui in range(nU):
+            rowsl = slice(ui * nR * N, (ui + 1) * nR * N)
+            for vi in range(nU):
+                FR = Fu[ui] @ Resp[vi]                                       # channel-independent factor
+                colsl = slice(vi * nR * N, (vi + 1) * nR * N)
+                for k in range(nW):
+                    Amat[rowsl, colsl] += H[:, k * N:(k + 1) * N] @ (FR @ Gk[k])
             for k in range(nW):
-                # phi_{u,k} = Fu_ops[ui] @ Z_k;  Z_k = Zpass_k + sum_v Ru_conv[v] @ Gk[k] @ gamma_v
-                const = Fu_ops[ui] @ Zpass[:, k]
-                rowsl = slice(ui * nR * N, (ui + 1) * nR * N)
-                Hk = H[:, k * N:(k + 1) * N]
-                bvec[rowsl] += Hk @ const
-                for vi in range(nU):
-                    colsl = slice(vi * nR * N, (vi + 1) * nR * N)
-                    Amat[rowsl, colsl] += Hk @ (Fu_ops[ui] @ (Ru_conv[vi] @ Gk[k]))
+                bvec[rowsl] += H[:, k * N:(k + 1) * N] @ (Fu[ui] @ Zpass[:, k])
         gamma = np.linalg.solve(Amat, -bvec).reshape(nU, nR, N)
-        # action kernels and full world
         cact = np.zeros((nU, N, nW))
         for ui in range(nU):
             for k in range(nW):
                 cact[ui, :, k] = Gk[k] @ gamma[ui].reshape(-1)
         Zfull = Zpass.copy()
         for ui in range(nU):
-            Zfull += Ru_conv[ui] @ cact[ui]
-        # raw map: project each action kernel on the agent's closed-loop rows
-        yraw, yrinst = [], []
-        for r in range(nR):
-            regular, deltas = c.row_seen(agent.name, r, set())
-            yraw.append(regular @ Zfull)
-            yrinst.append([(c.channels.index(src), d) for src, dl in deltas.items() if src in c.channels for d in dl])
-        Bk = np.zeros((nW, N, nR * N))
-        for r in range(nR):
-            for k in range(nW):
-                Bk[k, :, r * N:(r + 1) * N] += c.grid.conv_op(yraw[r][:, k])
-            for (k, d) in yrinst[r]:
-                Bk[k, :, r * N:(r + 1) * N] += d.w * c.shift(d.age)
-        W = c.grid.mass
-        Gram = sum((Bk[k] * W[:, None]).T @ Bk[k] for k in range(nW))
-        g = np.zeros((nU, nR, N))
-        for ui in range(nU):
-            rhs = sum((Bk[k] * W[:, None]).T @ cact[ui, :, k] for k in range(nW))
-            g[ui] = np.linalg.solve(Gram + 1e-14 * np.trace(Gram) / Gram.shape[0] * np.eye(nR * N), rhs).reshape(nR, N)
+            Zfull += Resp[ui] @ cact[ui]
+        g = self._project_maps(agent, Zfull, cact)
         out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
         if want_decomp:
             dec = {}
             for ui, u in enumerate(agent.controls):
-                phi = np.stack([Fu_ops[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
-                phi_phys = np.stack([Fu_phys[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
+                phi = np.stack([Fu[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
+                phi_phys = np.stack([Fphys[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
                 dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
             out["decomp"] = dec
         return g, out
 
     # ------------------------------------------------ maps from kernels
     def maps_from_kernels(self, Z: np.ndarray) -> Dict[str, np.ndarray]:
-        """Raw maps that reproduce given closed-loop primary kernels Z (n_prim N, nW):
-        each agent's action kernels projected on its closed-loop signal rows."""
-        c = self.c
-        N, nW = c.N, c.nW
-        W = c.grid.mass
-        maps = {}
-        for a in self.model.agents:
-            nR = len(a.signals)
-            Bk = np.zeros((nW, N, nR * N))
-            for r in range(nR):
-                regular, deltas = c.row_seen(a.name, r, set())
-                y = regular @ Z
-                for k in range(nW):
-                    Bk[k, :, r * N:(r + 1) * N] += c.grid.conv_op(y[:, k])
-                for src, dl in deltas.items():
-                    if src in c.channels:
-                        k = c.channels.index(src)
-                        for d in dl:
-                            Bk[k, :, r * N:(r + 1) * N] += d.w * c.shift(d.age)
-            Gram = sum((Bk[k] * W[:, None]).T @ Bk[k] for k in range(nW))
-            g = np.zeros((len(a.controls), nR, N))
-            for ui, u in enumerate(a.controls):
-                cu = Z[c.block(u)]
-                rhs = sum((Bk[k] * W[:, None]).T @ cu[:, k] for k in range(nW))
-                g[ui] = np.linalg.solve(Gram + 1e-14 * np.trace(Gram) / Gram.shape[0] * np.eye(nR * N), rhs).reshape(nR, N)
-            maps[a.name] = g
-        return maps
+        """Raw maps that reproduce given closed-loop primary kernels Z (n_prim N, nW)."""
+        return {a.name: self._project_maps(a, Z, np.stack([Z[self.c.block(u)] for u in a.controls]))
+                for a in self.model.agents}
 
     # ------------------------------------------------------ fixed point
     def response_map(self, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:

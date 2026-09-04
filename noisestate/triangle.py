@@ -21,12 +21,12 @@ boundary the line crosses:
 """
 from __future__ import annotations
 
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional
 
 import numpy as np
 from numpy.polynomial import legendre
 
-from .grid import bary_weights, cheb_lobatto, clenshaw_curtis
+from .grid import bary_rows as _bary_rows, bary_weights, cheb_lobatto, clenshaw_curtis
 
 
 class Piece:
@@ -59,19 +59,6 @@ class Piece:
         if self.triangle:
             return (t >= self.t0 - tol) & (t <= self.t1 + tol) & (a >= self.t0 - tol) & (a <= t + tol)
         return (t >= self.t0 - tol) & (t <= self.t1 + tol) & (a >= self.a0 - tol) & (a <= self.a1 + tol)
-
-
-def _bary_rows(pts: np.ndarray, xs: np.ndarray, w: np.ndarray) -> np.ndarray:
-    d = pts[:, None] - xs[None, :]
-    exact = np.abs(d) < 1e-13
-    with np.errstate(divide="ignore", invalid="ignore"):
-        r = w[None, :] / d
-    r[exact] = 0.0
-    out = r / r.sum(axis=1, keepdims=True)
-    rows = np.where(exact.any(axis=1))[0]
-    out[rows] = 0.0
-    out[rows, np.argmax(exact[rows], axis=1)] = 1.0
-    return out
 
 
 class TriangleGrid:

@@ -1,5 +1,4 @@
-import os
-import json, os, numpy as np, pytest
+import json, os, numpy as np
 import noisestate as ns
 
 REFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs")

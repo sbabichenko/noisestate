@@ -21,11 +21,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
-from scipy.optimize import newton_krylov
-from scipy.optimize._nonlin import NoConvergence
 from scipy.sparse.linalg import LinearOperator, lgmres
 
 from .accel import solve_fixed_point
@@ -89,9 +87,6 @@ class FiniteCompiled:
         imp = list(impulse_controls)
         ncol = nW * N + len(imp) * N
         Z = np.zeros((len(self.prim), N, ncol))
-        excl = set()
-        if excluded is not None:
-            excl = set(next(a for a in self.model.agents if a.name == excluded).controls)
         agents = [a for a in self.model.agents if a.name != excluded]
         # signal-row kernels seen by each agent, filled as we go: yk[agent][r] (N, ncol)
         yk = {a.name: [np.zeros((N, ncol)) for _ in a.signals] for a in self.model.agents}
@@ -247,8 +242,6 @@ class FiniteSolver:
         R = {u: Zp[:, :, NB + ui * N:NB + (ui + 1) * N] for ui, u in enumerate(agent.controls)}   # (n_prim, N, N): [., tau, i]
         ytil = c.rows_seen(agent.name, Zpass, own_off=True)             # list (N, NB)
         atoms, Q, q = c.loss[agent.name]
-        m = len(atoms)
-        disc = np.exp(-c.rho * h * np.arange(N))
         tri = self.tri
         nfree = int(tri.sum())
 
@@ -262,9 +255,8 @@ class FiniteSolver:
         def full_world(cact):              # cact (nU, N, NB) -> Z (n_prim, N, NB)
             Z = Zpass.copy()
             for ui, u in enumerate(agent.controls):
-                Ru = R[u]                                   # response at tau to unit mass at i
                 # Z[p, tau, :] += sum_i h R[p, tau, i] c[i, :]
-                Z += h * np.einsum("pti,ic->ptc", Ru, cact[ui])
+                Z += h * np.einsum("pti,ic->ptc", R[u], cact[ui])
                 Z[c.index[u]] = cact[ui]                    # own control is the action itself
             return Z
 
@@ -282,7 +274,6 @@ class FiniteSolver:
                     out[ui] += Qz[atoms.index((u, 0.0))]
                 if agent.myopic:
                     continue
-                Ru = R[u]
                 for j, at in enumerate(atoms):
                     name, lag = at
                     if name in agent.controls:
