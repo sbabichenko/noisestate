@@ -311,6 +311,11 @@ class FiniteSolver:
                 Z[c.index[u]] = cact[ui]                    # own control is the action itself
             return Z
 
+        # discounted future weights dm[i, tau] = e^{-rho (tau - i) h} for tau > i (fixed per best response)
+        dm = np.exp(-c.rho * h * (np.arange(N)[None, :] - np.arange(N)[:, None])) * np.triu(np.ones((N, N)), 1)
+        Rj_cache = {u: {at: (c.atom_kernel(R[u], at).T * dm) for at in atoms
+                        if at[0] not in agent.controls} for u in agent.controls}
+
         def foc(Z):                        # -> (nU, N, NB) FOC kernels
             zeta = np.stack([c.atom_kernel(Z, at) for at in atoms])          # (m, N, NB)
             Qz = np.einsum("jk,ktc->jtc", Q, zeta)                            # (m, N, NB)
@@ -328,12 +333,8 @@ class FiniteSolver:
                             d = c.lag_cells(lag)
                             out[ui, :N - d] += np.exp(-c.rho * lag) * Qz[j, d:]
                         continue
-                    # impulse response of atom j: shift of the primary response kernel along tau
-                    Rj = c.atom_kernel(Ru, at)                                 # (N, N) [tau, i]
                     # continuation: sum_{tau > i} h e^{-rho (tau-i) h} Rj[tau, i] Qz[j, tau, :]
-                    W = np.triu(np.ones((N, N)), 1)                             # tau > i  (as [i, tau])
-                    dm = np.exp(-c.rho * h * (np.arange(N)[None, :] - np.arange(N)[:, None])) * W   # [i, tau]
-                    out[ui] += h * ((Rj.T * dm) @ Qz[j])
+                    out[ui] += h * (Rj_cache[u][at] @ Qz[j])
             return out
 
         # projection H: for each row r and v < i: sum_j FOC[i, j] ytil_r[v, j] = 0
