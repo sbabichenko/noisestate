@@ -27,6 +27,7 @@ from scipy.optimize import newton_krylov
 from scipy.optimize._nonlin import NoConvergence
 
 from .grid import AgeGrid
+from .accel import solve_fixed_point
 from .spec import Agent, Atom, Model, parse_atom
 
 
@@ -486,28 +487,9 @@ class StationarySolver:
             return self.pack(self.response_map(self.unpack(zz))) - zz
 
         # damped pre-phase
-        for it in range(pre_iterations):
-            r = F(z)
-            nr = float(np.linalg.norm(r) / max(1.0, np.linalg.norm(z)))
-            hist.append(nr)
-            if self.verbose:
-                print(f"  pre {it:3d} rel resid {nr:.3e}", flush=True)
-            if nr < pre_tol:
-                break
-            z = z + damping * r
-        converged = True
-        if hist and hist[-1] >= tol:
-            try:
-                z = newton_krylov(F, z, f_tol=tol * max(1.0, float(np.linalg.norm(z))), maxiter=max_newton,
-                                  method="lgmres", verbose=self.verbose)
-            except NoConvergence as e:
-                z = np.asarray(e.args[0]); converged = False
-            except ValueError:
-                converged = False
-        r = F(z)
-        resid = float(np.linalg.norm(r) / max(1.0, np.linalg.norm(z)))
+        z, resid, nev, converged = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
+                                                     max_newton=max_newton, method="newton", pre_iterations=pre_iterations, pre_tol=pre_tol)
         hist.append(resid)
-        converged = converged and resid < 10 * tol
         maps = self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = Result(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,

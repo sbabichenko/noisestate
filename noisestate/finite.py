@@ -24,6 +24,7 @@ from scipy.optimize import newton_krylov
 from scipy.optimize._nonlin import NoConvergence
 from scipy.sparse.linalg import LinearOperator, lgmres
 
+from .accel import solve_fixed_point
 from .spec import Agent, Atom, Model
 
 
@@ -371,6 +372,8 @@ class FiniteSolver:
         for i in range(1, N):
             B = np.concatenate([yraw[r][:i] for r in range(nR)], axis=0)      # (nR*i, NB)
             G = B @ B.T
+            if np.trace(G) <= 0:
+                continue                                   # no information yet (delayed rows): map stays zero
             G += 1e-13 * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
             for ui in range(nU):
                 sol = np.linalg.solve(G, B @ cact[ui, i])
@@ -406,24 +409,9 @@ class FiniteSolver:
             evals[0] += 1
             return self.pack(self.response_map(self.unpack(zz))) - zz
 
-        for it in range(pre_iterations):
-            r = F(z); nr = float(np.linalg.norm(r) / max(1.0, np.linalg.norm(z))); hist.append(nr)
-            if self.verbose:
-                print(f"  pre {it:3d} rel resid {nr:.3e}", flush=True)
-            if nr < pre_tol:
-                break
-            z = z + damping * r
-        converged = True
-        if hist and hist[-1] >= tol:
-            try:
-                z = newton_krylov(F, z, f_tol=tol * max(1.0, float(np.linalg.norm(z))), maxiter=max_newton,
-                                  method="lgmres", verbose=self.verbose)
-            except NoConvergence as e:
-                z = np.asarray(e.args[0]); converged = False
-            except ValueError:
-                converged = False
-        r = F(z); resid = float(np.linalg.norm(r) / max(1.0, np.linalg.norm(z))); hist.append(resid)
-        converged = converged and resid < 10 * tol
+        z, resid, nev, converged = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
+                                                     max_newton=max_newton)
+        hist.append(resid)
         maps = self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = FiniteResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,

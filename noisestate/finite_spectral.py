@@ -20,6 +20,7 @@ import numpy as np
 from scipy.optimize import newton_krylov
 from scipy.optimize._nonlin import NoConvergence
 
+from .accel import solve_fixed_point
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
 
@@ -417,7 +418,16 @@ class SpectralFiniteSolver:
         Zfull = Zpass.copy()
         for ui in range(nU):
             Zfull += Resp[ui] @ cact[ui]
-        # raw maps by per-time-row projection on the closed-loop seen rows
+        gmap = self.maps_from_world(agent, Zfull, cact)
+        return gmap, {"gamma": gamma, "action": cact, "Zfull": Zfull}
+
+
+    def maps_from_world(self, agent: Agent, Zfull: np.ndarray, cact: np.ndarray) -> np.ndarray:
+        """Raw maps of `agent` reproducing its action kernels cact (nU, N, nW) given the closed-loop
+        primary kernels Zfull: one weighted least-squares projection per time row."""
+        c = self.c; g = c.g; N, nW = c.N, c.nW
+        rows = c.rows[agent.name]; nR, nU = len(rows), len(agent.controls)
+        delays = [rows[r][3] for r in range(nR)]
         yraw, yrinst = [], []
         for r in range(nR):
             reg, deltas = c.row_op(agent.name, r, set())
@@ -436,15 +446,59 @@ class SpectralFiniteSolver:
             tv = g.t[idx[0]]
             w = g.row_weights(tv, side=(-1 if tv >= g.bp[p + 1] - 1e-12 else +1))[idx]
             cols = np.concatenate([r * N + idx for r in range(nR)])
-            Bsub = Bk[:, idx][:, :, cols]                                    # (nW, m, nR m)
+            Bsub = Bk[:, idx][:, :, cols]
             G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
-            G += (1e-13 * np.trace(G) / max(1, G.shape[0]) + 1e-300) * np.eye(G.shape[0])
+            tr = np.trace(G)
+            if tr <= 0:
+                continue
+            G += 1e-13 * tr / G.shape[0] * np.eye(G.shape[0])
             for ui in range(nU):
                 rhs = sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW))
                 sol = np.linalg.solve(G, rhs)
                 for r in range(nR):
                     gmap[ui, r, idx] = sol[r * len(idx):(r + 1) * len(idx)]
-        return gmap, {"gamma": gamma, "action": cact, "Zfull": Zfull}
+        return gmap
+
+    def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
+        """Closed-loop primary kernels when every agent's action kernels are given."""
+        c = self.c; N, nW = c.N, c.nW
+        n = len(c.prim) * N
+        Z = np.zeros((n, nW))
+        for a in self.model.agents:
+            for ui, u in enumerate(a.controls):
+                Z[c.block(u)] = actions[a.name][ui]
+        if c.nX:
+            if any(nm in c.model.state_names for _, (nm, _), _ in c.state_inputs):
+                raise NotImplementedError("lagged state inputs: use variable='maps'")
+            EA = c.expA(c.g.a)
+            X = np.zeros((c.nX, N, nW))
+            for k in range(nW):
+                for i in range(c.nX):
+                    X[i, :, k] += EA[:, i, :] @ c.sigma[:, k]
+            inp = np.zeros((c.nX, N, nW))
+            for si, (nm, lag), coef in c.state_inputs:
+                inp[si] += coef * (c.read(lag, lag) @ Z[c.block(nm)])
+            for i in range(c.nX):
+                for j in range(c.nX):
+                    X[i] += c.Vol[i, j] @ inp[j]
+            for i in range(c.nX):
+                Z[c.block(c.prim[i])] = X[i]
+        return Z
+
+    def maps_from_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        Z = self.world_from_actions(actions)
+        return {a.name: self.maps_from_world(a, Z, actions[a.name]) for a in self.model.agents}
+
+    def response_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        maps = self.maps_from_actions(actions)
+        new = {}
+        for a in self.model.agents:
+            if self.c.rep[a.name] == a.name:
+                new[a.name] = self.best_response(a, maps)[1]["action"]
+        for a in self.model.agents:
+            if a.name not in new:
+                new[a.name] = new[self.c.rep[a.name]]
+        return new
 
     def response_map(self, maps):
         new = {}
@@ -465,34 +519,43 @@ class SpectralFiniteSolver:
         return float(0.5 * np.sum(Q * G))
 
     def solve(self, init=None, tol: float = 1e-10, damping: float = 0.5, pre_iterations: int = 10,
-              max_newton: int = 60, pre_tol: float = 1e-3) -> SpectralResult:
+              max_newton: int = 30, pre_tol: float = 1e-3, variable: str = "actions") -> SpectralResult:
+        """variable="actions": iterate on the agents' action kernels, raw maps derived by projection
+        (robust where early-time maps are ill-determined).  variable="maps": iterate on raw maps."""
         t0 = time.time()
-        maps = init if init is not None else self.zero_maps()
-        z = self.pack(maps); hist, evals = [], [0]
+        hist, evals = [], [0]
+        shapes = {a.name: (len(a.controls), self.c.N, self.c.nW) for a in self.model.agents}
+        reps = self.c.reps
 
-        def F(zz):
-            evals[0] += 1
-            return self.pack(self.response_map(self.unpack(zz))) - zz
+        def packa(acts):
+            return np.concatenate([acts[n].reshape(-1) for n in reps])
 
-        for it in range(pre_iterations):
-            r = F(z); nr = float(np.linalg.norm(r) / max(1.0, np.linalg.norm(z))); hist.append(nr)
-            if self.verbose:
-                print(f"  pre {it:3d} rel resid {nr:.3e}", flush=True)
-            if nr < pre_tol:
-                break
-            z = z + damping * r
-        converged = True
-        if hist and hist[-1] >= tol:
-            try:
-                z = newton_krylov(F, z, f_tol=tol * max(1.0, float(np.linalg.norm(z))), maxiter=max_newton,
-                                  method="lgmres", verbose=self.verbose)
-            except NoConvergence as e:
-                z = np.asarray(e.args[0]); converged = False
-            except ValueError:
-                converged = False
-        r = F(z); resid = float(np.linalg.norm(r) / max(1.0, np.linalg.norm(z))); hist.append(resid)
-        converged = converged and resid < 10 * tol
-        maps = self.unpack(z)
+        def unpacka(z):
+            acts, pos = {}, 0
+            for n in reps:
+                size = int(np.prod(shapes[n])); acts[n] = z[pos:pos + size].reshape(shapes[n]); pos += size
+            for a in self.model.agents:
+                if a.name not in acts:
+                    acts[a.name] = acts[self.c.rep[a.name]]
+            return acts
+        if variable == "actions":
+            acts0 = init if init is not None else {a.name: np.zeros(shapes[a.name]) for a in self.model.agents}
+            z = packa(acts0)
+
+            def F(zz):
+                evals[0] += 1
+                return packa(self.response_actions(unpacka(zz))) - zz
+        else:
+            maps = init if init is not None else self.zero_maps()
+            z = self.pack(maps)
+
+            def F(zz):
+                evals[0] += 1
+                return self.pack(self.response_map(self.unpack(zz))) - zz
+        z, resid, nev, converged = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
+                                                     max_newton=max_newton)
+        hist.append(resid)
+        maps = self.maps_from_actions(unpacka(z)) if variable == "actions" else self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = SpectralResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
                              iterations=evals[0], seconds=time.time() - t0, history=hist)
