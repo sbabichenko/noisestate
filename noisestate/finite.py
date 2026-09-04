@@ -257,6 +257,7 @@ class FiniteSolver:
         self.model = model
         self.verbose = verbose
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N, self.c.N) for a in model.agents}
+        self._warm = {}                                          # last Krylov solution per agent (warm start)
         N = self.c.N
         self.tri = np.tril(np.ones((N, N), dtype=bool), -1)     # v < i
 
@@ -353,9 +354,13 @@ class FiniteSolver:
             M = np.column_stack([op.matvec(e) for e in np.eye(nU * nR * nfree)])
             gvec = np.linalg.solve(M, -b)
         else:
-            gvec, info = lgmres(op, -b, rtol=1e-12, atol=0, maxiter=400)
+            x0 = self._warm.get(agent.name)
+            if x0 is not None and x0.shape[0] != nU * nR * nfree:
+                x0 = None
+            gvec, info = lgmres(op, -b, x0=x0, rtol=1e-12, atol=0, maxiter=400)
             if info != 0:
                 gvec, info = lgmres(op, -b, x0=gvec, rtol=1e-12, atol=0, maxiter=1000)
+            self._warm[agent.name] = gvec.copy()
         gam = np.zeros((nU, nR, N, N)); gam[:, :, tri] = gvec.reshape(nU, nR, nfree)
         cact = action_from_gamma(gam)
         Zfull = full_world(cact)
@@ -389,7 +394,7 @@ class FiniteSolver:
         G = np.einsum("itc,jtc,t->ij", zeta, zeta, disc) * c.h * c.h    # sum_t h e^{-rho t} sum_j h zeta zeta
         return float(0.5 * np.sum(Q * G))
 
-    def solve(self, init=None, tol: float = 1e-9, damping: float = 0.5, pre_iterations: int = 10,
+    def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, pre_iterations: int = 10,
               max_newton: int = 60, pre_tol: float = 1e-3) -> FiniteResult:
         t0 = time.time()
         maps = init if init is not None else self.zero_maps()
