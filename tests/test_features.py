@@ -1,9 +1,8 @@
 """Model-language features that only the (slow, opt-in) Chapter 5 test used to exercise."""
-import os, sys, numpy as np
+import os, numpy as np
 import noisestate as ns
 from noisestate.stationary import StationarySolver
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
-sys.path.insert(0, EX)
 
 
 def test_two_firm_cycle_market_ties_definitions_and_two_controls():

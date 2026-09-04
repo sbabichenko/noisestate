@@ -216,6 +216,15 @@ is from the model you wrote:
   (naive observers, ridge, tolerances), on the live model: changing `model.horizon.nodes` or a
   parameter on the object is honoured by `sweep`, `refine` and `stability`.
 
+## Known open items
+
+* The Chapter 5 cycle-market example has a second-order curvature of -3e-5 (relative to the
+  largest) in the firms' best response at 6 and 8 nodes per panel, in the map on the order rows at
+  ages 8 to 16.  Whether this is the window truncation of the objective or a genuine flat
+  direction of the firm's problem through the other firms' reactions has not been established;
+  the flag threshold of 1e-4 lets it pass, and the value is reported.  Things to try: more nodes
+  on the geometric panels, a longer window with a shift-invert eigensolver, a positive `rP`.
+
 ## Limits
 
 Scalar states and controls (write vector models as several scalars); no exact

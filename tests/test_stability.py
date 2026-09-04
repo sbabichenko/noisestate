@@ -1,6 +1,6 @@
-import os, sys
+import os
 import noisestate as ns
-HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples"); sys.path.insert(0, EX)
+HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
 
 def test_resolution_flag_and_stability_on_the_two_firm_market():
     """At 6 nodes per panel the two-firm cycle market is under-resolved and the result says so; the

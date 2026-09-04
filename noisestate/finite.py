@@ -26,6 +26,7 @@ import numpy as np
 from scipy.sparse.linalg import LinearOperator, lgmres
 
 from .accel import solve_fixed_point
+from .engine import EngineBase
 from .compile import compile_structure
 from .results import CellResult as FiniteResult
 from .spec import Agent, Atom, Model
@@ -176,7 +177,7 @@ class FiniteCompiled:
         return out
 
 
-class FiniteSolver:
+class FiniteSolver(EngineBase):
     def __init__(self, model: Model, verbose: bool = False):
         self.c = FiniteCompiled(model)
         self.model = model
@@ -186,7 +187,7 @@ class FiniteSolver:
         N = self.c.N
         self.tri = np.tril(np.ones((N, N), dtype=bool), -1)     # v < i
 
-    def pack(self, maps):
+    def pack(self, maps):                                   # only the causal (strictly lower) triangle is free
         return np.concatenate([maps[n][:, :, self.tri].reshape(-1) for n in self.c.reps])
 
     def unpack(self, z):
@@ -196,13 +197,7 @@ class FiniteSolver:
             size = nu * nr * int(self.tri.sum())
             g = np.zeros(self.shapes[n]); g[:, :, self.tri] = z[pos:pos + size].reshape(nu, nr, -1); pos += size
             maps[n] = g
-        for a in self.model.agents:
-            if a.name not in maps:
-                maps[a.name] = maps[self.c.rep[a.name]]
-        return maps
-
-    def zero_maps(self):
-        return {a.name: np.zeros(self.shapes[a.name]) for a in self.model.agents}
+        return self._fill_ties(maps)
 
     # ---------------------------------------------------------- best response
     def best_response(self, agent: Agent, maps):
@@ -301,16 +296,6 @@ class FiniteSolver:
                 sol = np.linalg.solve(G, B @ cact[ui, i])
                 g[ui, :, i, :i] = sol.reshape(nR, i)
         return g, {"gamma": gam, "action": cact, "Zfull": Zfull}
-
-    def response_map(self, maps):
-        new = {}
-        for a in self.model.agents:
-            if self.c.rep[a.name] == a.name:
-                new[a.name] = self.best_response(a, maps)[0]
-        for a in self.model.agents:
-            if a.name not in new:
-                new[a.name] = new[self.c.rep[a.name]]
-        return new
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
         c = self.c

@@ -25,6 +25,8 @@ Fixes from an adversarial test pass and a code review before release.
   `"finite"` like `horizon.kind`; one engine registry (`noisestate.ENGINES`).
 - CLI: model errors print a message and exit 2; `--nodes 0`, `--window 0` and `--param p=abc`
   are errors.
+- One `EngineBase` (`noisestate/engine.py`) holds the packing, tie fill-in and best-response fan-out
+  that the three engines each carried; `maps_from_actions` on every engine that iterates on actions.
 - Packaging: `LICENSE` file; `scipy >= 1.12` (the cell engine uses `lgmres(rtol=...)`); CI also
   runs at the declared floor.
 

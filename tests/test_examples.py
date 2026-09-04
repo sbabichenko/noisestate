@@ -1,10 +1,9 @@
 import noisestate as ns
-import os, sys
+import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 EX = os.path.join(HERE, "..", "examples")
 
 def test_ch5_example_matches_its_generator():
-    sys.path.insert(0, EX)
     from make_ch5_cycle_market import build
     generated = build().to_dict()
     committed = ns.read_yaml(os.path.join(EX, "ch5_cycle_market.yaml"))

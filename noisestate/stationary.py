@@ -26,6 +26,7 @@ import numpy as np
 from .grid import AgeGrid
 from .grid_cache import age_grid
 from .accel import solve_fixed_point
+from .engine import EngineBase
 from .compile import compile_structure
 from .results import StationaryResult as Result
 from .spec import Agent, Atom, Model
@@ -166,7 +167,7 @@ class Compiled:
 
 
 # ------------------------------------------------------------------- solver
-class StationarySolver:
+class StationarySolver(EngineBase):
     # the objective is truncated at the window, so a strategy can push a little loss past the edge: curvatures
     # within this fraction of the largest are treated as that truncation, not as a saddle
     SECOND_ORDER_TOL = 1e-4
@@ -183,26 +184,6 @@ class StationarySolver:
         self._qa: Dict[str, np.ndarray] = {}
         c = self.c
         self.shapes = {a.name: (len(a.controls), len(a.signals), c.N) for a in model.agents}
-
-    # ------------------------------------------------------------ packing
-    def pack(self, maps: Dict[str, np.ndarray]) -> np.ndarray:
-        return np.concatenate([maps[n].reshape(-1) for n in self.c.reps])
-
-    def unpack(self, z: np.ndarray) -> Dict[str, np.ndarray]:
-        maps = {}
-        pos = 0
-        for n in self.c.reps:
-            sh = self.shapes[n]
-            size = int(np.prod(sh))
-            maps[n] = z[pos:pos + size].reshape(sh)
-            pos += size
-        for a in self.model.agents:
-            if a.name not in maps:
-                maps[a.name] = maps[self.c.rep[a.name]]
-        return maps
-
-    def zero_maps(self) -> Dict[str, np.ndarray]:
-        return {a.name: np.zeros(self.shapes[a.name]) for a in self.model.agents}
 
     # -------------------------------------------- overridable model pieces
     def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
@@ -489,42 +470,15 @@ class StationarySolver:
             Z[:c.nX * N] = X
         return Z
 
-    def response_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        maps = self.maps_from_kernels(self.world_from_actions(actions))
-        new = {}
-        for a in self.model.agents:
-            if self.c.rep[a.name] == a.name:
-                new[a.name] = self.best_response(a, maps)[1]["action"]
-        for a in self.model.agents:
-            if a.name not in new:
-                new[a.name] = new[self.c.rep[a.name]]
-        return new
-
     def maps_from_kernels(self, Z: np.ndarray) -> Dict[str, np.ndarray]:
         """Raw maps that reproduce given closed-loop primary kernels Z (n_prim N, nW); tied agents
         share the representative's projection."""
-        maps = {}
-        for a in self.model.agents:
-            if self.c.rep[a.name] == a.name:
-                maps[a.name] = self._project_maps(a, Z, np.stack([Z[self.c.block(u)] for u in a.controls]))
-        for a in self.model.agents:
-            if a.name not in maps:
-                maps[a.name] = maps[self.c.rep[a.name]]
-        return maps
+        return self._over_representatives(lambda a: self._project_maps(a, Z, np.stack([Z[self.c.block(u)] for u in a.controls])))
+
+    def maps_from_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        return self.maps_from_kernels(self.world_from_actions(actions))
 
     # ------------------------------------------------------ fixed point
-    def response_map(self, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        new = {}
-        for a in self.model.agents:
-            if self.c.rep[a.name] != a.name:
-                continue
-            g, _ = self.best_response(a, maps)
-            new[a.name] = g
-        for a in self.model.agents:
-            if a.name not in new:
-                new[a.name] = new[self.c.rep[a.name]]
-        return new
-
     def solve(self, init: Optional[Dict[str, np.ndarray]] = None, tol: float = 1e-10, damping: float = 0.3,
               pre_iterations: int = 20, max_newton: int = 60, pre_tol: float = 1e-3, method: str = "anderson",
               variable: str = "actions") -> Result:
@@ -534,20 +488,8 @@ class StationarySolver:
         identified.  init: maps or actions accordingly."""
         t0 = time.time()
         hist, evals = [], [0]
-        shapes_a = {a.name: (len(a.controls), self.c.N, self.c.nW) for a in self.model.agents}
-        reps = self.c.reps
-
-        def packa(acts):
-            return np.concatenate([acts[n].reshape(-1) for n in reps])
-
-        def unpacka(zz):
-            acts, pos = {}, 0
-            for n in reps:
-                size = int(np.prod(shapes_a[n])); acts[n] = zz[pos:pos + size].reshape(shapes_a[n]); pos += size
-            for a in self.model.agents:
-                if a.name not in acts:
-                    acts[a.name] = acts[self.c.rep[a.name]]
-            return acts
+        shapes_a = self.action_shapes
+        packa, unpacka = self.pack_actions, self.unpack_actions
         if variable == "actions" and self.model.ties:
             # tied agents' action kernels differ by a channel permutation the symmetry implies; raw maps
             # (on each agent's own rows) carry over verbatim, so iterate on maps when ties are present
@@ -577,7 +519,7 @@ class StationarySolver:
         z, resid, nev, converged, message = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
                                                      max_newton=max_newton, method=method, pre_iterations=pre_iterations, pre_tol=pre_tol)
         hist.append(resid)
-        maps = self.maps_from_kernels(self.world_from_actions(unpacka(z))) if variable == "actions" else self.unpack(z)
+        maps = self.maps_from_actions(unpacka(z)) if variable == "actions" else self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = Result(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
                      iterations=evals[0], seconds=time.time() - t0, history=hist, message=message,

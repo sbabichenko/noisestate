@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .accel import solve_fixed_point
+from .engine import EngineBase
 from .compile import compile_structure
 from .results import TriangleResult as SpectralResult
 from .spec import Agent, Atom, Model
@@ -264,28 +265,13 @@ class SpectralCompiled:
         return Z
 
 
-class SpectralFiniteSolver:
+class SpectralFiniteSolver(EngineBase):
     def __init__(self, model: Model, verbose: bool = False, ridge: float = 1e-11):
         self.c = SpectralCompiled(model)
         self.model = model
         self.verbose = verbose
         self.ridge = ridge
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
-
-    def pack(self, maps):
-        return np.concatenate([maps[n].reshape(-1) for n in self.c.reps])
-
-    def unpack(self, z):
-        maps, pos = {}, 0
-        for n in self.c.reps:
-            sh = self.shapes[n]; size = int(np.prod(sh)); maps[n] = z[pos:pos + size].reshape(sh); pos += size
-        for a in self.model.agents:
-            if a.name not in maps:
-                maps[a.name] = maps[self.c.rep[a.name]]
-        return maps
-
-    def zero_maps(self):
-        return {a.name: np.zeros(self.shapes[a.name]) for a in self.model.agents}
 
     # ------------------------------------------------ best-response pieces
     def _passive_rows(self, agent: Agent, Zpass: np.ndarray):
@@ -462,27 +448,6 @@ class SpectralFiniteSolver:
         Z = self.world_from_actions(actions)
         return {a.name: self.maps_from_world(a, Z, actions[a.name]) for a in self.model.agents}
 
-    def response_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        maps = self.maps_from_actions(actions)
-        new = {}
-        for a in self.model.agents:
-            if self.c.rep[a.name] == a.name:
-                new[a.name] = self.best_response(a, maps)[1]["action"]
-        for a in self.model.agents:
-            if a.name not in new:
-                new[a.name] = new[self.c.rep[a.name]]
-        return new
-
-    def response_map(self, maps):
-        new = {}
-        for a in self.model.agents:
-            if self.c.rep[a.name] == a.name:
-                new[a.name] = self.best_response(a, maps)[0]
-        for a in self.model.agents:
-            if a.name not in new:
-                new[a.name] = new[self.c.rep[a.name]]
-        return new
-
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
         c = self.c
         atoms, Q, q = c.loss[agent.name]
@@ -519,20 +484,8 @@ class SpectralFiniteSolver:
         converted to the iteration variable."""
         t0 = time.time()
         hist, evals = [], [0]
-        shapes = {a.name: (len(a.controls), self.c.N, self.c.nW) for a in self.model.agents}
-        reps = self.c.reps
-
-        def packa(acts):
-            return np.concatenate([acts[n].reshape(-1) for n in reps])
-
-        def unpacka(z):
-            acts, pos = {}, 0
-            for n in reps:
-                size = int(np.prod(shapes[n])); acts[n] = z[pos:pos + size].reshape(shapes[n]); pos += size
-            for a in self.model.agents:
-                if a.name not in acts:
-                    acts[a.name] = acts[self.c.rep[a.name]]
-            return acts
+        shapes = self.action_shapes
+        packa, unpacka = self.pack_actions, self.unpack_actions
         if variable == "actions" and self.model.ties:
             # tied agents' action kernels differ by a channel permutation the symmetry implies; raw maps
             # (on each agent's own rows) carry over verbatim, so iterate on maps when ties are present
