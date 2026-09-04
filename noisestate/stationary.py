@@ -308,6 +308,10 @@ class StationarySolver:
         # passive world + impulse responses (own reactions off)
         Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
         Zpass, R = Zp[:, :nW], Zp[:, nW:]                                  # R: (n_prim N, nU)
+        if getattr(self, "reaction_hook", None) is not None:
+            R = self.reaction_hook(agent, maps)                       # experiment hook: alternative reaction model
+        if getattr(self, "passive_hook", None) is not None:
+            Zpass = self.passive_hook(agent, maps, Zpass, R)          # experiment hook: alternative passive world
         frozen = self.nonreactors.get(agent.name, [])
         if frozen:
             mz = {k: (np.zeros_like(v) if k in frozen else v) for k, v in maps.items()}
