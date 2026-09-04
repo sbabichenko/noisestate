@@ -10,7 +10,6 @@ import yaml
 
 from . import solve as _solve
 from .spec import Model
-from .results import TriangleResult, CellResult
 from .sweep import sweep
 
 
@@ -19,64 +18,6 @@ def save_result(res, path: str) -> None:
     with open(path, "w") as fh:
         json.dump(res.to_dict(), fh)
 
-
-
-def plot_result(res, path: str) -> None:
-    try:
-        import matplotlib
-    except ImportError as exc:
-        raise SystemExit("plotting needs matplotlib: pip install 'noisestate[plot]'") from exc
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    c = res.compiled
-    if isinstance(res, CellResult):
-        names = res.model.state_names + res.model.control_names; N = c.N; h = c.h
-        fig, axes = plt.subplots(len(names), len(c.channels), figsize=(3.6 * len(c.channels), 2.5 * len(names)), squeeze=False)
-        for i, name in enumerate(names):
-            for k, ch in enumerate(c.channels):
-                ax = axes[i, k]; K = res.kernel(name, ch)
-                for t_i in np.linspace(N // 5, N - 1, 5).astype(int):
-                    ax.plot(np.arange(t_i) * h, K[t_i, :t_i], lw=1, label=f"t={t_i * h:.2f}")
-                ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name} on {ch}", fontsize=9); ax.set_xlabel("shock time s")
-                if i == 0 and k == 0:
-                    ax.legend(fontsize=6, frameon=False)
-        fig.suptitle(f"{res.model.name}  (residual {res.residual:.1e})", fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
-        return
-    if isinstance(res, TriangleResult):
-        # finite horizon: plot each kernel as a function of shock time s at a few dates t
-        names = res.model.state_names + res.model.control_names
-        fig, axes = plt.subplots(len(names), len(c.channels), figsize=(3.6 * len(c.channels), 2.5 * len(names)), squeeze=False)
-        for i, name in enumerate(names):
-            for k, ch in enumerate(c.channels):
-                ax = axes[i, k]
-                for t in np.linspace(0.2, 1.0, 5) * c.T:
-                    s = np.linspace(0, t, 200)
-                    ax.plot(s, res.evaluate(name, ch, np.full_like(s, t), s), lw=1, label=f"t={t:.2f}")
-                ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name} on {ch}", fontsize=9); ax.set_xlabel("shock time s")
-                if i == 0 and k == 0:
-                    ax.legend(fontsize=6, frameon=False)
-        fig.suptitle(f"{res.model.name}  (residual {res.residual:.1e})", fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
-        return
-    controls = res.model.control_names
-    states = res.model.state_names
-    names = states + controls
-    ncol = 2
-    nrow = (len(names) + ncol - 1) // ncol
-    fig, axes = plt.subplots(nrow, ncol, figsize=(5.2 * ncol, 2.6 * nrow), squeeze=False)
-    for ax, name in zip(axes.ravel(), names):
-        K = res.kernel(name)
-        for k, ch in enumerate(c.channels):
-            if np.abs(K[:, k]).max() > 1e-12:
-                ax.plot(c.grid.nodes, K[:, k], lw=1.1, label=ch)
-        ax.axhline(0, color="k", lw=0.4)
-        ax.set_title(f"{name}: kernel by channel", fontsize=10)
-        ax.set_xlabel("shock age")
-        ax.legend(fontsize=7, frameon=False, ncol=2)
-    for ax in axes.ravel()[len(names):]:
-        ax.axis("off")
-    fig.suptitle(f"{res.model.name}  (residual {res.residual:.1e})", fontsize=11)
-    fig.tight_layout()
-    fig.savefig(path, dpi=150)
 
 
 def main(argv=None) -> int:
@@ -102,7 +43,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     try:
         return _run(p, args)
-    except (ValueError, TypeError, NotImplementedError, RuntimeError, np.linalg.LinAlgError) as exc:   # a model error: the message
+    except (ValueError, TypeError, NotImplementedError, RuntimeError, ImportError, np.linalg.LinAlgError) as exc:   # a model error: the message
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -152,7 +93,7 @@ def _run(p, args) -> int:
         save_result(res, args.out)
         print("wrote", args.out)
     if args.plot:
-        plot_result(res, args.plot)
+        res.plot(args.plot)
         print("wrote", args.plot)
     return 0 if res.converged else 1
 

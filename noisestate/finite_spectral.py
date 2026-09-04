@@ -12,12 +12,10 @@ node; Anderson fixed point over the action kernels (or the raw maps), Newton-Kry
 """
 from __future__ import annotations
 
-import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .accel import solve_fixed_point
 from .engine import EngineBase
 from .compile import compile_structure, reject_leads
 from .results import TriangleResult
@@ -263,10 +261,13 @@ class SpectralCompiled:
 
 
 class SpectralFiniteSolver(EngineBase):
+    RESULT = TriangleResult
+    TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
     MAP_RIDGE = 1e-13      # ridge of the per-time-row map projection, relative to the best-identified row's Gram
     RIDGE = 1e-11          # relative Tikhonov term on the best-response system: needed with delayed rows, 2e-13 effect without
 
     def __init__(self, model: Model, verbose: bool = False):
+        self.solver_kw = {"verbose": verbose}
         self.c = SpectralCompiled(model)
         self.model = model
         self.verbose = verbose
@@ -448,52 +449,9 @@ class SpectralFiniteSolver(EngineBase):
         G = np.einsum("ink,nm,jmk->ij", zeta, self._mass_rho, zeta)
         return float(0.5 * np.sum(Q * G))
 
-    def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, max_newton: int = 8,
-              variable: str = "actions") -> TriangleResult:
-        """variable="actions": iterate on the agents' action kernels, raw maps derived by projection
-        (robust where early-time maps are ill-determined).  variable="maps": iterate on raw maps.
-        init: action kernels (nU, N, nW) or raw maps (nU, nR, N) per agent; either is accepted and
-        converted to the iteration variable."""
-        t0 = time.time()
-        hist, evals = [], [0]
-        shapes = self.action_shapes
-        packa, unpacka = self.pack_actions, self.unpack_actions
-        if variable == "actions" and self.model.ties:
-            # tied agents' action kernels differ by a channel permutation the symmetry implies; raw maps
-            # (on each agent's own rows) carry over verbatim, so iterate on maps when ties are present
-            variable = "maps"
-        kind = self.init_kind(init) if init is not None else None
-        if variable == "actions":
-            if kind is None:
-                acts0 = {a.name: np.zeros(shapes[a.name]) for a in self.model.agents}
-            elif kind == "actions":
-                acts0 = init
-            else:
-                Z0 = self.c.closed_loop(init)
-                acts0 = {a.name: np.stack([Z0[self.c.block(u)] for u in a.controls]) for a in self.model.agents}
-            z = packa(acts0)
-
-            def F(zz):
-                evals[0] += 1
-                return packa(self.response_actions(unpacka(zz))) - zz
-        else:
-            maps = self.zero_maps() if kind is None else (init if kind == "maps" else self.maps_from_actions(init))
-            z = self.pack(maps)
-
-            def F(zz):
-                evals[0] += 1
-                return self.pack(self.response_map(self.unpack(zz))) - zz
-        z, resid, nev, converged, message = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
-                                                     max_newton=max_newton)
-        hist.append(resid)
-        maps = self.maps_from_actions(unpacka(z)) if variable == "actions" else self.unpack(z)
-        Z = self.c.closed_loop(maps)
-        res = TriangleResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                             iterations=evals[0], seconds=time.time() - t0, history=hist, message=message,
-                             solver_class=type(self), solver_kw={"verbose": self.verbose},
-                             solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable})
+    def _finish(self, res) -> None:
         for a in self.model.agents:
-            res.costs[a.name] = self.expected_cost(a, Z)
-            g, out = self.best_response(a, maps)
+            res.costs[a.name] = self.expected_cost(a, res.Z)
+            g, out = self.best_response(a, res.maps)
             res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
-        return res
+

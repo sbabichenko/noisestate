@@ -18,14 +18,12 @@ the best-response map over all raw maps.
 """
 from __future__ import annotations
 
-import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from .grid import AgeGrid
 from .grid_cache import age_grid
-from .accel import solve_fixed_point
 from .engine import EngineBase
 from .compile import compile_structure
 from .results import StationaryResult
@@ -170,6 +168,8 @@ class Compiled:
 
 # ------------------------------------------------------------------- solver
 class StationarySolver(EngineBase):
+    RESULT = StationaryResult
+    TOL, DAMPING, MAX_NEWTON = 1e-10, 0.3, 60       # 0.3: Kyle-Back converges, 0.5 does not
     # the objective is truncated at the window, so a strategy can push a little loss past the edge: curvatures
     # within this fraction of the largest are treated as that truncation, not as a saddle
     SECOND_ORDER_TOL = 1e-4
@@ -238,11 +238,11 @@ class StationarySolver(EngineBase):
             out.append(Cu)
         return out
 
-    def _foc_operators(self, agent: Agent, R: np.ndarray, Rphys: np.ndarray):
-        """Per control, operators (N x n_prim N) mapping the primary kernels of one channel to the
+    def _foc_operators(self, agent: Agent, R: np.ndarray):
+        """Per control, the operator (N x n_prim N) mapping the primary kernels of one channel to the
         first-order-condition kernel: instantaneous derivative, discounted continuation through the
-        impulse responses, delayed reads of own lagged controls.  Also the physical-only version
-        (all reactions off) for the wedge decomposition."""
+        impulse responses R, delayed reads of own lagged controls, and the past-date term of a lead.
+        Called with the physical impulse responses (all reactions off) for the wedge decomposition."""
         c = self.c; N = c.N; n_prim = len(c.prim) * N
         atoms, Q, q = c.loss[agent.name]
         atom_ops = [c.atom_op(at) for at in atoms]
@@ -250,41 +250,31 @@ class StationarySolver(EngineBase):
             AO = np.concatenate(atom_ops, axis=0)
             self._qa[agent.name] = np.kron(Q, np.eye(N)) @ AO
         QA = self._qa[agent.name]
-        Fu, Fphys = [], []
+        Fu = []
         for ui, u in enumerate(agent.controls):
-            op = np.zeros((N, n_prim)); op_phys = np.zeros((N, n_prim))
+            op = np.zeros((N, n_prim))
             if (u, 0.0) in atoms:
                 j0 = atoms.index((u, 0.0))
-                op += QA[j0 * N:(j0 + 1) * N]; op_phys += QA[j0 * N:(j0 + 1) * N]
+                op += QA[j0 * N:(j0 + 1) * N]
             if not agent.myopic:
-                # impulse responses of every loss atom, batched: (N, m) for R and for Rphys
-                Rj = np.stack([atom_ops[j] @ R[:, ui] for j in range(len(atoms))], axis=1)
-                Rjp = np.stack([atom_ops[j] @ Rphys[:, ui] for j in range(len(atoms))], axis=1)
-                CR = c.grid.corr_ops(Rj, c.rho); CRp = c.grid.corr_ops(Rjp, c.rho)
-                for j, at in enumerate(atoms):
-                    name, lag = at
+                Rj = np.stack([atom_ops[j] @ R[:, ui] for j in range(len(atoms))], axis=1)   # impulse responses of every atom
+                CR = c.grid.corr_ops(Rj, c.rho)
+                for j, (name, lag) in enumerate(atoms):
                     Qj = QA[j * N:(j + 1) * N]
                     if name in agent.controls:
                         if name == u and lag > 0:          # delayed read of the control itself
                             op += np.exp(-c.rho * lag) * c.shift(-lag) @ Qj
-                            op_phys += np.exp(-c.rho * lag) * c.shift(-lag) @ Qj
                         continue                            # own reactions: envelope
                     op += CR[j] @ Qj
-                    op_phys += CRp[j] @ Qj
                     if lag < 0:
                         # a lead: flows at dates t - |lag| <= tau < t also read the quantity after t, so the
                         # derivative of the discounted objective has a further term over those past dates:
                         #   int_0^{|lag|} e^{rho v} r(|lag| - v) (Q zeta)_j(a - v) dv   (convolution with k(v))
-                        for (Rsrc, target) in ((R, "op"), (Rphys, "op_phys")):
-                            rx = Rsrc[c.block(name), ui]
-                            v = c.grid.nodes
-                            kv = np.exp(c.rho * v) * (c.grid.interp(-lag - v) @ rx) * (v <= -lag + 1e-12)
-                            if target == "op":
-                                op += c.grid.conv_op(kv) @ Qj
-                            else:
-                                op_phys += c.grid.conv_op(kv) @ Qj
-            Fu.append(op); Fphys.append(op_phys)
-        return Fu, Fphys
+                        v = c.grid.nodes
+                        kv = np.exp(c.rho * v) * (c.grid.interp(-lag - v) @ R[c.block(name), ui]) * (v <= -lag + 1e-12)
+                        op += c.grid.conv_op(kv) @ Qj
+            Fu.append(op)
+        return Fu
 
     def _projection_operator(self, agent: Agent, rows, inst):
         """H (nR N x nW N): E[phi_t dY_r(t-b)] for every row r and age b, from the FOC kernels."""
@@ -334,14 +324,11 @@ class StationarySolver(EngineBase):
         Zpass, R = Zp[:, :nW], Zp[:, nW:]
         R = self._impulse_responses(agent, maps, R)
         Zpass = self._passive_world(agent, maps, Zpass, R)
-        if agent.name not in self._rphys:                                   # map-independent: cache
-            self._rphys[agent.name] = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
-        Rphys = self._rphys[agent.name]
         # operators: gamma -> action, action -> world, world -> FOC, FOC -> projection
         ytil, yinst = self._passive_rows(agent, Zpass)
         Gk = self._row_operator(agent, ytil, yinst)
         Resp = self._response_operators(agent, R)
-        Fu, Fphys = self._foc_operators(agent, R, Rphys)
+        Fu = self._foc_operators(agent, R)
         H = self._projection_operator(agent, ytil, yinst)
         # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp_v Gk gamma_v)) = 0 for all controls
         nG = nU * nR * N
@@ -387,6 +374,9 @@ class StationarySolver(EngineBase):
         out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
         if want_decomp:
             out["second_order"] = self._second_order(agent, Resp, Gk, keep)
+            if agent.name not in self._rphys:                               # physical impulse responses: map-independent
+                self._rphys[agent.name] = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
+            Fphys = self._foc_operators(agent, self._rphys[agent.name])
             dec = {}
             for ui, u in enumerate(agent.controls):
                 phi = np.stack([Fu[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
@@ -483,60 +473,16 @@ class StationarySolver(EngineBase):
         return self.maps_from_kernels(self.world_from_actions(actions))
 
     # ------------------------------------------------------ fixed point
-    def solve(self, init: Optional[Dict[str, np.ndarray]] = None, tol: float = 1e-10, damping: float = 0.3,
-              max_newton: int = 60, variable: str = "actions") -> StationaryResult:
-        """Anderson mixing (damping = the mixing weight; 0.3 is needed on Kyle-Back, 0.5 fails), then a
-        Newton-Krylov polish if it stalls.  variable: "maps" iterates on the raw strategies; "actions"
-        on the action kernels (raw maps by projection), better conditioned when strategies are weakly
-        identified; with ties the raw maps are used regardless (tied agents' action kernels differ by
-        a channel permutation).  init: maps or actions, either is accepted."""
-        t0 = time.time()
-        hist, evals = [], [0]
-        shapes_a = self.action_shapes
-        packa, unpacka = self.pack_actions, self.unpack_actions
-        if variable == "actions" and self.model.ties:
-            # tied agents' action kernels differ by a channel permutation the symmetry implies; raw maps
-            # (on each agent's own rows) carry over verbatim, so iterate on maps when ties are present
-            variable = "maps"
-        kind = self.init_kind(init) if init is not None else None
-        if variable == "actions":
-            if kind == "actions":
-                acts0 = init
-            elif kind == "maps":                          # maps given: convert to actions
-                Z0 = self.c.closed_loop(init); acts0 = {a.name: np.stack([Z0[self.c.block(u)] for u in a.controls]) for a in self.model.agents}
-            else:
-                acts0 = {a.name: np.zeros(shapes_a[a.name]) for a in self.model.agents}
-            z = packa(acts0)
-
-            def F(zz):
-                evals[0] += 1
-                return packa(self.response_actions(unpacka(zz))) - zz
-        else:
-            maps = self.zero_maps() if kind is None else (init if kind == "maps" else self.maps_from_actions(init))
-            z = self.pack(maps)
-
-            def F(zz):
-                evals[0] += 1
-                return self.pack(self.response_map(self.unpack(zz))) - zz
-
-        z, resid, nev, converged, message = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
-                                                     max_newton=max_newton)
-        hist.append(resid)
-        maps = self.maps_from_actions(unpacka(z)) if variable == "actions" else self.unpack(z)
-        Z = self.c.closed_loop(maps)
-        res = StationaryResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                     iterations=evals[0], seconds=time.time() - t0, history=hist, message=message,
-                     solver_class=type(self), solver_kw=self.solver_kw,
-                     solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable})
-        # decomposition, costs, and how well the raw rows represent each best response
+    def _finish(self, res) -> None:
+        """Costs, the first-order-condition decomposition, the second-order check and the representation
+        error of every agent's best response at the equilibrium."""
         for a in self.model.agents:
-            g, out = self.best_response(a, maps, want_decomp=True)
+            g, out = self.best_response(a, res.maps, want_decomp=True)
             res.foc[a.name] = out["decomp"]
-            res.costs[a.name] = self.expected_cost(a, Z)
+            res.costs[a.name] = self.expected_cost(a, res.Z)
             if out["second_order"] is not None:
                 res.second_order[a.name] = out["second_order"]
             res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
-        return res
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
         """Stationary flow loss per unit time of the agent in the world Z (exact Gram quadrature)."""

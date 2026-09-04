@@ -98,9 +98,7 @@ def test_sharp_optimality_the_projected_foc_vanishes_only_at_the_equilibrium():
 
     def projected_foc(maps, a):
         Zp = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls); Zpass, R = Zp[:, :nW], Zp[:, nW:]
-        if a.name not in S._rphys:
-            S._rphys[a.name] = c.closed_loop(S.zero_maps(), excluded=None, impulse_controls=a.controls)[:, nW:]
-        Fu, _ = S._foc_operators(a, R, S._rphys[a.name])
+        Fu = S._foc_operators(a, R)
         ytil, yinst = S._passive_rows(a, Zpass); H = S._projection_operator(a, ytil, yinst)
         Z = c.closed_loop(maps)
         worst = 0.0
@@ -267,7 +265,7 @@ def test_wrong_grid_warm_start_is_an_error_on_every_engine():
         ns.StationarySolver(ns.Model.from_dict(d)).solve(init=r.maps)
     dc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); dc["horizon"]["kind"] = "finite_cells"; dc["horizon"]["nodes"] = 8
     rc = ns.solve(dc); dc["horizon"]["nodes"] = 16
-    with pytest.raises(ValueError, match="raw maps of shape"):
+    with pytest.raises(ValueError, match="different grid"):
         ns.FiniteSolver(ns.Model.from_dict(dc)).solve(init=rc.maps)
 
 

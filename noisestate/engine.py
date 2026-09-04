@@ -8,10 +8,12 @@ conversion from action kernels to maps.
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, Tuple
+import time
+from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 
+from .accel import solve_fixed_point
 from .spec import Agent, Model
 
 
@@ -19,6 +21,10 @@ class EngineBase:
     model: Model
     c: object                       # the compiled model: .reps (tie representatives), .rep (agent -> representative), .N, .nW
     shapes: Dict[str, Tuple[int, ...]]      # agent -> shape of its raw maps
+    solver_kw: dict                 # constructor options, so a result can rebuild the same engine
+    RESULT = None                   # the result class
+    TOL, DAMPING, MAX_NEWTON = 1e-10, 0.5, 60       # solve() defaults; each engine sets its own
+    ACTIONS = True                  # whether the engine can iterate on action kernels
 
     # ------------------------------------------------------------ ties
     def _fill_ties(self, d: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
@@ -129,6 +135,63 @@ class EngineBase:
         return worst
 
     # ------------------------------------------------------ fixed points
+    def solve(self, init: Optional[Dict[str, np.ndarray]] = None, tol: Optional[float] = None, damping: Optional[float] = None,
+              max_newton: Optional[int] = None, variable: str = "actions"):
+        """Find the equilibrium: Anderson mixing on the fixed point of the best-response map (damping is
+        the mixing weight), then a Newton-Krylov polish if it stalls.  variable="actions" iterates on
+        the agents' action kernels, with the raw maps recovered by projection (better conditioned where
+        strategies are weakly identified); "maps" iterates on the raw maps, which is also what happens
+        with ties (tied agents' action kernels differ by a channel permutation) and on the cell engine.
+        init: action kernels or raw maps per agent, either is accepted."""
+        tol = self.TOL if tol is None else tol
+        damping = self.DAMPING if damping is None else damping
+        max_newton = self.MAX_NEWTON if max_newton is None else max_newton
+        t0 = time.time(); evals = [0]
+        if variable == "actions" and (self.model.ties or not self.ACTIONS):
+            variable = "maps"
+        kind = self.init_kind(init) if init is not None else None
+        if kind == "actions" and not self.ACTIONS:
+            raise ValueError("this engine iterates on raw maps: pass raw maps as init")
+        if variable == "actions":
+            if kind is None:
+                start = {a.name: np.zeros(self.action_shapes[a.name]) for a in self.model.agents}
+            else:
+                start = init if kind == "actions" else self.actions_from_maps(init)
+            pack, unpack, respond = self.pack_actions, self.unpack_actions, self.response_actions
+        else:
+            if kind is None:
+                start = self.zero_maps()
+            else:
+                start = init if kind == "maps" else self.maps_from_actions(init)
+            pack, unpack, respond = self.pack, self.unpack, self.response_map
+
+        def F(zz):
+            evals[0] += 1
+            return pack(respond(unpack(zz))) - zz
+        z, resid, _, converged, message = solve_fixed_point(F, pack(start), tol=tol, verbose=self.verbose, damping=damping,
+                                                            max_newton=max_newton)
+        maps = self.maps_from_actions(unpack(z)) if variable == "actions" else unpack(z)
+        Z = self.c.closed_loop(maps)
+        res = self.RESULT(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
+                          iterations=evals[0], seconds=time.time() - t0, message=message, solver_class=type(self),
+                          solver_kw=self.solver_kw,
+                          solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable})
+        self._finish(res)
+        return res
+
+    def _finish(self, res) -> None:
+        """Fill the engine's own outputs on a fresh result: costs, and what else it computes."""
+        for a in self.model.agents:
+            res.costs[a.name] = self.expected_cost(a, res.Z)
+
+    def actions_from_maps(self, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Action kernels the raw maps produce in their own closed loop."""
+        Z = self.c.closed_loop(maps)
+        return {a.name: np.stack([Z[self.c.block(u)] for u in a.controls]) for a in self.model.agents}
+
+    def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
+        raise NotImplementedError
+
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray]):
         """(raw map, {"action": ..., "Zfull": ..., ...}) of the agent against `maps`."""
         raise NotImplementedError

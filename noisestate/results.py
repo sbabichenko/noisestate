@@ -38,7 +38,6 @@ class BaseResult:
     iterations: int
     seconds: float
     costs: Dict[str, float] = field(default_factory=dict)
-    history: List[float] = field(default_factory=list)
     message: str = ""
     representation_error: Dict[str, float] = field(default_factory=dict)   # agent -> relative residual, see resolution_ok
     refinement: Optional[dict] = None          # filled by refine(): change of costs/kernels under a finer grid
@@ -310,8 +309,25 @@ class StationaryResult(BaseResult):
     def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         """Closed-loop kernel of a quantity at the shock ages: (N, nW), or (N,) for one channel."""
         c = self.compiled
-        K = c.expr_op(c.model.expand({name: 1.0})) @ self.Z
+        K = self.Z[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.Z
         return K if channel is None else K[:, self.channels.index(channel)]
+
+    def plot(self, path: str) -> None:
+        """Kernels by channel for every state and control, one panel per quantity (needs matplotlib)."""
+        plt = _pyplot(); c = self.compiled
+        names = self.model.state_names + self.model.control_names
+        nrow = (len(names) + 1) // 2
+        fig, axes = plt.subplots(nrow, 2, figsize=(10.4, 2.6 * nrow), squeeze=False)
+        for ax, name in zip(axes.ravel(), names):
+            K = self.kernel(name)
+            for k, ch in enumerate(self.channels):
+                if np.abs(K[:, k]).max() > 1e-12:
+                    ax.plot(c.grid.nodes, K[:, k], lw=1.1, label=ch)
+            ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name}: kernel by channel", fontsize=10); ax.set_xlabel("shock age")
+            ax.legend(fontsize=7, frameon=False, ncol=2)
+        for ax in axes.ravel()[len(names):]:
+            ax.axis("off")
+        fig.suptitle(f"{self.model.name}  (residual {self.residual:.1e})", fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
 
     def grid_info(self) -> dict:
         g = self.compiled.grid
@@ -341,8 +357,17 @@ class TriangleResult(BaseResult):
     def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         """Closed-loop kernel at the triangle nodes (res.grid.t, res.grid.s): (N, nW) or (N,)."""
         c = self.compiled
-        K = c.expr_op(c.model.expand({name: 1.0})) @ self.Z
+        K = self.Z[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.Z
         return K if channel is None else K[:, self.channels.index(channel)]
+
+    def plot(self, path: str) -> None:
+        """Each kernel as a function of the shock time s at five dates t (needs matplotlib)."""
+        T = self.compiled.T
+        def curves(name, ch):
+            for t in np.linspace(0.2, 1.0, 5) * T:
+                s = np.linspace(0, t, 200)
+                yield t, s, self.evaluate(name, ch, np.full_like(s, t), s)
+        _plot_by_shock_time(self, curves, path)
 
     def _kernel_change(self, fine) -> float:
         g = self.grid; worst = 0.0
@@ -403,6 +428,15 @@ class CellResult(BaseResult):
         c = self.compiled
         return {"kind": "finite_cells", "cells": int(c.N), "h": float(c.h), "t": c.times.tolist()}
 
+    def plot(self, path: str) -> None:
+        """Each kernel as a function of the shock time s at five dates t (needs matplotlib)."""
+        N, h = self.compiled.N, self.compiled.h
+        def curves(name, ch):
+            K = self.kernel(name, ch)
+            for t_i in np.linspace(N // 5, N - 1, 5).astype(int):
+                yield t_i * h, np.arange(t_i) * h, K[t_i, :t_i]
+        _plot_by_shock_time(self, curves, path)
+
     def summary(self) -> str:
         c = self.compiled
         lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.iterations} evaluations, "
@@ -410,3 +444,29 @@ class CellResult(BaseResult):
         for a in self.model.agents:
             lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.6f}")
         return "\n".join(lines)
+
+
+def _pyplot():
+    try:
+        import matplotlib
+    except ImportError as exc:
+        raise ImportError("plotting needs matplotlib: pip install 'noisestate[plot]'") from exc
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    return plt
+
+
+def _plot_by_shock_time(res, curves, path: str) -> None:
+    """Finite horizon: one panel per (quantity, channel), the kernel against the shock time s at a few dates t."""
+    plt = _pyplot()
+    names = res.model.state_names + res.model.control_names; chans = res.channels
+    fig, axes = plt.subplots(len(names), len(chans), figsize=(3.6 * len(chans), 2.5 * len(names)), squeeze=False)
+    for i, name in enumerate(names):
+        for k, ch in enumerate(chans):
+            ax = axes[i, k]
+            for t, s, y in curves(name, ch):
+                ax.plot(s, y, lw=1, label=f"t={t:.2f}")
+            ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name} on {ch}", fontsize=9); ax.set_xlabel("shock time s")
+            if i == 0 and k == 0:
+                ax.legend(fontsize=6, frameon=False)
+    fig.suptitle(f"{res.model.name}  (residual {res.residual:.1e})", fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)

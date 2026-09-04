@@ -216,22 +216,9 @@ class TriangleGrid:
             lo, hi = float(r_lo[k]), float(r_hi[k])
             if hi - lo <= 1e-13:
                 continue
-            t0, a0 = point_fn(k, np.array([lo])); t1, a1 = point_fn(k, np.array([hi]))
-            cuts = set()
-            for b in self.bp:
-                for (v0, v1) in ((t0[0], t1[0]), (a0[0], a1[0])):
-                    if abs(v1 - v0) > 1e-14:
-                        r = lo + (b - v0) / (v1 - v0) * (hi - lo)
-                        if lo + 1e-12 < r < hi - 1e-12:
-                            cuts.add(round(r, 13))
+            cuts = self._crossings(point_fn, k, lo, hi)
             if known_fn is not None:
-                kt0, ka0 = known_fn(k, np.array([lo])); kt1, ka1 = known_fn(k, np.array([hi]))
-                for b in self.bp:
-                    for (v0, v1) in ((kt0[0], kt1[0]), (ka0[0], ka1[0])):
-                        if abs(v1 - v0) > 1e-14:
-                            r = lo + (b - v0) / (v1 - v0) * (hi - lo)
-                            if lo + 1e-12 < r < hi - 1e-12:
-                                cuts.add(round(r, 13))
+                cuts |= self._crossings(known_fn, k, lo, hi)
             if extra_cuts is not None:
                 for r in extra_cuts(k):
                     if lo + 1e-12 < r < hi - 1e-12:
@@ -259,6 +246,18 @@ class TriangleGrid:
         lp.R = csr_matrix((np.ones(len(lp.rows)), (lp.rows, np.arange(len(lp.rows)))), shape=(n_out, len(lp.rows)))
         return lp
 
+    def _crossings(self, fn: Callable, k: int, lo: float, hi: float) -> set:
+        """Parameter values r in (lo, hi) at which the read point fn(k, r) (linear in r) crosses a breakpoint."""
+        t0, a0 = fn(k, np.array([lo])); t1, a1 = fn(k, np.array([hi]))
+        cuts = set()
+        for b in self.bp:
+            for (v0, v1) in ((t0[0], t1[0]), (a0[0], a1[0])):
+                if abs(v1 - v0) > 1e-14:
+                    r = lo + (b - v0) / (v1 - v0) * (hi - lo)
+                    if lo + 1e-12 < r < hi - 1e-12:
+                        cuts.add(round(r, 13))
+        return cuts
+
     def line_op(self, out_t, out_a, r_lo, r_hi, point_fn: Callable, weight_fn: Optional[Callable] = None,
                 extra_cuts: Optional[Callable] = None, m: Optional[int] = None, side_t=+1, side_a=+1) -> np.ndarray:
         """Dense (n_out x N) operator for one weight function (convenience over path())."""
@@ -267,13 +266,11 @@ class TriangleGrid:
             return np.zeros((len(np.atleast_1d(out_t)), self.N))
         w = lp.w.astype(float)
         if weight_fn is not None:
-            wf = np.empty(len(lp.r), dtype=complex)
+            wf = np.empty(len(lp.r))
             for k in np.unique(lp.rows):
                 sel = lp.rows == k
                 wf[sel] = weight_fn(int(k), lp.r[sel])
-            if np.abs(wf.imag).max() > 0:
-                return lp.apply(wf)
-            w = w * wf.real
+            w = w * wf
             return lp.apply_weights(w)
         return lp.apply_weights(w)
 

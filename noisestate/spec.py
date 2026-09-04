@@ -556,30 +556,15 @@ class Model:
             agents.append(Agent(name=k, controls=list(v.get("controls") or []), signals=rows, loss=loss,
                                 myopic=v.get("myopic", False)))
         import copy
-        # atoms ('P@tau') are parsed lazily, so scan them for lag parameters; a parameter used inside
-        # another parameter's expression also counts as used
-        for s in states:
-            for atom in list(s.drift) + list(s.noise):
-                parse_atom(atom, params)
-        for df in defs:
-            for atom in df.expr:
-                parse_atom(atom, params)
-        for a in agents:
-            for r in a.signals:
-                for atom in list(r.drift) + list(r.noise):
-                    parse_atom(atom, params)
-            for term in a.loss:
-                for atom in term[1:]:
-                    parse_atom(atom, params)
-        for k, v in (d.get("params") or {}).items():
-            if isinstance(v, str):
-                safe_eval(v, params)
         from types import MappingProxyType
         m = cls(name=d.get("name", "model"), channels=list(d.get("channels") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
-                params=MappingProxyType(dict(params)), source=copy.deepcopy(d))     # read-only: see with_params()
-        m.validate()                                           # structural errors first; then the parameter check
-        m.horizon.nodes = int(m.horizon.nodes)
+                params=MappingProxyType(params), source=copy.deepcopy(d))     # read-only: see with_params()
+        m.validate()                                           # structural errors first (its expansions also record
+        m.horizon.nodes = int(m.horizon.nodes)                 # the lag parameters, 'P@tau'); then the parameter check
+        for k, v in pdict.items():
+            if isinstance(v, str):
+                safe_eval(v, params)                           # a parameter used inside another one counts as used
         unused = sorted(set(params) - params.used)
         if unused:
             raise ValueError(f"parameter(s) {unused} are defined but never used in the model (misspelled somewhere?)")

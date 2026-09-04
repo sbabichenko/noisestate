@@ -19,13 +19,11 @@ refine N or Richardson-extrapolate for high accuracy.
 """
 from __future__ import annotations
 
-import time
 from typing import Dict, Optional
 
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, lgmres
 
-from .accel import solve_fixed_point
 from .engine import EngineBase
 from .compile import compile_structure, reject_leads
 from .results import CellResult
@@ -173,7 +171,11 @@ class FiniteCompiled:
 
 
 class FiniteSolver(EngineBase):
+    RESULT = CellResult
+    TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 60
+    ACTIONS = False
     def __init__(self, model: Model, verbose: bool = False):
+        self.solver_kw = {"verbose": verbose}
         self.c = FiniteCompiled(model)
         self.model = model
         self.verbose = verbose
@@ -300,30 +302,3 @@ class FiniteSolver(EngineBase):
         G = np.einsum("itc,jtc,t->ij", zeta, zeta, disc) * c.h * c.h    # sum_t h e^{-rho t} sum_j h zeta zeta
         return float(0.5 * np.sum(Q * G))
 
-    def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, max_newton: int = 60) -> CellResult:
-        """Anderson on the raw maps, then a Newton-Krylov polish.  init: raw maps."""
-        t0 = time.time()
-        if init is not None:
-            for a in self.model.agents:
-                if a.name not in init or np.asarray(init[a.name]).shape != tuple(self.shapes[a.name]):
-                    raise ValueError(f"init for {a.name}: expected raw maps of shape {tuple(self.shapes[a.name])}")
-        maps = init if init is not None else self.zero_maps()
-        z = self.pack(maps)
-        hist, evals = [], [0]
-
-        def F(zz):
-            evals[0] += 1
-            return self.pack(self.response_map(self.unpack(zz))) - zz
-
-        z, resid, nev, converged, message = solve_fixed_point(F, z, tol=tol, verbose=self.verbose, damping=damping,
-                                                     max_newton=max_newton)
-        hist.append(resid)
-        maps = self.unpack(z)
-        Z = self.c.closed_loop(maps)
-        res = CellResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                           iterations=evals[0], seconds=time.time() - t0, history=hist, message=message,
-                           solver_class=type(self), solver_kw={"verbose": self.verbose},
-                           solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton})
-        for a in self.model.agents:
-            res.costs[a.name] = self.expected_cost(a, Z)
-        return res
