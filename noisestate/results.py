@@ -132,8 +132,11 @@ class BaseResult:
         row("converged", float(self.residual), self.solve_kw.get("tol"), bool(self.converged),
             "NOT converged", self.message)
         rep = max(self.representation_error.values()) if self.representation_error else None
+        lagged = bool(self.model.all_lags())
         row("resolution", rep, self.RESOLUTION_TOL, self.resolution_ok,
-            f"UNDER-RESOLVED (representation error {rep:.1e}: raise horizon.nodes)" if rep is not None else "", "raise horizon.nodes")
+            (f"UNDER-RESOLVED (representation error {rep:.1e}: raise horizon.nodes"
+             + ("; with lagged reads or delayed rows a floor near 1e-3 is the interpolation of the jump at the lag, see the README's "
+                "known open items" if lagged else "") + ")") if rep is not None else "", "raise horizon.nodes")
         tail = getattr(self, "window_tail", None)
         if tail is not None:
             row("window", float(tail), self.WINDOW_TAIL_TOL, bool(tail <= self.WINDOW_TAIL_TOL),

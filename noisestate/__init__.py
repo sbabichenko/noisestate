@@ -8,10 +8,11 @@ from .stationary import StationarySolver
 from .finite import FiniteSolver
 from .finite_spectral import SpectralFiniteSolver
 from .sweep import sweep, make_solver, ENGINES
+from .grid_cache import clear as clear_grid_cache
 
 __all__ = ["Model", "ModelBuilder", "ConvergenceError", "BaseResult", "StationaryResult", "TriangleResult",
            "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "load", "solve", "sweep",
-           "read_yaml", "read_json", "make_solver", "ENGINES", "Result", "SpectralResult", "FiniteResult"]
+           "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache"]
 
 try:
     from importlib.metadata import version as _version

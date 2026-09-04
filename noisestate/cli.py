@@ -89,7 +89,7 @@ def main(argv=None) -> int:
     s.add_argument("--nodes", type=int, help="override nodes per panel (stationary) or per side of each piece (finite)")
     s.add_argument("--window", type=float, help="override the lag window L")
     s.add_argument("--param", action="append", default=[], help="override a parameter, k=v (repeatable)")
-    s.add_argument("--tol", type=float, default=1e-10)
+    s.add_argument("--tol", type=float, default=None, help="fixed-point tolerance (default: the engine's own, 1e-10 stationary, 1e-8 finite)")
     s.add_argument("--stability", action="store_true", help="also report the stability of the equilibrium under best-response dynamics")
     s.add_argument("--refine", action="store_true", help="re-solve on a finer grid and report how much costs and kernels move")
     s.add_argument("-v", "--verbose", action="store_true")
@@ -145,7 +145,8 @@ def _run(p, args) -> int:
             p.error("--window must be positive")
         d.setdefault("horizon", {})["window"] = args.window
     m = Model.from_dict(d)
-    res = _solve(m, verbose=args.verbose, tol=args.tol, refine=args.refine, stability=args.stability)
+    kw = {} if args.tol is None else {"tol": args.tol}
+    res = _solve(m, verbose=args.verbose, refine=args.refine, stability=args.stability, **kw)
     print(res.summary())
     if args.out:
         save_result(res, args.out)

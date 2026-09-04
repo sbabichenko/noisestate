@@ -108,6 +108,9 @@ warm-started point costs a handful of best responses, which is what a slider in 
 `to_dict()` is the payload such a front end would render (grid, kernels per quantity and
 channel, raw maps, costs, and the first-order-condition decomposition).
 
+Grids and their operator caches are shared across solves in a process (`noisestate.clear_grid_cache()`
+releases them; a large stationary grid holds a few hundred MB of convolution tensors).
+
 ## How it works
 
 Stationary form: every process is a kernel in shock age on `[0, L]`, stored at
