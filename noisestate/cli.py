@@ -31,7 +31,10 @@ def save_result(res, path: str) -> None:
 
 
 def plot_result(res, path: str) -> None:
-    import matplotlib
+    try:
+        import matplotlib
+    except ImportError as exc:
+        raise SystemExit("plotting needs matplotlib: pip install 'noisestate[plot]'") from exc
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     c = res.compiled

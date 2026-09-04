@@ -16,7 +16,11 @@ __all__ = ["Model", "ModelBuilder", "ConvergenceError", "BaseResult", "Stationar
            "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "load", "solve", "sweep",
            "read_yaml", "read_json", "Result", "SpectralResult", "FiniteResult"]
 
-__version__ = "0.2.0"
+try:
+    from importlib.metadata import version as _version
+    __version__ = _version("noisestate")
+except Exception:                                   # not installed as a distribution
+    __version__ = "0.2.1"
 
 _ENGINES = {"stationary": StationarySolver, "finite": SpectralFiniteSolver, "finite_cells": FiniteSolver}
 
