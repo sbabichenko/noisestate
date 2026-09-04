@@ -30,6 +30,8 @@
   the map projection (the stationary engine's keep mask) instead of being regularised by a ridge;
   the fixed-point map is smooth again and the delayed Chapter 1 example converges to 1e-12 in 13
   evaluations where it stalled at 1e-8.  Costs unchanged to 1e-12.
+- `refine()` on the finite engine reads the fine kernel from the coarse node's side of each piece
+  boundary (a one-sided read across the delay line reported a kernel change of 1.0).
 - Anderson mixing detects a stall (no 30% improvement over 20 iterations) and stops with a message;
   within two decades of the tolerance the Newton polish is skipped.
 - Triangle path quadrature builds its interpolation sparsely: a 12-node delay-cut grid compiles in

@@ -369,10 +369,13 @@ class TriangleResult(BaseResult):
         _plot_by_shock_time(self, curves, path)
 
     def _kernel_change(self, fine) -> float:
+        # read the fine kernel at the coarse nodes from the same side of each piece boundary as the coarse
+        # node (kernels jump across the delay line; a one-sided read from the other side is not an error)
         g = self.grid; worst = 0.0
+        I = fine.grid.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a)
         for name in self.compiled.prim:
             for ch in self.channels:
-                K0 = self.kernel(name, ch); K1 = fine.evaluate(name, ch, g.t, g.s)
+                K0 = self.kernel(name, ch); K1 = I @ fine.kernel(name, ch)
                 worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
         return worst
 
