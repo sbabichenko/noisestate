@@ -106,6 +106,21 @@ def parse_expr(spec, params: Dict[str, float]) -> Dict[str, float]:
     return out
 
 
+class _Recording(dict):
+    """A parameter dict that remembers which keys were looked up."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k); self.used = set()
+
+    def __getitem__(self, k):
+        self.used.add(k); return super().__getitem__(k)
+
+    def __contains__(self, k):
+        if super().__contains__(k):
+            self.used.add(k)
+        return super().__contains__(k)
+
+
 @dataclass
 class State:
     name: str
@@ -256,6 +271,25 @@ class Model:
             loss.append((round(float(term[0]), 9), tuple(sorted(ex))))
         return (len(a.controls), a.myopic, rows, tuple(sorted(loss)))
 
+    @property
+    def notes(self) -> List[str]:
+        """Conventions that apply to this particular model and are easy to misread."""
+        out = []
+        for a in self.agents:
+            for r in a.signals:
+                obs = [n for (n, l) in self.expand(r.drift) if n in self.control_names and l == 0]
+                if obs:
+                    out.append(f"row {a.name}.{r.name} observes the control(s) {obs}: only their regular (predictable) part is "
+                               "seen; a quantity with a white component (a price that loads on a noise channel) is observed "
+                               "through that channel, e.g. a row with the channel as its noise")
+            if a.myopic:
+                out.append(f"agent {a.name} is myopic: it ignores the effect of its action on future flows (a competitive pricing agent)")
+        if self.horizon.kind == "stationary":
+            out.append("costs are stationary flow losses per unit time" + (" (the discount rate enters the best responses, not the reported cost)" if self.horizon.discount else ""))
+        else:
+            out.append("costs are discounted integrals over [0, T]")
+        return out
+
     # --------------------------------------------------------- validation
     def validate(self) -> None:
         names = self.state_names + self.control_names + self.def_names
@@ -371,6 +405,7 @@ class Model:
         params: Dict[str, float] = {}
         for k, v in (d.get("params") or {}).items():          # a parameter may be an expression in earlier ones
             params[k] = eval_coef(v, params)
+        params = _Recording(params)                            # records which parameters the model references
         hz = d.get("horizon") or {}
         horizon = Horizon(kind=hz.get("kind", "stationary"),
                           discount=eval_coef(hz.get("discount", 0.0), params),
@@ -395,9 +430,30 @@ class Model:
             agents.append(Agent(name=k, controls=list(v.get("controls") or []), signals=rows, loss=loss,
                                 myopic=bool(v.get("myopic", False))))
         import copy
+        # atoms ('P@tau') are parsed lazily, so scan them for lag parameters; a parameter used inside
+        # another parameter's expression also counts as used
+        for s in states:
+            for atom in list(s.drift) + list(s.noise):
+                parse_atom(atom, params)
+        for df in defs:
+            for atom in df.expr:
+                parse_atom(atom, params)
+        for a in agents:
+            for r in a.signals:
+                for atom in list(r.drift) + list(r.noise):
+                    parse_atom(atom, params)
+            for term in a.loss:
+                for atom in term[1:]:
+                    parse_atom(atom, params)
+        for k, v in (d.get("params") or {}).items():
+            if isinstance(v, str):
+                safe_eval(v, params)
+        unused = sorted(set(params) - params.used)
+        if unused:
+            raise ValueError(f"parameter(s) {unused} are defined but never used in the model (misspelled somewhere?)")
         m = cls(name=d.get("name", "model"), channels=list(d.get("channels") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
-                params=params, source=copy.deepcopy(d))
+                params=dict(params), source=copy.deepcopy(d))
         m.validate()
         return m
 

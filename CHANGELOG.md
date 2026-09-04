@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2 (2026-09-04) — guards against misleading results
+
+- `refine=True` / `--refine` / `res.refine()`: re-solve at 1.5x the nodes and report the change of
+  costs and kernels (`res.refinement`, summary flag `NOT RESOLVED`).
+- `StationaryResult.window_tail` and the summary flag `WINDOW TOO SHORT`.
+- Sweep rows carry `change` and `jump` (branch-jump detection).
+- Unreferenced parameters are an error; `Model.notes` and `res.cost_kind` state the conventions
+  that apply (predictable part of observed controls, myopia, flow loss vs discounted cost);
+  summaries print `flow loss` / `discounted cost` rather than `E[cost]`.
+
 ## 0.2.1 (2026-09-04) — review fixes
 
 - Sweeping a `Model` object re-parametrises its source; ties require structural identity, not

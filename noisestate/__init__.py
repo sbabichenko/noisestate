@@ -41,10 +41,11 @@ def load(path: str) -> Model:
     return Model.from_dict(read_yaml(path))
 
 
-def solve(model, **kw) -> BaseResult:
+def solve(model, refine: bool = False, stability: bool = False, **kw) -> BaseResult:
     """Solve a model (a Model, a dict, or a path to a YAML file) with the engine its horizon selects.
     Keyword arguments go to the engine's constructor (e.g. verbose, naive_observers) or to its
-    solve() (e.g. tol, init, method, variable); unknown ones are an error."""
+    solve() (e.g. tol, init, method, variable); unknown ones are an error.  refine=True re-solves
+    on a finer grid and reports the change (res.refinement); stability=True adds res.stability()."""
     if isinstance(model, str):
         model = load(model)
     elif isinstance(model, dict):
@@ -58,4 +59,9 @@ def solve(model, **kw) -> BaseResult:
     if unknown:
         valid = sorted((set(init_params) | set(solve_params)) - {"self", "model", "init"})
         raise TypeError(f"unknown option(s) {unknown} for the {model.horizon.kind!r} engine; valid: {valid}")
-    return engine(model, **ctor_kw).solve(**solve_kw)
+    res = engine(model, **ctor_kw).solve(**solve_kw)
+    if refine:
+        res.refine(**{k: v for k, v in solve_kw.items() if k != "init"})
+    if stability:
+        res.stability()
+    return res

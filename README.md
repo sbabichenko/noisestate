@@ -166,6 +166,26 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
   without any reference solution, together with the equivalence of the two iteration variables
   and invariance to channel relabelling and agent order.
 
+### Guards against misleading results
+
+A converged solve is a solution of the discretised, truncated model.  Four checks say how far that
+is from the model you wrote:
+
+* `noisestate solve model.yaml --refine` (or `solve(..., refine=True)`, `res.refine()`) re-solves
+  on a grid with 1.5 times the nodes and reports the relative change of every cost and of the
+  kernels; `res.refinement["resolved"]` is the verdict, and the summary says `NOT RESOLVED`.
+* Stationary results carry `res.window_tail`, the largest kernel value at the window edge relative
+  to that kernel's peak; above 2% the summary says `WINDOW TOO SHORT`, because the equilibrium
+  solved is that of the model truncated at `horizon.window`.
+* Every sweep row has `change` (relative change of the action kernels from the previous point) and
+  `jump` (that change per unit of parameter step is more than five times the sweep's median), so
+  a branch jump between neighbouring points is visible instead of silently plotted as a curve.
+* `res.cost_kind` and `model.notes` name what the numbers are: stationary costs are flow losses
+  per unit time, finite-horizon costs are discounted integrals; a row that observes a control
+  directly sees only its predictable part; a myopic agent ignores its effect on future flows.
+  `noisestate validate` prints the notes.  A parameter that nothing references is an error, the
+  usual sign of a misspelled name elsewhere in the file.
+
 ## Limits
 
 Scalar states and controls (write vector models as several scalars); no exact

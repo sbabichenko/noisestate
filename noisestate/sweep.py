@@ -58,7 +58,10 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], s
     the previous one.  predictor="secant" starts from the linear extrapolation of the last two
     equilibria in the parameter (a tangent predictor; markedly more robust at hard points such as a
     small trading cost); "previous" starts from the last equilibrium.
-    Returns [{"value", "result", "seconds", "evaluations", "converged"}] in the given order."""
+    Returns [{"value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the given
+    order; "change" is the relative change of the action kernels from the previous point and "jump"
+    flags a change per unit parameter step more than five times the sweep's median (a possible
+    branch jump)."""
     base = _load_dict(model)
     if param not in (base.get("params") or {}):
         raise ValueError(f"{param!r} is not a parameter of the model (params: {sorted((base.get('params') or {}))})")
@@ -80,11 +83,25 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], s
             if init is None:
                 init = w1
         res = S.solve(init=init, **(solve_kw or {}))
+        change = None
+        if prev is not None and prev.compiled.N == S.c.N:
+            a1, a0 = warm_start(res), warm_start(prev)
+            num = max(np.abs(a1[k] - a0[k]).max() for k in a1); den = max(max(np.abs(a0[k]).max() for k in a0), 1e-12)
+            change = float(num / den)
         rows.append({"value": float(v), "result": res, "seconds": time.time() - t0, "evaluations": int(res.iterations),
-                     "converged": bool(res.converged)})
+                     "converged": bool(res.converged), "change": change})
         if verbose:
             print(f"{param} = {v:g}: {'ok' if res.converged else 'NOT converged'} in {res.iterations} evaluations, {time.time()-t0:.1f}s", flush=True)
         prev2, prev = prev, res
+    # continuity: a point whose change (per unit of parameter step) is far above the sweep's typical
+    # change is a candidate branch jump
+    rates = [r["change"] / abs(r["value"] - rows[i - 1]["value"]) for i, r in enumerate(rows) if i and r["change"] is not None and r["value"] != rows[i - 1]["value"]]
+    med = float(np.median(rates)) if rates else 0.0
+    for i, r in enumerate(rows):
+        rate = (r["change"] / abs(r["value"] - rows[i - 1]["value"])) if (i and r["change"] is not None and r["value"] != rows[i - 1]["value"]) else None
+        r["jump"] = bool(rate is not None and med > 0 and rate > 5 * med)
+        if verbose and r["jump"]:
+            print(f"  {param} = {r['value']:g}: change per unit step {rate:.2g} against a typical {med:.2g}: possible branch jump", flush=True)
     return rows
 
 

@@ -100,6 +100,7 @@ def main(argv=None) -> int:
     s.add_argument("--param", action="append", default=[], help="override a parameter, k=v (repeatable)")
     s.add_argument("--tol", type=float, default=1e-10)
     s.add_argument("--stability", action="store_true", help="also report the stability of the equilibrium under best-response dynamics")
+    s.add_argument("--refine", action="store_true", help="re-solve on a finer grid and report how much costs and kernels move")
     s.add_argument("-v", "--verbose", action="store_true")
     v = sub.add_parser("validate", help="parse and validate a model file, print its structure")
     v.add_argument("model")
@@ -126,6 +127,8 @@ def main(argv=None) -> int:
         for a in m.agents:
             print(f"  {a.name}: controls {a.controls}; rows {[r.name for r in a.signals]}; {len(a.loss)} loss terms"
                   + ("; myopic" if a.myopic else ""))
+        for note in m.notes:
+            print("  note:", note)
         return 0
     for kv in args.param:
         k, v_ = kv.split("=", 1)
@@ -135,9 +138,7 @@ def main(argv=None) -> int:
     if args.window:
         d.setdefault("horizon", {})["window"] = args.window
     m = Model.from_dict(d)
-    res = _solve(m, verbose=args.verbose, tol=args.tol)
-    if args.stability:
-        res.stability()
+    res = _solve(m, verbose=args.verbose, tol=args.tol, refine=args.refine, stability=args.stability)
     print(res.summary())
     if args.out:
         save_result(res, args.out)

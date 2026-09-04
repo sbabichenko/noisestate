@@ -40,9 +40,11 @@ class BaseResult:
     history: List[float] = field(default_factory=list)
     message: str = ""
     representation_error: Dict[str, float] = field(default_factory=dict)   # agent -> relative residual, see resolution_ok
+    refinement: Optional[dict] = None          # filled by refine(): change of costs/kernels under a finer grid
     kind: str = "base"
 
     RESOLUTION_TOL = 1e-6
+    WINDOW_TAIL_TOL = 0.02
 
     @property
     def resolution_ok(self) -> bool:
@@ -72,10 +74,40 @@ class BaseResult:
     def grid_info(self) -> dict:
         raise NotImplementedError
 
+    @property
+    def cost_kind(self) -> str:
+        return "stationary flow loss per unit time" if self.kind == "stationary" else "discounted integral over [0, T]"
+
+    def refine(self, factor: float = 1.5, **solve_kw) -> dict:
+        """Re-solve on a finer grid (nodes x factor) and report the relative change of every agent's
+        cost and of the kernels, the honest test of resolution (window, corner and product errors alike).
+        Stored in self.refinement and shown by summary()."""
+        import math
+        from .sweep import make_solver
+        d = self.model.to_dict(); hz = d.setdefault("horizon", {})
+        n0 = int(hz.get("nodes", 16)); n1 = max(n0 + 2, int(math.ceil(n0 * factor)))
+        hz["nodes"] = n1
+        fine = make_solver(Model.from_dict(d)).solve(**solve_kw)
+        cost_change = max(abs(fine.costs[k] - self.costs[k]) / max(1e-12, abs(self.costs[k])) for k in self.costs)
+        kernel_change = self._kernel_change(fine)
+        rep = {"nodes": n1, "converged": bool(fine.converged), "cost_change": float(cost_change),
+               "kernel_change": float(kernel_change), "resolved": bool(fine.converged and cost_change < 1e-6 and kernel_change < 1e-5)}
+        self.refinement = rep
+        return rep
+
+    def _kernel_change(self, fine) -> float:
+        raise NotImplementedError
+
     def _status(self) -> str:
         s = "converged" if self.converged else f"NOT converged ({self.message})"
         if self.representation_error and not self.resolution_ok:
             s += f"; UNDER-RESOLVED (representation error {max(self.representation_error.values()):.1e}: raise horizon.nodes)"
+        if self.refinement:
+            s += (f"; refinement to {self.refinement['nodes']} nodes moves costs by {self.refinement['cost_change']:.1e} and kernels by "
+                  f"{self.refinement['kernel_change']:.1e}" + ("" if self.refinement["resolved"] else " (NOT RESOLVED)"))
+        tail = getattr(self, "window_tail", None)
+        if tail is not None and tail > self.WINDOW_TAIL_TOL:
+            s += f"; WINDOW TOO SHORT (a kernel still has {tail:.1%} of its peak at the window edge: raise horizon.window)"
         rep = getattr(self, "stability_report", None)
         if rep:
             s += f"; best-response dynamics {'stable' if rep['stable'] else 'UNSTABLE'} (spectral radius {rep['radius']:.3f}"
@@ -144,6 +176,13 @@ class BaseResult:
                "costs": {k: float(v) for k, v in self.costs.items()}}
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
         out["resolution_ok"] = bool(self.resolution_ok)
+        out["cost_kind"] = self.cost_kind
+        out["notes"] = self.model.notes
+        if self.refinement:
+            out["refinement"] = self.refinement
+        tail = getattr(self, "window_tail", None)
+        if tail is not None:
+            out["window_tail"] = float(tail)
         rep = getattr(self, "stability_report", None)
         if rep:
             out["stability"] = {"radius": rep["radius"], "stable": rep["stable"], "untied": rep["untied"],
@@ -171,6 +210,27 @@ class StationaryResult(BaseResult):
     def ages(self) -> np.ndarray:
         return self.compiled.grid.nodes
 
+    @property
+    def window_tail(self) -> float:
+        """Largest kernel value at the window edge L relative to that kernel's peak, over states and
+        controls: above WINDOW_TAIL_TOL the processes have not decayed within the window and the model
+        solved is the truncated one."""
+        worst = 0.0
+        for name in self.compiled.prim:
+            K = self.kernel(name)
+            peak = np.abs(K).max()
+            if peak > 0:
+                worst = max(worst, float(np.abs(K[-1]).max() / peak))
+        return worst
+
+    def _kernel_change(self, fine) -> float:
+        I = fine.compiled.grid.interp(self.ages)
+        worst = 0.0
+        for name in self.compiled.prim:
+            K0 = self.kernel(name); K1 = I @ fine.kernel(name)
+            worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
+        return worst
+
     def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         """Closed-loop kernel of a quantity at the shock ages: (N, nW), or (N,) for one channel."""
         c = self.compiled
@@ -187,7 +247,7 @@ class StationaryResult(BaseResult):
         lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.iterations} evaluations, "
                  f"{self.seconds:.1f}s; grid {c.grid.P} panels x {c.grid.n} nodes on [0, {c.grid.L}], rho={c.rho}"]
         for a in self.model.agents:
-            lines.append(f"  {a.name}: E[loss] = {self.costs.get(a.name, float('nan')):+.6f}")
+            lines.append(f"  {a.name}: flow loss = {self.costs.get(a.name, float('nan')):+.6f}")
             for u in a.controls:
                 k = self.kernel(u)
                 lines.append(f"    {u}(0+) on channels: " + ", ".join(f"{ch}={k[0, j]:+.4f}" for j, ch in enumerate(self.channels)))
@@ -208,6 +268,14 @@ class TriangleResult(BaseResult):
         K = c.expr_op(c.model.expand({name: 1.0})) @ self.Z
         return K if channel is None else K[:, self.channels.index(channel)]
 
+    def _kernel_change(self, fine) -> float:
+        g = self.grid; worst = 0.0
+        for name in self.compiled.prim:
+            for ch in self.channels:
+                K0 = self.kernel(name, ch); K1 = fine.evaluate(name, ch, g.t, g.s)
+                worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
+        return worst
+
     def evaluate(self, name: str, channel: str, t, s) -> np.ndarray:
         """Kernel value at (t, s) points: response at time t to a unit shock of `channel` at time s."""
         t = np.asarray(t, dtype=float); s = np.asarray(s, dtype=float)
@@ -224,7 +292,7 @@ class TriangleResult(BaseResult):
                  f"{self.seconds:.1f}s; triangle grid {c.g.P} panels, {len(c.g.pieces)} pieces x {c.g.nt}x{c.g.na} nodes "
                  f"= {c.N} nodes on [0, {c.T}], rho={c.rho}"]
         for a in self.model.agents:
-            lines.append(f"  {a.name}: E[cost] = {self.costs.get(a.name, float('nan')):+.8f}")
+            lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.8f}")
         return "\n".join(lines)
 
 
@@ -235,6 +303,16 @@ class CellResult(BaseResult):
     @property
     def times(self) -> np.ndarray:
         return self.compiled.times
+
+    def _kernel_change(self, fine) -> float:
+        # compare at the coarse cell times: fine cell index = round(t / h_fine)
+        c0, c1 = self.compiled, fine.compiled; worst = 0.0
+        idx = np.clip(np.round(c0.times / c1.h).astype(int), 0, c1.N - 1)
+        for name in c0.prim:
+            for ch in self.channels:
+                K0 = self.kernel(name, ch); K1 = fine.kernel(name, ch)[np.ix_(idx, idx)]
+                worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
+        return worst
 
     def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         """K[i, j]: response of `name` at cell i to a unit increment of `channel` in cell j (channel required)."""
@@ -254,5 +332,5 @@ class CellResult(BaseResult):
         lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.iterations} evaluations, "
                  f"{self.seconds:.1f}s; {c.N} cells on [0, {c.T}], rho={c.rho}"]
         for a in self.model.agents:
-            lines.append(f"  {a.name}: E[cost] = {self.costs.get(a.name, float('nan')):+.6f}")
+            lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.6f}")
         return "\n".join(lines)
