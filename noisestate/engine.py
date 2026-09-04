@@ -38,6 +38,9 @@ class EngineBase:
     RESULT = None                   # the result class
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.5, 60       # solve() defaults; each engine sets its own
     ACTIONS = True                  # whether the engine can iterate on action kernels
+    SECOND_ORDER_TOL = 1e-4         # curvature (relative to the largest) below which a negative value is window truncation
+    SECOND_ORDER_QUADRATIC = True   # whether the objective is a quadratic form in the strategy at every discount
+    SECOND_ORDER_DENSE = 1000       # strategy dimension up to which the form is built densely (always settles); Lanczos above
 
     def __init__(self, model: Model, verbose: bool = False, **options):
         self.model = model
@@ -230,7 +233,89 @@ class EngineBase:
         raise NotImplementedError
 
     def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk) -> None:
-        """Extras the engine adds to the best response when asked (hook)."""
+        """The second-order check and the FOC decomposition (instantaneous/physical/wedge)."""
+        c = self.c; nW = c.nW; Zfull = out["Zfull"]
+        out["second_order"] = self._second_order(agent, Resp, Gk, np.tile(self._identified(agent), len(agent.controls)))
+        if agent.name not in self._rphys:                                   # physical impulse responses: map-independent
+            self._rphys[agent.name] = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
+        Fphys = self._foc_operators(agent, self._rphys[agent.name])
+        dec = {}
+        for ui, u in enumerate(agent.controls):
+            phi = np.stack([Fu[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
+            phi_phys = np.stack([Fphys[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
+            dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
+        out["decomp"] = dec
+
+    def _identified(self, agent: Agent) -> np.ndarray:
+        """Mask over the stacked map nodes of the ages at which the map on each row reads something
+        (all of them, unless the engine masks delayed rows)."""
+        return np.ones(len(agent.signals) * self.c.N, dtype=bool)
+
+    def _second_order(self, agent: Agent, Resp, Gk, keep) -> Optional[dict]:
+        """Second-order condition of the best response: the agent's objective is a quadratic form in its
+        strategy, and a first-order condition is a minimum only if that form is positive on the
+        feasible strategies (those its rows can express).  The form is computed exactly from the
+        cost's own Gram matrix: J(delta) = 1/2 delta' M delta with M = T' G T, T the map from a
+        strategy to the world it produces and G the loss form.  Its extreme eigenvalues come from
+        Lanczos on matvecs.  Returns {"min", "max", "ok", "converged"} with min/max the eigenvalues
+        of M scaled by max; None when the objective is not a quadratic form in the strategy (the
+        stationary engine with rho > 0: the discounted objective is not one in the stationary kernel).
+        The objective is truncated at the window, so a strategy can push a little loss past the edge:
+        curvatures within SECOND_ORDER_TOL of the largest are treated as that, not as a saddle."""
+        c = self.c
+        if not (self.SECOND_ORDER_QUADRATIC or c.rho == 0):
+            return None
+        from scipy.sparse.linalg import LinearOperator, eigsh
+        N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
+        atoms, Q, q = c.loss[agent.name]
+        AO = np.concatenate([c.atom_op(at) for at in atoms], axis=0)           # (m N, n_prim N)
+        QM = np.kron(Q, c.cost_mass())                                           # the loss form on the atoms
+        GAO = AO.T @ (QM @ AO)                                                   # symmetric loss form on the world
+        idx = np.where(keep)[0]
+
+        def T(delta_full):                     # strategy -> world, per channel: (n_prim N, nW)
+            Zd = np.zeros((GAO.shape[0], nW))
+            for ui in range(nU):
+                du = delta_full[ui * nR * N:(ui + 1) * nR * N]
+                for k in range(nW):
+                    Zd[:, k] += Resp[ui] @ (Gk[k] @ du)
+            return Zd
+
+        def Tt(Zd):                            # its transpose
+            out = np.zeros(nU * nR * N)
+            for ui in range(nU):
+                RZ = Resp[ui].T @ Zd                                            # (N, nW)
+                for k in range(nW):
+                    out[ui * nR * N:(ui + 1) * nR * N] += Gk[k].T @ RZ[:, k]
+            return out
+
+        def matvec(v):
+            full = np.zeros(nU * nR * N); full[idx] = np.asarray(v, dtype=float).ravel()
+            return Tt(GAO @ T(full))[idx]
+        n = idx.size
+        if n <= self.SECOND_ORDER_DENSE:
+            # the form explicitly: T per channel as a matrix (n_prim N x n), M = sum_k T_k' G T_k
+            Mfull = np.zeros((n, n))
+            for k in range(nW):
+                Tk = np.zeros((GAO.shape[0], n))
+                for ui in range(nU):
+                    cols = np.where((idx >= ui * nR * N) & (idx < (ui + 1) * nR * N))[0]
+                    if cols.size:
+                        Tk[:, cols] = Resp[ui] @ Gk[k][:, idx[cols] - ui * nR * N]
+                Mfull += Tk.T @ (GAO @ Tk)
+            w = np.linalg.eigvalsh((Mfull + Mfull.T) / 2)
+            lo, hi = float(w[0]), float(w[-1])
+        else:
+            op = LinearOperator((n, n), matvec=matvec, dtype=float)
+            try:
+                hi = float(eigsh(op, k=1, which="LA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
+                lo = float(eigsh(op, k=1, which="SA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
+            except Exception as exc:                          # Lanczos did not settle: say so rather than stay silent
+                return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
+        scale = max(abs(lo), abs(hi), 1e-300)
+        return {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale), "converged": True}
+
+    # ------------------------------------------------ maps from kernels
 
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
         """The agent's best response to `maps`: (raw map, {"gamma", "action", "Zfull", ...}).  The

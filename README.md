@@ -113,6 +113,13 @@ releases them; a large stationary grid holds a few hundred MB of convolution ten
 
 ## How it works
 
+The two spectral engines share one best response, written against a kernel algebra of seven
+operations that each compiled model supplies (convolution with a row, the instantaneous entry
+and its adjoint, the response to an action, the discounted continuation, the read of a lagged own
+control, the projection onto a row).  The engines keep what differs: the closed-loop solve (dense
+on the age grid, causal block substitution on the triangle), the regularisation of the
+first-order-condition system, and the projection back to raw maps.
+
 Stationary form: every process is a kernel in shock age on `[0, L]`, stored at
 Chebyshev nodes on panels whose breakpoints include every delay, so delays are
 exact shifts and kernels may jump there.  Given all strategies, the closed loop is
@@ -204,9 +211,10 @@ The checks:
   flagged.  The Kyle-Back example with `rho: 0` is flagged: with no discounting the trader's
   stationary problem has no solution and the kernels are window artefacts (profit 0.93 on a window
   of 8, 0.38 on 16); the example ships with `rho: 0.5`, where the profit is 0.8208 on both.
-* Stationary results with `discount: 0` carry `res.second_order[agent]`: the agent's objective is
-  a quadratic form in its strategy, computed exactly on the feasible strategies, and its smallest
-  eigenvalue relative to the largest says whether the first-order condition is a minimum.  The
+* Stationary results with `discount: 0`, and finite-horizon results at any discount, carry
+  `res.second_order[agent]`: the agent's objective is a quadratic form in its strategy, computed
+  exactly on the feasible strategies from the cost's own Gram matrix, and its smallest eigenvalue
+  relative to the largest says whether the first-order condition is a minimum.  The
   summary says `NOT A MINIMUM` when it is not (a loss that is not convex in the agent's own
   strategy, for instance a negative weight on its own control, or a cross term with no own
   quadratic term).  Curvatures within 1e-4 of zero are not flagged: the objective is truncated
@@ -214,7 +222,8 @@ The checks:
   sign there (the Chapter 5 example sits at -3e-5 with 6 nodes per panel); the value is reported
   in `res.second_order` and `to_dict()` either way.
   Discounted stationary models are not checked (their objective is not a quadratic form in the
-  stationary kernel).  When the eigensolver does not settle the report says so
+  stationary kernel).  Up to a strategy dimension of 1000 the form is built densely and always
+  settles; above that a Lanczos iteration is used, and when it does not settle the report says so
   (`converged: False`) instead of staying silent.  The undiscounted Kyle-Back model at a
   trading cost of 0.01 crosses the threshold (-1.6e-4) on the window of 8: the truncation
   effect grows as the trading cost shrinks, and a positive discount removes it.
@@ -255,7 +264,9 @@ The checks:
   (`variable="maps"`) stalls near a residual of 1e-6 on models with delayed rows while the
   action-kernel iteration converges: the best-response action carries a spurious response to
   shocks younger than the delay that no causal map of the rows can reproduce, so the map
-  fixed-point function is noisy at that level.  Giving the lower copy of the node its left limit
+  fixed-point function is noisy at that level; in action space the floor is near 1e-8, which is
+  the finite engine's default tolerance, so on the delayed Chapter 1 example the evaluation count
+  is erratic and `tol=3e-8` converges in 16 evaluations.  Giving the lower copy of the node its left limit
   (zero) makes each best response exactly causal and cuts its representation error by an order of
   magnitude, but it also exposes a genuinely weakly identified direction at the start of the
   delayed row's map (a singular value of 8e-3 where the artefact had supplied a spurious 0.9): the

@@ -122,6 +122,10 @@ class Compiled(CompiledBase):
     def projection_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
         return self.grid.corr_ops(Y, 0.0).transpose(1, 0, 2).reshape(self.N, self.nW * self.N)
 
+    def cost_mass(self) -> np.ndarray:
+        """The Gram matrix under which expected_cost integrates products of kernels."""
+        return self.grid.mass_matrix
+
     def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
                     impulse_controls: Sequence = ()):
         """Solve the closed loop for the Brownian channels and for unit impulses in
@@ -186,9 +190,7 @@ class Compiled(CompiledBase):
 class StationarySolver(EngineBase):
     RESULT = StationaryResult
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.3, 60       # 0.3: Kyle-Back converges, 0.5 does not
-    # the objective is truncated at the window, so a strategy can push a little loss past the edge: curvatures
-    # within this fraction of the largest are treated as that truncation, not as a saddle
-    SECOND_ORDER_TOL = 1e-4
+    SECOND_ORDER_QUADRATIC = False   # the flow loss is a quadratic form in the stationary strategy only at rho = 0
 
     def __init__(self, model: Model, verbose: bool = False, naive_observers: Optional[Dict[str, List[str]]] = None):
         """naive_observers: {agent: [observers]} lists agents whose strategies do NOT react to that agent's
@@ -283,75 +285,6 @@ class StationarySolver(EngineBase):
                                  "window - tau), or a row's noise loading may be zero") from None
         return gamma
 
-    def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk) -> None:
-        """The second-order check and the FOC decomposition (instantaneous/physical/wedge)."""
-        c = self.c; nW = c.nW; Zfull = out["Zfull"]
-        out["second_order"] = self._second_order(agent, Resp, Gk, np.tile(self._identified(agent), len(agent.controls)))
-        if agent.name not in self._rphys:                                   # physical impulse responses: map-independent
-            self._rphys[agent.name] = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
-        Fphys = self._foc_operators(agent, self._rphys[agent.name])
-        dec = {}
-        for ui, u in enumerate(agent.controls):
-            phi = np.stack([Fu[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
-            phi_phys = np.stack([Fphys[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
-            dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
-        out["decomp"] = dec
-
-    def _second_order(self, agent: Agent, Resp, Gk, keep) -> Optional[dict]:
-        """Second-order condition of the best response: the agent's objective is a quadratic form in its
-        strategy, and a first-order condition is a minimum only if that form is positive on the
-        feasible strategies (those its rows can express).  With rho = 0 the objective is the flow
-        loss, integrated exactly, so the form is computed exactly: J(delta) = 1/2 delta' M delta with
-        M = T' G T, T the map from a strategy to the world it produces and G the loss form.  Its
-        extreme eigenvalues come from Lanczos on matvecs.  Returns {"min", "max", "ok"} with
-        min/max the eigenvalues of M scaled by max; None when rho > 0 (the discounted objective is
-        not a quadratic form in the stationary kernel)."""
-        c = self.c
-        if c.rho > 0:
-            return None
-        from scipy.sparse.linalg import LinearOperator, eigsh
-        N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
-        atoms, Q, q = c.loss[agent.name]
-        AO = np.concatenate([c.atom_op(at) for at in atoms], axis=0)           # (m N, n_prim N)
-        QM = np.kron(Q, c.grid.mass_matrix)                                      # the loss form on the atoms
-        GAO = AO.T @ (QM @ AO)                                                   # symmetric loss form on the world
-        idx = np.where(keep)[0]
-
-        def T(delta_full):                     # strategy -> world, per channel: (n_prim N, nW)
-            Zd = np.zeros((GAO.shape[0], nW))
-            for ui in range(nU):
-                du = delta_full[ui * nR * N:(ui + 1) * nR * N]
-                for k in range(nW):
-                    Zd[:, k] += Resp[ui] @ (Gk[k] @ du)
-            return Zd
-
-        def Tt(Zd):                            # its transpose
-            out = np.zeros(nU * nR * N)
-            for ui in range(nU):
-                RZ = Resp[ui].T @ Zd                                            # (N, nW)
-                for k in range(nW):
-                    out[ui * nR * N:(ui + 1) * nR * N] += Gk[k].T @ RZ[:, k]
-            return out
-
-        def matvec(v):
-            full = np.zeros(nU * nR * N); full[idx] = np.asarray(v, dtype=float).ravel()
-            return Tt(GAO @ T(full))[idx]
-        n = idx.size
-        if n <= 400:
-            Mfull = np.column_stack([matvec(e) for e in np.eye(n)])
-            w = np.linalg.eigvalsh((Mfull + Mfull.T) / 2)
-            lo, hi = float(w[0]), float(w[-1])
-        else:
-            op = LinearOperator((n, n), matvec=matvec, dtype=float)
-            try:
-                hi = float(eigsh(op, k=1, which="LA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
-                lo = float(eigsh(op, k=1, which="SA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
-            except Exception as exc:                          # Lanczos did not settle: say so rather than stay silent
-                return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
-        scale = max(abs(lo), abs(hi), 1e-300)
-        return {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale), "converged": True}
-
-    # ------------------------------------------------ maps from kernels
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
         """Closed-loop primary kernels (n_prim N, nW) when every agent's action kernels (nU, N, nW) are
         given: the states follow from the propagator, no strategy maps needed."""
@@ -401,8 +334,7 @@ class StationarySolver(EngineBase):
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])          # (m, N, nW)
-        M = c.grid.mass_matrix                                        # exact <l_i, l_j>
-        G = np.einsum("ink,nm,jmk->ij", zeta, M, zeta)                # <zeta_i, zeta_j> over ages and channels
+        G = np.einsum("ink,nm,jmk->ij", zeta, c.cost_mass(), zeta)   # <zeta_i, zeta_j> over ages and channels
         return float(0.5 * np.sum(Q * G))
 
     expected_loss = expected_cost                       # the older name

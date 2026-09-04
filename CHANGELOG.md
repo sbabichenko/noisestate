@@ -26,6 +26,11 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- The two spectral engines' best response is one function on `EngineBase`, written against a
+  seven-operation kernel algebra each compiled model supplies; the FOC decomposition and the
+  second-order check are now on the finite engine too (its discounted objective is a quadratic
+  form at every discount).  The second-order form is built densely up to dimension 1000, which
+  settles where Lanczos did not.  All recorded results unchanged to round-off.
 - One outer solve loop on `EngineBase` (the three engines' copies removed; each contributes its
   result class, defaults and a `_finish`); `CompiledBase` adopts the structure once; FOC operators
   built per impulse-response set, the physical set only for the decomposition; one-pass parameter

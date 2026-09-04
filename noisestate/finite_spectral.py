@@ -214,6 +214,10 @@ class SpectralCompiled(CompiledBase):
     def own_lag_read(self, lag: float) -> np.ndarray:
         return self.read(-lag, -lag)
 
+    def cost_mass(self) -> np.ndarray:
+        """The discounted Gram matrix under which expected_cost integrates products of kernels."""
+        return self.g.mass_matrix(rho=self.rho)
+
     def projection_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
         N = self.N; H = np.zeros((N, self.nW * N))
         for k in range(self.nW):
@@ -298,7 +302,7 @@ class SpectralCompiled(CompiledBase):
 class SpectralFiniteSolver(EngineBase):
     RESULT = TriangleResult
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
-    MAP_RIDGE = 1e-13      # ridge of the per-time-row map projection, relative to the best-identified row's Gram
+    MAP_RIDGE = 1e-13      # ridge of the per-time-row map projection, relative to the row's own Gram
     RIDGE = 1e-11          # relative Tikhonov term on the best-response system: needed with delayed rows, 2e-13 effect without
 
     def __init__(self, model: Model, verbose: bool = False):
@@ -330,14 +334,10 @@ class SpectralFiniteSolver(EngineBase):
             Bsub = Bk[:, idx][:, :, cols]
             G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
             systems.append((idx, w, Bsub, G))
-        # one ridge for every time row, relative to the best-identified row: just after a delay a row's
-        # history is short and its Gram tiny, and a ridge relative to that row's own Gram regularises
-        # nothing, leaving the map there to round-off (the map iteration then stalls near 1e-6)
-        scale = max((np.trace(G) / G.shape[0] for (_, _, _, G) in systems if np.trace(G) > 0), default=0.0)
         for (idx, w, Bsub, G) in systems:
             if np.trace(G) <= 0:
                 continue
-            G = G + self.MAP_RIDGE * scale * np.eye(G.shape[0])
+            G = G + self.MAP_RIDGE * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
             for ui in range(nU):
                 rhs = sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW))
                 sol = np.linalg.solve(G, rhs)
@@ -383,12 +383,15 @@ class SpectralFiniteSolver(EngineBase):
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])                  # (m, N, nW)
-        G = np.einsum("ink,nm,jmk->ij", zeta, c.g.mass_matrix(rho=c.rho), zeta)
+        G = np.einsum("ink,nm,jmk->ij", zeta, c.cost_mass(), zeta)
         return float(0.5 * np.sum(Q * G))
 
     def _finish(self, res) -> None:
         for a in self.model.agents:
             res.costs[a.name] = self.expected_cost(a, res.Z)
-            g, out = self.best_response(a, res.maps)
+            g, out = self.best_response(a, res.maps, want_decomp=True)
+            res.foc[a.name] = out["decomp"]
+            if out["second_order"] is not None:
+                res.second_order[a.name] = out["second_order"]
             res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
 

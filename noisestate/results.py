@@ -45,6 +45,7 @@ class BaseResult:
     solver_kw: dict = field(default_factory=dict)      # refine()/stability() rebuild the same solver
     solve_kw: dict = field(default_factory=dict)
     second_order: Dict[str, dict] = field(default_factory=dict)   # agent -> {"min", "max", "ok"}: is the best response a minimum
+    foc: Dict[str, dict] = field(default_factory=dict)            # agent -> control -> {"foc", "physical", "wedge"} kernels
     kind: str = "base"
 
     RESOLUTION_TOL = 1e-6
@@ -263,9 +264,8 @@ class BaseResult:
             g = self.maps[a.name]
             out["maps"][a.name] = {u: {r.name: g[ui, ri].tolist() for ri, r in enumerate(a.signals)}
                                    for ui, u in enumerate(a.controls)}
-        foc = getattr(self, "foc", None)
-        if foc:
-            for aname, dec in foc.items():
+        if self.foc:
+            for aname, dec in self.foc.items():
                 out["foc"][aname] = {u: {part: {ch: arr[:, k].tolist() for k, ch in enumerate(self.channels)}
                                          for part, arr in parts.items()} for u, parts in dec.items()}
         return out
@@ -273,7 +273,6 @@ class BaseResult:
 
 @dataclass
 class StationaryResult(BaseResult):
-    foc: Dict[str, dict] = field(default_factory=dict)      # agent -> control -> {"foc","physical","wedge"} (N, nW)
     kind: str = "stationary"
 
     @property
