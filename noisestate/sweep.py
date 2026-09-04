@@ -65,9 +65,8 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], s
     equilibria in the parameter (a tangent predictor; markedly more robust at hard points such as a
     small trading cost); "previous" starts from the last equilibrium.
     Returns [{"value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the given
-    order; "change" is the relative change of the action kernels from the previous point and "jump"
-    flags a change per unit parameter step more than five times the sweep's median (a possible
-    branch jump)."""
+    order; "change" is the relative change of the raw maps from the previous point (on the same grid)
+    and "jump" flags a change more than five times the sweep's median (a possible branch jump)."""
     base = _load_dict(model)
     if param not in (base.get("params") or {}):
         raise ValueError(f"{param!r} is not a parameter of the model (params: {sorted((base.get('params') or {}))})")
@@ -80,9 +79,9 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], s
         S = make_solver(m, **(solver_kw or {}))
         t0 = time.time()
         init = None
-        if prev is not None and prev.compiled.N == S.c.N:
+        if prev is not None and S.same_grid(prev.compiled):
             w1 = warm_start(prev)
-            if predictor == "secant" and prev2 is not None and prev2.compiled.N == S.c.N:
+            if predictor == "secant" and prev2 is not None and S.same_grid(prev2.compiled):
                 w0 = warm_start(prev2); e1, e0 = rows[-1]["value"], rows[-2]["value"]
                 if abs(e1 - e0) > 0:
                     init = {k: w1[k] + (w1[k] - w0[k]) * (float(v) - e1) / (e1 - e0) for k in w1}
@@ -90,7 +89,7 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], s
                 init = w1
         res = S.solve(init=init, **(solve_kw or {}))
         change = None
-        if prev is not None and prev.compiled.N == S.c.N:
+        if prev is not None and S.same_grid(prev.compiled):
             a1, a0 = warm_start(res), warm_start(prev)
             num = max(np.abs(a1[k] - a0[k]).max() for k in a1); den = max(max(np.abs(a0[k]).max() for k in a0), 1e-12)
             change = float(num / den)
@@ -99,15 +98,15 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], s
         if verbose:
             print(f"{param} = {v:g}: {'ok' if res.converged else 'NOT converged'} in {res.iterations} evaluations, {time.time()-t0:.1f}s", flush=True)
         prev2, prev = prev, res
-    # continuity: a point whose change (per unit of parameter step) is far above the sweep's typical
-    # change is a candidate branch jump
-    rates = [r["change"] / abs(r["value"] - rows[i - 1]["value"]) for i, r in enumerate(rows) if i and r["change"] is not None and r["value"] != rows[i - 1]["value"]]
-    med = float(np.median(rates)) if rates else 0.0
-    for i, r in enumerate(rows):
-        rate = (r["change"] / abs(r["value"] - rows[i - 1]["value"])) if (i and r["change"] is not None and r["value"] != rows[i - 1]["value"]) else None
-        r["jump"] = bool(rate is not None and med > 0 and rate > 5 * med)
+    # continuity: a point whose change from its predecessor is far above the sweep's typical change is a
+    # candidate branch jump (the change per point, not per unit of parameter: a geometric sweep moves
+    # the same amount per point)
+    changes = [r["change"] for r in rows if r["change"] is not None]
+    med = float(np.median(changes)) if changes else 0.0
+    for r in rows:
+        r["jump"] = bool(r["change"] is not None and med > 0 and r["change"] > 5 * med)
         if verbose and r["jump"]:
-            print(f"  {param} = {r['value']:g}: change per unit step {rate:.2g} against a typical {med:.2g}: possible branch jump", flush=True)
+            print(f"  {param} = {r['value']:g}: change {r['change']:.2g} against a typical {med:.2g}: possible branch jump", flush=True)
     return rows
 
 

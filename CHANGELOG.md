@@ -9,6 +9,17 @@
   new models; the plain solve, `sweep`, `refine` and `stability` cannot disagree on the model.
 - Ties compare the dynamics of private states and whether a row's noise channel drives a state;
   agents with different private-state parameters no longer pass as tied.
+- Validation: lags, delays and leads must be below the window on every engine (the cell engine
+  solved a lag beyond the horizon silently, the spectral engine crashed on a delay equal to it);
+  `unit_range` at most the window; integer `nodes`; a control absent from its owner's loss is
+  rejected again; empty agent blocks; `naive_observers` names; warm starts of the wrong shape on
+  every engine (one check on `EngineBase`).
+- Guards: `refine` measures cost changes against the largest cost and gives no verdict on the
+  first-order cell engine; the sweep `jump` flag compares the change per point with the sweep's
+  median (geometric sweeps are not flagged); sweep warm starts require the same grid object;
+  `second_order` and `stability` report whether their eigensolver converged and which method
+  produced the number.  The singular-system message names lagged-only own quadratic terms.
+- CLI catches every model-level error class.
 - The delayed-row least-squares cutoff is documented as immaterial (costs move by 1e-7 across
   cutoffs 1e-9 to 1e-6), and the jump-interpolation floor on the representation error for
   delayed rows and lagged control reads is recorded as a known open item.

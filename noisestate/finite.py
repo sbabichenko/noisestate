@@ -308,6 +308,10 @@ class FiniteSolver(EngineBase):
     def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, max_newton: int = 60) -> FiniteResult:
         """Anderson on the raw maps, then a Newton-Krylov polish.  init: raw maps."""
         t0 = time.time()
+        if init is not None:
+            for a in self.model.agents:
+                if a.name not in init or np.asarray(init[a.name]).shape != tuple(self.shapes[a.name]):
+                    raise ValueError(f"init for {a.name}: expected raw maps of shape {tuple(self.shapes[a.name])}")
         maps = init if init is not None else self.zero_maps()
         z = self.pack(maps)
         hist, evals = [], [0]

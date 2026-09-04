@@ -457,25 +457,6 @@ class SpectralFiniteSolver(EngineBase):
         G = np.einsum("ink,nm,jmk->ij", zeta, self._mass_rho, zeta)
         return float(0.5 * np.sum(Q * G))
 
-    def _init_kind(self, init: dict, shapes: dict) -> dict:
-        """Classify a warm start as action kernels or raw maps by shape; ambiguous or wrong shapes are errors."""
-        kinds = set()
-        for a in self.model.agents:
-            v = np.asarray(init[a.name]); nR = len(a.signals)
-            sa, sm = shapes[a.name], (len(a.controls), nR, self.c.N)
-            if v.shape == sa and v.shape != sm:
-                kinds.add("actions")
-            elif v.shape == sm and v.shape != sa:
-                kinds.add("maps")
-            elif v.shape == sa:
-                raise ValueError(f"init for {a.name}: shape {v.shape} could be action kernels or raw maps (nR == nW); pass the "
-                                 "other representation")
-            else:
-                raise ValueError(f"init for {a.name}: shape {v.shape}; expected action kernels {sa} or raw maps {sm}")
-        if len(kinds) != 1:
-            raise ValueError("init mixes action kernels and raw maps across agents")
-        return {"kind": kinds.pop(), "value": init}
-
     def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, max_newton: int = 8,
               variable: str = "actions") -> SpectralResult:
         """variable="actions": iterate on the agents' action kernels, raw maps derived by projection
@@ -490,15 +471,14 @@ class SpectralFiniteSolver(EngineBase):
             # tied agents' action kernels differ by a channel permutation the symmetry implies; raw maps
             # (on each agent's own rows) carry over verbatim, so iterate on maps when ties are present
             variable = "maps"
-        if init is not None:
-            init = self._init_kind(init, shapes)
+        kind = self.init_kind(init) if init is not None else None
         if variable == "actions":
-            if init is None:
+            if kind is None:
                 acts0 = {a.name: np.zeros(shapes[a.name]) for a in self.model.agents}
-            elif init["kind"] == "actions":
-                acts0 = init["value"]
+            elif kind == "actions":
+                acts0 = init
             else:
-                Z0 = self.c.closed_loop(init["value"])
+                Z0 = self.c.closed_loop(init)
                 acts0 = {a.name: np.stack([Z0[self.c.block(u)] for u in a.controls]) for a in self.model.agents}
             z = packa(acts0)
 
@@ -506,12 +486,7 @@ class SpectralFiniteSolver(EngineBase):
                 evals[0] += 1
                 return packa(self.response_actions(unpacka(zz))) - zz
         else:
-            if init is None:
-                maps = self.zero_maps()
-            elif init["kind"] == "maps":
-                maps = init["value"]
-            else:
-                maps = self.maps_from_actions(init["value"])
+            maps = self.zero_maps() if kind is None else (init if kind == "maps" else self.maps_from_actions(init))
             z = self.pack(maps)
 
             def F(zz):

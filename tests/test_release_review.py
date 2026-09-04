@@ -228,3 +228,61 @@ def test_delayed_row_equilibrium_is_insensitive_to_the_least_squares_cutoff():
     finally:
         np.linalg.lstsq = orig
     assert abs(costs[1e-9] - costs[1e-6]) < 1e-6
+
+
+# ---------------------------------------------------------------- second round: validation and guards
+@pytest.mark.parametrize("edit, match", [
+    (lambda d: d["horizon"].update(unit=0.5, unit_range=8.0), "unit_range"),
+    (lambda d: d["horizon"].update(nodes=12.7), "must be an integer"),
+    (lambda d: d["agents"]["player1"]["signals"]["y1"].update(delay=3.0), "not below the window"),
+    (lambda d: d["states"]["X"]["drift"].update({"D1@3.5": 0.1}), "not below the window"),
+    (lambda d: d["agents"]["player1"]["loss"].append([0.1, "D1", "X@-9.0"]), "not below the window"),
+    (lambda d: d["agents"]["player1"].update(loss=[[0.5, "X", "X"]]), "do not enter its loss"),
+    (lambda d: d["agents"].update(ghost=None), "empty block"),
+])
+def test_second_round_validation(edit, match):
+    d = _ch3(); edit(d)
+    with pytest.raises(ValueError, match=match):
+        ns.Model.from_dict(d)
+
+
+def test_lag_beyond_horizon_rejected_on_every_engine():
+    for kind in ("stationary", "finite", "finite_cells"):
+        d = _ch3(kind=kind, window=0.2, nodes=4); d["states"]["X"]["drift"] = {"D1@0.25": 1.0, "D2": 1.0}
+        with pytest.raises(ValueError, match="not below the window"):
+            ns.Model.from_dict(d)
+
+
+def test_naive_observers_are_validated():
+    kb = ns.load(os.path.join(EX, "ch4_kyle_back.yaml"))
+    for bad, exc in (({"trader1": ["playr2"]}, ValueError), ({"playr1": ["market_maker"]}, ValueError),
+                     ({"trader1": "market_maker"}, TypeError), ({"trader1": ["trader1"]}, ValueError)):
+        with pytest.raises(exc):
+            ns.StationarySolver(kb, naive_observers=bad)
+
+
+def test_wrong_grid_warm_start_is_an_error_on_every_engine():
+    d = _ch3(nodes=12); r = ns.solve(d); d["horizon"]["nodes"] = 16
+    with pytest.raises(ValueError, match="different grid"):
+        ns.StationarySolver(ns.Model.from_dict(d)).solve(init=r.maps)
+    dc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); dc["horizon"]["kind"] = "finite_cells"; dc["horizon"]["nodes"] = 8
+    rc = ns.solve(dc); dc["horizon"]["nodes"] = 16
+    with pytest.raises(ValueError, match="raw maps of shape"):
+        ns.FiniteSolver(ns.Model.from_dict(dc)).solve(init=rc.maps)
+
+
+def test_jump_flag_is_quiet_on_a_geometric_sweep():
+    rows = ns.sweep(_ch3(), "r1", [2.0 / 2 ** k for k in range(7)])
+    assert not any(r["jump"] for r in rows) and all(r["converged"] for r in rows)
+
+
+def test_refine_on_cells_reports_without_a_verdict():
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"]["kind"] = "finite_cells"; d["horizon"]["nodes"] = 12
+    r = ns.solve(d); r.refine()
+    assert r.refinement["resolved"] is None and "NOT RESOLVED" not in r.summary() and r.refinement["nodes"] == 24
+
+
+def test_second_order_and_stability_report_their_method():
+    r = ns.solve(_ch3(), stability=True)
+    assert all(v["converged"] for v in r.second_order.values()) and r.stability_report["method"] == "arnoldi"
+    assert r.to_dict()["stability"]["method"] == "arnoldi"

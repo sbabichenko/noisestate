@@ -231,6 +231,8 @@ class Model:
                 for (n, l) in self.expand(r.drift):
                     if l > 0:
                         lags.add(l)
+                    if r.delay + l > 0:
+                        lags.add(round(r.delay + l, 12))        # a delayed row reads the quantity at delay + lag
             for term in a.loss:
                 for atom in term[1:]:
                     for (n, l) in self.expand({atom: 1.0}):
@@ -379,7 +381,28 @@ class Model:
         unused = [ch for ch in self.channels if ch not in used]
         if unused:
             raise ValueError(f"channel(s) {unused} are never loaded by a state or a signal row (misspelled?)")
+        for a in self.agents:
+            atoms = {n for term in a.loss for atom in term[1:] for (n, l) in self.expand({atom: 1.0})}
+            missing = [u for u in a.controls if u not in atoms]
+            if missing:
+                raise ValueError(f"agent {a.name}: control(s) {missing} do not enter its loss; the best response would be undetermined")
         hz = self.horizon
+        if hz.nodes != int(hz.nodes):
+            raise ValueError(f"horizon.nodes must be an integer, got {hz.nodes!r}")
+        far = [l for l in self.all_lags() if l >= hz.window - 1e-12]
+        if far:
+            raise ValueError(f"lag(s)/delay(s) {far} are not below the window {hz.window}: a quantity read that far back, or "
+                             "a row delayed that much, carries nothing within the window")
+        leads = [-l for s in self.states for (n, l) in self.expand(s.drift) if l < 0]
+        for a in self.agents:
+            for term in a.loss:
+                leads += [-l for atom in term[1:] for (n, l) in self.expand({atom: 1.0}) if l < 0]
+        if any(l >= hz.window - 1e-12 for l in leads):
+            raise ValueError(f"lead(s) {sorted(set(l for l in leads if l >= hz.window - 1e-12))} are not below the window {hz.window}")
+        if hz.unit_range is not None and hz.unit_range > hz.window + 1e-12:
+            raise ValueError(f"horizon.unit_range ({hz.unit_range}) must not exceed the window ({hz.window})")
+        if hz.unit is not None and not hz.unit > 0:
+            raise ValueError("horizon.unit must be positive")
         if hz.breakpoints is not None:
             bp = list(hz.breakpoints)
             if len(bp) < 2 or abs(bp[0]) > 1e-12 or abs(bp[-1] - hz.window) > 1e-9 * max(1.0, hz.window) or any(b2 <= b1 for b1, b2 in zip(bp, bp[1:])):
@@ -488,6 +511,8 @@ class Model:
         for k, v in (d.get("states") or {}).items():
             cls._check_keys("state", v or {}, cls._KEYS["state"], f" '{k}'")
         for k, v in (d.get("agents") or {}).items():
+            if not v:
+                raise ValueError(f"agent {k}: empty block; give it controls, signals and a loss")
             cls._check_keys("agent", v or {}, cls._KEYS["agent"], f" '{k}'")
             if not isinstance(v.get("signals") or {}, dict):
                 raise ValueError(f"agent {k}: signals must be a mapping of row name to {{drift, noise, delay}}")
@@ -518,7 +543,7 @@ class Model:
                           breakpoints=[eval_coef(b, params) for b in hz["breakpoints"]] if hz.get("breakpoints") else None,
                           unit=eval_coef(hz["unit"], params) if hz.get("unit") is not None else None,
                           unit_range=eval_coef(hz["unit_range"], params) if hz.get("unit_range") is not None else None,
-                          nodes=int(hz.get("nodes", 16)))
+                          nodes=hz.get("nodes", 16))
         states = [State(name=k, drift=parse_expr(v.get("drift"), params), noise=parse_expr(v.get("noise"), params))
                   for k, v in (d.get("states") or {}).items()]
         defs = [Definition(name=k, expr=parse_expr(v, params)) for k, v in (d.get("definitions") or {}).items()]
@@ -558,6 +583,7 @@ class Model:
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
                 params=MappingProxyType(dict(params)), source=copy.deepcopy(d))     # read-only: see with_params()
         m.validate()                                           # structural errors first; then the parameter check
+        m.horizon.nodes = int(m.horizon.nodes)
         unused = sorted(set(params) - params.used)
         if unused:
             raise ValueError(f"parameter(s) {unused} are defined but never used in the model (misspelled somewhere?)")

@@ -180,6 +180,19 @@ class StationarySolver(EngineBase):
         self.model = model
         self.verbose = verbose
         self.naive_observers = naive_observers or {}
+        names = [a.name for a in model.agents]
+        if not isinstance(self.naive_observers, dict):
+            raise TypeError("naive_observers must be a dict {agent: [observers that do not react to it]}")
+        for k, v in self.naive_observers.items():
+            if k not in names:
+                raise ValueError(f"naive_observers: {k!r} is not an agent (agents: {names})")
+            if isinstance(v, str) or not all(isinstance(x, str) for x in v):
+                raise TypeError(f"naive_observers[{k!r}] must be a list of agent names")
+            bad = [x for x in v if x not in names]
+            if bad:
+                raise ValueError(f"naive_observers[{k!r}]: {bad} are not agents (agents: {names})")
+            if k in v:
+                raise ValueError(f"naive_observers[{k!r}] lists the agent itself")
         self._rphys: Dict[str, np.ndarray] = {}
         self._qa: Dict[str, np.ndarray] = {}
         c = self.c
@@ -372,7 +385,9 @@ class StationarySolver(EngineBase):
                 gamma[keep] = np.linalg.solve(Amat[np.ix_(keep, keep)], -bvec[keep])
             except np.linalg.LinAlgError:
                 raise ValueError(f"the best-response system of {agent.name} is singular: two of its rows may carry the "
-                                 "same information, or a control may have no strictly convex own term in the loss") from None
+                                 "same information, a control may have no quadratic term in its current value (a "
+                                 "quadratic in a lagged read, D@tau, leaves the strategy free at ages above "
+                                 "window - tau), or a row's noise loading may be zero") from None
         gamma = gamma.reshape(nU, nR, N)
         cact = np.zeros((nU, N, nW))
         for ui in range(nU):
@@ -442,10 +457,10 @@ class StationarySolver(EngineBase):
             try:
                 hi = float(eigsh(op, k=1, which="LA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
                 lo = float(eigsh(op, k=1, which="SA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
-            except Exception:
-                return None
+            except Exception as exc:                          # Lanczos did not settle: say so rather than stay silent
+                return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
         scale = max(abs(lo), abs(hi), 1e-300)
-        return {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale)}
+        return {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale), "converged": True}
 
     # ------------------------------------------------ maps from kernels
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
@@ -496,10 +511,11 @@ class StationarySolver(EngineBase):
             # tied agents' action kernels differ by a channel permutation the symmetry implies; raw maps
             # (on each agent's own rows) carry over verbatim, so iterate on maps when ties are present
             variable = "maps"
+        kind = self.init_kind(init) if init is not None else None
         if variable == "actions":
-            if init is not None and all(v.ndim == 3 and v.shape[1] == self.c.N and v.shape[2] == self.c.nW for v in init.values()):
+            if kind == "actions":
                 acts0 = init
-            elif init is not None:                       # maps given: convert to actions
+            elif kind == "maps":                          # maps given: convert to actions
                 Z0 = self.c.closed_loop(init); acts0 = {a.name: np.stack([Z0[self.c.block(u)] for u in a.controls]) for a in self.model.agents}
             else:
                 acts0 = {a.name: np.zeros(shapes_a[a.name]) for a in self.model.agents}
@@ -509,9 +525,7 @@ class StationarySolver(EngineBase):
                 evals[0] += 1
                 return packa(self.response_actions(unpacka(zz))) - zz
         else:
-            maps = init if init is not None else self.zero_maps()
-            if init is not None and all(v.ndim == 3 and v.shape[2] == self.c.nW for v in init.values()):
-                maps = self.maps_from_kernels(self.world_from_actions(init))      # actions given: project
+            maps = self.zero_maps() if kind is None else (init if kind == "maps" else self.maps_from_actions(init))
             z = self.pack(maps)
 
             def F(zz):

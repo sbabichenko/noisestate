@@ -111,7 +111,7 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     try:
         return _run(p, args)
-    except (ValueError, TypeError) as exc:                 # a model error: the message, not a traceback
+    except (ValueError, TypeError, NotImplementedError, RuntimeError, np.linalg.LinAlgError) as exc:   # a model error: the message
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

@@ -63,6 +63,38 @@ class EngineBase:
     def unpack_actions(self, z: np.ndarray) -> Dict[str, np.ndarray]:
         return self._unpack(z, self.action_shapes)
 
+    # ---------------------------------------------------------- checks
+    def init_kind(self, init: Dict[str, np.ndarray]) -> str:
+        """Classify a warm start as "actions" or "maps" by shape; a wrong or ambiguous shape is an error."""
+        kinds = set()
+        for a in self.model.agents:
+            if a.name not in init:
+                raise ValueError(f"init has no entry for agent {a.name}")
+            v = np.asarray(init[a.name]); sa, sm = self.action_shapes[a.name], tuple(self.shapes[a.name])
+            if v.shape == sa and v.shape != sm:
+                kinds.add("actions")
+            elif v.shape == sm and v.shape != sa:
+                kinds.add("maps")
+            elif v.shape == sa:
+                raise ValueError(f"init for {a.name}: shape {v.shape} could be action kernels or raw maps (N == nR == nW); "
+                                 "pass the other representation")
+            else:
+                raise ValueError(f"init for {a.name}: shape {v.shape}; expected action kernels {sa} or raw maps {sm} "
+                                 "(a warm start from a different grid cannot be used directly)")
+        if len(kinds) != 1:
+            raise ValueError("init mixes action kernels and raw maps across agents")
+        return kinds.pop()
+
+    def same_grid(self, other) -> bool:
+        """Whether another compiled model lives on the same grid (so its kernels can be a warm start)."""
+        g1, g2 = getattr(self.c, "grid", None), getattr(other, "grid", None)
+        if g1 is not None or g2 is not None:
+            return g1 is g2
+        g1, g2 = getattr(self.c, "g", None), getattr(other, "g", None)
+        if g1 is not None or g2 is not None:
+            return g1 is g2
+        return self.c.N == other.N and abs(self.c.h - other.h) < 1e-12
+
     # ------------------------------------------------------ fixed points
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray]):
         """(raw map, {"action": ..., "Zfull": ..., ...}) of the agent against `maps`."""

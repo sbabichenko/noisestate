@@ -183,8 +183,12 @@ A converged solve is a solution of the discretised, truncated model.  Four check
 is from the model you wrote:
 
 * `noisestate solve model.yaml --refine` (or `solve(..., refine=True)`, `res.refine()`) re-solves
-  on a grid with 1.5 times the nodes and reports the relative change of every cost and of the
-  kernels; `res.refinement["resolved"]` is the verdict, and the summary says `NOT RESOLVED`.
+  on a grid with 1.5 times the nodes (twice the cells for the cell engine) and reports the change
+  of every cost, relative to the largest cost, and of the kernels; `res.refinement["resolved"]`
+  is the verdict for the spectral engines, and the summary says `NOT RESOLVED`.  The cell engine
+  is first order, so it reports the changes without a verdict.  On the finite engine with delays
+  the refinement rebuilds the delay-cut triangle's quadrature and can take far longer than the
+  solve (the delayed Chapter 1 example: 6 s to solve, over 10 minutes to refine).
 * Stationary results carry `res.window_tail`, the largest change of a kernel over the last tenth
   of the window relative to that kernel's peak; above 2% the summary says `WINDOW TOO SHORT`,
   because the equilibrium solved is that of the model truncated at `horizon.window`.  A kernel that
@@ -201,18 +205,27 @@ is from the model you wrote:
   sign there (the Chapter 5 example sits at -3e-5 with 6 nodes per panel); the value is reported
   in `res.second_order` and `to_dict()` either way.
   Discounted stationary models are not checked (their objective is not a quadratic form in the
-  stationary kernel).
-* Every sweep row has `change` (relative change of the action kernels from the previous point) and
-  `jump` (that change per unit of parameter step is more than five times the sweep's median), so
-  a branch jump between neighbouring points is visible instead of silently plotted as a curve.
+  stationary kernel).  When the eigensolver does not settle the report says so
+  (`converged: False`) instead of staying silent.  The undiscounted Kyle-Back example at a
+  trading cost of 0.01 crosses the threshold (-1.6e-4) on the window of 8: the truncation
+  effect grows as the trading cost shrinks, and a positive discount removes it.
+* `stability()` reports the spectral radius of the best-response map (tatonnement stability) and
+  the method that produced it.  This is a different question from whether the fixed-point
+  solver converged: the Kyle-Back example converges under Anderson mixing while its radius is
+  1.4, so naive best-response adjustment would not find that equilibrium.
+* Every sweep row has `change` (relative change of the raw maps from the previous point, on the
+  same grid) and `jump` (that change is more than five times the sweep's median), so a branch
+  jump between neighbouring points is visible instead of silently plotted as a curve.  The
+  change is per point, not per unit of the parameter, so a geometric sweep is not flagged.
 * `res.cost_kind` and `model.notes` name what the numbers are: stationary costs are flow losses
   per unit time, finite-horizon costs are discounted integrals; a row that observes a control
   directly sees only its predictable part; a myopic agent ignores its effect on future flows; a
   linear loss term moves only the means, which are not solved, and has no effect on kernels or
   costs.  `noisestate validate` prints the notes.  A parameter that nothing references is an
   error, the usual sign of a misspelled name elsewhere in the file; so are a drift that depends on
-  a future value, a zero noise loading, `breakpoints` that do not end at the window, and a
-  `myopic` that is not a boolean.
+  a future value, a zero noise loading, `breakpoints` that do not end at the window, a
+  `myopic` that is not a boolean, a lag, delay or lead that is not below the window, a
+  `unit_range` above the window, and a misspelled agent in `naive_observers`.
 * `refine()` and `stability()` rebuild the engine that produced the result, with the same options
   (naive observers, ridge, tolerances).  A built model is single-sourced: its coefficients are
   numbers, so `model.params` is read-only and `model.with_params(p=4.0)` returns a new model, while

@@ -104,10 +104,14 @@ class BaseResult:
         hz["nodes"] = n1
         kw = {k: v for k, v in self.solve_kw.items() if k != "init"}; kw.update(solve_kw)
         fine = self._make_solver(Model.from_dict(d)).solve(**kw)
-        cost_change = max(abs(fine.costs[k] - self.costs[k]) / max(1e-12, abs(self.costs[k])) for k in self.costs)
+        scale = max(1e-300, max(abs(v) for v in self.costs.values()))          # one scale: a zero-profit agent is not "unresolved"
+        cost_change = max(abs(fine.costs[k] - self.costs[k]) / scale for k in self.costs)
         kernel_change = self._kernel_change(fine)
         rep = {"nodes": n1, "converged": bool(fine.converged), "cost_change": float(cost_change),
-               "kernel_change": float(kernel_change), "resolved": bool(fine.converged and cost_change < 1e-6 and kernel_change < 1e-5)}
+               "kernel_change": float(kernel_change)}
+        # the spectral engines converge exponentially, so a small change means resolved; the cell engine is
+        # first order and its change halves per doubling: no verdict, the numbers are the report
+        rep["resolved"] = None if self.kind == "finite_cells" else bool(fine.converged and cost_change < 1e-6 and kernel_change < 1e-5)
         self.refinement = rep
         return rep
 
@@ -118,20 +122,23 @@ class BaseResult:
         s = "converged" if self.converged else f"NOT converged ({self.message})"
         if self.representation_error and not self.resolution_ok:
             s += f"; UNDER-RESOLVED (representation error {max(self.representation_error.values()):.1e}: raise horizon.nodes)"
-        bad = [a for a, so in self.second_order.items() if not so["ok"]]
+        bad = [a for a, so in self.second_order.items() if so["ok"] is False]
         if bad:
             s += (f"; NOT A MINIMUM (the best response of {bad} is a saddle: its loss is not convex in its own strategy, "
                   f"smallest curvature {min(self.second_order[a]['min'] for a in bad):.1e} of the largest)")
         if self.refinement:
             s += (f"; refinement to {self.refinement['nodes']} nodes moves costs by {self.refinement['cost_change']:.1e} and kernels by "
-                  f"{self.refinement['kernel_change']:.1e}" + ("" if self.refinement["resolved"] else " (NOT RESOLVED)"))
+                  f"{self.refinement['kernel_change']:.1e}" + ("" if self.refinement["resolved"] in (True, None) else " (NOT RESOLVED)"))
+        unsettled = [a for a, so in self.second_order.items() if so.get("converged") is False]
+        if unsettled:
+            s += f"; second-order check did not converge for {unsettled}"
         tail = getattr(self, "window_tail", None)
         if tail is not None and tail > self.WINDOW_TAIL_TOL:
             s += f"; WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window)"
         rep = getattr(self, "stability_report", None)
         if rep:
             s += f"; best-response dynamics {'stable' if rep['stable'] else 'UNSTABLE'} (spectral radius {rep['radius']:.3f}"
-            s += ", untied game)" if rep["untied"] else ")"
+            s += (", untied game" if rep["untied"] else "") + (f", by {rep['method']}" if rep["method"] != "arnoldi" else "") + ")"
         return s
 
     def stability(self, untied: bool = True, k: int = 2, eps: float = 1e-6, tol: float = 1e-3,
@@ -168,14 +175,14 @@ class BaseResult:
         kk = max(1, min(k, n - 2))
         op = LinearOperator((n, n), matvec=matvec, dtype=float)
         rng = np.random.default_rng(0)
-        v = rng.standard_normal(n)
+        v = rng.standard_normal(n); method = "arnoldi"
         if np.linalg.norm(matvec(v)) <= 1e-12 * np.linalg.norm(v):
-            vals = np.array([0.0])                          # a single agent: its best response does not depend on itself
+            vals = np.array([0.0]); method = "zero"          # a single agent: its best response does not depend on itself
         else:
             try:
                 vals = eigs(op, k=kk, which="LM", tol=tol, maxiter=max_evaluations, v0=v, return_eigenvectors=False)
-            except Exception:                               # ARPACK did not settle: fall back to power iteration
-                lam = 0.0
+            except Exception:                               # ARPACK did not settle: power iteration, and say so
+                method = "power iteration (arnoldi did not converge)"; lam = 0.0
                 for _ in range(30):
                     w = matvec(v); nw = np.linalg.norm(w)
                     lam = nw / np.linalg.norm(v)
@@ -185,7 +192,7 @@ class BaseResult:
                 vals = np.array([lam])
         radius = float(np.max(np.abs(vals)))
         rep = {"radius": radius, "eigenvalues": [complex(x) for x in np.asarray(vals)], "stable": bool(radius < 1.0),
-               "evaluations": int(count[0]), "untied": bool(untied and self.model.ties),
+               "evaluations": int(count[0]), "untied": bool(untied and self.model.ties), "method": method,
                "fixed_point_residual": float(np.linalg.norm(F0 - z0) / scale)}
         self.stability_report = rep
         return rep
@@ -211,7 +218,7 @@ class BaseResult:
             out["window_tail"] = float(tail)
         rep = getattr(self, "stability_report", None)
         if rep:
-            out["stability"] = {"radius": rep["radius"], "stable": rep["stable"], "untied": rep["untied"],
+            out["stability"] = {"radius": rep["radius"], "stable": rep["stable"], "untied": rep["untied"], "method": rep["method"],
                                 "eigenvalues": [[x.real, x.imag] for x in rep["eigenvalues"]]}
         for name in c.prim:
             out["kernels"][name] = {ch: self.kernel(name, ch).tolist() for ch in self.channels}
