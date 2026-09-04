@@ -1,0 +1,51 @@
+--- kb_spectral_q.cpp	2026-09-02 16:44:19.160789015 -0400
++++ kb_spectral_q.cpp	2026-09-04 08:28:01.387337899 -0400
+@@ -287,6 +287,16 @@
+             if (pre && !dg) yj[j] = pre_solve(Gj, Hj[j] * cs[j], pre->Glu[j]);
+             else { Eigen::PartialPivLU<MatrixXd> lu(Gj); yj[j] = lu.solve(Hj[j] * cs[j]); if (dg) { dg->Glu[j] = lu; dg->Htj[j] = Htj[j]; dg->Hj[j] = Hj[j]; dg->yj[j] = yj[j]; } }
+         }
++        // FIX (2026-09-04): the cascade feeds each opponent's own reaction back into its flow observation, so the
++        // policy rows it uses must be on TOTAL-flow rows (own trades included), as in kb_multi.py.  The residual-row
++        // policy yj[j] above is kept for the agent's own FOC only.
++        std::vector<MatrixXd> yj_cas(NT);
++        for (int j = 0; j < NT; ++j) {
++            const MatrixXd Hts = obs_Ht(signal_kw(g, j), (2 + j) * q);
++            MatrixXd Htc(NC * N, 2 * q * N); Htc << Htf, Hts;
++            const MatrixXd Hc = Htmass(Htc);
++            Eigen::PartialPivLU<MatrixXd> lu(Hc * Htc); yj_cas[j] = lu.solve(Hc * cs[j]);
++        }
+         std::vector<MatrixXd> out(NT);
+         const MatrixXd I = MatrixXd::Identity(N, N);
+         for (int i = 0; i < NT; ++i) {
+@@ -310,7 +320,7 @@
+                 for (int u = 0; u < q; ++u) {
+                     Msys.block((q + u) * N, (q + u) * N, N, N) = I;
+                     for (int j = 0; j < NT; ++j) if (j != i) for (int o = 0; o < q; ++o) {
+-                        const VectorXd rf = yj[j].block(o * N, u, N, 1), rs = yj[j].block((q + o) * N, u, N, 1);
++                        const VectorXd rf = yj_cas[j].block(o * N, u, N, 1), rs = yj_cas[j].block((q + o) * N, u, N, 1);
+                         const MatrixXd Vrf = volterra(rf), Vrs = volterra(rs);
+                         for (int uu = 0; uu < q; ++uu) Msys.block((q + u) * N, (q + uu) * N, N, N) -= SZhi(o, uu) * Vrf;
+                         Msys.block((q + u) * N, o * N, N, N) += gam[j][o] * Vrs;
+@@ -942,7 +952,7 @@
+     std::vector<VectorXd> gam;
+     { std::string s = argv[6]; size_t p = 0; while (p <= s.size()) { size_t e = s.find(';', p); if (e == std::string::npos) e = s.size(); auto v = parse_list(s.substr(p, e - p)); VectorXd g(q); for (int k = 0; k < q; ++k) g[k] = v.size() == 1 ? v[0] : v[k]; gam.push_back(g); p = e + 1; } }
+     MatrixXd SV = MatrixXd::Identity(q, q), SZ = MatrixXd::Identity(q, q);
+-    double tol = 1e-10, split_b = 0.0, map_alpha = 0.0; int uniform = 0, coarse = 0, n1 = 0; bool verbose = false, eval_only = false, adaptive = true, tangent = true, use_jfnk = true, use_analytic = true, check_jac = false, exact_nt = true, range_nt = false, lagged_nt = true; int gm_max = 12, lag_its = 8, pre_steps = 60, chunk_sz = 48; double min_ratio = 0.25; int pvar = 0; bool quad_pred = false; bool no_batch = true; double gm_tol = 1e-3; std::vector<double> path; std::string init_file; std::string dump_jac;
+     for (int i = 7; i < argc; ++i) {
+         if (!std::strcmp(argv[i], "--sigma-v") && i + 1 < argc) { auto v = parse_list(argv[++i]); for (int r = 0; r < q; ++r) for (int c = 0; c < q; ++c) SV(r, c) = v[r * q + c]; }
+         else if (!std::strcmp(argv[i], "--sigma-z") && i + 1 < argc) { auto v = parse_list(argv[++i]); for (int r = 0; r < q; ++r) for (int c = 0; c < q; ++c) SZ(r, c) = v[r * q + c]; }
+@@ -978,6 +988,7 @@
+         else if (!std::strcmp(argv[i], "--no-quad")) quad_pred = false;
+         else if (!std::strcmp(argv[i], "--init") && i + 1 < argc) init_file = argv[++i];
+         else if (!std::strcmp(argv[i], "--dump-jacobian") && i + 1 < argc) dump_jac = argv[++i];
+         else if (!std::strcmp(argv[i], "--threads") && i + 1 < argc) {
+ #ifdef _OPENMP
+             omp_set_num_threads(std::atoi(argv[++i])); threads_set = true;
+@@ -1085,7 +1096,11 @@
+     }
+     if (eval_only) {
+         M.eps = eps;
+-        const VectorXd r = M.residual(z);
+         std::fprintf(stderr, "eval-only: |r|_max %.3e  |r|_2 %.3e\n", r.cwiseAbs().maxCoeff(), r.norm());
+         o.z = z; o.resid = r.cwiseAbs().maxCoeff(); o.steps = 0; o.jacobians = 0; o.ok = true;
+     } else if (coarse > 0 && coarse < N && init_file.empty() && n1 == 0) {

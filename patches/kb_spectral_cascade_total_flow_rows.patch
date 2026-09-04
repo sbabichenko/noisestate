@@ -1,0 +1,27 @@
+--- kb_spectral.cpp	2026-08-27 20:10:21.708438333 -0400
++++ kb_spectral.cpp	2026-09-04 08:30:00.707526363 -0400
+@@ -256,6 +256,15 @@
+             { const MatrixXd G = Hj * Htj; if (use_pre) y = pre_solve(G, Hj * flat(cs[j]), pre->Glu[j]); else { Eigen::PartialPivLU<MatrixXd> lu(G); y = lu.solve(Hj * flat(cs[j])); if (dg) dg->Glu[j] = lu; } }
+             yf[j] = y.head(N); ys[j] = y.tail(N);
+         }
++        // FIX (2026-09-04): the cascade feeds each opponent's own reaction back into its flow observation, so the
++        // policy rows it uses must be on TOTAL-flow rows (own trades included), as in kb_multi.py.
++        std::vector<VectorXd> yf_cas(NT), ys_cas(NT);
++        for (int j = 0; j < NT; ++j) {
++            MatrixXd Hj(2 * N, NC * N); Hj << Hf, Hs[j];
++            MatrixXd Htj(NC * N, 2 * N); Htj << Htf, Hts[j];
++            Eigen::PartialPivLU<MatrixXd> lu(Hj * Htj); const VectorXd y = lu.solve(Hj * flat(cs[j]));
++            yf_cas[j] = y.head(N); ys_cas[j] = y.tail(N);
++        }
+         const MatrixXd I = MatrixXd::Identity(N, N);
+         for (int i = 0; i < NT; ++i) {
+             // price-impact cascade: dP = beta/sZ + (1/sZ) V_beta x,  x = sum_{j != i} [ yf_j/sZ + (1/sZ) V_{yf_j} x - gam_j V_{ys_j} dP ]
+@@ -265,7 +274,7 @@
+             } else {
+                 MatrixXd SF = MatrixXd::Zero(N, N), SS = MatrixXd::Zero(N, N);
+                 VectorXd f0 = VectorXd::Zero(N);
+-                for (int j = 0; j < NT; ++j) if (j != i) { SF += volterra(yf[j]); SS += gam[j] * volterra(ys[j]); f0 += yf[j] / sZ; }
++                for (int j = 0; j < NT; ++j) if (j != i) { SF += volterra(yf_cas[j]); SS += gam[j] * volterra(ys_cas[j]); f0 += yf_cas[j] / sZ; }
+                 MatrixXd M(2 * N, 2 * N);
+                 M << I, -Vb / sZ, SS, I - SF / sZ;
+                 VectorXd rhs(2 * N); rhs << beta / sZ, f0;
