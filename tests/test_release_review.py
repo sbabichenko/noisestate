@@ -78,7 +78,7 @@ def test_numeric_export_is_loadable_and_equivalent():
 
 
 def test_window_tail_ignores_random_walk_states_and_flags_the_undiscounted_kyle_back():
-    kb = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml"))
+    kb = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml")); kb["params"]["rho"] = 0.0
     assert "WINDOW TOO SHORT" in ns.solve(kb).summary()                       # rho = 0: the average-cost artefact
     kb["params"]["rho"] = 0.5; r = ns.solve(kb)
     assert r.window_tail < 0.01 and "WINDOW TOO SHORT" not in r.summary()     # V is a random walk, P tracks it: not flagged

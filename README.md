@@ -201,8 +201,9 @@ The checks:
   of the window relative to that kernel's peak; above 2% the summary says `WINDOW TOO SHORT`,
   because the equilibrium solved is that of the model truncated at `horizon.window`.  A kernel that
   has decayed or reached a constant limit (a random-walk state, a price that tracks it) is not
-  flagged.  The undiscounted Kyle-Back example is flagged: with no discounting the trader's kernel
-  depends on the window (the average-cost artefact of Chapter 4), and a positive `rho` removes it.
+  flagged.  The Kyle-Back example with `rho: 0` is flagged: with no discounting the trader's
+  stationary problem has no solution and the kernels are window artefacts (profit 0.93 on a window
+  of 8, 0.38 on 16); the example ships with `rho: 0.5`, where the profit is 0.8208 on both.
 * Stationary results with `discount: 0` carry `res.second_order[agent]`: the agent's objective is
   a quadratic form in its strategy, computed exactly on the feasible strategies, and its smallest
   eigenvalue relative to the largest says whether the first-order condition is a minimum.  The
@@ -214,7 +215,7 @@ The checks:
   in `res.second_order` and `to_dict()` either way.
   Discounted stationary models are not checked (their objective is not a quadratic form in the
   stationary kernel).  When the eigensolver does not settle the report says so
-  (`converged: False`) instead of staying silent.  The undiscounted Kyle-Back example at a
+  (`converged: False`) instead of staying silent.  The undiscounted Kyle-Back model at a
   trading cost of 0.01 crosses the threshold (-1.6e-4) on the window of 8: the truncation
   effect grows as the trading cost shrinks, and a positive discount removes it.
 * `stability()` reports the spectral radius of the best-response map (tatonnement stability) and

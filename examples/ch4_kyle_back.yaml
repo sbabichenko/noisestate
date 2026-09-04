@@ -3,8 +3,12 @@
 #   dY_j = gamma_j (V - P) dt + dW_j,  P = E[V | flow history] (competitive market maker);
 #   trader j observes Y_j and the flow Z,
 #   trader j maximises E int e^{-rho t} [D_j (V - P) - eps D_j^2] dt.
+# rho must be positive: with no discounting the trader's stationary problem has no solution and the
+# kernels are window artefacts (profit 0.93 on a window of 8, 0.38 on 16); at rho = 0.5 the profit is
+# 0.8208 on both windows.  The market maker's cost omits the V^2 term (no control in it) and grows
+# with the window; the variance of the pricing error is the meaningful number.
 name: ch4_kyle_back
-params: {eps: 0.2, rho: 0.0, gamma1: 1.0, sigma_V: 1.0, sigma_Z: 1.0}
+params: {eps: 0.2, rho: 0.5, gamma1: 1.0, sigma_V: 1.0, sigma_Z: 1.0}
 channels: [wV, wZ, w1]
 states:
   V: {drift: {}, noise: {wV: sigma_V}}
