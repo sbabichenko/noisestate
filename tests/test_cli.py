@@ -11,7 +11,7 @@ def test_cli_validate_solve_sweep_on_every_engine(tmp_path):
         out = tmp_path / f"{name}.json"; plot = tmp_path / f"{name}.png"; npz = tmp_path / f"{name}.npz"
         assert main(["solve", path, "-o", str(out), "--plot", str(plot)]) == 0
         assert main(["solve", path, "-o", str(npz)]) == 0
-        d = json.load(open(out)); assert d["converged"] and d["kernels"] and d["grid"]["kind"] in ("stationary", "finite_triangle", "finite_cells")
+        d = json.load(open(out)); assert d["converged"] and d["kernels"] and d["grid"]["kind"] in ("stationary", "finite", "finite_cells")
         assert plot.stat().st_size > 1000 and npz.stat().st_size > 100
     sw = tmp_path / "sw.json"
     assert main(["sweep", os.path.join(EX, "ch3_two_player.yaml"), "p2", "3,5", "-o", str(sw)]) == 0

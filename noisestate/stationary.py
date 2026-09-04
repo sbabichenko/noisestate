@@ -47,7 +47,8 @@ class Compiled:
             bp = [0.0, hz.window]
         for l in lags:
             if not any(abs(l - b) < 1e-12 for b in bp):
-                raise ValueError(f"lag {l} is not a panel breakpoint; set horizon.unit so every lag is a multiple")
+                raise ValueError(f"lag {l} is not a panel breakpoint {[round(b, 6) for b in bp]}; set horizon.unit so every lag is a "
+                                 f"multiple of it, and horizon.unit_range at least {max(lags)} so the unit panels reach the largest lag")
         self.grid = age_grid(tuple(round(float(b), 12) for b in bp), hz.nodes)   # shared, with its operator caches
         self.N = self.grid.N
         self.rho = float(hz.discount)
@@ -166,7 +167,12 @@ class Compiled:
 
 # ------------------------------------------------------------------- solver
 class StationarySolver:
+    # the objective is truncated at the window, so a strategy can push a little loss past the edge: curvatures
+    # within this fraction of the largest are treated as that truncation, not as a saddle
+    SECOND_ORDER_TOL = 1e-4
+
     def __init__(self, model: Model, verbose: bool = False, naive_observers: Optional[Dict[str, List[str]]] = None):
+        self.solver_kw = {"verbose": verbose, "naive_observers": naive_observers}
         """naive_observers: {agent: [observers]} lists agents whose strategies do NOT react to that agent's
         deviations (Chapter 6's naive observers); every other observer is privy and reacts through its map."""
         self.c = Compiled(model)
@@ -317,13 +323,26 @@ class StationarySolver:
             inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
         Bk = self._row_operator(rows, inst)
         W = c.grid.mass
-        Gram = sum((Bk[k] * W[:, None]).T @ Bk[k] for k in range(nW))
-        Gram += 1e-14 * np.trace(Gram) / Gram.shape[0] * np.eye(nR * N)
-        g = np.zeros((nU, nR, N))
+        keep = self._identified(agent)                                       # delayed rows: zero where they read nothing
+        Gram = sum((Bk[k] * W[:, None]).T @ Bk[k] for k in range(nW))[np.ix_(keep, keep)]
+        Gram += 1e-14 * np.trace(Gram) / Gram.shape[0] * np.eye(Gram.shape[0])
+        g = np.zeros((nU, nR * N))
         for ui in range(nU):
-            rhs = sum((Bk[k] * W[:, None]).T @ actions[ui, :, k] for k in range(nW))
-            g[ui] = np.linalg.solve(Gram, rhs).reshape(nR, N)
-        return g
+            rhs = sum((Bk[k] * W[:, None]).T @ actions[ui, :, k] for k in range(nW))[keep]
+            g[ui, keep] = np.linalg.solve(Gram, rhs)
+        return g.reshape(nU, nR, N)
+
+    def _identified(self, agent: Agent) -> np.ndarray:
+        """Mask over the stacked map nodes (row-major over rows) of the ages at which the map on each
+        row reads something within the window: all ages for an undelayed row, ages below L - delay
+        for a row observed with a delay."""
+        c = self.c; N = c.N
+        keep = np.ones(len(agent.signals) * N, dtype=bool)
+        for r in range(len(agent.signals)):
+            d = c.rows[agent.name][r][3]
+            if d > 0:
+                keep[r * N:(r + 1) * N] = c.grid.nodes < c.grid.L - d - 1e-12
+        return keep
 
     # ------------------------------------------------------ best response
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
@@ -354,7 +373,24 @@ class StationarySolver:
                 FRG = (FR @ Gk).reshape(nW * N, nR * N)                      # FR applied per channel, stacked
                 Amat[rowsl, colsl] += H @ FRG                                # one product over all channels
             bvec[rowsl] += H @ (Fu[ui] @ Zpass).T.reshape(-1)
-        gamma = np.linalg.solve(Amat, -bvec).reshape(nU, nR, N)
+        # a row observed with delay d is uninformative about shocks younger than d, so the map on it at
+        # ages b > L - d reads nothing within the window: those unknowns (and their projection rows,
+        # which are zero) are removed, and the map is zero there.  A plain solve on the full system
+        # would be singular.
+        keep = np.tile(self._identified(agent), nU)
+        gamma = np.zeros(nG)
+        if max(c.rows[agent.name][r][3] for r in range(nR)):
+            # with a delayed row the seen kernels jump at the delay, and the map values at the panel
+            # breakpoints (one of each duplicated node) drop out of the discrete system exactly: least
+            # squares with a cutoff far below the rest of the spectrum takes the minimum-norm values there
+            gamma[keep] = np.linalg.lstsq(Amat[np.ix_(keep, keep)], -bvec[keep], rcond=1e-8)[0]
+        else:
+            try:
+                gamma[keep] = np.linalg.solve(Amat[np.ix_(keep, keep)], -bvec[keep])
+            except np.linalg.LinAlgError:
+                raise ValueError(f"the best-response system of {agent.name} is singular: two of its rows may carry the "
+                                 "same information, or a control may have no strictly convex own term in the loss") from None
+        gamma = gamma.reshape(nU, nR, N)
         cact = np.zeros((nU, N, nW))
         for ui in range(nU):
             for k in range(nW):
@@ -365,6 +401,7 @@ class StationarySolver:
         g = self._project_maps(agent, Zfull, cact)
         out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
         if want_decomp:
+            out["second_order"] = self._second_order(agent, Resp, Gk, keep)
             dec = {}
             for ui, u in enumerate(agent.controls):
                 phi = np.stack([Fu[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
@@ -372,6 +409,60 @@ class StationarySolver:
                 dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
             out["decomp"] = dec
         return g, out
+
+    def _second_order(self, agent: Agent, Resp, Gk, keep) -> Optional[dict]:
+        """Second-order condition of the best response: the agent's objective is a quadratic form in its
+        strategy, and a first-order condition is a minimum only if that form is positive on the
+        feasible strategies (those its rows can express).  With rho = 0 the objective is the flow
+        loss, integrated exactly, so the form is computed exactly: J(delta) = 1/2 delta' M delta with
+        M = T' G T, T the map from a strategy to the world it produces and G the loss form.  Its
+        extreme eigenvalues come from Lanczos on matvecs.  Returns {"min", "max", "ok"} with
+        min/max the eigenvalues of M scaled by max; None when rho > 0 (the discounted objective is
+        not a quadratic form in the stationary kernel)."""
+        c = self.c
+        if c.rho > 0:
+            return None
+        from scipy.sparse.linalg import LinearOperator, eigsh
+        N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
+        atoms, Q, q = c.loss[agent.name]
+        AO = np.concatenate([c.atom_op(at) for at in atoms], axis=0)           # (m N, n_prim N)
+        QM = np.kron(Q, c.grid.mass_matrix)                                      # the loss form on the atoms
+        GAO = AO.T @ (QM @ AO)                                                   # symmetric loss form on the world
+        idx = np.where(keep)[0]
+
+        def T(delta_full):                     # strategy -> world, per channel: (n_prim N, nW)
+            Zd = np.zeros((GAO.shape[0], nW))
+            for ui in range(nU):
+                du = delta_full[ui * nR * N:(ui + 1) * nR * N]
+                for k in range(nW):
+                    Zd[:, k] += Resp[ui] @ (Gk[k] @ du)
+            return Zd
+
+        def Tt(Zd):                            # its transpose
+            out = np.zeros(nU * nR * N)
+            for ui in range(nU):
+                RZ = Resp[ui].T @ Zd                                            # (N, nW)
+                for k in range(nW):
+                    out[ui * nR * N:(ui + 1) * nR * N] += Gk[k].T @ RZ[:, k]
+            return out
+
+        def matvec(v):
+            full = np.zeros(nU * nR * N); full[idx] = np.asarray(v, dtype=float).ravel()
+            return Tt(GAO @ T(full))[idx]
+        n = idx.size
+        if n <= 400:
+            Mfull = np.column_stack([matvec(e) for e in np.eye(n)])
+            w = np.linalg.eigvalsh((Mfull + Mfull.T) / 2)
+            lo, hi = float(w[0]), float(w[-1])
+        else:
+            op = LinearOperator((n, n), matvec=matvec, dtype=float)
+            try:
+                hi = float(eigsh(op, k=1, which="LA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
+                lo = float(eigsh(op, k=1, which="SA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
+            except Exception:
+                return None
+        scale = max(abs(lo), abs(hi), 1e-300)
+        return {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale)}
 
     # ------------------------------------------------ maps from kernels
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
@@ -489,12 +580,16 @@ class StationarySolver:
         maps = self.maps_from_kernels(self.world_from_actions(unpacka(z))) if variable == "actions" else self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = Result(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                     iterations=evals[0], seconds=time.time() - t0, history=hist, message=message)
+                     iterations=evals[0], seconds=time.time() - t0, history=hist, message=message,
+                     solver_class=type(self), solver_kw=self.solver_kw,
+                     solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "method": method, "variable": variable})
         # decomposition, costs, and how well the raw rows represent each best response
         for a in self.model.agents:
             g, out = self.best_response(a, maps, want_decomp=True)
             res.foc[a.name] = out["decomp"]
             res.costs[a.name] = self.expected_loss(a, Z)
+            if out["second_order"] is not None:
+                res.second_order[a.name] = out["second_order"]
             res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
         return res
 

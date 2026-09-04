@@ -14,4 +14,4 @@ def test_finite_sweep_warm_starts():
     rows = sweep(os.path.join(HERE, "..", "examples", "ch1_two_player_finite.yaml"), "p1", [3.0, 4.0, 5.0])
     assert all(r["converged"] for r in rows)
     assert rows[2]["evaluations"] <= rows[0]["evaluations"]
-    d = result_to_dict(rows[-1]["result"]); assert d["grid"]["kind"] == "finite_triangle"
+    d = result_to_dict(rows[-1]["result"]); assert d["grid"]["kind"] == "finite"

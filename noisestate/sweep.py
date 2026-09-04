@@ -17,7 +17,7 @@ from typing import Iterable, List, Optional, Union
 import numpy as np
 import yaml
 
-from .spec import Model
+from .spec import Model, ModelBuilder
 from .results import TriangleResult
 from .stationary import StationarySolver
 from .finite import FiniteSolver
@@ -28,18 +28,24 @@ def _load_dict(model: Union[str, dict, Model]) -> dict:
     if isinstance(model, str):
         with open(model) as fh:
             return yaml.safe_load(fh)
+    if isinstance(model, ModelBuilder):
+        return model.to_dict()
     if isinstance(model, Model):
         return model.to_dict()
+    if not isinstance(model, dict):
+        raise TypeError(f"expected a Model, a ModelBuilder, a dict or a path, not {type(model).__name__}")
     return copy.deepcopy(model)
 
 
+ENGINES = {"stationary": StationarySolver, "finite": SpectralFiniteSolver, "finite_cells": FiniteSolver}
+
+
 def make_solver(model: Model, **kw):
-    kind = model.horizon.kind
-    if kind == "stationary":
-        return StationarySolver(model, **kw)
-    if kind == "finite_cells":
-        return FiniteSolver(model, **kw)
-    return SpectralFiniteSolver(model, **kw)
+    """The engine `model.horizon.kind` selects, constructed with `kw`."""
+    try:
+        return ENGINES[model.horizon.kind](model, **kw)
+    except KeyError:
+        raise ValueError(f"unknown horizon.kind {model.horizon.kind!r}; one of {sorted(ENGINES)}") from None
 
 
 def warm_start(prev) -> Optional[dict]:

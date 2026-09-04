@@ -68,7 +68,7 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
     method="newton": a few damped steps, then Newton-Krylov.
     Returns (z, rel_residual, evaluations, converged, message); converged means rel_residual <= tol."""
     from scipy.optimize import newton_krylov
-    from scipy.optimize._nonlin import NoConvergence
+    from scipy.optimize import NoConvergence
     msg = []
     if method == "anderson":
         z, rn, ev, ok = anderson(F, z0, tol=tol, M=M, beta=damping, maxiter=anderson_iters, verbose=verbose)

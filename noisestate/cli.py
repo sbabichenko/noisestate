@@ -109,7 +109,14 @@ def main(argv=None) -> int:
     w.add_argument("-o", "--out", required=True, help="output .json")
     w.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
+    try:
+        return _run(p, args)
+    except (ValueError, TypeError) as exc:                 # a model error: the message, not a traceback
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
+
+def _run(p, args) -> int:
     with open(args.model) as fh:
         d = yaml.safe_load(fh)
     if args.cmd == "sweep":
@@ -131,11 +138,20 @@ def main(argv=None) -> int:
             print("  note:", note)
         return 0
     for kv in args.param:
+        if "=" not in kv:
+            p.error(f"--param expects name=value, got {kv!r}")
         k, v_ = kv.split("=", 1)
-        d.setdefault("params", {})[k] = float(v_)
-    if args.nodes:
+        try:
+            d.setdefault("params", {})[k] = float(v_)
+        except ValueError:
+            p.error(f"--param {k}: {v_!r} is not a number")
+    if args.nodes is not None:
+        if args.nodes < 2:
+            p.error("--nodes must be at least 2")
         d.setdefault("horizon", {})["nodes"] = args.nodes
-    if args.window:
+    if args.window is not None:
+        if not args.window > 0:
+            p.error("--window must be positive")
         d.setdefault("horizon", {})["window"] = args.window
     m = Model.from_dict(d)
     res = _solve(m, verbose=args.verbose, tol=args.tol, refine=args.refine, stability=args.stability)

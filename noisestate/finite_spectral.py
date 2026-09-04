@@ -8,7 +8,7 @@ loop as one linear system in the nodal kernels; best response in the agent's
 passive world with the per-date first-order condition (instantaneous term,
 discounted continuation through the impulse responses, delayed reads) affine
 in the map on the passive rows; raw map by projection, one Gram per time
-node; Newton-Krylov fixed point over all raw maps.
+node; Anderson fixed point over the action kernels (or the raw maps), Newton-Krylov polish.
 """
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ class SpectralCompiled:
         self.prim, self.index, self.nX, self.nU = st.prim, st.index, st.nX, st.nU
         self.A, self.state_inputs, self.sigma = st.A, st.state_inputs, st.sigma
         self.rows, self.loss, self.rep, self.reps = st.rows, st.loss, st.rep, st.reps
-        # state propagation operators (eigen-decomposition of A)
+        # state propagation operators (matrix exponentials of A)
         if self.nX:
             # state propagation e^{A(t-r)} along the Volterra path; entrywise weights from expm, which
             # is exact for defective A too (an eigen-decomposition would not be)
@@ -492,10 +492,31 @@ class SpectralFiniteSolver:
         G = np.einsum("ink,nm,jmk->ij", zeta, self._mass_rho, zeta)
         return float(0.5 * np.sum(Q * G))
 
-    def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, pre_iterations: int = 10,
-              max_newton: int = 8, pre_tol: float = 1e-3, variable: str = "actions") -> SpectralResult:
+    def _init_kind(self, init: dict, shapes: dict) -> dict:
+        """Classify a warm start as action kernels or raw maps by shape; ambiguous or wrong shapes are errors."""
+        kinds = set()
+        for a in self.model.agents:
+            v = np.asarray(init[a.name]); nR = len(a.signals)
+            sa, sm = shapes[a.name], (len(a.controls), nR, self.c.N)
+            if v.shape == sa and v.shape != sm:
+                kinds.add("actions")
+            elif v.shape == sm and v.shape != sa:
+                kinds.add("maps")
+            elif v.shape == sa:
+                raise ValueError(f"init for {a.name}: shape {v.shape} could be action kernels or raw maps (nR == nW); pass the "
+                                 "other representation")
+            else:
+                raise ValueError(f"init for {a.name}: shape {v.shape}; expected action kernels {sa} or raw maps {sm}")
+        if len(kinds) != 1:
+            raise ValueError("init mixes action kernels and raw maps across agents")
+        return {"kind": kinds.pop(), "value": init}
+
+    def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, max_newton: int = 8,
+              variable: str = "actions") -> SpectralResult:
         """variable="actions": iterate on the agents' action kernels, raw maps derived by projection
-        (robust where early-time maps are ill-determined).  variable="maps": iterate on raw maps."""
+        (robust where early-time maps are ill-determined).  variable="maps": iterate on raw maps.
+        init: action kernels (nU, N, nW) or raw maps (nU, nR, N) per agent; either is accepted and
+        converted to the iteration variable."""
         t0 = time.time()
         hist, evals = [], [0]
         shapes = {a.name: (len(a.controls), self.c.N, self.c.nW) for a in self.model.agents}
@@ -516,15 +537,28 @@ class SpectralFiniteSolver:
             # tied agents' action kernels differ by a channel permutation the symmetry implies; raw maps
             # (on each agent's own rows) carry over verbatim, so iterate on maps when ties are present
             variable = "maps"
+        if init is not None:
+            init = self._init_kind(init, shapes)
         if variable == "actions":
-            acts0 = init if init is not None else {a.name: np.zeros(shapes[a.name]) for a in self.model.agents}
+            if init is None:
+                acts0 = {a.name: np.zeros(shapes[a.name]) for a in self.model.agents}
+            elif init["kind"] == "actions":
+                acts0 = init["value"]
+            else:
+                Z0 = self.c.closed_loop(init["value"])
+                acts0 = {a.name: np.stack([Z0[self.c.block(u)] for u in a.controls]) for a in self.model.agents}
             z = packa(acts0)
 
             def F(zz):
                 evals[0] += 1
                 return packa(self.response_actions(unpacka(zz))) - zz
         else:
-            maps = init if init is not None else self.zero_maps()
+            if init is None:
+                maps = self.zero_maps()
+            elif init["kind"] == "maps":
+                maps = init["value"]
+            else:
+                maps = self.maps_from_actions(init["value"])
             z = self.pack(maps)
 
             def F(zz):
@@ -536,7 +570,9 @@ class SpectralFiniteSolver:
         maps = self.maps_from_actions(unpacka(z)) if variable == "actions" else self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = SpectralResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                             iterations=evals[0], seconds=time.time() - t0, history=hist, message=message)
+                             iterations=evals[0], seconds=time.time() - t0, history=hist, message=message,
+                             solver_class=type(self), solver_kw={"verbose": self.verbose, "ridge": self.ridge},
+                             solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable})
         for a in self.model.agents:
             res.costs[a.name] = self.expected_cost(a, Z)
             g, out = self.best_response(a, maps)

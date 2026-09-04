@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "noisestate"
-version = "0.2.2"
+version = "0.2.3"
 description = "Equilibrium solver for linear-quadratic-Gaussian games with private information (noise-state linear strategies)"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "Sam Babichenko", email = "sbabichenko@ucsb.edu"}]
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "scipy>=1.10", "pyyaml>=6"]
+dependencies = ["numpy>=1.24", "scipy>=1.12", "pyyaml>=6"]
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.6"]

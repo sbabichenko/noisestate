@@ -7,22 +7,20 @@ from .results import BaseResult, StationaryResult, TriangleResult, CellResult
 from .stationary import StationarySolver
 from .finite import FiniteSolver
 from .finite_spectral import SpectralFiniteSolver
-from .sweep import sweep
+from .sweep import sweep, make_solver, ENGINES
 
 # backwards-compatible aliases
 Result, SpectralResult, FiniteResult = StationaryResult, TriangleResult, CellResult
 
 __all__ = ["Model", "ModelBuilder", "ConvergenceError", "BaseResult", "StationaryResult", "TriangleResult",
            "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "load", "solve", "sweep",
-           "read_yaml", "read_json", "Result", "SpectralResult", "FiniteResult"]
+           "read_yaml", "read_json", "make_solver", "ENGINES", "Result", "SpectralResult", "FiniteResult"]
 
 try:
     from importlib.metadata import version as _version
     __version__ = _version("noisestate")
 except Exception:                                   # not installed as a distribution
-    __version__ = "0.2.1"
-
-_ENGINES = {"stationary": StationarySolver, "finite": SpectralFiniteSolver, "finite_cells": FiniteSolver}
+    __version__ = "unknown"
 
 
 def read_yaml(path: str) -> dict:
@@ -50,7 +48,11 @@ def solve(model, refine: bool = False, stability: bool = False, **kw) -> BaseRes
         model = load(model)
     elif isinstance(model, dict):
         model = Model.from_dict(model)
-    engine = _ENGINES[model.horizon.kind]
+    elif isinstance(model, ModelBuilder):
+        model = model.build()
+    elif not isinstance(model, Model):
+        raise TypeError(f"solve() takes a Model, a ModelBuilder, a dict or a path, not {type(model).__name__}")
+    engine = ENGINES[model.horizon.kind]
     init_params = inspect.signature(engine.__init__).parameters
     solve_params = inspect.signature(engine.solve).parameters
     ctor_kw = {k: v for k, v in kw.items() if k in init_params}

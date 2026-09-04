@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.3 (2026-09-04) — release review
+
+Fixes from an adversarial test pass and a code review before release.
+
+- Stationary engine: a signal row with a positive delay crashed with a singular matrix; the map on
+  a delayed row is now zero where it reads nothing within the window, and the reduced system is
+  solved (equilibrium independent of the window to 1e-6).  Same fix in the cell engine.
+- `window_tail` measures the change of a kernel over the last tenth of the window, so random-walk
+  states and prices that track them are no longer flagged; the undiscounted Kyle-Back example is
+  flagged, correctly.
+- `res.second_order[agent]` (stationary, undiscounted): exact second-order condition of the best
+  response on the feasible strategies; the summary says `NOT A MINIMUM` for non-convex losses.
+- `refine()` and `stability()` rebuild the same engine with the same options; `Model.to_dict()`
+  reflects changes made on the object; `to_dict(numeric=True)` is loadable.
+- Validation: causal drifts, zero noise loadings, breakpoints ending at the window, boolean
+  `myopic`, list-typed `controls`/`signals`/`loss`, parameters used before their definition,
+  `ModelBuilder` accepted by `solve`/`sweep`.  The unused-parameter check runs after the
+  structural checks, so it no longer masks them.
+- One-agent `stability()` reports radius 0 instead of NaN; `resolution_ok` is `None` when the
+  engine does not compute it (cells); `refine()` on the cell engine doubles the cells so lags
+  stay aligned; a warm start of the wrong kind is an error, not a reshape failure.
+- Finite engines: dead `pre_iterations`/`pre_tol` options removed; result `engine` string is
+  `"finite"` like `horizon.kind`; one engine registry (`noisestate.ENGINES`).
+- CLI: model errors print a message and exit 2; `--nodes 0`, `--window 0` and `--param p=abc`
+  are errors.
+- Packaging: `LICENSE` file; `scipy >= 1.12` (the cell engine uses `lgmres(rtol=...)`); CI also
+  runs at the declared floor.
+
 ## 0.2.2 (2026-09-04) — guards against misleading results
 
 - `refine=True` / `--refine` / `res.refine()`: re-solve at 1.5x the nodes and report the change of

@@ -1,11 +1,11 @@
-"""Chapter 5 cycle market vs the recorded sweep point (slow: ~10 minutes). Run with NOISESTATE_SLOW=1."""
+"""Chapter 5 cycle market vs the recorded sweep point (slow: ~20 s at 4 threads, 1-2 min on a loaded machine). Run with NOISESTATE_SLOW=1."""
 import os, numpy as np, pytest
 import noisestate as ns
 HERE = os.path.dirname(os.path.abspath(__file__))
 REFS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refs")
 REF = os.path.join(REFS, "ch5_s1_2.5_u16_endo.txt")
 
-@pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="slow (~5 min); set NOISESTATE_SLOW=1")
+@pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="slow; set NOISESTATE_SLOW=1")
 def test_ch5_cycle_market_matches_recorded_sweep():
     res = ns.solve(os.path.join(HERE, "..", "examples", "ch5_cycle_market.yaml"), tol=1e-8)
     assert res.converged

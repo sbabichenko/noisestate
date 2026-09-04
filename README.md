@@ -18,11 +18,13 @@ the agent's own observation history.
 ## Install
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e .
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest -q tests        # regression tests against the chapter solvers
 ```
 
-Dependencies: numpy, scipy, pyyaml, matplotlib.
+Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml; matplotlib only for `--plot`
+(`pip install -e ".[plot]"`).  The examples and reference data live in the repository
+(`examples/`, `tests/refs/`), not in the wheel.  MIT licence.
 
 ## Use
 
@@ -158,9 +160,15 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
 
 * A model file with a misspelled key, an unused channel, or a control that does not enter its
   owner's loss is rejected with a message naming the offending item.
-* `converged` means the relative residual is at or below `tol`; `res.message` says what the outer
+* `converged` means the residual of the fixed point is at or below `tol`, where the residual is
+  the norm of the update divided by the larger of one and the norm of the iterate (so for a
+  solution of norm below one it is an absolute residual).  `res.message` says what the outer
   solver did, `res.summary()` shows it when the solve did not converge, and `res.check()` raises
   `ConvergenceError` so a pipeline cannot use a failed solve by accident.
+* A signal row with a positive `delay` is uninformative about shocks younger than the delay; the
+  map on that row is set to zero at ages above `window - delay`, where it reads nothing within the
+  window.  The equilibrium does not depend on the window once the kernels have decayed (Chapter 3
+  game with one row delayed by 0.5: costs agree to 1e-6 between windows 6 and 10).
 * Costs are integrated with exact Gram matrices, so a converged best response is optimal against
   every feasible perturbation to round-off; `tests/test_properties.py` checks this on both engines
   without any reference solution, together with the equivalence of the two iteration variables
@@ -174,17 +182,37 @@ is from the model you wrote:
 * `noisestate solve model.yaml --refine` (or `solve(..., refine=True)`, `res.refine()`) re-solves
   on a grid with 1.5 times the nodes and reports the relative change of every cost and of the
   kernels; `res.refinement["resolved"]` is the verdict, and the summary says `NOT RESOLVED`.
-* Stationary results carry `res.window_tail`, the largest kernel value at the window edge relative
-  to that kernel's peak; above 2% the summary says `WINDOW TOO SHORT`, because the equilibrium
-  solved is that of the model truncated at `horizon.window`.
+* Stationary results carry `res.window_tail`, the largest change of a kernel over the last tenth
+  of the window relative to that kernel's peak; above 2% the summary says `WINDOW TOO SHORT`,
+  because the equilibrium solved is that of the model truncated at `horizon.window`.  A kernel that
+  has decayed or reached a constant limit (a random-walk state, a price that tracks it) is not
+  flagged.  The undiscounted Kyle-Back example is flagged: with no discounting the trader's kernel
+  depends on the window (the average-cost artefact of Chapter 4), and a positive `rho` removes it.
+* Stationary results with `discount: 0` carry `res.second_order[agent]`: the agent's objective is
+  a quadratic form in its strategy, computed exactly on the feasible strategies, and its smallest
+  eigenvalue relative to the largest says whether the first-order condition is a minimum.  The
+  summary says `NOT A MINIMUM` when it is not (a loss that is not convex in the agent's own
+  strategy, for instance a negative weight on its own control, or a cross term with no own
+  quadratic term).  Curvatures within 1e-4 of zero are not flagged: the objective is truncated
+  at the window, and on coarse panels the discrete strategies find a little curvature of either
+  sign there (the Chapter 5 example sits at -3e-5 with 6 nodes per panel); the value is reported
+  in `res.second_order` and `to_dict()` either way.
+  Discounted stationary models are not checked (their objective is not a quadratic form in the
+  stationary kernel).
 * Every sweep row has `change` (relative change of the action kernels from the previous point) and
   `jump` (that change per unit of parameter step is more than five times the sweep's median), so
   a branch jump between neighbouring points is visible instead of silently plotted as a curve.
 * `res.cost_kind` and `model.notes` name what the numbers are: stationary costs are flow losses
   per unit time, finite-horizon costs are discounted integrals; a row that observes a control
-  directly sees only its predictable part; a myopic agent ignores its effect on future flows.
-  `noisestate validate` prints the notes.  A parameter that nothing references is an error, the
-  usual sign of a misspelled name elsewhere in the file.
+  directly sees only its predictable part; a myopic agent ignores its effect on future flows; a
+  linear loss term moves only the means, which are not solved, and has no effect on kernels or
+  costs.  `noisestate validate` prints the notes.  A parameter that nothing references is an
+  error, the usual sign of a misspelled name elsewhere in the file; so are a drift that depends on
+  a future value, a zero noise loading, `breakpoints` that do not end at the window, and a
+  `myopic` that is not a boolean.
+* `refine()` and `stability()` rebuild the engine that produced the result, with the same options
+  (naive observers, ridge, tolerances), on the live model: changing `model.horizon.nodes` or a
+  parameter on the object is honoured by `sweep`, `refine` and `stability`.
 
 ## Limits
 

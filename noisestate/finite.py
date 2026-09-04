@@ -12,7 +12,7 @@ map g[u][r][i, v]: its control over cell i is sum_r sum_{v<i} g[u][r][i, v]
 dY_r,v.  Everything else follows the stationary engine: closed loop by a
 forward march, passive-world best response (the per-cell first-order
 condition is affine in the map on the passive rows and is solved with a
-Krylov method), raw map by projection, and a Newton-Krylov fixed point.
+Krylov method), raw map by projection, and an Anderson fixed point over the raw maps.
 
 The scheme is first order in h (Euler state step, cell-averaged controls);
 refine N or Richardson-extrapolate for high accuracy.
@@ -274,7 +274,7 @@ class FiniteSolver:
         op = LinearOperator((nU * nR * nfree, nU * nR * nfree), matvec=lambda v: affine(v) - b)
         if nU * nR * nfree <= 200:
             M = np.column_stack([op.matvec(e) for e in np.eye(nU * nR * nfree)])
-            gvec = np.linalg.solve(M, -b)
+            gvec = np.linalg.lstsq(M, -b, rcond=1e-13)[0]       # delayed rows give zero columns (see stationary)
         else:
             x0 = self._warm.get(agent.name)
             if x0 is not None and x0.shape[0] != nU * nR * nfree:
@@ -320,8 +320,8 @@ class FiniteSolver:
         G = np.einsum("itc,jtc,t->ij", zeta, zeta, disc) * c.h * c.h    # sum_t h e^{-rho t} sum_j h zeta zeta
         return float(0.5 * np.sum(Q * G))
 
-    def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, pre_iterations: int = 10,
-              max_newton: int = 60, pre_tol: float = 1e-3) -> FiniteResult:
+    def solve(self, init=None, tol: float = 1e-8, damping: float = 0.5, max_newton: int = 60) -> FiniteResult:
+        """Anderson on the raw maps, then a Newton-Krylov polish.  init: raw maps."""
         t0 = time.time()
         maps = init if init is not None else self.zero_maps()
         z = self.pack(maps)
@@ -337,7 +337,9 @@ class FiniteSolver:
         maps = self.unpack(z)
         Z = self.c.closed_loop(maps)
         res = FiniteResult(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                           iterations=evals[0], seconds=time.time() - t0, history=hist, message=message)
+                           iterations=evals[0], seconds=time.time() - t0, history=hist, message=message,
+                           solver_class=type(self), solver_kw={"verbose": self.verbose},
+                           solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton})
         for a in self.model.agents:
             res.costs[a.name] = self.expected_cost(a, Z)
         return res

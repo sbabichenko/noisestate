@@ -284,6 +284,10 @@ class Model:
                                "through that channel, e.g. a row with the channel as its noise")
             if a.myopic:
                 out.append(f"agent {a.name} is myopic: it ignores the effect of its action on future flows (a competitive pricing agent)")
+            lin = [t for t in a.loss if len(t) == 2]
+            if lin:
+                out.append(f"agent {a.name}: the linear loss term(s) {lin} move only the means, which this solver does not "
+                           "compute; they have no effect on the kernels or on the reported costs")
         if self.horizon.kind == "stationary":
             out.append("costs are stationary flow losses per unit time" + (" (the discount rate enters the best responses, not the reported cost)" if self.horizon.discount else ""))
         else:
@@ -305,20 +309,30 @@ class Model:
             for ch in s.noise:
                 if ch not in self.channels:
                     raise ValueError(f"state {s.name}: unknown channel {ch}")
-            self.expand(s.drift)
+            for (n, l) in self.expand(s.drift):
+                if l < 0:
+                    raise ValueError(f"state {s.name}: its drift depends on the future value {n}@{l}; drifts must be causal")
         for d in self.definitions:
             self.expand({d.name: 1.0})
         for a in self.agents:
+            if not isinstance(a.controls, list) or not all(isinstance(u, str) for u in a.controls):
+                raise ValueError(f"agent {a.name}: controls must be a list of names, got {a.controls!r}")
             if not a.controls:
                 raise ValueError(f"agent {a.name} has no controls")
+            if not isinstance(a.myopic, bool):
+                raise ValueError(f"agent {a.name}: myopic must be true or false, got {a.myopic!r}")
             for r in a.signals:
                 for ch in r.noise:
                     if ch not in self.channels:
                         raise ValueError(f"row {a.name}.{r.name}: unknown channel {ch}")
                 if not r.noise:
                     raise ValueError(f"row {a.name}.{r.name} needs a noise loading (exact rows are not supported)")
+                if all(v == 0 for v in r.noise.values()):
+                    raise ValueError(f"row {a.name}.{r.name} has a zero noise loading (exact rows are not supported)")
+                if r.delay < 0:
+                    raise ValueError(f"row {a.name}.{r.name}: delay must be non-negative")
+                # own controls may appear in own rows (the agent knows them; they drop out of its passive rows)
                 for (n, l) in self.expand(r.drift):
-                    pass   # own controls may appear in own rows (the agent knows them; they drop out of its passive rows)
                     if l < 0:
                         raise ValueError(f"row {a.name}.{r.name} observes a future quantity {n}@{l}")
             for term in a.loss:
@@ -340,12 +354,11 @@ class Model:
         unused = [ch for ch in self.channels if ch not in used]
         if unused:
             raise ValueError(f"channel(s) {unused} are never loaded by a state or a signal row (misspelled?)")
-        for a in self.agents:
-            atoms = {n for term in a.loss for atom in term[1:] for (n, l) in self.expand({atom: 1.0})}
-            missing = [u for u in a.controls if u not in atoms]
-            if missing:
-                raise ValueError(f"agent {a.name}: control(s) {missing} do not enter its loss; the best response would be undetermined")
         hz = self.horizon
+        if hz.breakpoints is not None:
+            bp = list(hz.breakpoints)
+            if len(bp) < 2 or abs(bp[0]) > 1e-12 or abs(bp[-1] - hz.window) > 1e-9 * max(1.0, hz.window) or any(b2 <= b1 for b1, b2 in zip(bp, bp[1:])):
+                raise ValueError(f"horizon.breakpoints {bp} must increase from 0 to horizon.window ({hz.window})")
         if hz.nodes < 2:
             raise ValueError("horizon.nodes must be at least 2")
         if not hz.window > 0:
@@ -376,20 +389,54 @@ class Model:
         """The file structure of this model.  When the model was built from a file or dict, that
         source (with its parameter expressions) is returned, so re-parametrising it works; with
         numeric=True, or when there is no source, coefficients are returned as numbers."""
+        import copy
+        hz = self.horizon
+        horizon = {"kind": hz.kind, "discount": hz.discount, "window": hz.window, "nodes": hz.nodes}
+        for k in ("breakpoints", "unit", "unit_range"):
+            if getattr(hz, k) is not None:
+                horizon[k] = getattr(hz, k)
         if self.source is not None and not numeric:
-            import copy
-            return copy.deepcopy(self.source)
-        d = {"name": self.name, "params": dict(self.params), "channels": list(self.channels),
-             "states": {s.name: {"drift": dict(s.drift), "noise": dict(s.noise)} for s in self.states},
-             "definitions": {x.name: dict(x.expr) for x in self.definitions},
-             "agents": {}, "ties": [list(g) for g in self.ties],
-             "horizon": {"kind": self.horizon.kind, "discount": self.horizon.discount, "window": self.horizon.window,
-                         "nodes": self.horizon.nodes, "breakpoints": self.horizon.breakpoints, "unit": self.horizon.unit,
-                         "unit_range": self.horizon.unit_range}}
+            # the source, with anything changed on the live object (a parameter, horizon.nodes, ...) replacing
+            # its source entry; unchanged entries keep their expressions so re-parametrising still works
+            d = copy.deepcopy(self.source)
+            src = d.get("params") or {}
+            live = {}; seen: Dict[str, float] = {}
+
+            def same(x, y):
+                return abs(x - y) <= 1e-12 * max(1.0, abs(y))
+            for k, v in src.items():
+                seen[k] = eval_coef(v, seen)
+                live[k] = v if same(self.params.get(k, seen[k]), seen[k]) else float(self.params[k])
+            if src:
+                d["params"] = live
+            hsrc = d.get("horizon") or {}
+            hout = {}
+            for k, v in horizon.items():
+                key = k if k in hsrc else next((al for al in ("L", "T") if k == "window" and al in hsrc), k)
+                if key in hsrc and (hsrc[key] == v or (isinstance(v, float) and not isinstance(hsrc[key], (list, str, bool)) and same(float(hsrc[key]), v))
+                                    or (isinstance(hsrc[key], str) and same(eval_coef(hsrc[key], seen), v))):
+                    hout[key] = hsrc[key]
+                else:
+                    hout[k] = v
+            d["horizon"] = hout
+            return d
+        # numeric form: parameter values are inlined, including the lags written as name@param
+        p = self.params
+
+        def atom(s: str) -> str:
+            n, l = parse_atom(s, p)
+            return n if l == 0 else f"{n}@{l:g}"
+
+        def ex(e: Dict[str, float]) -> Dict[str, float]:
+            return {atom(k): float(v) for k, v in e.items()}
+        d = {"name": self.name, "channels": list(self.channels),
+             "states": {s.name: {"drift": ex(s.drift), "noise": ex(s.noise)} for s in self.states},
+             "definitions": {x.name: ex(x.expr) for x in self.definitions},
+             "agents": {}, "ties": [list(g) for g in self.ties], "horizon": horizon}
         for a in self.agents:
             d["agents"][a.name] = {"controls": list(a.controls), "myopic": a.myopic,
-                                   "signals": {r.name: {"drift": dict(r.drift), "noise": dict(r.noise), "delay": r.delay} for r in a.signals},
-                                   "loss": [list(t) for t in a.loss]}
+                                   "signals": {r.name: {"drift": ex(r.drift), "noise": ex(r.noise), "delay": r.delay} for r in a.signals},
+                                   "loss": [[float(t[0])] + [atom(x) for x in t[1:]] for t in a.loss]}
         return d
 
     @classmethod
@@ -400,11 +447,27 @@ class Model:
             cls._check_keys("state", v or {}, cls._KEYS["state"], f" '{k}'")
         for k, v in (d.get("agents") or {}).items():
             cls._check_keys("agent", v or {}, cls._KEYS["agent"], f" '{k}'")
+            if not isinstance(v.get("signals") or {}, dict):
+                raise ValueError(f"agent {k}: signals must be a mapping of row name to {{drift, noise, delay}}")
+            if not isinstance(v.get("loss") or [], list):
+                raise ValueError(f"agent {k}: loss must be a list of [coef, a, b] terms")
+            if isinstance(v.get("controls"), str):
+                raise ValueError(f"agent {k}: controls must be a list of names, e.g. [{v['controls']}]")
             for rk, rv in (v.get("signals") or {}).items():
                 cls._check_keys("signal", rv or {}, cls._KEYS["signal"], f" '{k}.{rk}'")
         params: Dict[str, float] = {}
-        for k, v in (d.get("params") or {}).items():          # a parameter may be an expression in earlier ones
-            params[k] = eval_coef(v, params)
+        pdict = d.get("params") or {}
+        if not isinstance(pdict, dict):
+            raise ValueError("params must be a mapping of name to number or expression")
+        for k, v in pdict.items():                            # a parameter may be an expression in earlier ones
+            try:
+                params[k] = eval_coef(v, params)
+            except ValueError as exc:
+                later = [n for n in pdict if n not in params and n != k and f"'{n}'" in str(exc)]
+                if later:
+                    raise ValueError(f"parameter {k!r} uses {later[0]!r}, which is defined after it; parameters are "
+                                     "evaluated in order, so move it up") from None
+                raise
         params = _Recording(params)                            # records which parameters the model references
         hz = d.get("horizon") or {}
         horizon = Horizon(kind=hz.get("kind", "stationary"),
@@ -428,7 +491,7 @@ class Model:
             for term in (v.get("loss") or []):
                 loss.append([eval_coef(term[0], params)] + [str(x) for x in term[1:]])
             agents.append(Agent(name=k, controls=list(v.get("controls") or []), signals=rows, loss=loss,
-                                myopic=bool(v.get("myopic", False))))
+                                myopic=v.get("myopic", False)))
         import copy
         # atoms ('P@tau') are parsed lazily, so scan them for lag parameters; a parameter used inside
         # another parameter's expression also counts as used
@@ -448,13 +511,13 @@ class Model:
         for k, v in (d.get("params") or {}).items():
             if isinstance(v, str):
                 safe_eval(v, params)
-        unused = sorted(set(params) - params.used)
-        if unused:
-            raise ValueError(f"parameter(s) {unused} are defined but never used in the model (misspelled somewhere?)")
         m = cls(name=d.get("name", "model"), channels=list(d.get("channels") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
                 params=dict(params), source=copy.deepcopy(d))
-        m.validate()
+        m.validate()                                           # structural errors first; then the parameter check
+        unused = sorted(set(params) - params.used)
+        if unused:
+            raise ValueError(f"parameter(s) {unused} are defined but never used in the model (misspelled somewhere?)")
         return m
 
 

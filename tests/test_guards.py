@@ -20,8 +20,8 @@ def test_refinement_check_on_a_resolved_and_an_unresolved_model():
 
 
 def test_window_tail_flag():
-    short = ns.solve(os.path.join(EX, "ch3_two_player.yaml"))        # L = 3: the state kernel is 7% of its peak at L
-    assert short.window_tail > 0.05 and "WINDOW TOO SHORT" in short.summary()
+    short = ns.solve(os.path.join(EX, "ch3_two_player.yaml"))        # L = 3: the state kernel still moves 2.4% over the last tenth
+    assert short.window_tail > 0.02 and "WINDOW TOO SHORT" in short.summary()
     d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["horizon"]["window"] = 10.0; d["horizon"]["nodes"] = 48
     long = ns.solve(ns.Model.from_dict(d))
     assert long.window_tail < 1e-3 and "WINDOW TOO SHORT" not in long.summary()

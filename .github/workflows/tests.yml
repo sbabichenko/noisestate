@@ -3,10 +3,15 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - {python-version: "3.12", pins: ""}
+          - {python-version: "3.10", pins: "numpy==1.24.4 scipy==1.12.0 pyyaml==6.0"}   # the declared floor
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: "3.12"}
-      - run: pip install -e ".[dev]"
+        with: {python-version: "${{ matrix.python-version }}"}
+      - run: pip install -e ".[dev]" ${{ matrix.pins }}
       - run: python -m pyflakes noisestate tests examples tools
       - run: python -m pytest -q tests

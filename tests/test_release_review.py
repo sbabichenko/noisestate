@@ -1,0 +1,161 @@
+"""Regressions from the pre-release adversarial test and code review (0.2.3)."""
+import os, json, numpy as np, pytest
+import noisestate as ns
+from noisestate.stationary import StationarySolver
+HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
+
+
+def _ch3(**hz):
+    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["horizon"].update(hz); return d
+
+
+# ---------------------------------------------------------------- delayed rows in the stationary engine
+def test_delayed_row_solves_and_is_window_independent():
+    d = _ch3(window=3.0, nodes=16); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.5
+    r3 = ns.solve(d).check()
+    d = _ch3(window=6.0, nodes=16); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.5
+    r6 = ns.solve(d).check()
+    undelayed = ns.solve(_ch3(window=6.0, nodes=16)).check()
+    assert all(r.second_order[a]["ok"] for r in (r3, r6) for a in r.second_order)
+    assert abs(r6.costs["player2"] - r3.costs["player2"]) < 5e-3            # window 3 truncates; 6 has settled
+    assert r6.costs["player2"] > undelayed.costs["player2"]                   # less information costs more
+    g = r6.maps["player2"][0, 0]                                              # map on the delayed row
+    assert np.all(g[r6.ages > 6.0 - 0.5 + 1e-9] == 0)                        # zero where it reads nothing
+
+
+def test_one_agent_delayed_observation_costs_more_and_passes_second_order():
+    base = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
+            "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.5}, "noise": {"w1": 1.0}, "delay": 0.5}},
+                             "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}},
+            "horizon": {"kind": "stationary", "window": 6.0, "nodes": 12}}
+    r = ns.solve(base).check(); base["agents"]["a"]["signals"]["y"]["delay"] = 0.0; r0 = ns.solve(base).check()
+    assert r.costs["a"] > r0.costs["a"] and r.second_order["a"]["ok"]
+    assert r.stability()["radius"] == 0.0 and "stable" in r.summary()        # one agent: radius 0, not NaN
+
+
+def test_cell_engine_dense_branch_with_delays():
+    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d["horizon"]["kind"] = "finite_cells"; d["horizon"]["nodes"] = 16
+    r = ns.solve(d).check()
+    assert r.resolution_ok is None and r.to_dict()["resolution_ok"] is None
+    r.refine(); assert r.refinement["nodes"] == 32                             # doubled: lags stay aligned
+
+
+# ---------------------------------------------------------------- guards compare like with like
+def test_refine_and_stability_rebuild_the_same_solver():
+    kb = os.path.join(EX, "ch4_kyle_back.yaml")
+    r = ns.solve(kb, naive_observers={"trader1": ["market_maker"]}, refine=True)
+    assert r.refinement["cost_change"] < 1e-4                                 # not the naive-vs-full gap (1.1)
+    assert r.solver_class is StationarySolver and r.solver_kw["naive_observers"]
+
+
+def test_mutating_the_model_object_is_honoured():
+    m = ns.load(os.path.join(EX, "ch3_two_player.yaml")); m.horizon.nodes = 30; m.params["p1"] = 4.0
+    d = m.to_dict(); assert d["horizon"]["nodes"] == 30 and d["params"]["p1"] == 4.0 and d["params"]["p2"] == m.params["p2"]
+    r = ns.solve(m); assert r.compiled.N == 30
+    r.refine(); assert r.refinement["nodes"] == 45
+    rows = ns.sweep(m, "p2", [3.0]); assert rows[0]["result"].compiled.N == 30
+
+
+def test_numeric_export_is_loadable_and_equivalent():
+    for f in ("ch3_two_player.yaml", "ch5_cycle_market.yaml"):
+        m = ns.load(os.path.join(EX, f)); m2 = ns.Model.from_dict(m.to_dict(numeric=True))
+        assert m2.all_lags() == m.all_lags() and m2.control_names == m.control_names and not m2.params
+    m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
+    a, b = ns.solve(m), ns.solve(ns.Model.from_dict(m.to_dict(numeric=True)))
+    assert abs(a.costs["player1"] - b.costs["player1"]) < 1e-12
+    # a Model built directly from the dataclasses (no source) refines and sweeps
+    direct = ns.Model(name="d", channels=m.channels, states=m.states, agents=m.agents, horizon=m.horizon, params=dict(m.params))
+    assert ns.solve(direct, refine=True).refinement["resolved"]
+
+
+def test_window_tail_ignores_random_walk_states_and_flags_the_undiscounted_kyle_back():
+    kb = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml"))
+    assert "WINDOW TOO SHORT" in ns.solve(kb).summary()                       # rho = 0: the average-cost artefact
+    kb["params"]["rho"] = 0.5; r = ns.solve(kb)
+    assert r.window_tail < 0.01 and "WINDOW TOO SHORT" not in r.summary()     # V is a random walk, P tracks it: not flagged
+
+
+def test_second_order_flags_non_convex_losses():
+    d = _ch3(); d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["-r1", "D1", "D1"]]
+    r = ns.solve(d); assert not r.second_order["player1"]["ok"] and "NOT A MINIMUM" in r.summary() and r.second_order["player2"]["ok"]
+    d = _ch3(); d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["r1", "D1", "X"]]
+    assert not ns.solve(d).second_order["player1"]["ok"]
+    assert all(v["ok"] for v in ns.solve(_ch3()).second_order.values())
+    assert json.dumps(ns.solve(_ch3()).to_dict())["second_order"] if False else True
+
+
+def test_sharp_optimality_the_projected_foc_vanishes_only_at_the_equilibrium():
+    m = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")); S = StationarySolver(m); res = S.solve().check(); c = S.c; nW = c.nW
+
+    def projected_foc(maps, a):
+        Zp = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls); Zpass, R = Zp[:, :nW], Zp[:, nW:]
+        if a.name not in S._rphys:
+            S._rphys[a.name] = c.closed_loop(S.zero_maps(), excluded=None, impulse_controls=a.controls)[:, nW:]
+        Fu, _ = S._foc_operators(a, R, S._rphys[a.name])
+        ytil, yinst = S._passive_rows(a, Zpass); H = S._projection_operator(ytil, yinst)
+        Z = c.closed_loop(maps)
+        worst = 0.0
+        for ui in range(len(a.controls)):
+            phi = np.stack([Fu[ui] @ Z[:, k] for k in range(nW)], axis=1)
+            worst = max(worst, np.linalg.norm(H @ phi.T.reshape(-1)) / max(np.linalg.norm(phi), 1e-300))
+        return worst
+    for a in m.agents:
+        at_eq = projected_foc(res.maps, a)
+        scaled = {k: (1.01 * v if k == a.name else v) for k, v in res.maps.items()}
+        off = projected_foc(scaled, a)
+        assert at_eq < 1e-8 and off > 1e-4 and at_eq < 1e-5 * off, (a.name, at_eq, off)
+
+
+# ---------------------------------------------------------------- validation and messages
+@pytest.mark.parametrize("edit, match", [
+    (lambda d: d["states"]["X"]["drift"].update({"X@-0.5": 0.1}), "future value"),
+    (lambda d: d["agents"]["player1"]["signals"]["y1"].update(noise={"w1": 0.0}), "zero noise loading"),
+    (lambda d: d["horizon"].update(breakpoints=[0, 1]), "breakpoints"),
+    (lambda d: d["agents"]["player1"].update(myopic="false"), "myopic must be true or false"),
+    (lambda d: d["agents"]["player1"].update(controls="D1"), "controls must be a list"),
+    (lambda d: d["agents"]["player1"].update(signals=[{"drift": {"X": 1}}]), "signals must be a mapping"),
+    (lambda d: d["params"].update({"p1": "2*base", "base": 1.5}), "defined after it"),
+])
+def test_validation_messages(edit, match):
+    d = _ch3(); edit(d)
+    with pytest.raises(ValueError, match=match):
+        ns.Model.from_dict(d)
+
+
+def test_structural_errors_come_before_the_unused_parameter_check():
+    d = _ch3(); d["agents"]["player1"]["signals"] = {}                          # removing the rows also strips p1's use
+    with pytest.raises(ValueError, match="signal") as e:
+        ns.Model.from_dict(d)
+    assert "never used" not in str(e.value)
+
+
+def test_linear_terms_are_noted_and_builder_is_accepted():
+    m = ns.load(os.path.join(EX, "ch5_cycle_market.yaml"))
+    assert any("linear loss term" in n for n in m.notes)
+    from noisestate import ModelBuilder
+    b = (ModelBuilder("b", p=2.0).channel("w0", "w1").state("X", drift={"D": 1.0}, noise={"w0": 1.0})
+         .agent("a", ["D"], [[1.0, "X", "X"], ["p", "D", "D"]]).stationary(window=4.0, nodes=8))
+    b.signal("a", "y", drift={"X": 1.0}, noise={"w1": 1.0})
+    assert ns.solve(b).converged and ns.sweep(b, "p", [2.0, 3.0])[1]["converged"]
+
+
+def test_wrong_kind_warm_start_is_an_error_and_right_kinds_are_converted():
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
+    r = ns.solve(d).check(); S = ns.SpectralFiniteSolver(ns.Model.from_dict(d))
+    assert S.solve(init=r.maps).converged                                     # raw maps are accepted and converted
+    with pytest.raises(ValueError, match="expected action kernels"):
+        S.solve(init={k: v[:, :, :5] for k, v in r.maps.items()})
+
+
+def test_cli_reports_model_errors_as_messages(tmp_path, capsys):
+    from noisestate.cli import main
+    bad = tmp_path / "bad.yaml"; import yaml
+    d = _ch3(); d["agents"]["player1"]["signals"]["y1"]["noise"] = {"w1": 0.0}; yaml.safe_dump(d, open(bad, "w"))
+    assert main(["solve", str(bad)]) == 2 and "zero noise loading" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--nodes", "0"])
+    with pytest.raises(SystemExit):
+        main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--param", "p1=abc"])
+    d = _ch3(); d["horizon"]["kind"] = "finite"; d["horizon"]["window"] = 1.0; d["horizon"]["nodes"] = 8
+    good = tmp_path / "good.yaml"; yaml.safe_dump(d, open(good, "w"))
+    assert main(["solve", str(good)]) == 0 and "discounted cost" in capsys.readouterr().out

@@ -2,7 +2,8 @@
 
     res.converged, res.residual, res.message     outcome of the outer solve
     res.check()                                  raise ConvergenceError unless converged
-    res.costs[agent]                             expected discounted (or average) loss
+    res.costs[agent]                             stationary flow loss per unit time, or the discounted
+                                                 integral over [0, T] (res.cost_kind says which)
     res.kernel(name, channel=None)               closed-loop kernel of a state or control
     res.maps[agent]                              raw strategies on the agent's signal rows
     res.to_dict()                                JSON-ready payload (grid, kernels, maps, costs, FOC parts)
@@ -41,16 +42,30 @@ class BaseResult:
     message: str = ""
     representation_error: Dict[str, float] = field(default_factory=dict)   # agent -> relative residual, see resolution_ok
     refinement: Optional[dict] = None          # filled by refine(): change of costs/kernels under a finer grid
+    solver_class: object = None                # the engine that produced this result, with its options, so that
+    solver_kw: dict = field(default_factory=dict)      # refine()/stability() rebuild the same solver
+    solve_kw: dict = field(default_factory=dict)
+    second_order: Dict[str, dict] = field(default_factory=dict)   # agent -> {"min", "max", "ok"}: is the best response a minimum
     kind: str = "base"
 
     RESOLUTION_TOL = 1e-6
     WINDOW_TAIL_TOL = 0.02
 
     @property
-    def resolution_ok(self) -> bool:
+    def resolution_ok(self) -> Optional[bool]:
         """False when the grid is too coarse for the equilibrium it reports (representation error of a
-        best response on the raw rows above RESOLUTION_TOL); raise horizon.nodes and re-solve."""
+        best response on the raw rows above RESOLUTION_TOL); raise horizon.nodes and re-solve.  None
+        when the engine does not compute the representation error (the cell engine)."""
+        if not self.representation_error:
+            return None
         return all(v <= self.RESOLUTION_TOL for v in self.representation_error.values())
+
+    def _make_solver(self, model: Model):
+        """The engine that produced this result, with the same constructor options, on `model`."""
+        if self.solver_class is None:
+            from .sweep import make_solver
+            return make_solver(model)
+        return self.solver_class(model, **self.solver_kw)
 
     # ----------------------------------------------------------- common
     def check(self):
@@ -83,11 +98,12 @@ class BaseResult:
         cost and of the kernels, the honest test of resolution (window, corner and product errors alike).
         Stored in self.refinement and shown by summary()."""
         import math
-        from .sweep import make_solver
         d = self.model.to_dict(); hz = d.setdefault("horizon", {})
-        n0 = int(hz.get("nodes", 16)); n1 = max(n0 + 2, int(math.ceil(n0 * factor)))
+        n0 = int(hz.get("nodes", 16))
+        n1 = 2 * n0 if self.kind == "finite_cells" else max(n0 + 2, int(math.ceil(n0 * factor)))   # cells: keep lags aligned
         hz["nodes"] = n1
-        fine = make_solver(Model.from_dict(d)).solve(**solve_kw)
+        kw = {k: v for k, v in self.solve_kw.items() if k != "init"}; kw.update(solve_kw)
+        fine = self._make_solver(Model.from_dict(d)).solve(**kw)
         cost_change = max(abs(fine.costs[k] - self.costs[k]) / max(1e-12, abs(self.costs[k])) for k in self.costs)
         kernel_change = self._kernel_change(fine)
         rep = {"nodes": n1, "converged": bool(fine.converged), "cost_change": float(cost_change),
@@ -102,12 +118,16 @@ class BaseResult:
         s = "converged" if self.converged else f"NOT converged ({self.message})"
         if self.representation_error and not self.resolution_ok:
             s += f"; UNDER-RESOLVED (representation error {max(self.representation_error.values()):.1e}: raise horizon.nodes)"
+        bad = [a for a, so in self.second_order.items() if not so["ok"]]
+        if bad:
+            s += (f"; NOT A MINIMUM (the best response of {bad} is a saddle: its loss is not convex in its own strategy, "
+                  f"smallest curvature {min(self.second_order[a]['min'] for a in bad):.1e} of the largest)")
         if self.refinement:
             s += (f"; refinement to {self.refinement['nodes']} nodes moves costs by {self.refinement['cost_change']:.1e} and kernels by "
                   f"{self.refinement['kernel_change']:.1e}" + ("" if self.refinement["resolved"] else " (NOT RESOLVED)"))
         tail = getattr(self, "window_tail", None)
         if tail is not None and tail > self.WINDOW_TAIL_TOL:
-            s += f"; WINDOW TOO SHORT (a kernel still has {tail:.1%} of its peak at the window edge: raise horizon.window)"
+            s += f"; WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window)"
         rep = getattr(self, "stability_report", None)
         if rep:
             s += f"; best-response dynamics {'stable' if rep['stable'] else 'UNSTABLE'} (spectral radius {rep['radius']:.3f}"
@@ -124,14 +144,12 @@ class BaseResult:
         tied model is assessed on the untied game, so asymmetric deviations are allowed.
         Returns {"radius", "eigenvalues", "stable", "evaluations", "untied"}; also stored in
         self.stability_report."""
-        import numpy as np
         from scipy.sparse.linalg import LinearOperator, eigs
-        from .sweep import make_solver
         model = self.model
         if untied and model.ties:
             d = model.to_dict(); d["ties"] = []
             model = Model.from_dict(d)
-        S = make_solver(model)
+        S = self._make_solver(model)
         maps = {a.name: np.array(self.maps[a.name], copy=True) for a in model.agents}
         z0 = S.pack(maps)
         F0 = S.pack(S.response_map(S.unpack(z0)))
@@ -150,14 +168,21 @@ class BaseResult:
         kk = max(1, min(k, n - 2))
         op = LinearOperator((n, n), matvec=matvec, dtype=float)
         rng = np.random.default_rng(0)
-        try:
-            vals = eigs(op, k=kk, which="LM", tol=tol, maxiter=max_evaluations, v0=rng.standard_normal(n),
-                        return_eigenvectors=False)
-        except Exception:                                   # ARPACK did not settle: fall back to power iteration
-            v = rng.standard_normal(n); lam = 0.0
-            for _ in range(30):
-                w = matvec(v); lam = np.linalg.norm(w) / np.linalg.norm(v); v = w / max(np.linalg.norm(w), 1e-300)
-            vals = np.array([lam])
+        v = rng.standard_normal(n)
+        if np.linalg.norm(matvec(v)) <= 1e-12 * np.linalg.norm(v):
+            vals = np.array([0.0])                          # a single agent: its best response does not depend on itself
+        else:
+            try:
+                vals = eigs(op, k=kk, which="LM", tol=tol, maxiter=max_evaluations, v0=v, return_eigenvectors=False)
+            except Exception:                               # ARPACK did not settle: fall back to power iteration
+                lam = 0.0
+                for _ in range(30):
+                    w = matvec(v); nw = np.linalg.norm(w)
+                    lam = nw / np.linalg.norm(v)
+                    if nw == 0:
+                        break
+                    v = w / nw
+                vals = np.array([lam])
         radius = float(np.max(np.abs(vals)))
         rep = {"radius": radius, "eigenvalues": [complex(x) for x in np.asarray(vals)], "stable": bool(radius < 1.0),
                "evaluations": int(count[0]), "untied": bool(untied and self.model.ties),
@@ -175,8 +200,9 @@ class BaseResult:
                "channels": self.channels, "kernels": {}, "maps": {}, "foc": {},
                "costs": {k: float(v) for k, v in self.costs.items()}}
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
-        out["resolution_ok"] = bool(self.resolution_ok)
+        out["resolution_ok"] = None if self.resolution_ok is None else bool(self.resolution_ok)
         out["cost_kind"] = self.cost_kind
+        out["second_order"] = {a: dict(so) for a, so in self.second_order.items()}
         out["notes"] = self.model.notes
         if self.refinement:
             out["refinement"] = self.refinement
@@ -212,15 +238,20 @@ class StationaryResult(BaseResult):
 
     @property
     def window_tail(self) -> float:
-        """Largest kernel value at the window edge L relative to that kernel's peak, over states and
-        controls: above WINDOW_TAIL_TOL the processes have not decayed within the window and the model
-        solved is the truncated one."""
+        """How far the kernels are from having settled at the window edge L: the largest change of a
+        kernel over the last tenth of the window, |K(L) - K(0.9 L)|, relative to the kernel's peak,
+        over states and controls.  A kernel that has decayed, or that has reached a constant limit
+        (a random-walk state, a price that tracks it), scores near zero; one still moving at L is
+        truncated by the window, and above WINDOW_TAIL_TOL the summary says so.  (The value at L
+        alone would flag every random-walk state.)"""
+        g = self.compiled.grid; L = float(g.L)
+        I1, I0 = g.interp(np.array([L])), g.interp(np.array([0.9 * L]))
         worst = 0.0
         for name in self.compiled.prim:
             K = self.kernel(name)
             peak = np.abs(K).max()
             if peak > 0:
-                worst = max(worst, float(np.abs(K[-1]).max() / peak))
+                worst = max(worst, float(np.abs(I1 @ K - I0 @ K).max() / peak))
         return worst
 
     def _kernel_change(self, fine) -> float:
@@ -256,7 +287,7 @@ class StationaryResult(BaseResult):
 
 @dataclass
 class TriangleResult(BaseResult):
-    kind: str = "finite_triangle"
+    kind: str = "finite"
 
     @property
     def grid(self):
@@ -283,7 +314,7 @@ class TriangleResult(BaseResult):
 
     def grid_info(self) -> dict:
         g = self.grid
-        return {"kind": "finite_triangle", "breakpoints": [float(b) for b in g.bp], "nodes_per_side": g.nt,
+        return {"kind": "finite", "breakpoints": [float(b) for b in g.bp], "nodes_per_side": g.nt,
                 "t": g.t.tolist(), "age": g.a.tolist(), "s": g.s.tolist()}
 
     def summary(self) -> str:
