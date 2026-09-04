@@ -78,7 +78,7 @@ def main(argv=None) -> int:
     s.add_argument("model")
     s.add_argument("-o", "--out", help="write results (.json or .npz)")
     s.add_argument("--plot", help="write a kernel plot (.pdf/.png)")
-    s.add_argument("--nodes", type=int, help="override nodes per panel")
+    s.add_argument("--nodes", type=int, help="override nodes per panel (stationary) or per side of each piece (finite)")
     s.add_argument("--window", type=float, help="override the lag window L")
     s.add_argument("--param", action="append", default=[], help="override a parameter, k=v (repeatable)")
     s.add_argument("--tol", type=float, default=1e-10)

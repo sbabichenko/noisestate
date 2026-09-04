@@ -30,14 +30,6 @@ from .compile import compile_structure
 from .spec import Agent, Atom, Model
 
 
-# ------------------------------------------------------------------ helpers
-@dataclass
-class Delta:
-    """A unit impulse of quantity `name` at age `age` with weight `w` (an instantaneous entry)."""
-    age: float
-    w: float
-
-
 class Compiled:
     """Grid, index maps and constant operators for a stationary model."""
 
@@ -58,12 +50,11 @@ class Compiled:
         self.grid = AgeGrid(bp, hz.nodes)
         self.N = self.grid.N
         self.rho = float(hz.discount)
-        st = compile_structure(model); self.st = st
+        st = compile_structure(model)
         self.channels, self.nW = st.channels, st.nW
         self.prim, self.index, self.nX, self.nU = st.prim, st.index, st.nX, st.nU
         self.A, self.state_inputs, self.sigma = st.A, st.state_inputs, st.sigma
         self.rows, self.loss, self.rep, self.reps = st.rows, st.loss, st.rep, st.reps
-        self.ctrl_agent = {u: a for a in model.agents for u in a.controls}
         self._shift_cache: Dict[float, np.ndarray] = {}
         self._atom_cache: Dict[tuple, np.ndarray] = {}
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
@@ -96,7 +87,7 @@ class Compiled:
         return M
 
     # ------------------------------------------------------- closed loop
-    def row_seen(self, agent: str, r: int, excluded: set) -> Tuple[np.ndarray, Dict[str, List[Delta]]]:
+    def row_seen(self, agent: str, r: int, excluded: set) -> Tuple[np.ndarray, Dict[str, List[Tuple[float, float]]]]:
         """Regular part of row r as seen by the agent (delayed), as an operator on the
         primary vector, and the instantaneous entries per source: channel names for
         Brownian noise, control names for observed-control impulses.  Controls in
@@ -105,15 +96,15 @@ class Compiled:
         name, drift, E, delay = self.rows[agent][r]
         S = self.shift(delay)
         regular = np.zeros((self.N, len(self.prim) * self.N))
-        deltas: Dict[str, List[Delta]] = {}
+        deltas: Dict[str, List[Tuple[float, float]]] = {}      # source -> [(age, weight)]
         for (n, l), c in drift.items():
             if n in excluded:
-                deltas.setdefault(n, []).append(Delta(delay + l, c))
+                deltas.setdefault(n, []).append((delay + l, c))
             else:
                 regular[:, self.block(n)] += c * (S @ self.shift(l))
         for k, ch in enumerate(self.channels):
             if E[k] != 0.0:
-                deltas.setdefault(ch, []).append(Delta(delay, E[k]))
+                deltas.setdefault(ch, []).append((delay, E[k]))
         return regular, deltas
 
     def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
@@ -170,8 +161,8 @@ class Compiled:
                             col = self.nW + list(impulse_controls).index(src)
                         else:
                             continue
-                        for d in dl:
-                            B[bl, col] += d.w * (self.shift(d.age) @ gur)
+                        for (age, w) in dl:
+                            B[bl, col] += w * (self.shift(age) @ gur)
         Z = np.linalg.solve(np.eye(n) - M, B)
         return Z
 
@@ -276,13 +267,13 @@ class StationarySolver:
     # ------------------------------------------------ best-response pieces
     def _passive_rows(self, agent: Agent, Zpass: np.ndarray):
         """Seen signal rows of `agent` in its passive world: regular kernels (N, nW) per row and the
-        instantaneous entries [(channel, Delta)] per row."""
+        instantaneous entries [(channel, age, weight)] per row."""
         c = self.c
         ytil, yinst = [], []
         for r in range(len(agent.signals)):
             regular, deltas = c.row_seen(agent.name, r, set(agent.controls))
             ytil.append(regular @ Zpass)
-            yinst.append([(c.channels.index(src), d) for src, dl in deltas.items() if src in c.channels for d in dl])
+            yinst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
         return ytil, yinst
 
     def _row_operator(self, rows, inst):
@@ -292,8 +283,8 @@ class StationarySolver:
         Gk = np.zeros((nW, N, nR * N))
         for r in range(nR):
             Gk[:, :, r * N:(r + 1) * N] += c.grid.conv_ops(rows[r])           # all channels at once
-            for (k, d) in inst[r]:
-                Gk[k, :, r * N:(r + 1) * N] += d.w * c.shift(d.age)
+            for (k, age, w) in inst[r]:
+                Gk[k, :, r * N:(r + 1) * N] += w * c.shift(age)
         return Gk
 
     def _response_operators(self, agent: Agent, R: np.ndarray):
@@ -351,8 +342,8 @@ class StationarySolver:
         for r in range(nR):
             ops = c.grid.corr_ops(rows[r], 0.0)                                  # (nW, N, N)
             H[r * N:(r + 1) * N] += ops.transpose(1, 0, 2).reshape(N, nW * N)
-            for (k, d) in inst[r]:
-                H[r * N:(r + 1) * N, k * N:(k + 1) * N] += d.w * c.shift(-d.age)
+            for (k, age, w) in inst[r]:
+                H[r * N:(r + 1) * N, k * N:(k + 1) * N] += w * c.shift(-age)
         return H
 
     def _project_maps(self, agent: Agent, Z: np.ndarray, actions: np.ndarray) -> np.ndarray:
@@ -363,7 +354,7 @@ class StationarySolver:
         for r in range(nR):
             regular, deltas = c.row_seen(agent.name, r, set())
             rows.append(regular @ Z)
-            inst.append([(c.channels.index(src), d) for src, dl in deltas.items() if src in c.channels for d in dl])
+            inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
         Bk = self._row_operator(rows, inst)
         W = c.grid.mass
         Gram = sum((Bk[k] * W[:, None]).T @ Bk[k] for k in range(nW))

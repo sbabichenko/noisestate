@@ -21,7 +21,7 @@ from .stationary import StationarySolver
 class CppCascadeReplica(StationarySolver):
     def __init__(self, model: Model, **kw):
         super().__init__(model, **kw)
-        d = json.loads(json.dumps(model_to_dict(model)))
+        d = json.loads(json.dumps(model.to_dict()))
         # every flow row (one that observes other agents' controls) is made gross of the observer's own controls
         for aname, a in d["agents"].items():
             if a.get("myopic"):
@@ -50,19 +50,3 @@ class CppCascadeReplica(StationarySolver):
                 elif np.abs(Ru[p]).max() > 0:
                     out[p * N:(p + 1) * N] -= c.grid.conv_op(Ru[p]) @ cu
         return out
-
-
-def model_to_dict(model: Model) -> dict:
-    """Round-trip a Model back to the file structure (coefficients already numeric)."""
-    d = {"name": model.name, "params": dict(model.params), "channels": list(model.channels),
-         "states": {s.name: {"drift": dict(s.drift), "noise": dict(s.noise)} for s in model.states},
-         "definitions": {x.name: dict(x.expr) for x in model.definitions},
-         "agents": {}, "ties": [list(g) for g in model.ties],
-         "horizon": {"kind": model.horizon.kind, "discount": model.horizon.discount, "window": model.horizon.window,
-                     "nodes": model.horizon.nodes, "breakpoints": model.horizon.breakpoints, "unit": model.horizon.unit,
-                     "unit_range": model.horizon.unit_range}}
-    for a in model.agents:
-        d["agents"][a.name] = {"controls": list(a.controls), "myopic": a.myopic,
-                               "signals": {r.name: {"drift": dict(r.drift), "noise": dict(r.noise), "delay": r.delay} for r in a.signals},
-                               "loss": [list(t) for t in a.loss]}
-    return d

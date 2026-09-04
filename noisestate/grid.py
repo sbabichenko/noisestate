@@ -165,7 +165,7 @@ class AgeGrid:
     def propagator(self, A: np.ndarray):
         """Returns (P0, P) with x = P0 @ x0 + P @ u for the vector ODE
         dx/da = A x + u(a) on [0, L], x(0) = x0, nodal ordering (node, component).
-        Jumps at breakpoints are handled by add_jump()."""
+        Jumps at breakpoints are handled by jump_injector()."""
         A = np.atleast_2d(np.asarray(A, dtype=float))
         m = A.shape[0]
         n = self.n

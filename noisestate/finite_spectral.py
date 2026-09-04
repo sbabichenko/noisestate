@@ -36,7 +36,7 @@ class SpectralCompiled:
         g = self.g
         self.N = g.N
         self.rho = float(hz.discount)
-        st = compile_structure(model); self.st = st
+        st = compile_structure(model)
         self.channels, self.nW = st.channels, st.nW
         self.prim, self.index, self.nX, self.nU = st.prim, st.index, st.nX, st.nU
         self.A, self.state_inputs, self.sigma = st.A, st.state_inputs, st.sigma

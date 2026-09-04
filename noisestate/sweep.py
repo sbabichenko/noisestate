@@ -28,8 +28,7 @@ def _load_dict(model: Union[str, dict, Model]) -> dict:
         with open(model) as fh:
             return yaml.safe_load(fh)
     if isinstance(model, Model):
-        from .diagnostics import model_to_dict
-        return model_to_dict(model)
+        return model.to_dict()
     return copy.deepcopy(model)
 
 
