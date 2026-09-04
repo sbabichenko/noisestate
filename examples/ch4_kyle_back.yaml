@@ -1,0 +1,24 @@
+# Chapter 4: stationary Kyle-Back market, one asset, NT informed traders.
+#   dV = sigma_V dW_V (windowed random walk),  dZ = sum_j D_j dt + sigma_Z dW_Z,
+#   dY_j = gamma_j (V - P) dt + dW_j,  P = E[V | flow history] (competitive market maker);
+#   trader j observes Y_j and the flow Z,
+#   trader j maximises E int e^{-rho t} [D_j (V - P) - eps D_j^2] dt.
+name: ch4_kyle_back
+params: {eps: 0.2, rho: 0.0, gamma1: 1.0, sigma_V: 1.0, sigma_Z: 1.0}
+channels: [wV, wZ, w1]
+states:
+  V: {drift: {}, noise: {wV: sigma_V}}
+agents:
+  market_maker:
+    controls: [P]
+    myopic: true
+    signals:
+      flow: {drift: {D1: 1.0}, noise: {wZ: sigma_Z}}
+    loss: [[1.0, P, P], [-2.0, P, V]]
+  trader1:
+    controls: [D1]
+    signals:
+      y1: {drift: {V: gamma1, P: "-gamma1"}, noise: {w1: 1.0}}
+      flow: {drift: {}, noise: {wZ: sigma_Z}}      # the trader also sees the order flow (net of its own orders)
+    loss: [[-1.0, D1, V], [1.0, D1, P], [eps, D1, D1]]
+horizon: {kind: stationary, discount: rho, window: 8.0, nodes: 24}

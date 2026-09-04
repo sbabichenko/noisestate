@@ -1,0 +1,20 @@
+# Chapter 3 benchmark: stationary two-player tracking game, average cost.
+#   dX = (D1 + D2) dt + dW0,   dY_i = sqrt(p_i) X dt + dW_i,
+#   player i minimises E[ 1/2 X^2 + 1/2 r_i D_i^2 ]  (average cost, rho = 0)
+name: ch3_two_player
+params: {p1: 3.0, p2: 10.0, r1: 1.0, r2: 1.0}
+channels: [w0, w1, w2]
+states:
+  X: {drift: {D1: 1.0, D2: 1.0}, noise: {w0: 1.0}}
+agents:
+  player1:
+    controls: [D1]
+    signals:
+      y1: {drift: {X: "sqrt(p1)"}, noise: {w1: 1.0}}
+    loss: [[0.5, X, X], ["0.5*r1", D1, D1]]
+  player2:
+    controls: [D2]
+    signals:
+      y2: {drift: {X: "sqrt(p2)"}, noise: {w2: 1.0}}
+    loss: [[0.5, X, X], ["0.5*r2", D2, D2]]
+horizon: {kind: stationary, discount: 0.0, window: 3.0, nodes: 24}

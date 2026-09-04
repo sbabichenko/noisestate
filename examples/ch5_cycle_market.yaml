@@ -1,0 +1,346 @@
+name: ch5_cycle_market
+params:
+  theta: 4.0
+  xi: 0.15
+  zeta: 0.5
+  kappa: 0.3
+  m: 1.0
+  r: 0.2
+  rP: 0.0
+  c: 0.2
+  sigma_u: 1.0
+  theta_a: 0.5
+  sigma_a: 1.0
+  theta_eta: 0.5
+  sigma_eta: 1.0
+  s1: 2.5
+  s2: 0.3
+  s3: 0.3
+  s4: 2.0
+  tau: 0.5
+channels:
+- w_q
+- w_a0
+- w_eta0
+- w_0_0
+- w_0_1
+- w_0_2
+- w_0_3
+- w_a1
+- w_eta1
+- w_1_0
+- w_1_1
+- w_1_2
+- w_1_3
+- w_a2
+- w_eta2
+- w_2_0
+- w_2_1
+- w_2_2
+- w_2_3
+states:
+  q:
+    drift: {}
+    noise:
+      w_q: sigma_u
+  a0:
+    drift:
+      a0: -theta_a
+    noise:
+      w_a0: sigma_a
+  eta0:
+    drift:
+      eta0: -theta_eta
+    noise:
+      w_eta0: sigma_eta
+  a1:
+    drift:
+      a1: -theta_a
+    noise:
+      w_a1: sigma_a
+  eta1:
+    drift:
+      eta1: -theta_eta
+    noise:
+      w_eta1: sigma_eta
+  a2:
+    drift:
+      a2: -theta_a
+    noise:
+      w_a2: sigma_a
+  eta2:
+    drift:
+      eta2: -theta_eta
+    noise:
+      w_eta2: sigma_eta
+definitions:
+  Pidx:
+    P0@tau: 0.3333333333333333
+    P1@tau: 0.3333333333333333
+    P2@tau: 0.3333333333333333
+  Pnext:
+    P0: 0.3333333333333333
+    P1: 0.3333333333333333
+    P2: 0.3333333333333333
+  pi0:
+    P0@tau: 1.0
+  i0:
+    o0@tau: 1.0
+  d0:
+    o1@tau: 1.0
+  yH0:
+    q: 1.0
+    Pidx: theta - 1
+    pi0: -theta
+    eta0: 1.0
+  pi1:
+    P1@tau: 1.0
+  i1:
+    o1@tau: 1.0
+  d1:
+    o2@tau: 1.0
+  yH1:
+    q: 1.0
+    Pidx: theta - 1
+    pi1: -theta
+    eta1: 1.0
+  pi2:
+    P2@tau: 1.0
+  i2:
+    o2@tau: 1.0
+  d2:
+    o0@tau: 1.0
+  yH2:
+    q: 1.0
+    Pidx: theta - 1
+    pi2: -theta
+    eta2: 1.0
+  dev0:
+    pi0: 1.0
+    Pidx: -(1 - xi - zeta)
+    q: -xi
+    pi2: -zeta
+    a0@tau: zeta
+  mis0:
+    a0@tau: 1.0
+    i0: 1.0
+    d0: -1.0
+    yH0: -1.0
+  bill0:
+    P2: 1.0
+    Pnext: -1.0
+  quote_gap0:
+    P0: 1.0
+    Pnext: -1.0
+  dev1:
+    pi1: 1.0
+    Pidx: -(1 - xi - zeta)
+    q: -xi
+    pi0: -zeta
+    a1@tau: zeta
+  mis1:
+    a1@tau: 1.0
+    i1: 1.0
+    d1: -1.0
+    yH1: -1.0
+  bill1:
+    P0: 1.0
+    Pnext: -1.0
+  quote_gap1:
+    P1: 1.0
+    Pnext: -1.0
+  dev2:
+    pi2: 1.0
+    Pidx: -(1 - xi - zeta)
+    q: -xi
+    pi1: -zeta
+    a2@tau: zeta
+  mis2:
+    a2@tau: 1.0
+    i2: 1.0
+    d2: -1.0
+    yH2: -1.0
+  bill2:
+    P1: 1.0
+    Pnext: -1.0
+  quote_gap2:
+    P2: 1.0
+    Pnext: -1.0
+agents:
+  firm0:
+    controls:
+    - P0
+    - o0
+    signals:
+      sales:
+        drift:
+          yH0: 1.0
+        noise:
+          w_0_0: s1
+        delay: 0.0
+      trans_price:
+        drift:
+          P2: 1.0
+        noise:
+          w_0_1: s2
+        delay: 0.0
+      order_book:
+        drift:
+          o1: 1.0
+        noise:
+          w_0_2: s3
+        delay: 0.0
+      upstream_order:
+        drift:
+          o2: 1.0
+        noise:
+          w_0_3: s4
+        delay: 0.0
+      own_prod:
+        drift: {}
+        noise:
+          w_a0: 1.0
+        delay: 0.0
+    loss:
+    - - 1.0
+      - dev0
+      - dev0
+    - - -2*kappa
+      - d0
+    - - -2*kappa
+      - yH0
+    - - m
+      - mis0
+      - mis0
+    - - r
+      - o0
+      - o0
+    - - rP
+      - quote_gap0
+      - quote_gap0
+    - - 2*c
+      - o0
+      - bill0
+    myopic: false
+  firm1:
+    controls:
+    - P1
+    - o1
+    signals:
+      sales:
+        drift:
+          yH1: 1.0
+        noise:
+          w_1_0: s1
+        delay: 0.0
+      trans_price:
+        drift:
+          P0: 1.0
+        noise:
+          w_1_1: s2
+        delay: 0.0
+      order_book:
+        drift:
+          o2: 1.0
+        noise:
+          w_1_2: s3
+        delay: 0.0
+      upstream_order:
+        drift:
+          o0: 1.0
+        noise:
+          w_1_3: s4
+        delay: 0.0
+      own_prod:
+        drift: {}
+        noise:
+          w_a1: 1.0
+        delay: 0.0
+    loss:
+    - - 1.0
+      - dev1
+      - dev1
+    - - -2*kappa
+      - d1
+    - - -2*kappa
+      - yH1
+    - - m
+      - mis1
+      - mis1
+    - - r
+      - o1
+      - o1
+    - - rP
+      - quote_gap1
+      - quote_gap1
+    - - 2*c
+      - o1
+      - bill1
+    myopic: false
+  firm2:
+    controls:
+    - P2
+    - o2
+    signals:
+      sales:
+        drift:
+          yH2: 1.0
+        noise:
+          w_2_0: s1
+        delay: 0.0
+      trans_price:
+        drift:
+          P1: 1.0
+        noise:
+          w_2_1: s2
+        delay: 0.0
+      order_book:
+        drift:
+          o0: 1.0
+        noise:
+          w_2_2: s3
+        delay: 0.0
+      upstream_order:
+        drift:
+          o1: 1.0
+        noise:
+          w_2_3: s4
+        delay: 0.0
+      own_prod:
+        drift: {}
+        noise:
+          w_a2: 1.0
+        delay: 0.0
+    loss:
+    - - 1.0
+      - dev2
+      - dev2
+    - - -2*kappa
+      - d2
+    - - -2*kappa
+      - yH2
+    - - m
+      - mis2
+      - mis2
+    - - r
+      - o2
+      - o2
+    - - rP
+      - quote_gap2
+      - quote_gap2
+    - - 2*c
+      - o2
+      - bill2
+    myopic: false
+ties:
+- - firm0
+  - firm1
+  - firm2
+horizon:
+  kind: stationary
+  discount: 0.0
+  window: 24.0
+  nodes: 8
+  breakpoints: null
+  unit: 0.5
+  unit_range: 8.0
