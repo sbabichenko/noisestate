@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "noisestate"
-version = "0.2.3"
+version = "0.2.4"
 description = "Equilibrium solver for linear-quadratic-Gaussian games with private information (noise-state linear strategies)"
 readme = "README.md"
 license = {text = "MIT"}

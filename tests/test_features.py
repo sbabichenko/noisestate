@@ -1,7 +1,6 @@
 """Model-language features that only the (slow, opt-in) Chapter 5 test used to exercise."""
 import os, numpy as np
 import noisestate as ns
-from noisestate.stationary import StationarySolver
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
 
 
@@ -34,22 +33,6 @@ def test_two_firm_cycle_market_ties_definitions_and_two_controls():
     for u0, u1 in (("P0", "P1"), ("o0", "o1")):
         assert np.abs(tied.kernel(u0) - tied.kernel(u1)[:, perm]).max() < 1e-8
     assert abs(tied.costs["firm0"] - tied.costs["firm1"]) < 1e-8
-
-
-def test_lead_atoms_solve_and_are_optimal():
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml"))
-    d["definitions"] = {"gap": {"X": 1.0, "X@-0.5": -0.5}}                 # a lead: X half a unit ahead
-    d["agents"]["player1"]["loss"] = [[0.5, "gap", "gap"], ["0.5*r1", "D1", "D1"]]
-    S = StationarySolver(ns.Model.from_dict(d)); res = S.solve().check()
-    a = S.model.agents[0]; c = S.c; nW = c.nW
-    g, out = S.best_response(a, res.maps)
-    Zp = c.closed_loop(res.maps, excluded=a.name, impulse_controls=a.controls); Zpass, R = Zp[:, :nW], Zp[:, nW:]
-    Resp = S._response_operators(a, R)[0]; ytil, yinst = S._passive_rows(a, Zpass); Gk = S._row_operator(ytil, yinst)
-    cost = lambda cc: S.expected_loss(a, Zpass + Resp @ cc)
-    c0 = out["action"][0]; L0 = cost(c0); rng = np.random.default_rng(2)
-    for _ in range(5):
-        gam = rng.standard_normal(Gk.shape[2]); dc = np.stack([Gk[k] @ gam for k in range(nW)], axis=1); dc *= 0.02 / np.abs(dc).max()
-        assert cost(c0 + dc) >= L0 - 1e-10 and cost(c0 - dc) >= L0 - 1e-10
 
 
 def test_lagged_state_feedback_in_both_engines():

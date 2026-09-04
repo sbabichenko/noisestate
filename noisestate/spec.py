@@ -252,19 +252,33 @@ class Model:
                     if n in self.state_names:
                         users.setdefault(n, set()).add(ag.name)
 
-        def cls(name):
+        states = {s.name: s for s in self.states}
+
+        def cls(name, depth=0):
             if name in own:
                 return own[name]
             if name in others:
                 return "other_control"
             if len(users.get(name, set())) <= 1:
-                return "private_state"
+                # a private state is compared by its dynamics: drift (canonicalised) and noise loadings
+                s = states[name]
+                drift = canon(self.expand(s.drift), depth + 1) if depth < 3 else "..."
+                return "private_state:" + repr((drift, tuple(sorted(round(v, 9) for v in s.noise.values()))))
             return "state:" + name
 
-        def canon(expr):
-            return tuple(sorted((cls(n), round(l, 9), round(c, 9)) for (n, l), c in expr.items()))
-        rows = tuple((canon(self.expand(r.drift)), tuple(sorted(round(v, 9) for v in r.noise.values())), round(r.delay, 9))
-                     for r in a.signals)
+        def canon(expr, depth=0):
+            return tuple(sorted((cls(n, depth), round(l, 9), round(c, 9)) for (n, l), c in expr.items()))
+
+        def noise_sig(noise):
+            # a row's noise channel may also drive a state: shared with a private state of this agent, a
+            # public state, or nothing; the tie must preserve that
+            out = []
+            for ch, v in noise.items():
+                drives = [s.name for s in self.states if ch in s.noise]
+                kind = tuple(sorted(("private" if len(users.get(n, set())) <= 1 else "state:" + n) for n in drives))
+                out.append((round(v, 9), kind))
+            return tuple(sorted(out))
+        rows = tuple((canon(self.expand(r.drift)), noise_sig(r.noise), round(r.delay, 9)) for r in a.signals)
         loss = []
         for term in a.loss:
             ex = [canon(self.expand({s: 1.0})) for s in term[1:]]
@@ -338,8 +352,19 @@ class Model:
             for term in a.loss:
                 if len(term) not in (2, 3):
                     raise ValueError(f"agent {a.name}: loss term {term} must be [coef, a] or [coef, a, b]")
-                for atom in term[1:]:
-                    self.expand({atom: 1.0})
+                ex = [self.expand({atom: 1.0}) for atom in term[1:]]
+                led = [i for i, e in enumerate(ex) if any(l < 0 for (n, l) in e)]
+                if led:
+                    # a value tau ahead also loads on shocks that arrive after t, which the age grid does not
+                    # carry; only its covariance with the agent's own current action is computed exactly
+                    other = [e for i, e in enumerate(ex) if i not in led]
+                    ok = (len(term) == 3 and len(led) == 1
+                          and all(n in a.controls and l == 0 for (n, l) in other[0]))
+                    if not ok:
+                        raise ValueError(f"agent {a.name}: loss term {term} uses a lead (name@-tau) outside a cross term with "
+                                         "the agent's own current control; a led quantity squared, or a lead on a control, "
+                                         "is not supported: write the flow with lags instead (at discount 0 the time "
+                                         "average of X(t+tau)^2 equals that of X(t)^2)")
         for group in self.ties:
             for n in group:
                 if n not in agent_names:
@@ -396,25 +421,19 @@ class Model:
             if getattr(hz, k) is not None:
                 horizon[k] = getattr(hz, k)
         if self.source is not None and not numeric:
-            # the source, with anything changed on the live object (a parameter, horizon.nodes, ...) replacing
-            # its source entry; unchanged entries keep their expressions so re-parametrising still works
+            # the source (parameter expressions intact) with the live horizon: horizon fields may be changed
+            # on the object (the engines read them at compile time); parameters may not (coefficients are
+            # numbers once built), so params come from the source and with_params() makes a new model
             d = copy.deepcopy(self.source)
-            src = d.get("params") or {}
-            live = {}; seen: Dict[str, float] = {}
-
-            def same(x, y):
-                return abs(x - y) <= 1e-12 * max(1.0, abs(y))
-            for k, v in src.items():
-                seen[k] = eval_coef(v, seen)
-                live[k] = v if same(self.params.get(k, seen[k]), seen[k]) else float(self.params[k])
-            if src:
-                d["params"] = live
             hsrc = d.get("horizon") or {}
+            seen: Dict[str, float] = {}
+            for k, v in (d.get("params") or {}).items():
+                seen[k] = eval_coef(v, seen)
             hout = {}
             for k, v in horizon.items():
                 key = k if k in hsrc else next((al for al in ("L", "T") if k == "window" and al in hsrc), k)
-                if key in hsrc and (hsrc[key] == v or (isinstance(v, float) and not isinstance(hsrc[key], (list, str, bool)) and same(float(hsrc[key]), v))
-                                    or (isinstance(hsrc[key], str) and same(eval_coef(hsrc[key], seen), v))):
+                if key in hsrc and (hsrc[key] == v or (isinstance(hsrc[key], str) and abs(eval_coef(hsrc[key], seen) - v) <= 1e-12 * max(1.0, abs(v)))
+                                    or (isinstance(v, float) and not isinstance(hsrc[key], (list, str, bool)) and abs(float(hsrc[key]) - v) <= 1e-12 * max(1.0, abs(v)))):
                     hout[key] = hsrc[key]
                 else:
                     hout[k] = v
@@ -438,6 +457,29 @@ class Model:
                                    "signals": {r.name: {"drift": ex(r.drift), "noise": ex(r.noise), "delay": r.delay} for r in a.signals},
                                    "loss": [[float(t[0])] + [atom(x) for x in t[1:]] for t in a.loss]}
         return d
+
+    def with_params(self, **values) -> "Model":
+        """A new model with these parameter values (numbers) replacing the source's; the other parameters
+        keep their expressions and are re-evaluated."""
+        d = self.to_dict()
+        unknown = sorted(set(values) - set(d.get("params") or {}))
+        if unknown:
+            raise ValueError(f"{unknown} are not parameters of the model (params: {sorted(d.get('params') or {})})")
+        for k, v in values.items():
+            d["params"][k] = float(v)
+        return Model.from_dict(d)
+
+    def with_horizon(self, **fields) -> "Model":
+        """A new model with these horizon fields (nodes, window, discount, kind, breakpoints, unit, unit_range)."""
+        d = self.to_dict(); d.setdefault("horizon", {})
+        bad = sorted(set(fields) - self._KEYS["horizon"])
+        if bad:
+            raise ValueError(f"unknown horizon field(s) {bad}")
+        for k in ("L", "T"):
+            if "window" in fields:
+                d["horizon"].pop(k, None)
+        d["horizon"].update(fields)
+        return Model.from_dict(d)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Model":
@@ -511,9 +553,10 @@ class Model:
         for k, v in (d.get("params") or {}).items():
             if isinstance(v, str):
                 safe_eval(v, params)
+        from types import MappingProxyType
         m = cls(name=d.get("name", "model"), channels=list(d.get("channels") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
-                params=dict(params), source=copy.deepcopy(d))
+                params=MappingProxyType(dict(params)), source=copy.deepcopy(d))     # read-only: see with_params()
         m.validate()                                           # structural errors first; then the parameter check
         unused = sorted(set(params) - params.used)
         if unused:

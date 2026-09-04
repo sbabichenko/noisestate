@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.4 (2026-09-04) — second review round
+
+- Lead atoms are accepted only in a loss cross term with the agent's own current control; a led
+  quantity squared or a lead on a control gave a wrong equilibrium (cost off by 2x) and is now
+  rejected with the lag rewrite suggested.
+- A built `Model` is single-sourced: `params` is read-only, `with_params()` / `with_horizon()` make
+  new models; the plain solve, `sweep`, `refine` and `stability` cannot disagree on the model.
+- Ties compare the dynamics of private states and whether a row's noise channel drives a state;
+  agents with different private-state parameters no longer pass as tied.
+- The delayed-row least-squares cutoff is documented as immaterial (costs move by 1e-7 across
+  cutoffs 1e-9 to 1e-6), and the jump-interpolation floor on the representation error for
+  delayed rows and lagged control reads is recorded as a known open item.
+
 ## 0.2.3 (2026-09-04) — release review
 
 Fixes from an adversarial test pass and a code review before release.

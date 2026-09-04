@@ -69,7 +69,8 @@ horizon: {kind: stationary, discount: rho, window: 8.0, nodes: 24}
 ```
 
 * **Atoms.** `name` is a state, a control, or a definition; `name@tau` is its value
-  `tau` earlier (a lag), `name@-tau` its value `tau` later (a lead).
+  `tau` earlier (a lag), `name@-tau` its value `tau` later (a lead; allowed only in a loss
+  cross term with the agent's own current control, see Limits).
 * **States.** `drift` is linear in atoms (other states, controls, lagged controls,
   definitions); `noise` gives the loading on each channel.
 * **Definitions.** Named linear combinations of atoms, usable anywhere:
@@ -213,10 +214,25 @@ is from the model you wrote:
   a future value, a zero noise loading, `breakpoints` that do not end at the window, and a
   `myopic` that is not a boolean.
 * `refine()` and `stability()` rebuild the engine that produced the result, with the same options
-  (naive observers, ridge, tolerances), on the live model: changing `model.horizon.nodes` or a
-  parameter on the object is honoured by `sweep`, `refine` and `stability`.
+  (naive observers, ridge, tolerances).  A built model is single-sourced: its coefficients are
+  numbers, so `model.params` is read-only and `model.with_params(p=4.0)` returns a new model, while
+  the horizon fields (`nodes`, `window`, ...) may be changed on the object or through
+  `model.with_horizon(nodes=32)`; `solve`, `sweep`, `refine` and `stability` all see the same model.
+* `ties` are checked structurally: rows, losses, delays and coefficients up to relabelling, the
+  dynamics of each agent's private states, and whether a row's noise channel also drives a state.
 
 ## Known open items
+
+* A lagged read of a kernel that is nonzero at age 0 (a delayed signal row, or `P@tau` where `P`
+  is a control) jumps at the lag; on the age grid both copies of the breakpoint node at the lag
+  carry the right limit, so the panel below the lag interpolates the jump as a bump.  The effect
+  is a floor on the representation error that node refinement lowers only slowly (2e-3 on the
+  Chapter 3 game with one row delayed by 0.5, 2e-3 on the Chapter 5 example), so `UNDER-RESOLVED`
+  overstates the problem for such models: costs converge (5e-5 between 24 and 40 nodes) and the
+  stationary and finite engines agree.  Giving the lower copy the left limit (zero) is the right
+  convention but, applied to the shift alone, breaks the convolution tensors' assumptions and the
+  fixed point diverges; the fix needs the same convention in the convolution and correlation
+  quadrature.
 
 * The Chapter 5 cycle-market example has a second-order curvature of -3e-5 (relative to the
   largest) in the firms' best response at 6 and 8 nodes per panel, in the map on the order rows at
@@ -229,10 +245,14 @@ is from the model you wrote:
 
 Scalar states and controls (write vector models as several scalars); no exact
 (noise-free) observation of a state that is not itself a channel; means (targets,
-linear loss terms) are not yet solved.  Lead atoms (`X@-0.5`) in loss terms are
-supported by the stationary engine (its first-order condition carries the extra
-term from flows before *t* that read the quantity after *t*) and rejected by the
-finite-horizon engines for now.  With lagged *state* feedback in a drift
+linear loss terms) are not yet solved.  Lead atoms (`X@-0.5`) are accepted only in a
+stationary loss cross term with the agent's own current control (`[c, D, X@-0.5]`),
+where the covariance is computed exactly (its first-order condition carries the extra
+term from flows before *t* that read the quantity after *t*); a led quantity squared,
+or a lead on a control, would need the part of the kernel on shocks arriving after *t*,
+which the age grid does not carry, and is rejected (write the flow with lags: at
+discount 0 the time average of *X(t+tau)^2* equals that of *X(t)^2*).  The finite
+engines reject leads.  With lagged *state* feedback in a drift
 (`X@0.5` in the drift of `X`), the map and action-kernel iterations agree only to
 first order in the node count (1.6e-5 at 24 nodes per panel on the Chapter 3 game);
 the action-kernel path is the default and the more accurate one.  A game can have

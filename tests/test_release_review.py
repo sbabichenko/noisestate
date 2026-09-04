@@ -48,12 +48,21 @@ def test_refine_and_stability_rebuild_the_same_solver():
     assert r.solver_class is StationarySolver and r.solver_kw["naive_observers"]
 
 
-def test_mutating_the_model_object_is_honoured():
-    m = ns.load(os.path.join(EX, "ch3_two_player.yaml")); m.horizon.nodes = 30; m.params["p1"] = 4.0
-    d = m.to_dict(); assert d["horizon"]["nodes"] == 30 and d["params"]["p1"] == 4.0 and d["params"]["p2"] == m.params["p2"]
-    r = ns.solve(m); assert r.compiled.N == 30
+def test_model_is_single_sourced():
+    m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
+    with pytest.raises(TypeError):                                            # coefficients are numbers once built
+        m.params["p1"] = 4.0
+    m4 = m.with_params(p1=4.0); base = ns.solve(m); r4 = ns.solve(m4)
+    assert m4.params["p1"] == 4.0 and abs(r4.costs["player1"] - base.costs["player1"]) > 1e-4
+    fresh = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); fresh["params"]["p1"] = 4.0
+    assert abs(r4.costs["player1"] - ns.solve(fresh).costs["player1"]) < 1e-12   # the same model as from a file
+    r4.refine(); assert r4.refinement["cost_change"] < 1e-8                    # refine compares like with like
+    m.horizon.nodes = 30                                                       # horizon fields are read live
+    r = ns.solve(m); assert r.compiled.N == 30 and m.to_dict()["horizon"]["nodes"] == 30
     r.refine(); assert r.refinement["nodes"] == 45
-    rows = ns.sweep(m, "p2", [3.0]); assert rows[0]["result"].compiled.N == 30
+    assert ns.solve(m.with_horizon(nodes=12)).compiled.N == 12
+    with pytest.raises(ValueError, match="not parameters"):
+        m.with_params(zzz=1.0)
 
 
 def test_numeric_export_is_loadable_and_equivalent():
@@ -81,7 +90,7 @@ def test_second_order_flags_non_convex_losses():
     d = _ch3(); d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["r1", "D1", "X"]]
     assert not ns.solve(d).second_order["player1"]["ok"]
     assert all(v["ok"] for v in ns.solve(_ch3()).second_order.values())
-    assert json.dumps(ns.solve(_ch3()).to_dict())["second_order"] if False else True
+    assert json.loads(json.dumps(ns.solve(_ch3()).to_dict()))["second_order"]["player1"]["ok"]
 
 
 def test_sharp_optimality_the_projected_foc_vanishes_only_at_the_equilibrium():
@@ -177,3 +186,45 @@ def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
         for ch in ("w0", "w1"):
             ks = rs.kernel(name, ch); kf = rf.evaluate(name, ch, 6.0 + 0 * rs.ages, 6.0 - rs.ages)
             assert np.abs(ks - kf).max() < 5e-3 * max(1.0, np.abs(ks).max()), (name, ch)
+
+
+def test_leads_only_in_cross_terms_with_the_own_current_control():
+    d = _ch3(window=8.0, nodes=10); d["horizon"].update(unit=0.5, unit_range=4.0)
+    for bad in ([[0.5, "X@-0.5", "X@-0.5"], ["0.5*r1", "D1", "D1"]], [[0.5, "X", "X"], ["0.5*r1", "D1@-0.5", "D1@-0.5"]],
+                [[0.5, "X", "X"], ["0.5*r1", "D1", "D1"], [0.1, "D1@0.5", "X@-0.5"]]):
+        d["agents"]["player1"]["loss"] = bad
+        with pytest.raises(ValueError, match="lead"):
+            ns.Model.from_dict(d)
+    # the supported form: [c, D1, X@-tau] is the same flow as [c, D1@tau, X] at discount 0
+    d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["0.5*r1", "D1", "D1"], [0.2, "D1", "X@-0.5"]]; lead = ns.solve(d).check()
+    d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["0.5*r1", "D1", "D1"], [0.2, "D1@0.5", "X"]]; lag = ns.solve(d).check()
+    assert abs(lead.costs["player1"] - lag.costs["player1"]) < 5e-3 * abs(lag.costs["player1"])
+
+
+def test_ties_compare_private_state_dynamics_and_channel_sharing():
+    def two(th1, s1, share):
+        d = {"channels": ["w0", "wa0", "wa1", "wy0", "wy1"],
+             "states": {"X": {"drift": {"D0": 1.0, "D1": 1.0}, "noise": {"w0": 1.0}},
+                        "a0": {"drift": {"a0": -0.5}, "noise": {"wa0": 1.0}}, "a1": {"drift": {"a1": -th1}, "noise": {"wa1": s1}}},
+             "agents": {}, "ties": [["f0", "f1"]], "horizon": {"kind": "stationary", "window": 4.0, "nodes": 8}}
+        for i in range(2):
+            d["agents"][f"f{i}"] = {"controls": [f"D{i}"], "signals": {"y": {"drift": {"X": 1.0, f"a{i}": 1.0}, "noise": {(f"wa{i}" if share and i == 0 else f"wy{i}"): 1.0}}},
+                                    "loss": [[1.0, "X", "X"], [1.0, f"D{i}", f"D{i}"], [0.5, f"D{i}", f"a{i}"]]}
+        return d
+    assert ns.Model.from_dict(two(0.5, 1.0, False)).ties
+    with pytest.raises(ValueError, match="not structurally identical"):
+        ns.Model.from_dict(two(5.0, 3.0, False))
+    with pytest.raises(ValueError, match="not structurally identical"):
+        ns.Model.from_dict(two(0.5, 1.0, True))
+
+
+def test_delayed_row_equilibrium_is_insensitive_to_the_least_squares_cutoff():
+    d = _ch3(window=6.0, nodes=16); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.5
+    m = ns.Model.from_dict(d); orig = np.linalg.lstsq; costs = {}
+    try:
+        for rc in (1e-9, 1e-6):
+            np.linalg.lstsq = lambda A, b, rcond=None, _o=orig, _rc=rc: _o(A, b, rcond=_rc)
+            costs[rc] = ns.StationarySolver(m).solve().check().costs["player2"]
+    finally:
+        np.linalg.lstsq = orig
+    assert abs(costs[1e-9] - costs[1e-6]) < 1e-6

@@ -362,8 +362,10 @@ class StationarySolver(EngineBase):
         gamma = np.zeros(nG)
         if max(c.rows[agent.name][r][3] for r in range(nR)):
             # with a delayed row the seen kernels jump at the delay, and the map values at the panel
-            # breakpoints (one of each duplicated node) drop out of the discrete system exactly: least
-            # squares with a cutoff far below the rest of the spectrum takes the minimum-norm values there
+            # breakpoints (one of each duplicated node) drop out of the discrete system exactly; a few
+            # more modes sit within 1e-8 of zero relative to the largest.  Least squares with that cutoff
+            # takes the minimum-norm values there; the equilibrium is insensitive to the cutoff (costs move
+            # by 1e-7 between 1e-9 and 1e-6 on the Chapter 3 game with one delayed row, window 6)
             gamma[keep] = np.linalg.lstsq(Amat[np.ix_(keep, keep)], -bvec[keep], rcond=1e-8)[0]
         else:
             try:
