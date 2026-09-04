@@ -349,11 +349,13 @@ class FiniteSolver:
 
         b = affine(np.zeros(nU * nR * nfree))
         op = LinearOperator((nU * nR * nfree, nU * nR * nfree), matvec=lambda v: affine(v) - b)
-        if nU * nR * nfree <= 2500:
+        if nU * nR * nfree <= 200:
             M = np.column_stack([op.matvec(e) for e in np.eye(nU * nR * nfree)])
             gvec = np.linalg.solve(M, -b)
         else:
             gvec, info = lgmres(op, -b, rtol=1e-12, atol=0, maxiter=400)
+            if info != 0:
+                gvec, info = lgmres(op, -b, x0=gvec, rtol=1e-12, atol=0, maxiter=1000)
         gam = np.zeros((nU, nR, N, N)); gam[:, :, tri] = gvec.reshape(nU, nR, nfree)
         cact = action_from_gamma(gam)
         Zfull = full_world(cact)

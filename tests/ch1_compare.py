@@ -13,7 +13,7 @@ def at(K, t, s):
     """value of a cell kernel K[i, j] (response at t_i to a unit increment in cell j) at (t, s), s < t"""
     i = np.clip(np.round(t / h).astype(int), 0, N - 1); j = np.clip(np.floor(s / h).astype(int), 0, N - 1)
     return K[i, j]
-sel = (t_ref > 2 * h) & (s_ref < t_ref - 1.5 * h)     # away from the diagonal and the corner
+sel = (t_ref > 0.1) & (s_ref < t_ref - 0.1)     # away from the diagonal boundary layer and the corner
 for name, R in (("X", X_ref), ("calD1", D1_ref)):
     for k, ch in enumerate(S.c.channels):
         K = res.kernel(name if name == "X" else "D1", ch)
