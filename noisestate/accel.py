@@ -17,17 +17,22 @@ import numpy as np
 def anderson(F: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, tol: float = 1e-10, M: int = 6,
              beta: float = 0.5, maxiter: int = 200, reg: float = 1e-8, verbose: bool = False):
     """Solve F(x) = 0 for the residual F(x) = G(x) - x of a fixed-point map G.
-    Returns (x, residual_norm_relative, evaluations, converged)."""
+    Returns (x, residual_norm_relative, evaluations, converged, stalled); stalled means the best
+    residual stopped improving (by less than 30% over 20 iterations), which is what a noise floor
+    of F looks like, and the iteration was cut short."""
     x = np.array(x0, dtype=float)
     r = F(x); evals = 1
     dX: List[np.ndarray] = []; dR: List[np.ndarray] = []
     rn = np.linalg.norm(r) / max(1.0, np.linalg.norm(x))
     best_x, best_rn = x.copy(), rn
+    best_hist = [rn]
     for k in range(maxiter):
         if verbose:
             print(f"  anderson {k:3d} rel resid {rn:.3e} (history {len(dX)})", flush=True)
         if rn < tol:
-            return x, rn, evals, True
+            return x, rn, evals, True, False
+        if k >= 40 and best_rn > 0.7 * best_hist[-20]:
+            return best_x, best_rn, evals, False, True
         if dX:
             Rm = np.stack(dR, axis=1)                                   # (n, m)
             A = Rm.T @ Rm
@@ -51,7 +56,8 @@ def anderson(F: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, tol: float =
         x, r, rn = x_new, r_new, rn_new
         if rn < best_rn:
             best_x, best_rn = x.copy(), rn
-    return best_x, best_rn, evals, best_rn < tol
+        best_hist.append(best_rn)
+    return best_x, best_rn, evals, best_rn < tol, False
 
 
 class ConvergenceError(RuntimeError):
@@ -65,9 +71,10 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
     norm(F(z)) / max(1, norm(z)) and converged means residual <= tol."""
     from scipy.optimize import newton_krylov, NoConvergence
     msg = []
-    z, rn, ev, ok = anderson(F, z0, tol=tol, M=M, beta=damping, maxiter=anderson_iters, verbose=verbose)
-    msg.append(f"anderson: {ev} evaluations, residual {rn:.2e}")
-    if ok or max_newton <= 0:
+    z, rn, ev, ok, stalled = anderson(F, z0, tol=tol, M=M, beta=damping, maxiter=anderson_iters, verbose=verbose)
+    msg.append(f"anderson: {ev} evaluations, residual {rn:.2e}" + (" (stalled: the residual stopped improving, a noise floor of the fixed-point map)" if stalled else ""))
+    if ok or max_newton <= 0 or (stalled and rn < 100 * tol):
+        # a stall within two decades of the tolerance is a floor; a Newton polish cannot beat noise
         return z, rn, ev, rn <= tol, "; ".join(msg)
     cnt = [0]
 

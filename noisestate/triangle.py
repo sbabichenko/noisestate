@@ -122,6 +122,30 @@ class TriangleGrid:
             I[np.ix_(sel, np.arange(pc.offset, pc.offset + pc.n))] = (Rt[:, :, None] * Rx[:, None, :]).reshape(len(sel), -1)
         return I
 
+    def interp_sparse(self, t, a, side_t=+1, side_a=+1):
+        """interp() as a CSR matrix built directly: each point touches one piece's nt x na nodes, so the
+        dense form (npts x N) is wasteful for the tens of thousands of quadrature points of a path."""
+        from scipy.sparse import csr_matrix
+        t = np.atleast_1d(np.asarray(t, dtype=float)); a = np.atleast_1d(np.asarray(a, dtype=float))
+        inside = (a >= -1e-12) & (a <= t + 1e-12) & (t <= self.T + 1e-12) & (t >= -1e-12)
+        tc = np.clip(t, 0.0, self.T); ac = np.clip(a, 0.0, tc)
+        st = np.broadcast_to(np.asarray(side_t), tc.shape); sa = np.broadcast_to(np.asarray(side_a), ac.shape)
+        p = np.where(st > 0, self.panel_of(tc, +1), self.panel_of(tc, -1))
+        q = np.where(sa > 0, self.panel_of(ac, +1), self.panel_of(ac, -1))
+        q = np.minimum(q, p)
+        rows, cols, vals = [], [], []
+        for pc in self.pieces:
+            sel = np.where(inside & (p == pc.p) & (q == pc.q))[0]
+            if len(sel) == 0:
+                continue
+            tt, xx = pc.local_coords(tc[sel], ac[sel])
+            Rt = _bary_rows(tt, pc.tn, pc.wt); Rx = _bary_rows(xx, pc.xn, pc.wx)
+            vals.append((Rt[:, :, None] * Rx[:, None, :]).reshape(len(sel), -1).ravel())
+            rows.append(np.repeat(sel, pc.n)); cols.append(np.tile(np.arange(pc.offset, pc.offset + pc.n), len(sel)))
+        if not rows:
+            return csr_matrix((len(t), self.N))
+        return csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(len(t), self.N))
+
     def evaluate(self, f, t, a):
         return self.interp(t, a) @ f
 
@@ -236,13 +260,13 @@ class TriangleGrid:
         for k in np.unique(lp.rows):
             sel = lp.rows == k
             tt, aa = point_fn(int(k), lp.r[sel]); pt[sel] = tt; pa[sel] = aa
-        lp.I = csr_matrix(self.interp(pt, pa, side_t=side_t, side_a=side_a))
+        lp.I = self.interp_sparse(pt, pa, side_t=side_t, side_a=side_a)
         if known_fn is not None:
             kt = np.empty_like(lp.r); ka = np.empty_like(lp.r)
             for k in np.unique(lp.rows):
                 sel = lp.rows == k
                 tt, aa = known_fn(int(k), lp.r[sel]); kt[sel] = tt; ka[sel] = aa
-            lp.J = csr_matrix(self.interp(kt, ka))
+            lp.J = self.interp_sparse(kt, ka)
         lp.out_t = out_t; lp.out_a = out_a
         lp.R = csr_matrix((np.ones(len(lp.rows)), (lp.rows, np.arange(len(lp.rows)))), shape=(n_out, len(lp.rows)))
         return lp
