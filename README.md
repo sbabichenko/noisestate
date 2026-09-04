@@ -104,7 +104,11 @@ continuation through the physical state and through the other agents' reactions)
 affine in the unknown, and the best response is a single linear solve.  The raw
 strategy is recovered by projecting the resulting action kernel on the agent's
 closed-loop rows, and the equilibrium is the fixed point of the best-response map
-(damped iteration, then Newton-Krylov).
+(the stationary engine uses damped iteration then Newton-Krylov; the finite-horizon
+engines iterate on the action kernels with Tikhonov-regularised Anderson
+acceleration, the outer solver of the Chapter 5 market solver, and derive the raw
+maps by projection, which keeps ill-determined early-time maps from feeding noise
+back into the iteration).
 
 Finite horizon: the same construction on a piecewise-spectral triangle.  Kernels
 K(t, s) live in (time, shock-age) coordinates on the domain cut by the delays:
@@ -127,6 +131,7 @@ uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
 | 3 | two-player stationary tracking game | `solve_spectral` | 1e-11 at L = 10 (1e-5 at L = 3, window truncation) |
 | 4 | Kyle-Back, one trader, rho = 0 and 0.5 | `kb_spectral_q` | 1e-4 at 24 nodes, 1e-5 at 48 |
 | 5 | purchase-order market on a 3-cycle with delay | `spectral_market` sweep | 0.5% (quote maps), 1-5% (order maps) |
+| 1 + delays | control lag and a delayed observation, finite horizon | cell scheme, Richardson-extrapolated | cost within 1e-4, kernels within 1e-3 at smooth ages; exact zero response before the observation delay |
 | 1 | finite-horizon two-player game | `spec_ch1` | converged at 12 nodes per side (cost stable to 1e-8 from 12 to 20); kernels within 1e-3 of the reference except on the diagonal, where the reference's own README reports weakly determined modes; the cell scheme's Richardson limit agrees with the spectral engine there to 1e-3 |
 
 Kyle-Back with two traders: the reference grid solver (`kb_multi.py`), Richardson-
