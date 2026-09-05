@@ -34,9 +34,10 @@
   Jbar within 0.1% up to precision 1 (once the target's constant b^2 T, which the reference
   includes, is set aside), 1.1e-3 and 1.3e-3 at 10 and 100; the p = 10 path within 1.4e-2 at every
   t (1.9e-3 of Dbar1(0), the largest at t = 0.075); at precision 1000 (sharp kernels: 20 nodes per
-  side) 2e-3 on every number.  Those gaps are the reference's own error: the cell engine's
-  Richardson limits close on the spectral paths as h^2 (4.8e-3 then 1.2e-3 at T/2), and the
-  reference's variance cost is off by the same order (9e-5 at 10, 2e-4 at 100, 1.1e-3 at 1000).
+  side) 2e-3 on the paths (1.9e-3 and 1.8e-3) and 3.1e-3 on the cost.  Those gaps are the
+  reference's own error: the cell engine's Richardson limits close on the spectral paths as h^2
+  (4.8e-3 then 1.2e-3 at T/2), and the reference's variance cost is off by the same order (9e-5 at
+  10, 2e-4 at 100, 1.1e-3 at 1000).
   One agent alone reproduces the deterministic finite-horizon LQ optimum (Riccati, solve_ivp at
   rtol 1e-12) within 1e-11 on the paths and 1e-10 on the cost, with a target, an initial state and a
   discount, for one and two states; the means are linear in the targets and the mean cost

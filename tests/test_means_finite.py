@@ -29,9 +29,10 @@ def test_ch1_target_sweep_against_the_dissertation():
     at p = 10 and 100) and Jbar to 0.1% up to p = 1 (5.7e-5, 4.3e-4), then 1.1e-3 and 1.3e-3 at p = 10 and 100, the
     reference's own error: the cell engine's Richardson limits close on the package's values as h^2 (the next test) and
     the reference's variance cost is off by the same order (9e-5 at p = 10, 2.0e-4 at p = 100).  At p = 1000 the kernels
-    are sharp, the package needs 20 nodes per side (16 is 3.7e-4 off, 12 is 8e-4) and the reference is 2e-3 off on every
-    number, its variance cost included (1.1e-3).  The state mean is zero by symmetry; Dbar1(0) falls monotonically from
-    the open-loop 10 toward the closed-loop 4.646924 as the precision grows (the separation failure)."""
+    are sharp, the package needs 20 nodes per side (16 is 3.7e-4 off, 12 is 8e-4) and the reference is 2e-3 off on the
+    paths (1.9e-3, 1.8e-3), 3.1e-3 on Jbar and 1.1e-3 on its variance cost.  The state mean is zero by symmetry;
+    Dbar1(0) falls monotonically from the open-loop 10 toward the closed-loop 4.646924 as the precision grows (the
+    separation failure)."""
     seen = {}
     for p, (r0, rh, J) in REF.items():
         res = ns.solve(ch1_targets(p, nodes=20 if p == 1000.0 else 12)).check()
