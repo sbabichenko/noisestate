@@ -172,6 +172,8 @@ class FiniteSolver(EngineBase):
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 60
     ACTIONS = False
     def __init__(self, model: Model, verbose: bool = False):
+        """The cell grid's compiled model and the map shapes (nU, nR, N, N): g[u][r][i, v], the weight the
+        control in cell i puts on the seen increment of cell v < i.  No engine options."""
         super().__init__(model, verbose)
         self.c = FiniteCompiled(model)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N, self.c.N) for a in model.agents}
@@ -180,9 +182,12 @@ class FiniteSolver(EngineBase):
         self.tri = np.tril(np.ones((N, N), dtype=bool), -1)     # v < i
 
     def pack(self, maps):                                   # only the causal (strictly lower) triangle is free
+        """The representatives' maps as one vector: only the causal (strictly lower) triangle v < i of each
+        (N, N) map is free, so the vector has nU nR N (N - 1) / 2 entries per representative."""
         return np.concatenate([maps[n][:, :, self.tri].reshape(-1) for n in self.c.reps])
 
     def unpack(self, z):
+        """The inverse of pack: every agent's (nU, nR, N, N) maps, zero above the diagonal, tied agents filled."""
         maps, pos = {}, 0
         for n in self.c.reps:
             nu, nr, N, _ = self.shapes[n]
@@ -193,6 +198,14 @@ class FiniteSolver(EngineBase):
 
     # ---------------------------------------------------------- best response
     def best_response(self, agent: Agent, maps):
+        """The agent's best response to `maps` on the cells: (raw map (nU, nR, N, N), {"gamma", "action",
+        "Zfull"}) with "action" (nU, N, nW N) and "Zfull" (n_prim, N, nW N).  Replaces the base's best
+        response wholesale (the base's kernel-algebra pieces do not apply to the cell layout): the same
+        passive-world first-order condition, affine in the map on the passive rows, solved densely up to
+        200 unknowns and by LGMRES above, then the raw map by one projection per cell.  No want_decomp
+        argument: this engine computes no decomposition or second-order check, and its _diagnostics is
+        the base's no-op.  A singular system raises the ValueError of singular_system_message (dense
+        branch: the condition estimate; Krylov branch: one probe per control)."""
         c = self.c
         N, h, nW = c.N, c.h, c.nW
         nR, nU = len(agent.signals), len(agent.controls)
@@ -312,6 +325,8 @@ class FiniteSolver(EngineBase):
         return g, {"gamma": gam, "action": cact, "Zfull": Zfull}
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
+        """The variance part of the agent's discounted cost over [0, T] in the world Z (n_prim, N, nW N), the
+        cell layout closed_loop returns: h sum_t e^{-rho t} 1/2 sum Q_ij <zeta_i, zeta_j>, first order in h."""
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_kernel(Z, at) for at in atoms])          # (m, N, NB)

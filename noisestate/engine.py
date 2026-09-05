@@ -35,19 +35,71 @@ def singular_system_message(name: str) -> str:
 
 class EngineBase:
     """The passive-world best response and the outer fixed point, written once against a small
-    kernel algebra that each compiled model supplies:
+    kernel algebra that each compiled model supplies and a set of hooks the engines fill in.
 
-        conv_rows(Y, delay)      (N, m) row kernels -> (m, N, N): gamma on a row -> its action
-        instant(age, delay)      (N, N): the instantaneous entry of a row observed with `delay`, gamma(. - age)
-        instant_adjoint(age, delay)  (N, N): its adjoint, phi(. + age)
-        response(Ru, own)        (n_prim, N) impulse responses -> (n_prim N, N): action -> world
-        continuation(Rj)         (N, m) -> (m, N, N): discounted continuation through impulse responses
+    Layout.  A kernel is a nodal vector over the engine's N nodes (shock ages on the stationary
+    grid, (time, age) nodes on the triangle).  The world Z is (n_prim N, ncol): rows in
+    (primary, node) order, c.block(name) slicing a primary's N nodes; columns the nW Brownian
+    channels, then one unit-impulse column per control in `impulse_controls`.  An agent's raw
+    maps are (nU, nR, N) (control, signal row, node of the row as the agent sees it: a delayed
+    row's map is stored at the shifted time or age); its action kernels are (nU, N, nW); the
+    first-order-condition unknown gamma is the maps flattened in (control, row, node) order, and
+    a mask over map nodes is (nR N,) in (row, node) order.  The cell engine has its own layouts
+    (Z (n_prim, N, ncol) per cell, maps (nU, nR, N, N)) and overrides best_response wholesale, so
+    the base's best-response pieces (_seen_rows to _foc_system, _decompose, _second_order) never
+    see them; it uses the packing, the fixed point, _finish and the mean hook only.
+
+    Kernel algebra of the compiled model self.c (see each engine's Compiled class):
+
+        closed_loop(maps, excluded=None, impulse_controls=())
+                                 Z (n_prim N, nW + len(impulse_controls)) under `maps`, with the agent
+                                 `excluded` switched off and a unit impulse of each listed control
+        block(name)              slice of the primary's N rows in Z
+        atom_op((name, lag))     (N, n_prim N): the kernel of name@lag from the primary vector
+        conv_rows(Y, delay)      (N, m) row kernels, as seen (shifted by the delay) -> (m, N, N): the
+                                 map gamma on such a row -> the action kernel on that channel
+        instant(age, delay)      (N, N): the action's instantaneous read, at `age`, of the map on a row
+                                 observed with `delay` (a row's own noise at age = delay; an observed
+                                 control's impulse at delay + lag)
+        instant_adjoint(age, delay)  (N, N): its adjoint on the FOC kernel phi
+        response(Ru, own)        (n_prim, N) impulse responses of the primaries to control `own` ->
+                                 (n_prim N, N): action kernel -> world; the base then sets the own
+                                 block to the identity
+        continuation(Rj)         (N, m) impulse responses of m loss atoms -> (m, N, N): the discounted
+                                 continuation of each atom's kernel through its response
         own_lag_read(lag)        (N, N): the FOC term of a delayed read of the control itself
-        projection_rows(Y, d)    (N, nW) row kernels -> (N, nW N): E[phi_t dY_r(t - b)]
+        projection_rows(Y, d)    (N, m) row kernels -> (N, m N), columns (channel, node): E[phi_t dY_r(t - b)]
+        cost_mass()              (N, N) Gram matrix under which expected_cost integrates products of kernels
+        causal_chunks()          optional: [(lo, hi)] node ranges in increasing age such that projection_rows
+                                 is zero from a chunk's ages to nodes of an earlier one (_causal_chunks)
+        row_blocks(agent, r, excluded)  optional: ({primary: (N, N)}, {source: [(age, weight)]}), the seen row's
+                                 regular part per primary it reads and its instantaneous entries;
+                                 else row(agent, r, excluded) -> ((N, n_prim N), the same deltas)
+    and its attributes N, nW, prim, index, channels, rows (agent -> [(name, drift, E, delay)]),
+    loss (agent -> (atoms, Q, q)), rep, reps, rho, model, and grid / g / h (same_grid).
 
-    The engines keep what genuinely differs: the closed loop, the solve of the FOC system and its
-    regularisation, the projection back to raw maps, and their own extras (decomposition, second
-    order, naive observers)."""
+    Hooks: what an engine overrides (the base's default in brackets) and which engines do:
+
+        hook                 purpose                                                   overridden by
+        __init__             build self.c, self.shapes; record the options in solver_kw  all three
+        pack, unpack         maps of the tie representatives <-> one vector [flat]     cells
+        best_response        (raw map, {"gamma", "action", "Zfull", ...}) [FOC solve]  cells
+        _impulse_responses   R with some observers' reactions removed [R]              stationary
+        _passive_world       Zpass adjusted [Zpass]                                    none
+        _identified          mask of the map nodes that read something [all True]     stationary, spectral
+        _solve_foc           gamma from Amat gamma = -bvec [abstract]                  stationary, spectral
+        _project             raw maps reproducing action kernels [abstract]            stationary, spectral
+        _lead_term           FOC term of a lead [NotImplementedError]                  stationary
+        _embedded_curvature  optional: curvature of a direction on a longer window     stationary
+        interpolate_maps     a coarser result's maps on this grid [NotImplementedError] stationary, spectral
+        maps_from_actions    raw maps reproducing action kernels in their world [abstract]  stationary, spectral
+        expected_cost        variance part of an agent's cost from Z [abstract]        all three
+        _mean_part           means and the mean part of the costs [no-op]              all three
+        _diagnostics         checks at the equilibrium [no-op]                         stationary, spectral
+
+    Class attributes the engines set: RESULT (the result class), TOL / DAMPING / MAX_NEWTON (solve()
+    defaults), ACTIONS (whether the engine can iterate on action kernels), SECOND_ORDER_QUADRATIC
+    (whether the objective is a quadratic form in the strategy at every discount)."""
     model: Model
     c: object                       # the compiled model: .reps (tie representatives), .rep (agent -> representative), .N, .nW
     shapes: Dict[str, Tuple[int, ...]]      # agent -> shape of its raw maps
@@ -60,6 +112,12 @@ class EngineBase:
     SECOND_ORDER_DENSE = 4000       # strategy dimension up to which the form is built densely (always settles, 2.7 s at 1600); Lanczos above
 
     def __init__(self, model: Model, verbose: bool = False, **options):
+        """Hook (every engine overrides it): an engine's __init__ calls this first, with its own
+        constructor options as `options`, then builds self.c (its compiled model) and self.shapes
+        (agent -> shape of its raw maps: (nU, nR, N), or (nU, nR, N, N) on the cell engine).  The
+        base assumes self.c and self.shapes exist after construction, and that solver_kw holds
+        exactly the keywords that rebuild an equal engine: type(self)(model, **solver_kw) is how
+        coarse_start, the embedded curvature check and a result's refine()/stability() make one."""
         self.model = model
         self.verbose = verbose
         self.solver_kw = {"verbose": verbose, **options}   # so a result can rebuild the same engine
@@ -92,10 +150,14 @@ class EngineBase:
         return self._fill_ties(out)
 
     def pack(self, maps: Dict[str, np.ndarray]) -> np.ndarray:
-        """Raw maps of the representatives as one vector."""
+        """Raw maps of the tie representatives as one vector (hook: the cell engine packs only the
+        causal triangle of its (N, N) maps).  Receives a dict with every agent's maps in self.shapes;
+        the base assumes pack(unpack(z)) is z and that unpack fills the tied agents (_fill_ties).
+        The fixed point, coarse starts and a result's stability() go through these two."""
         return self._pack(maps)
 
     def unpack(self, z: np.ndarray) -> Dict[str, np.ndarray]:
+        """The inverse of pack: every agent's raw maps, tied agents copied from their representative."""
         return self._unpack(z, self.shapes)
 
     def zero_maps(self) -> Dict[str, np.ndarray]:
@@ -146,9 +208,13 @@ class EngineBase:
 
     # ------------------------------------------------------ seen rows
     def _seen_rows(self, agent: Agent, Z: np.ndarray, excluded: set):
-        """The agent's signal rows in the world Z: regular kernels (one array per row) and the
-        instantaneous entries [(channel index, age, weight)] per row.  Controls in `excluded` are
-        switched off (their impulses come through impulse channels instead)."""
+        """The agent's signal rows in the world Z: regular kernels (one (N, ncol) array per row, as the
+        agent sees them, shifted by the observation delay) and the instantaneous entries
+        [(channel index, age, weight)] per row.  Controls in `excluded` are switched off (their
+        impulses come through impulse channels instead), and only Brownian sources keep an
+        instantaneous entry here: an excluded control's own impulse in a row is dropped (in the
+        passive world the agent's own control is off).  Reads c.row_blocks when the compiled model
+        has it (the nonzero primary blocks only), else c.row."""
         c = self.c; rows, inst = [], []
         blockwise = hasattr(c, "row_blocks")
         for r in range(len(agent.signals)):
@@ -258,7 +324,12 @@ class EngineBase:
         return (Fu, Ms) if atoms else Fu
 
     def _lead_term(self, agent: Agent, Ru: np.ndarray, name: str, lag: float) -> np.ndarray:
-        """The FOC term of a lead (name@lag, lag < 0) from flows before t that read the quantity after t."""
+        """Hook (stationary only): the FOC term of a lead (name@lag, lag < 0) from the flows before t
+        that read the quantity after t.  Receives the impulse responses Ru (n_prim N,) of the
+        primaries to one of the agent's controls and the led primary's name; must return an (N, N)
+        operator on that atom's (Q zeta) kernel, added to the atom's continuation.  Called only when
+        a loss atom has a negative lag, which the finite engines reject at compile time
+        (reject_leads), so their NotImplementedError is never reached."""
         raise NotImplementedError("leads are supported by the stationary engine only")
 
     def _projection_operator(self, agent: Agent, rows, inst):
@@ -273,16 +344,29 @@ class EngineBase:
 
     # ----------------------------------------------------- best response
     def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
-        """Responses of the primary kernels to a unit impulse of each of the agent's controls, with the
-        agent's own reaction switched off (hook: naive observers)."""
+        """Hook (stationary: naive observers): the responses R (n_prim N, nU) of the primary kernels
+        to a unit impulse of each of the agent's controls, with the agent's own reaction switched
+        off and every other agent reacting through `maps`.  Receives the columns closed_loop
+        returned for `impulse_controls=agent.controls`; must return an array of the same shape.
+        The base uses the result for the response operators, the continuation in the FOC and the
+        mean systems; the wedge decomposition uses the physical responses (all maps zero) instead
+        and does not go through this hook.  The default returns R unchanged."""
         return R
 
     def _passive_world(self, agent: Agent, maps, Zpass: np.ndarray, R: np.ndarray) -> np.ndarray:
-        """The agent's passive world, its own strategy off (hook for diagnostics)."""
+        """Hook (no engine overrides it): the agent's passive world Zpass (n_prim N, nW), its own
+        strategy off, before the passive rows are read from it.  Must return the same shape."""
         return Zpass
 
     def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
-        """gamma solving Amat gamma = -bvec, with the engine's regularisation."""
+        """Hook (stationary, spectral): gamma solving Amat gamma = -bvec with the engine's own
+        regularisation.  Receives the FOC system of _foc_system on every map node, (nG, nG) and
+        (nG,) with nG = nU nR N in (control, row, node) order, including the exactly zero rows and
+        columns of the nodes _identified masks out; must return gamma (nG,) in the same order, zero
+        at the masked nodes (best_response reshapes it to (nU, nR, N)).  The base assumes a
+        singular system raises ValueError with singular_system_message(agent.name) (the stationary
+        engine on np.linalg.solve's exact test, the spectral engine on _solve_regular's condition
+        estimate), which solve_fixed_point passes through the Newton polish unchanged."""
         raise NotImplementedError
 
     FOC_RCOND = 1e-10    # a best-response system whose reciprocal condition estimate is below this is singular
@@ -308,7 +392,12 @@ class EngineBase:
         return sla.lu_solve((lu, piv), b, check_finite=False)
 
     def _project(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray) -> np.ndarray:
-        """Raw maps (nU, nR, N) reproducing the action kernels on the agent's closed-loop rows."""
+        """Hook (stationary, spectral): raw maps (nU, nR, N) reproducing the action kernels `actions`
+        (nU, N, nW) on the agent's closed-loop rows, read from the full world Zfull (n_prim N, nW)
+        in which the agent's own strategy is on.  Both engines solve a weighted least-squares
+        projection (a Gram over the seen rows, with a small ridge); the base only requires the
+        shape, zero where _identified masks a node, and takes the result as the best-response map
+        the fixed point iterates on."""
         raise NotImplementedError
 
     def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk, maps=None) -> None:
@@ -332,8 +421,13 @@ class EngineBase:
         out["decomp"] = dec
 
     def _identified(self, agent: Agent) -> np.ndarray:
-        """Mask over the stacked map nodes of the ages at which the map on each row reads something
-        (all of them, unless the engine masks delayed rows)."""
+        """Hook (stationary, spectral): boolean mask (nR N,) in (row, node) order of the map nodes at
+        which the map on each row reads something within the window; the default keeps all of
+        them.  The base assumes a masked node has exactly zero rows and columns in the FOC system
+        (a row observed with a delay is uninformative there), so the engines' _solve_foc and
+        _project solve on the kept nodes only and leave the map zero elsewhere; the second-order
+        check restricts its quadratic form to the kept nodes (tiled over the controls).  Must be
+        the same for tied agents up to relabelling, since they share the representative's check."""
         return np.ones(len(agent.signals) * self.c.N, dtype=bool)
 
     def _second_order(self, agent: Agent, Resp, Gk, keep, maps=None) -> Optional[dict]:
@@ -346,7 +440,11 @@ class EngineBase:
         of M scaled by max; None when the objective is not a quadratic form in the strategy (the
         stationary engine with rho > 0: the discounted objective is not one in the stationary kernel).
         The objective is truncated at the window, so a strategy can push a little loss past the edge:
-        curvatures within SECOND_ORDER_TOL of the largest are treated as that, not as a saddle."""
+        curvatures within SECOND_ORDER_TOL of the largest are treated as that, not as a saddle.
+        When the form is not positive and the engine defines _embedded_curvature(agent, maps, idx,
+        vmin) (an optional hook, the stationary engine's), that is asked for the curvature of the
+        offending direction on a longer window: a float, or None when it cannot say; a positive
+        value turns the verdict into ok with "edge" and "embedded" recorded."""
         c = self.c
         if not (self.SECOND_ORDER_QUADRATIC or c.rho == 0):
             return None
@@ -457,7 +555,8 @@ class EngineBase:
     def _causal_chunks(self):
         """Node ranges [(lo, hi)] in increasing age such that the regular projection operator of any row is
         zero from ages in one chunk to nodes in an earlier one (a correlation reads only older ages); the
-        products over those blocks are skipped.  One chunk when the compiled model declares none."""
+        products over those blocks are skipped.  One chunk when the compiled model declares none
+        (c.causal_chunks is optional: the stationary Compiled has it, the triangle does not)."""
         ch = getattr(self.c, "causal_chunks", None)
         return ch() if ch is not None else [(0, self.c.N)]
 
@@ -530,7 +629,15 @@ class EngineBase:
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
         """The agent's best response to `maps`: (raw map, {"gamma", "action", "Zfull", ...}).  The
         agent's information is the passive signal history, so its first-order condition is affine
-        in its map on the passive rows: one linear solve."""
+        in its map on the passive rows: one linear solve.
+        Hook (the cell engine overrides it wholesale, with the signature (agent, maps)).  Receives
+        every agent's raw maps in self.shapes; must return the agent's raw map (its shape in
+        self.shapes) and a dict with "gamma" (the FOC unknown), "action" (the action kernels,
+        (nU, N, nW), what response_actions iterates on) and "Zfull" (the world with the response
+        in).  With want_decomp=True the dict also carries "second_order" (the check, or None) and
+        "decomp" (control -> {"foc", "physical", "wedge"} kernels (N, nW)), which _diagnostics
+        reads; an engine without them must not call the base _diagnostics.  A singular system
+        raises the ValueError of singular_system_message."""
         c = self.c; N, nW = c.N, c.nW
         nR, nU = len(agent.signals), len(agent.controls)
         Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
@@ -568,7 +675,12 @@ class EngineBase:
 
     # ------------------------------------------------------ fixed points
     def interpolate_maps(self, coarse) -> Dict[str, np.ndarray]:
-        """Raw maps of a result on a coarser grid of the same model, read at this grid's nodes (hook)."""
+        """Hook (stationary, spectral): the raw maps of `coarse`, a result of the same engine on a
+        grid of the same model with fewer nodes (coarse.maps, coarse.compiled), read at this grid's
+        nodes: every agent's maps in self.shapes.  coarse_start (solve(start="coarse")) and a
+        result's refine() call it; refine() treats NotImplementedError as "no warm start" and
+        starts from zero, coarse_start does not catch it (the cell engine, which does not override
+        it, has no coarse start)."""
         raise NotImplementedError
 
     def coarse_start(self, factor: float = 0.5, **solve_kw) -> Dict[str, np.ndarray]:
@@ -662,7 +774,8 @@ class EngineBase:
     def _finish(self, res) -> None:
         """Fill the engine's own outputs on a fresh result: the costs (their variance part), the means and the
         mean part of the costs, then, unless the result's options say diagnostics=False, the engine's checks at
-        the equilibrium."""
+        the equilibrium.  The order is the contract: expected_cost first, _mean_part reads res.costs as the
+        variance part and adds the mean part, _diagnostics last."""
         for a in self.model.agents:
             res.costs[a.name] = self.expected_cost(a, res.Z)
         self._mean_part(res)
@@ -670,12 +783,18 @@ class EngineBase:
             self._diagnostics(res)
 
     def _mean_part(self, res) -> None:
-        """The means (targets, constant drifts, initial states) and the mean part of every cost, added to
-        res.costs: part of the answer, computed whether or not the diagnostics are (hook: every engine solves them)."""
+        """Hook (every engine overrides it): the means (targets, constant drifts, initial states) and the
+        mean part of every cost.  Receives the result with res.maps, res.Z and res.costs already holding the
+        variance part of every agent's cost; must fill res.means (name -> a float on the stationary engine, a
+        path over res.means_t on the finite engines, for every primary, definition and "agent.row" drift
+        rate), res.cost_parts[agent] = {"variance", "mean"} and add the mean part to res.costs[agent].  Part
+        of the answer, not a check: it runs with diagnostics=False too.  The default does nothing."""
 
     def _diagnostics(self, res) -> None:
-        """The checks the engine computes at the equilibrium: the first-order-condition decomposition, the
-        second-order check and the representation error (hook; the cell engine has none)."""
+        """Hook (stationary, spectral; the cell engine keeps the no-op): the checks at the equilibrium,
+        filled on the result: res.foc[agent] (the "decomp" of best_response), res.second_order[agent]
+        (when the check applies) and res.representation_error[agent].  Runs after _mean_part, skipped
+        when the solve was made with diagnostics=False; a result without these has resolution_ok None."""
 
     def actions_from_maps(self, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Action kernels the raw maps produce in their own closed loop."""
@@ -683,10 +802,19 @@ class EngineBase:
         return {a.name: np.stack([Z[self.c.block(u)] for u in a.controls]) for a in self.model.agents}
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
+        """Hook (every engine overrides it): the variance part of the agent's cost in the world Z, exactly
+        what c.closed_loop(maps) returns (so the cell engine receives its (n_prim, N, nW N) layout): the
+        stationary flow loss per unit time, or the discounted integral over [0, T], of 1/2 z'Qz over its
+        loss atoms, from the shocks alone.  Must return a float; _finish stores it in res.costs before the
+        mean part is added."""
         raise NotImplementedError
 
     def maps_from_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """Raw maps that reproduce the given action kernels in the world they generate."""
+        """Hook (stationary, spectral; the cell engine iterates on maps only, ACTIONS = False): raw maps
+        that reproduce the given action kernels (every agent, (nU, N, nW)) in the world they generate.
+        The base uses it to close an iteration on action kernels (the states follow from the actions
+        without any map) and to convert an action-kernel warm start; must return every agent's maps in
+        self.shapes, tied agents equal."""
         raise NotImplementedError
 
     def response_map(self, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:

@@ -135,24 +135,34 @@ class Compiled(CompiledBase):
 
     # ------------------------------------------------ kernel algebra (see EngineBase)
     def conv_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
+        """(m, N, N) convolution operators of the m seen row kernels Y (N, m): map on the row -> action kernel.
+        The seen row is already shifted by the delay, so `delay` is not used here."""
         return self.grid.conv_ops(Y)                      # the seen row is already shifted by the delay
 
     def instant(self, age: float, delay: float = 0.0) -> np.ndarray:
+        """(N, N) shift by `age`: the action's read of the map at the age of an instantaneous entry."""
         return self.shift(age)
 
     def instant_adjoint(self, age: float, delay: float = 0.0) -> np.ndarray:
+        """(N, N) shift by -age, the adjoint of instant on the FOC kernel."""
         return self.shift(-age)
 
     def response(self, Ru: np.ndarray, own: int) -> np.ndarray:
+        """(n_prim N, N) convolution with every primary's impulse response Ru (n_prim, N): action -> world.
+        The own block is included as computed; the base overwrites it with the identity."""
         return self.grid.conv_ops(Ru.T).reshape(len(self.prim) * self.N, self.N)      # all primaries at once
 
     def continuation(self, Rj: np.ndarray) -> np.ndarray:
+        """(m, N, N) discounted correlation operators of the m atom responses Rj (N, m) at the rate rho."""
         return self.grid.corr_ops(Rj, self.rho)
 
     def own_lag_read(self, lag: float) -> np.ndarray:
+        """(N, N) shift by -lag: the FOC term of the control's own read `lag` later."""
         return self.shift(-lag)
 
     def projection_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
+        """(N, m N), columns (channel, node): the undiscounted correlation of the FOC kernel with the m seen row
+        kernels Y (N, m), E[phi_t dY_r(t - b)] at every map node b."""
         return self.grid.corr_ops(Y, 0.0).transpose(1, 0, 2).reshape(self.N, Y.shape[1] * self.N)
 
     def causal_chunks(self, target: int = 4):
@@ -516,6 +526,7 @@ class StationarySolver(EngineBase):
         return self.c.closed_loop(mz, excluded=agent.name, impulse_controls=agent.controls)[:, self.c.nW:]
 
     def _lead_term(self, agent: Agent, Ru: np.ndarray, name: str, lag: float) -> np.ndarray:
+        """(N, N) operator on the led atom's (Q zeta) kernel: the past-date term of a lead (see EngineBase)."""
         # flows at dates t - |lag| <= tau < t also read the quantity after t, so the derivative of the
         # discounted objective has a further term over those past dates:
         #   int_0^{|lag|} e^{rho v} r(|lag| - v) (Q zeta)_j(a - v) dv   (a convolution with k(v))
@@ -610,6 +621,9 @@ class StationarySolver(EngineBase):
 
     # ------------------------------------------------------ best response
     def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
+        """gamma (nU nR N,) solving the FOC system on the identified nodes with np.linalg.solve (its exact
+        singularity test, not the condition estimate of _solve_regular: see there), zero elsewhere; an exactly
+        singular system raises the ValueError of singular_system_message."""
         # a row observed with delay d is uninformative about shocks younger than d, so the map on it at
         # ages b > L - d reads nothing within the window: those unknowns (and their projection rows,
         # which are zero) are removed, and the map is zero there.  A plain solve on the full system
@@ -658,6 +672,8 @@ class StationarySolver(EngineBase):
         return self._over_representatives(lambda a: self._project(a, Z, np.stack([Z[self.c.block(u)] for u in a.controls])))
 
     def maps_from_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Every agent's raw maps (nU, nR, N) reproducing its action kernels (nU, N, nW) in the world those
+        actions generate (the states from the propagator, then one projection per representative)."""
         return self.maps_from_kernels(self.world_from_actions(actions))
 
     # ------------------------------------------------------ fixed point

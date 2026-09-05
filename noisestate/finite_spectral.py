@@ -334,22 +334,29 @@ class SpectralCompiled(CompiledBase):
         return out
 
     def conv_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
+        """(m, N, N) conv_right operators of the m seen row kernels Y (N, m) of a row observed with `delay`:
+        the map stored at the shifted time -> the action kernel; zero for a zero column."""
         g = self.g
         lp = self._path(("conv_right", delay), r_lo=g.s + delay, r_hi=g.t,
                         point_fn=lambda k, r: (np.full_like(r, g.t[k] - delay), g.t[k] - r), known_fn=lambda k, r: (r, r - g.s[k]))
         return self._many(lp, Y)
 
     def instant(self, age: float, delay: float = 0.0) -> np.ndarray:
+        """(N, N) read of the map on a row observed with `delay` at the age of an instantaneous entry: the
+        exact node shift map_shift(delay) for the row's own noise (age == delay), read(delay, age) otherwise."""
         if delay > 0 and abs(age - delay) < 1e-12:
             return self.map_shift(delay)
         return self.read(delay, age)
 
     def instant_adjoint(self, age: float, delay: float = 0.0) -> np.ndarray:
+        """(N, N) adjoint of instant on the FOC kernel."""
         if delay > 0 and abs(age - delay) < 1e-12:
             return self.map_shift(delay).T
         return self.read(-delay, -age)
 
     def response(self, Ru: np.ndarray, own: int) -> np.ndarray:
+        """(n_prim N, N) response operators of every primary to an action kernel, from the impulse responses
+        Ru (n_prim, N); the own block (primary index `own`) is zeroed here and set to the identity by the base."""
         g = self.g; N = self.N
         lp = self._path(("response",), r_lo=g.s, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
                         known_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r))
@@ -357,6 +364,7 @@ class SpectralCompiled(CompiledBase):
         return self._many(lp, K).reshape(len(self.prim) * N, N)
 
     def continuation(self, Rj: np.ndarray) -> np.ndarray:
+        """(m, N, N) discounted continuation operators of the m atom responses Rj (N, m), int_t^T e^{-rho (tau - t)} ..."""
         g = self.g
         lp = self._path(("continuation",), r_lo=g.t, r_hi=np.full(self.N, self.T), point_fn=lambda k, r: (r, r - g.s[k]),
                         known_fn=lambda k, r: (r, r - g.t[k]))
@@ -364,6 +372,7 @@ class SpectralCompiled(CompiledBase):
         return self._many(lp, Rj, disc)
 
     def own_lag_read(self, lag: float) -> np.ndarray:
+        """(N, N) read at (t + lag, a + lag): the FOC term of the control's own read `lag` later."""
         return self.read(-lag, -lag)
 
     def cost_mass(self) -> np.ndarray:
@@ -399,6 +408,8 @@ class SpectralCompiled(CompiledBase):
         return self._mean_reads[key]
 
     def projection_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
+        """(N, m N), columns (channel, node): the projection of the FOC kernel on the m seen row kernels Y (N, m)
+        of a row observed with `delay`, at every map node of the row (the raw row is Y read back by the delay)."""
         g = self.g; N = self.N; u = g.s
         lp = self._path(("projection", delay), r_lo=np.zeros(N), r_hi=u,
                         point_fn=lambda k, r: (np.full_like(r, g.t[k] + delay), g.t[k] + delay - r),
@@ -528,6 +539,7 @@ class SpectralFiniteSolver(EngineBase):
     MAP_RIDGE = 1e-13      # ridge of the per-time-row map projection, relative to the row's own Gram
 
     def __init__(self, model: Model, verbose: bool = False):
+        """The triangle grid's compiled model and the map shapes (nU, nR, N); no engine options."""
         super().__init__(model, verbose)
         self.c = SpectralCompiled(model)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
@@ -555,6 +567,8 @@ class SpectralFiniteSolver(EngineBase):
         return gamma
 
     def _project(self, agent: Agent, Zfull: np.ndarray, cact: np.ndarray) -> np.ndarray:
+        """Raw maps (nU, nR, N) reproducing the action kernels cact (nU, N, nW) on the closed-loop rows of
+        Zfull: maps_from_world, one weighted least-squares solve per time row."""
         return self.maps_from_world(agent, Zfull, cact)
 
     def maps_from_world(self, agent: Agent, Zfull: np.ndarray, cact: np.ndarray) -> np.ndarray:
@@ -621,10 +635,14 @@ class SpectralFiniteSolver(EngineBase):
         return Z
 
     def maps_from_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Every agent's raw maps (nU, nR, N) reproducing its action kernels (nU, N, nW) in the world those
+        actions generate (the states from the Volterra propagation, then one projection per agent)."""
         Z = self.world_from_actions(actions)
         return {a.name: self.maps_from_world(a, Z, actions[a.name]) for a in self.model.agents}
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
+        """The variance part of the agent's discounted cost over [0, T] in the world Z (n_prim N, nW):
+        1/2 sum Q_ij <zeta_i, zeta_j> under the discounted mass matrix of the triangle."""
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])                  # (m, N, nW)
@@ -732,6 +750,8 @@ class SpectralFiniteSolver(EngineBase):
             res.costs[a.name] += mean
 
     def _diagnostics(self, res) -> None:
+        """The first-order-condition decomposition, the second-order check and the representation error of
+        every agent's best response at the equilibrium (the stationary engine's, on this grid)."""
         self._second_order_cache.clear()
         order = [a for a in self.model.agents if self.c.rep[a.name] == a.name] + [a for a in self.model.agents if self.c.rep[a.name] != a.name]
         for a in order:

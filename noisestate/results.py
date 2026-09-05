@@ -69,9 +69,15 @@ class BaseResult:
     MAP_CONVENTION = ""             # how maps[agent][u][row] is indexed, in words, for a consumer of to_dict()
 
     def map_axes(self, delay: float) -> dict:
-        """Where the values of a map on a row observed with `delay` belong, as arrays over the map's nodes
-        (the time of the control, the age or time of the raw increment): to_dict() puts them beside the
-        row's delay so a consumer of the payload can place a delayed row's map without this code."""
+        """Hook (every result class overrides it): where the values of a map on a row observed with `delay`
+        belong, as {axis name: list over the map's nodes} (the time of the control, the age or time of the
+        raw increment; the keys MAP_CONVENTION names): to_dict() puts them beside the row's delay so a
+        consumer of the payload can place a delayed row's map without this code.
+        The other per-result hooks are kernel(name, channel) (a state's, control's or definition's
+        closed-loop kernel in the engine's layout, see the module docstring), grid_info() (the JSON-ready
+        grid description of to_dict()), _kernel_change(fine) (the relative change of the kernels against
+        a finer result of the same engine, for refine()), summary() and plot(path); window_tail is optional
+        (the stationary result's; diagnose() reads it when present)."""
         raise NotImplementedError
 
     MEAN_ZERO = 1e-12          # below this a mean is round-off (the mean system is solved only when something drives it)
