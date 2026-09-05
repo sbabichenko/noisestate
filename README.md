@@ -113,6 +113,12 @@ releases them; a large stationary grid holds a few hundred MB of convolution ten
 
 ## How it works
 
+A model whose single tie group is a cycle (the Chapter 5 market) is solved with that symmetry: the
+closed loop is block diagonal in the Fourier basis over the cycle, so the world solve is linear in
+the number of tied agents, and switching one agent off for its passive world is a low-rank
+correction.  The symmetry is found from the ties and verified on the expanded model, and the
+result is identical to the general solve.
+
 The two spectral engines share one best response, written against a kernel algebra of seven
 operations that each compiled model supplies (convolution with a row, the instantaneous entry
 and its adjoint, the response to an action, the discounted continuation, the read of a lagged own

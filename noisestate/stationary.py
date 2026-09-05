@@ -27,6 +27,7 @@ from .grid import AgeGrid
 from .grid_cache import age_grid
 from .engine import EngineBase
 from .compile import CompiledBase, close_under_delays
+from .symmetry import find_cyclic_symmetry
 from .results import StationaryResult
 from .spec import Agent, Atom, Model
 
@@ -60,6 +61,8 @@ class Compiled(CompiledBase):
         self.rho = float(hz.discount)
         self._atom_cache: Dict[tuple, np.ndarray] = {}
         self._elim: Dict[frozenset, tuple] = {}
+        self.sym = find_cyclic_symmetry(model)
+        self._modes = None
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
 
     # ------------------------------------------------------------- operators
@@ -172,6 +175,11 @@ class Compiled(CompiledBase):
         `excluded`).  maps[agent] has shape (n_controls, n_rows, N).
         Returns Z with shape (n_prim N, nW + len(impulse_controls)).  The states are eliminated
         through the cached propagator part (see _state_elimination); the solve is over the controls."""
+        if self.sym is not None and self._maps_symmetric(maps):
+            return self.closed_loop_symmetric(maps, excluded, impulse_controls)
+        return self._closed_loop_eliminated(maps, excluded, impulse_controls)
+
+    def _closed_loop_eliminated(self, maps, excluded=None, impulse_controls=()):
         nX, nU, N = self.nX, self.nU, self.N
         n = len(self.prim) * N; nxs = nX * N
         ncol = self.nW + len(impulse_controls)
@@ -219,6 +227,168 @@ class Compiled(CompiledBase):
             Z[:nxs] = W @ Z[nxs:] + GB
         else:
             Z[:] = np.linalg.solve(np.eye(nU * N) - MU, B)
+        return Z
+
+    # ------------------------------------------------ cyclic symmetry
+    def _maps_symmetric(self, maps) -> bool:
+        """Tied agents carry the same raw maps (the solver keeps them so); a user-supplied dict may not."""
+        ags = self.sym.agents
+        return all(np.array_equal(maps[a], maps[ags[0]]) for a in ags[1:])
+
+    def _mode_structure(self):
+        """Index structures of the control orbits: per orbit j and member s the node slice of that
+        control in the control block, the fixed controls, the state-orbit permutations, and the DFT."""
+        if self._modes is None:
+            sym = self.sym; m = sym.order; N = self.N; nxs = self.nX * N; nU = self.nU
+            ctrl_index = {u: i for i, u in enumerate(self.model.control_names)}
+            state_index = {x: i for i, x in enumerate(self.model.state_names)}
+            corb = [o for o in sym.orbits if o[0] in ctrl_index]                 # control orbits (cycle order)
+            sorb = [o for o in sym.orbits if o[0] in state_index]                # state orbits
+            fixed_c = [u for u in self.model.control_names if all(u not in o for o in corb)]
+            # column indices of control-orbit j member s (in the control block), and of the fixed controls
+            cols = [[np.arange(ctrl_index[o[s]] * N, (ctrl_index[o[s]] + 1) * N) for s in range(m)] for o in corb]
+            fcols = np.concatenate([np.arange(ctrl_index[u] * N, (ctrl_index[u] + 1) * N) for u in fixed_c]) if fixed_c else np.zeros(0, dtype=int)
+            # state-block row permutation by s steps of the cycle: entry i of the permuted vector is the
+            # (s steps back) image, so that MUX_rep @ GB[perm[s]] gives the rows of firm s
+            perms = []                     # GB[perms[s]] read at orbit member t gives GB at member t + s
+            for sh in range(m):
+                p = np.arange(nxs)
+                for o in sorb:
+                    for t in range(m):
+                        src, dst = state_index[o[t]], state_index[o[(t + sh) % m]]
+                        p[src * N:(src + 1) * N] = np.arange(dst * N, (dst + 1) * N)
+                perms.append(p)
+            # control columns shifted by s: entry at orbit j member t reads member t + s
+            cperms = []
+            for sh in range(m):
+                p = np.arange(nU * N)
+                for j in range(len(corb)):
+                    for t in range(m):
+                        p[cols[j][t]] = cols[j][(t + sh) % m]
+                cperms.append(p)
+            omega = np.exp(2j * np.pi / m)
+            self._modes = {"m": m, "corb": corb, "cols": cols, "fcols": fcols, "perms": perms, "cperms": cperms, "omega": omega,
+                           "member": {o[t]: (j, t) for j, o in enumerate(corb) for t in range(m)}}
+        return self._modes
+
+    def _control_rows(self, maps, controls, excl: frozenset, impulse_controls, B, regular: bool = True):
+        """The control-row operator MU (len(controls) N x n) for the given controls (their owners' maps),
+        filling the instantaneous entries of B on the way (regular=False: only those entries)."""
+        N = self.N; n = len(self.prim) * N
+        owner = {u: a for a in self.model.agents for u in a.controls}
+        MU = np.zeros((len(controls) * N, n))
+        for i, u in enumerate(controls):
+            a = owner[u]; ui = a.controls.index(u); g = maps[a.name]
+            rows_here = slice(i * N, (i + 1) * N); bl = self.block(u)
+            for r in range(len(a.signals)):
+                blocks, deltas = self.row_blocks(a.name, r, excl)
+                gur = g[ui, r]
+                if regular:
+                    C = self.grid.conv_op_left(gur)
+                    for nm, op in blocks.items():
+                        MU[rows_here, self.block(nm)] += C @ op
+                for src, dl in deltas.items():
+                    if src in self.channels:
+                        col = self.channels.index(src)
+                    elif src in impulse_controls:
+                        col = self.nW + list(impulse_controls).index(src)
+                    else:
+                        continue
+                    for (age, w) in dl:
+                        B[bl, col] += w * (self.shift(age) @ gur)
+        return MU
+
+    def closed_loop_symmetric(self, maps, excluded=None, impulse_controls=()):
+        """closed_loop for a cyclically symmetric model with symmetric maps: the reduced control-row
+        operator commutes with the cyclic relabelling, so in the Fourier basis over the cycle it is
+        block diagonal, one block per mode, built from the representative agent's rows alone.
+        Switching one agent off (the passive world) breaks the symmetry by a low-rank change of that
+        agent's rows, applied with the Woodbury identity on top of the symmetric solve."""
+        st = self._mode_structure(); m, omega = st["m"], st["omega"]
+        nX, nU, N = self.nX, self.nU, self.N; n = len(self.prim) * N; nxs = nX * N
+        ncol = self.nW + len(impulse_controls)
+        ex_agent = self.model.agents[[a.name for a in self.model.agents].index(excluded)] if excluded else None
+        B = np.zeros((n, ncol))
+        lu, W, P0X, perm = self._state_elimination(frozenset())          # the symmetric world: nobody excluded
+        for k in range(self.nW):
+            B[:nxs, k] += P0X @ self.sigma[:, k]
+        for j, u in enumerate(impulse_controls):
+            for i, (nm, lag), c in self.state_inputs:
+                if nm == u:
+                    v = np.zeros(nX); v[i] = c
+                    B[:nxs, self.nW + j] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
+        GB = lu_solve(lu, B[:nxs])
+        corb, cols, fcols, perms, cperms = st["corb"], st["cols"], st["fcols"], st["perms"], st["cperms"]
+        # representative rows of the reduced operator (states eliminated): R = MUU + MUX W
+        rep_controls = [o[0] for o in corb] + [u for u in self.model.control_names if all(u not in o for o in corb)]
+        Bsym = np.zeros((n, ncol))
+        MU_rep = self._control_rows(maps, rep_controls, frozenset(), impulse_controls, Bsym)
+        R_rep = MU_rep[:, nxs:] + MU_rep[:, :nxs] @ W                        # (n_rep N, nU N)
+        # every control's instantaneous entries (with the excluded agent's controls as impulses, which is
+        # how the others' reactions to its impulse enter): cheap, no regular part
+        all_controls = self.model.control_names
+        excl = frozenset(ex_agent.controls) if ex_agent else frozenset()
+        self._control_rows(maps, all_controls, excl, impulse_controls, B, regular=False)
+        # right-hand side rows: the representative's state rows applied to the states shifted by s
+        rhs = B[nxs:].copy(); MUX_rep = MU_rep[:, :nxs]
+        for j, o in enumerate(corb):
+            for sh in range(m):
+                rhs[cols[j][sh]] += MUX_rep[j * N:(j + 1) * N] @ GB[perms[sh]]
+        if fcols.size:
+            rhs[fcols] += MUX_rep[len(corb) * N:] @ GB
+        # mode blocks
+        r = len(corb); nf = fcols.size
+        blocks = []
+        for k in range(m):
+            Ak = np.zeros((r * N + (nf if k == 0 else 0),) * 2, dtype=complex)
+            for i in range(r):
+                for j in range(r):
+                    for d in range(m):
+                        Ak[i * N:(i + 1) * N, j * N:(j + 1) * N] += (omega ** (d * k)) * R_rep[i * N:(i + 1) * N][:, cols[j][d]]
+            if k == 0 and nf:
+                for i in range(r):
+                    Ak[i * N:(i + 1) * N, r * N:] += np.sqrt(m) * R_rep[i * N:(i + 1) * N][:, fcols]
+                    Ak[r * N:, i * N:(i + 1) * N] += np.sqrt(m) * R_rep[r * N:][:, cols[i][0]]
+                Ak[r * N:, r * N:] += R_rep[r * N:][:, fcols]
+            blocks.append(lu_factor(np.eye(Ak.shape[0]) - Ak))
+
+        def solve_sym(rhs_u):
+            """(I - R) Z_U = rhs_u for the symmetric operator, by modes."""
+            out = np.zeros_like(rhs_u, dtype=complex)
+            for k in range(m):
+                size = r * N + (nf if k == 0 else 0)
+                bk = np.zeros((size, rhs_u.shape[1]), dtype=complex)
+                for j in range(r):
+                    for sh in range(m):
+                        bk[j * N:(j + 1) * N] += (omega ** (-sh * k)) * rhs_u[cols[j][sh]] / np.sqrt(m)
+                if k == 0 and nf:
+                    bk[r * N:] = rhs_u[fcols]
+                zk = lu_solve(blocks[k], bk)
+                for j in range(r):
+                    for sh in range(m):
+                        out[cols[j][sh]] += (omega ** (sh * k)) * zk[j * N:(j + 1) * N] / np.sqrt(m)
+                if k == 0 and nf:
+                    out[fcols] += zk[r * N:]
+            return out.real
+        if ex_agent is None:
+            ZU = solve_sym(rhs)
+        else:
+            # Woodbury: the excluded agent's control rows become identity rows (its strategy off)
+            rows0 = np.concatenate([np.arange(all_controls.index(u) * N, (all_controls.index(u) + 1) * N) for u in ex_agent.controls])
+            R0 = np.zeros((rows0.size, nU * N))                                  # the excluded agent's rows of the symmetric
+            for i, u in enumerate(ex_agent.controls):                             # operator: the representative's, columns shifted
+                if u in st["member"]:
+                    j, sh = st["member"][u]; R0[i * N:(i + 1) * N] = R_rep[j * N:(j + 1) * N][:, cperms[(-sh) % m]]
+                else:
+                    fi = [x for x in rep_controls if x not in st["member"]].index(u)
+                    R0[i * N:(i + 1) * N] = R_rep[(r + fi) * N:(r + fi + 1) * N]
+            E0 = np.zeros((nU * N, rows0.size)); E0[rows0, np.arange(rows0.size)] = 1.0
+            rhs_ex = rhs.copy(); rhs_ex[rows0] = 0.0                                # B rows of the excluded agent are zero
+            Y = solve_sym(np.concatenate([rhs_ex, E0], axis=1)); Yb, Ye = Y[:, :ncol], Y[:, ncol:]
+            cap = np.eye(rows0.size) + R0 @ Ye
+            ZU = Yb - Ye @ np.linalg.solve(cap, R0 @ Yb)
+            ZU[rows0] = 0.0
+        Z = np.zeros((n, ncol)); Z[nxs:] = ZU; Z[:nxs] = W @ ZU + GB
         return Z
 
     def closed_loop_dense(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,

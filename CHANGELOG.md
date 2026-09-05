@@ -26,6 +26,14 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Cyclic symmetry (`noisestate/symmetry.py`): a single tie group listed in cycle order is checked to be
+  a relabelling that leaves the model unchanged (semantically, on expanded atoms); the stationary
+  closed loop then solves one block per Fourier mode over the cycle, built from the representative
+  agent's rows, and the passive world (one agent switched off) is a Woodbury correction on top.
+  Identical to the dense solve to 1e-15 for the full world and every agent's passive world; the
+  closed loop on a 6-firm market drops from 412 ms to 92 ms.  Since the states are already
+  eliminated, the best-response assembly (linear in the number of firms) now dominates an
+  evaluation at 3 to 6 firms, so the gain shows from about ten firms up.
 - Two cases a skeptic broke after the exact-delay fix are repaired: the breakpoints are closed under
   both b - d and b + d (a finer map panel read by a coarser action panel left unseen modes and a
   singular system), and a shifted node that lands within round-off of a breakpoint is snapped to it
