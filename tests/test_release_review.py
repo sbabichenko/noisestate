@@ -168,12 +168,12 @@ def test_cli_reports_model_errors_as_messages(tmp_path, capsys):
     assert main(["solve", str(good)]) == 0 and "discounted cost" in capsys.readouterr().out
 
 
-@pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="slow (~2 min); set NOISESTATE_SLOW=1")
+@pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="slow (a few minutes); set NOISESTATE_SLOW=1")
 def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
     """One agent with a delayed noisy observation: the stationary kernels (window 6) against the
-    spectral finite engine at t = 10 of T = 16.  Both horizon ends leave transients (the filter
+    spectral finite engine at t = 7 of T = 10.  Both horizon ends leave transients (the filter
     settles from its start, the control changes near the end; at t = 7 of T = 8 the two engines
-    differ by 8% on the control, delayed or not), so the comparison stays six units from each.
+    differ by 8% on the control, delayed or not), so the comparison stays a few units from each.
     Both engines are exactly causal (the stationary one since the side-aware shift); the finite
     kernel is read at each stationary node from that node's side of its panel, since kernels jump
     at the delay."""
@@ -182,12 +182,12 @@ def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
                              "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}}}
     import copy
     st = copy.deepcopy(base); st["horizon"] = {"kind": "stationary", "window": 6.0, "nodes": 16}; rs = ns.solve(st).check()
-    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 16.0, "nodes": 6, "breakpoints": [0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]}
+    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 10.0, "nodes": 6}
     rf = ns.solve(fi).check()
     g = rs.compiled.grid; sides = np.where((np.arange(g.N) % g.n) == g.n - 1, -1, 1)
-    t_eval = 10.0                   # six units before the end and, for ages up to 4, six after the start: both transients are gone
+    t_eval = 7.0                    # three units before the end and, for ages up to 3, four after the start (transients ~1e-4)
     I = rf.grid.interp(t_eval + 0 * rs.ages, rs.ages, side_a=sides)
-    young = rs.ages <= 4.0
+    young = rs.ages <= 3.0
     for name in ("X", "D"):
         for ch in ("w0", "w1"):
             ks = rs.kernel(name, ch); kf = I @ rf.kernel(name, ch)

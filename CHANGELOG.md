@@ -38,7 +38,11 @@
   every read is node to node, and one-sided reads follow the output node's side.  Representation
   error on the one-agent model 5e-2 (flat) to 7e-5, 3e-6, 1e-7, 6e-10 at 4 to 8 nodes; costs
   converge to 1e-7; the delayed Chapter 1 example's undelayed player drops from 6e-3 to 5e-10.
-  `res.maps` for a delayed row is indexed at the shifted time.
+  `res.maps` for a delayed row is indexed at the shifted time.  The top-edge read affected every
+  multi-panel grid, so undelayed finite models with lags also move, toward a fine reference (the
+  delayed Chapter 1 example with its delay removed: kernels move by 7e-3 at 6 nodes per side, to
+  within 3e-5 of a 10-node solve, representation error 5.5e-3 to 8e-8); single-panel models are
+  bit-for-bit unchanged.  The dense second-order threshold is 4000 unknowns.
 - Cyclic symmetry (`noisestate/symmetry.py`): a single tie group listed in cycle order is checked to be
   a relabelling that leaves the model unchanged (semantically, on expanded atoms); the stationary
   closed loop then solves one block per Fourier mode over the cycle, built from the representative

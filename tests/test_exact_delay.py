@@ -105,3 +105,17 @@ def test_delayed_ch1_example_both_players_representable():
     import os, noisestate as ns
     r = ns.solve(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "ch1_delayed_finite.yaml")).check()
     assert all(v < 1e-8 for v in r.representation_error.values()), r.representation_error
+
+
+def test_lagged_undelayed_finite_model_is_resolved_at_six_nodes():
+    """The delayed Chapter 1 example with its delay removed keeps its control lags: a multi-panel
+    finite grid without delayed rows.  The top-edge read defect moved these too; pinned against a
+    finer solve."""
+    import os, noisestate as ns
+    d = ns.read_yaml(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "ch1_delayed_finite.yaml"))
+    for a in d["agents"].values():
+        for row in a["signals"].values():
+            row["delay"] = 0.0
+    d["horizon"]["nodes"] = 6; r6 = ns.solve(d).check(); d["horizon"]["nodes"] = 10; r10 = ns.solve(d).check()
+    assert max(r6.representation_error.values()) < 1e-6
+    assert abs(r6.costs["player1"] - r10.costs["player1"]) < 1e-6

@@ -267,6 +267,11 @@ The checks:
 
 ## Known open items
 
+* A loss cross term between a control and its own lagged read (`[c, D@tau, D]`) gives a second-order
+  curvature of -1e-4 to -3e-4 relative to the largest at 4 to 8 nodes (worse at larger `c`),
+  although the continuous form is positive definite; the delayed and undelayed versions agree.
+  Predates the delay work (a delayed version used to report a vacuous zero).  Not understood.
+
 * The Chapter 5 cycle-market example has a second-order curvature of -3e-5 (relative to the
   largest) in the firms' best response at 6 and 8 nodes per panel, in the map on the order rows at
   ages 8 to 16; the two-firm variant on a window of 6 (`tests/test_stability.py`) has -6.7e-4 at
