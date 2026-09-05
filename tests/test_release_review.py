@@ -171,22 +171,27 @@ def test_cli_reports_model_errors_as_messages(tmp_path, capsys):
 @pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="slow (~2 min); set NOISESTATE_SLOW=1")
 def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
     """One agent with a delayed noisy observation: the stationary kernels (window 6) against the
-    spectral finite engine at t = 6 of T = 12, where the terminal effect has died out.  (At t = 7 of
-    T = 8 the two differ by 8% on the control, delayed or not: that is the horizon, not the delay.)
-    The bar of 1e-2 is the stationary engine's jump-interpolation artefact (README, known open
-    items): the finite engine's kernels are exactly zero below the delay, the stationary ones carry
-    a small alternating bump there, and the two differ by 6e-3 of the state's peak at 16 nodes."""
+    spectral finite engine at t = 10 of T = 16.  Both horizon ends leave transients (the filter
+    settles from its start, the control changes near the end; at t = 7 of T = 8 the two engines
+    differ by 8% on the control, delayed or not), so the comparison stays six units from each.
+    Both engines are exactly causal (the stationary one since the side-aware shift); the finite
+    kernel is read at each stationary node from that node's side of its panel, since kernels jump
+    at the delay."""
     base = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.5}, "noise": {"w1": 1.0}, "delay": 0.5}},
                              "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}}}
     import copy
     st = copy.deepcopy(base); st["horizon"] = {"kind": "stationary", "window": 6.0, "nodes": 16}; rs = ns.solve(st).check()
-    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 12.0, "nodes": 6, "breakpoints": [0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}
+    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 16.0, "nodes": 6, "breakpoints": [0, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]}
     rf = ns.solve(fi).check()
+    g = rs.compiled.grid; sides = np.where((np.arange(g.N) % g.n) == g.n - 1, -1, 1)
+    t_eval = 10.0                   # six units before the end and, for ages up to 4, six after the start: both transients are gone
+    I = rf.grid.interp(t_eval + 0 * rs.ages, rs.ages, side_a=sides)
+    young = rs.ages <= 4.0
     for name in ("X", "D"):
         for ch in ("w0", "w1"):
-            ks = rs.kernel(name, ch); kf = rf.evaluate(name, ch, 6.0 + 0 * rs.ages, 6.0 - rs.ages)
-            assert np.abs(ks - kf).max() < 1e-2 * max(1.0, np.abs(ks).max()), (name, ch)
+            ks = rs.kernel(name, ch); kf = I @ rf.kernel(name, ch)
+            assert np.abs(ks - kf)[young].max() < 1e-3 * max(1.0, np.abs(ks).max()), (name, ch, np.abs(ks - kf)[young].max())
 
 
 def test_leads_only_in_cross_terms_with_the_own_current_control():

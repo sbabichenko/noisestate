@@ -47,11 +47,33 @@ class Compiled(CompiledBase):
             if not any(abs(l - b) < 1e-12 for b in bp):
                 raise ValueError(f"lag {l} is not a panel breakpoint {[round(b, 6) for b in bp]}; set horizon.unit so every lag is a "
                                  f"multiple of it, and horizon.unit_range at least {max(lags)} so the unit panels reach the largest lag")
+        # the map on a row observed with delay d is read by the action at age b + d: for the map's panels to be
+        # the action's panels shifted by d (the instantaneous entry node to node, the map's window edge L - d a
+        # panel edge, no map mode the action cannot see) the breakpoints are closed under subtraction of every
+        # row delay.  With geometric panels beyond unit_range this makes the panels uniform.
+        delays = sorted({float(r[3]) for rr in self.rows.values() for r in rr if r[3] > 0})
+        if delays:
+            bp = self.close_under_delays(bp, delays)
         self.grid = age_grid(tuple(round(float(b), 12) for b in bp), hz.nodes)   # shared, with its operator caches
         self.N = self.grid.N
         self.rho = float(hz.discount)
         self._atom_cache: Dict[tuple, np.ndarray] = {}
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
+
+    @staticmethod
+    def close_under_delays(bp, delays, eps: float = 1e-9):
+        """The breakpoints with b - d added for every breakpoint b and row delay d, repeated until closed."""
+        bp = sorted(float(b) for b in bp)
+        changed = True
+        while changed:
+            changed = False
+            for d in delays:
+                for b in list(bp):
+                    c = b - d
+                    if c > eps and not any(abs(c - x) < eps for x in bp):
+                        bp.append(c); changed = True
+            bp = sorted(bp)
+        return bp
 
     # ------------------------------------------------------------- operators
     def shift(self, tau: float) -> np.ndarray:
@@ -251,12 +273,14 @@ class StationarySolver(EngineBase):
         """Mask over the stacked map nodes (row-major over rows) of the ages at which the map on each
         row reads something within the window: all ages for an undelayed row, ages below L - delay
         for a row observed with a delay."""
-        c = self.c; N = c.N
+        c = self.c; N = c.N; g = c.grid
         keep = np.ones(len(agent.signals) * N, dtype=bool)
+        last = (np.arange(N) % g.n) == g.n - 1
         for r in range(len(agent.signals)):
             d = c.rows[agent.name][r][3]
-            if d > 0:
-                keep[r * N:(r + 1) * N] = c.grid.nodes < c.grid.L - d - 1e-12
+            if d > 0:          # ages below L - d, and the lower copy of the node at L - d (the action at age L reads it)
+                edge = g.L - d
+                keep[r * N:(r + 1) * N] = (g.nodes < edge - 1e-12) | (last & (np.abs(g.nodes - edge) <= 1e-12))
         return keep
 
     # ------------------------------------------------------ best response
@@ -265,24 +289,18 @@ class StationarySolver(EngineBase):
         # ages b > L - d reads nothing within the window: those unknowns (and their projection rows,
         # which are zero) are removed, and the map is zero there.  A plain solve on the full system
         # would be singular.
-        c = self.c; nR = len(agent.signals)
         keep = np.tile(self._identified(agent), len(agent.controls))
         gamma = np.zeros(Amat.shape[0])
-        if max(c.rows[agent.name][r][3] for r in range(nR)):
-            # with a delayed row the seen kernels jump at the delay, and the map values at the panel
-            # breakpoints (one of each duplicated node) drop out of the discrete system exactly; a few
-            # more modes sit within 1e-8 of zero relative to the largest.  Least squares with that cutoff
-            # takes the minimum-norm values there; the equilibrium is insensitive to the cutoff (costs move
-            # by 1e-7 between 1e-9 and 1e-6 on the Chapter 3 game with one delayed row, window 6)
-            gamma[keep] = np.linalg.lstsq(Amat[np.ix_(keep, keep)], -bvec[keep], rcond=1e-8)[0]
-        else:
-            try:
-                gamma[keep] = np.linalg.solve(Amat[np.ix_(keep, keep)], -bvec[keep])
-            except np.linalg.LinAlgError:
-                raise ValueError(f"the best-response system of {agent.name} is singular: two of its rows may carry the "
-                                 "same information, a control may have no quadratic term in its current value (a "
-                                 "quadratic in a lagged read, D@tau, leaves the strategy free at ages above "
-                                 "window - tau), or a row's noise loading may be zero") from None
+        # with a delayed row the unknowns removed by `keep` have exactly zero rows and columns (the seen
+        # row is zero below the delay, the lead reads nothing beyond the window), so the reduced system
+        # is as well conditioned as an undelayed one and is solved directly
+        try:
+            gamma[keep] = np.linalg.solve(Amat[np.ix_(keep, keep)], -bvec[keep])
+        except np.linalg.LinAlgError:
+            raise ValueError(f"the best-response system of {agent.name} is singular: two of its rows may carry the "
+                             "same information, a control may have no quadratic term in its current value (a "
+                             "quadratic in a lagged read, D@tau, leaves the strategy free at ages above "
+                             "window - tau), or a row's noise loading may be zero") from None
         return gamma
 
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:

@@ -12,10 +12,13 @@ def test_shift_exact_on_aligned_panels():
     g = AgeGrid(AgeGrid.breakpoints_from_delays(4.0, [0.5], unit=0.5, unit_range=4.0), 10)
     f = np.where(g.nodes < 1.0, 1.0, np.exp(-(g.nodes - 1.0)))   # jump-free but kinked at 1
     S = g.shift(0.5)
+    last = (np.arange(g.N) % g.n) == g.n - 1; first = (np.arange(g.N) % g.n) == 0
     target = np.where(g.nodes < 0.5, 0.0, np.where(g.nodes - 0.5 < 1.0, 1.0, np.exp(-(g.nodes - 1.5))))
+    target[last & np.isclose(g.nodes, 0.5)] = 0.0                    # the lower copy at tau reads f(0-) = 0
     assert np.allclose(S @ f, target, atol=1e-13)
     Lm = g.shift(-0.5)   # lead
     target2 = np.where(g.nodes + 0.5 > 4.0 + 1e-14, 0.0, np.where(g.nodes + 0.5 < 1.0, 1.0, np.exp(-(g.nodes - 0.5))))
+    target2[first & np.isclose(g.nodes, 3.5)] = 0.0                  # the upper copy at L - tau reads f(L+) = 0
     assert np.allclose(Lm @ f, target2, atol=1e-13)
 
 def test_propagator_ou_and_jump():

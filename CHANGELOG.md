@@ -26,6 +26,18 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Stationary engine: delayed rows and lagged reads are discretised exactly.  A kernel read at a
+  lag jumps there; the duplicated breakpoint nodes now carry the two one-sided limits (the lower
+  copy reads the left limit, zero at the lag; the upper copy the right limit) and a lead is the
+  exact transpose of the lag, so the projection stays the adjoint of the row operator; the
+  breakpoints are closed under subtraction of every row delay; the map keeps the lower copy at the
+  window edge and the reduced FOC system is solved directly (no least-squares cutoff).  Against a
+  closed-form one-agent delayed problem (`tests/test_exact_delay.py`) the cost agrees to 7e-11 and
+  the kernels to 6e-6 (was 8e-4 and 1e-3); representation errors on delayed models drop from 2e-3
+  to 3e-13; the Chapter 5 example's representation error drops from 2.3e-3 to 1.3e-5 and its firm
+  cost moves by 1% (5.0702 to 5.0218 at 8 nodes per panel), which was that example's
+  discretisation error.  Undelayed results are bit-for-bit unchanged.  Found by an agent working
+  from a first-principles discrete gradient of the one-agent problem.
 - Finite engine: the map entries a delayed row cannot identify are removed from the FOC system and
   the map projection (the stationary engine's keep mask) instead of being regularised by a ridge;
   the fixed-point map is smooth again and the delayed Chapter 1 example converges to 1e-12 in 13

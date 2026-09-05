@@ -161,7 +161,7 @@ uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
 |---|---|---|---|
 | 3 | two-player stationary tracking game | `solve_spectral` | 1e-11 at L = 10 (1e-5 at L = 3, window truncation) |
 | 4 | Kyle-Back, one trader, rho = 0 and 0.5 | `kb_spectral_q` | 1e-4 at 24 nodes, 1e-5 at 48 |
-| 5 | purchase-order market on a 3-cycle with delay | `spectral_market` sweep | 8 nodes/panel: 0.5% (quotes), 1-5% (orders), 19 s; 12 nodes/panel: 0.1-0.3% (quotes), 0.3-1.8% (orders), 46 s |
+| 5 | purchase-order market on a 3-cycle with delay | `spectral_market` sweep (16 nodes/panel) | 8 nodes/panel: 0.05-0.2% (quotes), 0.4-1.5% (orders), 19 s |
 | 1 + delays | control lag and a delayed observation, finite horizon | cell scheme, Richardson-extrapolated | cost within 1e-4, kernels within 1e-3 at smooth ages; exact zero response before the observation delay |
 | 1 | finite-horizon two-player game | `spec_ch1` | converged at 12 nodes per side (cost stable to 1e-8 from 12 to 20); kernels within 1e-3 of the reference except on the diagonal, where the reference's own README reports weakly determined modes; the cell scheme's Richardson limit agrees with the spectral engine there to 1e-3 |
 
@@ -181,10 +181,16 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
   `ConvergenceError` so a pipeline cannot use a failed solve by accident.
 * A signal row with a positive `delay` is uninformative about shocks younger than the delay; the
   map on that row is set to zero at ages above `window - delay`, where it reads nothing within the
-  window.  The equilibrium does not depend on the window once the kernels have decayed (Chapter 3
-  game with one row delayed by 0.5: costs agree to 1e-6 between windows 6 and 10), and it agrees
-  with the finite-horizon engine in the interior of a long horizon to 2e-3 of the kernel peak
-  (one agent with a delayed observation; `NOISESTATE_SLOW=1` runs the check).
+  window.  A kernel read at a lag (a delayed row, `P@tau`) jumps at the lag, and the panels'
+  duplicated breakpoint nodes carry the two one-sided limits: the lower copy reads the left limit
+  (zero at the lag), the upper copy the right limit, and a lead is the exact transpose of the lag.
+  With that, the breakpoints closed under subtraction of every row delay (so the map's panels are
+  the action's panels shifted by the delay), and the map removed where the row reads nothing, the
+  delayed problem is discretised exactly: on a one-agent problem with a delayed observation whose
+  solution is known in closed form (certainty equivalence and a delay-differential system,
+  `tests/test_exact_delay.py`) the cost agrees to 7e-11 and the kernels to 6e-6 at 16 nodes per
+  panel, the representation error is 3e-13, the action is exactly zero below the delay, and the
+  costs are identical to eight digits between 12 and 24 nodes at a fixed window.
 * Costs are integrated with exact Gram matrices, so a converged best response is optimal against
   every feasible perturbation to round-off; `tests/test_properties.py` checks this on both engines
   without any reference solution, together with the equivalence of the two iteration variables
@@ -253,30 +259,6 @@ The checks:
   dynamics of each agent's private states, and whether a row's noise channel also drives a state.
 
 ## Known open items
-
-* A lagged read of a kernel that is nonzero at age 0 (a delayed signal row, or `P@tau` where `P`
-  is a control) jumps at the lag; on the age grid both copies of the breakpoint node at the lag
-  carry the right limit, so the panel below the lag interpolates the jump as a bump.  The effect
-  is a floor on the representation error that node refinement lowers only slowly (2e-3 on the
-  Chapter 3 game with one row delayed by 0.5, 2e-3 on the Chapter 5 example), so `UNDER-RESOLVED`
-  overstates the problem for such models: costs converge (5e-5 between 24 and 40 nodes) and the
-  stationary and finite engines agree to 2e-3.  The same artefact is why the raw-map iteration
-  (`variable="maps"`) stalls near a residual of 1e-6 on models with delayed rows while the
-  action-kernel iteration converges: the best-response action carries a spurious response to
-  shocks younger than the delay that no causal map of the rows can reproduce, so the map
-  fixed-point function is noisy at that level.  (The finite engine had a second, larger source of
-  noise, now removed: it regularised the exact null directions of a delayed row's map with a ridge
-  instead of removing them, which made its fixed-point map noisy at 1e-8; with the same keep mask
-  as the stationary engine it converges to 1e-12 in 13 evaluations on the delayed Chapter 1
-  example.)  Giving the lower copy of the node its left limit
-  (zero) makes each best response exactly causal and cuts its representation error by an order of
-  magnitude, but it also exposes a genuinely weakly identified direction at the start of the
-  delayed row's map (a singular value of 8e-3 where the artefact had supplied a spurious 0.9): the
-  map's value at short lags acts on the action only over the sliver of ages just above the delay.
-  A least-squares cutoff that removes that direction gives a sane equilibrium whose costs then
-  depend on the cutoff at the 1e-2 level, so a principled regularisation (or a parametrisation of
-  the delayed map on the row's own time axis) is needed before the convention can change; the
-  shipped results keep the current convention, which the finite engine shares.
 
 * The Chapter 5 cycle-market example has a second-order curvature of -3e-5 (relative to the
   largest) in the firms' best response at 6 and 8 nodes per panel, in the map on the order rows at

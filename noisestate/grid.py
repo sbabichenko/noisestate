@@ -134,17 +134,34 @@ class AgeGrid:
     def _bary_rows(self, pts: np.ndarray, xs: np.ndarray) -> np.ndarray:
         return bary_rows(pts, xs, self._bw)
 
+    def node_sides(self) -> np.ndarray:
+        """+1 for the first node of a panel, -1 for the last, 0 for interior nodes."""
+        k = np.arange(self.N) % self.n
+        s = np.zeros(self.N, dtype=int); s[k == 0] = 1; s[k == self.n - 1] = -1
+        return s
+
     def shift(self, tau: float) -> np.ndarray:
-        """Lag (tau>0): f(a-tau) 1{a>=tau}.  Lead (tau<0): f(a+|tau|) 1{a+|tau|<=L}."""
+        """Lag (tau>0): f(a-tau) 1{a>=tau}.  Lead (tau<0): f(a+|tau|) 1{a+|tau|<=L}.
+        A node at a breakpoint reads the shifted point from the side of its own panel (the last node of
+        a panel reads the left limit, the first node the right limit), so a kernel that jumps at a
+        breakpoint is shifted exactly: the lower copy of the node at tau reads f(0-) = 0 and the upper
+        copy f(0+), and the lead is the transpose of the lag on the duplicated nodes.  Interior nodes
+        read from above for a lag and from below for a lead (they never sit on a breakpoint when the
+        panels are aligned to the lags)."""
         if abs(tau) < 1e-15:
             return np.eye(self.N)
-        if tau > 0:
-            M = self.interp(self.nodes - tau, side=+1)
-            M[self.nodes < tau - 1e-14 * max(1.0, self.L)] = 0.0
-            # a node exactly at tau sees the right limit f(0+)
-            return M
-        M = self.interp(self.nodes - tau, side=-1)
-        M[self.nodes - tau > self.L * (1 + 1e-14)] = 0.0
+        eps = 1e-14 * max(1.0, self.L)
+        sides = self.node_sides()
+        pts = self.nodes - tau
+        inner = +1 if tau > 0 else -1
+        M = np.zeros((self.N, self.N))
+        for s in (+1, -1):
+            sel = (sides == s) | ((sides == 0) & (s == inner))
+            if sel.any():
+                M[sel] = self.interp(pts[sel], side=s)
+        below = (pts < -eps) | ((pts <= eps) & (sides == -1))          # f(0-) = 0
+        above = (pts > self.L + eps) | ((pts >= self.L - eps) & (sides == +1))   # f(L+) = 0
+        M[below | above] = 0.0
         return M
 
     def shift_cached(self, tau: float) -> np.ndarray:

@@ -356,7 +356,7 @@ class EngineBase:
         """Relative residual of the best-response action kernels after projection on the agent's raw
         rows.  Zero in exact arithmetic; on the grid it measures how well products of kernels are
         resolved, so a value above about 1e-6 means the equilibrium is under-resolved: raise
-        horizon.nodes (see the README's known open item on lagged reads)."""
+        horizon.nodes."""
         rows, inst = self._seen_rows(agent, Zfull, set())
         Bk = self._row_operator(agent, rows, inst)
         worst = 0.0
