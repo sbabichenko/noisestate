@@ -1,5 +1,100 @@
 # Changelog
 
+## 0.3.0 (2026-09-05) — readiness fixes
+
+- Bounding and watching a solve.  `solve(max_evaluations=N)` caps the best-response evaluations
+  (Anderson mixing and the Newton-Krylov polish together, the count `res.iterations` reports) and
+  `deadline=S` the wall time in seconds; at least one evaluation is made, and past either bound the
+  best iterate so far comes back with `converged=False` and `res.message` naming the bound (nothing
+  raises; `check()` does).  A coarse start is bounded the same way and skips its own diagnostics.
+  `progress=callback` is called after every evaluation with `{"evaluation", "residual", "phase",
+  "seconds"}` (phase `anderson` or `newton`, `coarse ` prefixed during a coarse start); an exception
+  it raises propagates, which is how a solve is cancelled.  `diagnostics=False` skips the checks at
+  the end (first-order-condition decomposition, second-order check, representation error: `res.foc`
+  and `res.second_order` stay empty, `res.resolution_ok` is None, the summary says `diagnostics
+  skipped`) and fills the costs only; a warm-started re-solve of the Chapter 3 game at 96 nodes takes
+  half the time.  The bounds and `diagnostics=False` are recorded in `res.solve_kw` and not inherited
+  by `refine()`; `sweep(solve_kw=...)` forwards all four; the CLI has `--max-evaluations` and
+  `--deadline` on `solve` and `sweep`.
+- The Newton-Krylov polish's inner budget holds: scipy's `newton_krylov` replaces LGMRES's outer loop
+  by the Newton steps, so the `inner_maxiter=15` it was given bounded nothing and a step could take
+  30 evaluations of the best-response map (LGMRES's `inner_m`); the call passes `inner_m=15` (a
+  linear test system: 24 evaluations per step before, 16 after; no shipped example reaches the
+  polish, so their numbers are unchanged).  `stability()` makes at most
+  `STABILITY_MAX_EVALUATIONS` (200) rounds of best responses, a number it passed to ARPACK as a count
+  of restarts (up to 18 rounds each): the Arnoldi iteration is stopped at 170 and the power-iteration
+  fallback gets the remaining 30, `method` saying so.  A best-response map that returns a non-finite
+  value (an overflow: a lead term at a discount rate times the window above 709) stops the iteration
+  with a `RuntimeError` naming the evaluation; every test of the Anderson loop is False on NaN, so it
+  iterated on NaN and the next evaluation's closed loop died with a bare `LinAlgError: Singular
+  matrix`.
+- Finite engines: a singular best-response system raises the stationary engine's `ValueError` (`the
+  best-response system of market_maker is singular: ...`) instead of falling through to a
+  least-squares solve that returned a zero strategy as a converged equilibrium with cost 0, a clean
+  `check()` and `second_order ok` (Kyle-Back with the market maker's `[1, P, P]` term dropped, on
+  both finite engines).  The kept unknowns are LU-factored and a reciprocal condition estimate below
+  `EngineBase.FOC_RCOND` (1e-10) is singular: singular systems sit at 1e-16 or 0, the worst regular
+  finite-engine system in the tests at 2.6e-3, and the results are unchanged.  The cell engine's
+  Krylov branch (above 200 unknowns) probes each control's block instead, and its non-converged
+  message names the singular cause.  A quadratic only in a lagged read of the control (`[r, D@0.5,
+  D@0.5]` without `[r, D, D]`) is singular on the finite horizon as well: the control is free over
+  the last lag.  Validation warns (`UserWarning`) when a control has no strictly positive quadratic
+  term in its own current value, or in a lagged read of it for a non-myopic agent, saying why the
+  best response is then usually singular; the Chapter 5 firms' prices, penalised through a lagged
+  read, do not warn, and no shipped example does.  The message lives once
+  (`engine.singular_system_message`) and says "within tau of the window's edge".
+- Finite spectral engine: the triangle's panels are closed under every lag (drift and loss lags, row
+  delays), not the row delays only, so a lagged atom on a window that is not a multiple of its lag
+  (a loss term `D1@0.3` at window 1.0; `ch1_delayed_finite` at window 1.1 without the delayed row)
+  solves instead of dying on a bare assertion in `map_shift`.  The compile warns with the panel and
+  piece counts when the closure adds panels: the kernels kink at `T - k tau`, so such a window costs
+  about twice the panels and four times the pieces (the delayed example at window 1.1 takes 120 s
+  against 3 s at 1.0, 8 nodes).  `TriangleGrid.breakpoints` no longer merges a trailing panel that
+  is a lag (a delay of 0.9 at window 1 was reported as 'not a breakpoint').  A lag off the panel unit
+  is rejected with the common divisor to set as `horizon.unit` (0.25 and 0.3: 0.05), and the
+  remaining checks in `map_shift` and `panel_shift` are `ValueError`s naming the lag and the panels.
+- Result payload provenance: `to_dict()` (the CLI's `-o` and `sweep -o` JSON) carries the package
+  `version`, the `params`, the `model` spec (`Model.from_dict` rebuilds it; the name is now `name`),
+  the numeric `horizon`, the engine and solve `options`, and per agent its `controls` and `signals`
+  with their `delay` and the axes of the row's map (`map_age` on the stationary engine, `map_time`
+  and `map_age` on the finite engine, `map_time` and `map_shock_time` on the cell engine), with
+  `map_convention` saying in words how `maps[agent][u][row]` is indexed: the finite engine stores a
+  delayed row's map at the shifted time t - delay, which a plot over `grid.t` drew early.  Sweep
+  rows name their `param`.  `res.solve_kw["start"]` is the option string (it held the starting
+  arrays, so the recorded options were neither JSON nor a repeat of the solve);
+  `solve(**res.solve_kw)` repeats a coarse start.  `res.seconds` is stamped after the diagnostics
+  (12% under on Chapter 5).  `noisestate --version`.
+- Tests: both finite engines against the closed form of a discounted one-agent finite-horizon problem
+  (`tests/test_finite_discount.py`: discounted Riccati equation, Kalman filter, closed-loop impulse
+  responses) where the only discounted finite test asserted `cost > 0`: the spectral engine at 12
+  nodes per side matches the cost to 2e-8 and the kernels to 6e-5 at rho = 0 and 0.5, the cell
+  engine's error halves from 48 to 96 cells and its Richardson pair is within 5e-4.  The Chapter 1
+  references (`tests/refs/ch1_spec_p3_p3.txt`, `ch1_grid_N160.json`), read by no test, are read by
+  `tests/test_ch1_refs.py` at lags >= 0.1 with tolerances at their own error (2e-3 to 4.9e-2 against
+  `spec_ch1`, 3e-3 to 3e-2 against the grid solver, which the package is closer to than `spec_ch1`
+  is on every control kernel); the README's Chapter 1 row claimed kernel agreement with `spec_ch1`
+  to 1e-3, which was false, and the pinned cost 0.39690577 is now stated as the package's own
+  converged value (the cell engine's Richardson pairs (80, 160) and (160, 320) give 0.396956 and
+  0.396918, closing on it as h^2; the dissertation's solvers report 0.39665 and 0.39657).
+- Documentation.  The README states the exception contract (`ValueError` a model problem,
+  `TypeError` a wrong argument, `NotImplementedError` a feature an engine lacks, `RuntimeError` and
+  `ConvergenceError` a solver problem; a solve that does not reach `tol` returns `converged=False`
+  and does not raise) and the CLI's exit status (0 converged, 1 not converged, 2 a usage error or an
+  error the package raises).  Limits says the finite engines have no initial state distribution and
+  no terminal cost (the finite-horizon Kyle-Back model is outside the grammar; a state with empty
+  `drift` and `noise` is carried as zero) and the Kyle-Back validation row is marked as the
+  stationary variant.  Stale claims fixed: the Chapter 5 example solves in 6 s at 4 threads (the
+  table said 19 s), Install states Python >= 3.10, the model-file listing shows the shipped
+  `rho: 0.5`, the sweep `change` is the action kernels on the finite spectral engine, `ridge` is gone
+  from the refine/stability note, `ModelBuilder.finite()`'s fields are stated.
+  `extras/patches/README.md` points at `extras/patches/` and `examples/make_ch5_cycle_market.py`
+  cites the package's Chapter 5 reference instead of dissertation-tree files; `solve()`'s docstring
+  names `start` (not the removed `method`) and `stability()`'s lists `method` and
+  `fixed_point_residual`.
+- Version 0.3.0: `solve()` takes `max_evaluations`, `deadline`, `progress` and `diagnostics`, the
+  payload's model name key is `name` and `res.solve_kw["start"]` is a string, so a minor bump rather
+  than a patch.
+
 ## 0.2.4 (2026-09-04) — second review round
 
 - Lead atoms are accepted only in a loss cross term with the agent's own current control; a led
@@ -33,16 +128,6 @@
   is window-invariant in the mass norm, turns positive when embedded in a wider window, and the
   untruncated Hessian is positive definite); the example and the two-firm variant pass with an edge
   note, the non-convex models stay flagged.
-- Finite spectral engine: the triangle's panels are closed under every lag (drift and loss lags, row
-  delays), not the row delays only, so a lagged atom on a window that is not a multiple of its lag
-  (a loss term `D1@0.3` at window 1.0; `ch1_delayed_finite` at window 1.1 without the delayed row)
-  solves instead of dying on a bare assertion in `map_shift`.  The compile warns with the panel and
-  piece counts when the closure adds panels: the kernels kink at `T - k tau`, so such a window costs
-  about twice the panels and four times the pieces (the delayed example at window 1.1 takes 120 s
-  against 3 s at 1.0, 8 nodes).  `TriangleGrid.breakpoints` no longer merges a trailing panel that is a lag (a
-  delay of 0.9 at window 1 was reported as 'not a breakpoint').  A lag off the panel unit is
-  rejected with the common divisor to set as `horizon.unit` (0.25 and 0.3: 0.05), and the remaining
-  checks in `map_shift` and `panel_shift` are `ValueError`s naming the lag and the panels.
 - Finite engine: a lagged atom in a loss (`D@tau`) is read node to node through the map shift
   instead of the interpolating read, which copied one node onto a triangle piece's degenerate corner
   row (mass norm 5 to 9 instead of 1) and made the loss form indefinite on directions of almost no
@@ -199,83 +284,6 @@
 - The delayed-row least-squares cutoff is documented as immaterial (costs move by 1e-7 across
   cutoffs 1e-9 to 1e-6), and the jump-interpolation floor on the representation error for
   delayed rows and lagged control reads is recorded as a known open item.
-- Finite engines: a singular best-response system raises the stationary engine's `ValueError`
-  (`the best-response system of market_maker is singular: ...`) instead of falling through to a
-  least-squares solve that returned a zero strategy as a converged equilibrium with cost 0, a clean
-  `check()` and `second_order ok` (Kyle-Back with the market maker's `[1, P, P]` term dropped, on
-  both finite engines).  The kept unknowns are LU-factored and a reciprocal condition estimate below
-  `EngineBase.FOC_RCOND` (1e-10) is singular: singular systems sit at 1e-16 or 0, the worst regular
-  finite-engine system in the tests at 2.6e-3, and the results are unchanged.  The cell engine's
-  Krylov branch (above 200 unknowns) probes each control's block instead, and its non-converged
-  message names the singular cause.  A quadratic only in a lagged read of the control
-  (`[r, D@0.5, D@0.5]` without `[r, D, D]`) is singular on the finite horizon as well: the control is
-  free over the last lag.  Validation warns (`UserWarning`) when a control has no strictly positive
-  quadratic term in its own current value, or in a lagged read of it for a non-myopic agent, saying
-  why the best response is then usually singular; the Chapter 5 firms' prices, penalised through a
-  lagged read, do not warn, and no shipped example does.  The message lives once
-  (`engine.singular_system_message`) and says "within tau of the window's edge".
-- Result payload provenance: `to_dict()` (the CLI's `-o` and `sweep -o` JSON) carries the package
-  `version`, the `params`, the `model` spec (`Model.from_dict` rebuilds it; the name is now `name`),
-  the numeric `horizon`, the engine and solve `options`, and per agent its `controls` and `signals`
-  with their `delay` and the axes of the row's map (`map_age` on the stationary engine, `map_time`
-  and `map_age` on the finite engine, `map_time` and `map_shock_time` on the cell engine), with
-  `map_convention` saying in words how `maps[agent][u][row]` is indexed: the finite engine stores a
-  delayed row's map at the shifted time t - delay, which a plot over `grid.t` drew early.  Sweep
-  rows name their `param`.  `res.solve_kw["start"]` is the option string (it held the starting
-  arrays, so the recorded options were neither JSON nor a repeat of the solve); `solve(**res.solve_kw)`
-  repeats a coarse start.  `res.seconds` is stamped after the diagnostics (12% under on Chapter 5).
-  `noisestate --version`.
-- Tests: both finite engines against the closed form of a discounted one-agent finite-horizon problem
-  (`tests/test_finite_discount.py`: discounted Riccati equation, Kalman filter, closed-loop impulse
-  responses) where the only discounted finite test asserted `cost > 0`: the spectral engine at 12 nodes
-  per side matches the cost to 2e-8 and the kernels to 6e-5 at rho = 0 and 0.5, the cell engine's error
-  halves from 48 to 96 cells and its Richardson pair is within 5e-4.  The Chapter 1 references
-  (`tests/refs/ch1_spec_p3_p3.txt`, `ch1_grid_N160.json`), read by no test, are read by
-  `tests/test_ch1_refs.py` at lags >= 0.1 with tolerances at their own error (2e-3 to 4.9e-2 against
-  `spec_ch1`, 3e-3 to 3e-2 against the grid solver, which the package is closer to than `spec_ch1` is on
-  every control kernel);
-  the README's Chapter 1 row claimed kernel agreement with `spec_ch1` to 1e-3, which was false, and the
-  pinned cost 0.39690577 is now stated as the package's own converged value (the cell engine's Richardson
-  pairs (80, 160) and (160, 320) give 0.396956 and 0.396918, closing on it as h^2; the dissertation's
-  solvers report 0.39665 and 0.39657).
-- Documentation.  The README states the exception contract (`ValueError` a model problem, `TypeError`
-  a wrong argument, `NotImplementedError` a feature an engine lacks, `RuntimeError` and
-  `ConvergenceError` a solver problem; a solve that does not reach `tol` returns `converged=False` and
-  does not raise) and the CLI's exit status (0 converged, 1 not converged, 2 a usage error or an error
-  the package raises).  Limits says the finite engines have no initial state distribution and no
-  terminal cost (the finite-horizon Kyle-Back model is outside the grammar; a state with empty `drift`
-  and `noise` is carried as zero) and the Kyle-Back validation row is marked as the stationary variant.
-  Stale claims fixed: the Chapter 5 example solves in 6 s at 4 threads (the table said 19 s), Install
-  states Python >= 3.10, the model-file listing shows the shipped `rho: 0.5`, the sweep `change` is
-  the action kernels on the finite spectral engine, `ridge` is gone from the refine/stability note,
-  `ModelBuilder.finite()`'s fields are stated.  `extras/patches/README.md` points at `extras/patches/`
-  and `examples/make_ch5_cycle_market.py` cites the package's Chapter 5 reference instead of
-  dissertation-tree files; `solve()`'s docstring names `start` (not the removed `method`) and
-  `stability()`'s lists `method` and `fixed_point_residual`.
-- Bounding and watching a solve.  `solve(max_evaluations=N)` caps the best-response evaluations (Anderson
-  mixing and the Newton-Krylov polish together, the count `res.iterations` reports) and `deadline=S` the
-  wall time in seconds; at least one evaluation is made, and past either bound the best iterate so far
-  comes back with `converged=False` and `res.message` naming the bound (nothing raises; `check()` does).
-  A coarse start is bounded the same way and skips its own diagnostics.  `progress=callback` is called
-  after every evaluation with `{"evaluation", "residual", "phase", "seconds"}` (phase `anderson` or
-  `newton`, `coarse ` prefixed during a coarse start); an exception it raises propagates, which is how a
-  solve is cancelled.  `diagnostics=False` skips the checks at the end (first-order-condition
-  decomposition, second-order check, representation error: `res.foc` and `res.second_order` stay empty,
-  `res.resolution_ok` is None, the summary says `diagnostics skipped`) and fills the costs only; a
-  warm-started re-solve of the Chapter 3 game at 96 nodes takes half the time.  The bounds and
-  `diagnostics=False` are recorded in `res.solve_kw` and not inherited by `refine()`;
-  `sweep(solve_kw=...)` forwards all four; the CLI has `--max-evaluations` and `--deadline` on `solve`
-  and `sweep`.  The Newton-Krylov polish's inner budget holds: scipy's `newton_krylov` replaces LGMRES's
-  outer loop by the Newton steps, so the `inner_maxiter=15` it was given bounded nothing and a step could
-  take 30 evaluations of the best-response map (LGMRES's `inner_m`); the call passes `inner_m=15` (a
-  linear test system: 24 evaluations per step before, 16 after; no shipped example reaches the polish, so
-  their numbers are unchanged).  `stability()` makes at most `STABILITY_MAX_EVALUATIONS` (200) rounds of
-  best responses, a number it passed to ARPACK as a count of restarts (up to 18 rounds each): the Arnoldi
-  iteration is stopped at 170 and the power-iteration fallback gets the remaining 30, `method` saying so.
-  A best-response map that returns a non-finite value (an overflow: a lead term at a discount rate times
-  the window above 709) stops the iteration with a `RuntimeError` naming the evaluation; every test of
-  the Anderson loop is False on NaN, so it iterated on NaN and the next evaluation's closed loop died with
-  a bare `LinAlgError: Singular matrix`.
 
 ## 0.2.3 (2026-09-04) — release review
 
