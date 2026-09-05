@@ -26,6 +26,20 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Second speed round (two agents, exact to round-off, bitwise where stated).  Stationary: the cost
+  integrals as two matrix products instead of a three-index einsum (89 ms to 1 ms); the second-order
+  form associated as M[u, v] = sum_k G_k' (Resp_u' G Resp_v) G_k over the responding primaries with
+  channels grouped by row support and only u <= v computed (900 ms to 130 ms); the loss form
+  assembled block by block and cached; no index copies before the FOC and projection solves; the
+  symmetric closed loop skips the control-to-state products when no control drives a state and
+  uses slices for its orbit blocks.  Finite: the line-integral operators build their output by a
+  scaled CSR densification instead of two sparse products, all known kernels of an operator are read
+  in one sparse product, the regular row operators and the map-independent state part of the closed
+  loop are cached per (agent, row, exclusion), zero blocks are skipped exactly, and the causal block
+  solve extracts its blocks without copies.  Chapter 5 example 8.5 s to 7.0 s (finishing step 1.8 s
+  to 0.7 s); the delayed Chapter 1 finite example 4.3 s to 3.1 s cold, one evaluation 258 ms to
+  170 ms.  Rejected with numbers: a conjugate-mode DFT restructure of the symmetric closed loop (39%
+  faster but not exact to 1e-12), dsyrk Grams, dense per-piece reads of known kernels.
 - First-order-condition assembly restructured (agent work, exact to round-off: Amat 1e-15, maps
   3e-12, identical evaluation counts): the regular parts of the row and projection operators are
   assembled on the nonzero (row, channel) support only and batched per delay; the projection's

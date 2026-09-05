@@ -61,6 +61,7 @@ class Compiled(CompiledBase):
         self.rho = float(hz.discount)
         self._atom_cache: Dict[tuple, np.ndarray] = {}
         self._elim: Dict[frozenset, tuple] = {}
+        self._elim_wzero: Dict[frozenset, bool] = {}
         self.sym = find_cyclic_symmetry(model)
         self._modes = None
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
@@ -174,6 +175,7 @@ class Compiled(CompiledBase):
             lu = lu_factor(np.eye(nX * N) - PU[:, :nX * N])
             W = lu_solve(lu, PU[:, nX * N:])
             self._elim[key] = (lu, W, P0X, perm)
+            self._elim_wzero[key] = not W.any()          # no state driven by a control: the products with W are skipped
         return self._elim[key]
 
     def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
@@ -276,8 +278,9 @@ class Compiled(CompiledBase):
                         p[cols[j][t]] = cols[j][(t + sh) % m]
                 cperms.append(p)
             omega = np.exp(2j * np.pi / m)
-            self._modes = {"m": m, "corb": corb, "cols": cols, "fcols": fcols, "perms": perms, "cperms": cperms, "omega": omega,
-                           "member": {o[t]: (j, t) for j, o in enumerate(corb) for t in range(m)}}
+            csl = [[slice(int(cc[0]), int(cc[-1]) + 1) for cc in cj] for cj in cols]     # the same columns as slices
+            self._modes = {"m": m, "corb": corb, "cols": cols, "csl": csl, "fcols": fcols, "perms": perms, "cperms": cperms,
+                           "omega": omega, "member": {o[t]: (j, t) for j, o in enumerate(corb) for t in range(m)}}
         return self._modes
 
     def _control_rows(self, maps, controls, excl: frozenset, impulse_controls, B, regular: bool = True):
@@ -320,6 +323,7 @@ class Compiled(CompiledBase):
         ex_agent = self.model.agents[[a.name for a in self.model.agents].index(excluded)] if excluded else None
         B = np.zeros((n, ncol))
         lu, W, P0X, perm = self._state_elimination(frozenset())          # the symmetric world: nobody excluded
+        wzero = self._elim_wzero[frozenset()]
         for k in range(self.nW):
             B[:nxs, k] += P0X @ self.sigma[:, k]
         for j, u in enumerate(impulse_controls):
@@ -328,12 +332,12 @@ class Compiled(CompiledBase):
                     v = np.zeros(nX); v[i] = c
                     B[:nxs, self.nW + j] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
         GB = lu_solve(lu, B[:nxs])
-        corb, cols, fcols, perms, cperms = st["corb"], st["cols"], st["fcols"], st["perms"], st["cperms"]
+        corb, cols, csl, fcols, perms, cperms = st["corb"], st["cols"], st["csl"], st["fcols"], st["perms"], st["cperms"]
         # representative rows of the reduced operator (states eliminated): R = MUU + MUX W
         rep_controls = [o[0] for o in corb] + [u for u in self.model.control_names if all(u not in o for o in corb)]
         Bsym = np.zeros((n, ncol))
         MU_rep = self._control_rows(maps, rep_controls, frozenset(), impulse_controls, Bsym)
-        R_rep = MU_rep[:, nxs:] + MU_rep[:, :nxs] @ W                        # (n_rep N, nU N)
+        R_rep = MU_rep[:, nxs:] if wzero else MU_rep[:, nxs:] + MU_rep[:, :nxs] @ W       # (n_rep N, nU N)
         # every control's instantaneous entries (with the excluded agent's controls as impulses, which is
         # how the others' reactions to its impulse enter): cheap, no regular part
         all_controls = self.model.control_names
@@ -343,7 +347,7 @@ class Compiled(CompiledBase):
         rhs = B[nxs:].copy(); MUX_rep = MU_rep[:, :nxs]
         for j, o in enumerate(corb):
             for sh in range(m):
-                rhs[cols[j][sh]] += MUX_rep[j * N:(j + 1) * N] @ GB[perms[sh]]
+                rhs[csl[j][sh]] += MUX_rep[j * N:(j + 1) * N] @ GB[perms[sh]]
         if fcols.size:
             rhs[fcols] += MUX_rep[len(corb) * N:] @ GB
         # mode blocks
@@ -354,7 +358,7 @@ class Compiled(CompiledBase):
             for i in range(r):
                 for j in range(r):
                     for d in range(m):
-                        Ak[i * N:(i + 1) * N, j * N:(j + 1) * N] += (omega ** (d * k)) * R_rep[i * N:(i + 1) * N][:, cols[j][d]]
+                        Ak[i * N:(i + 1) * N, j * N:(j + 1) * N] += (omega ** (d * k)) * R_rep[i * N:(i + 1) * N, csl[j][d]]
             if k == 0 and nf:
                 for i in range(r):
                     Ak[i * N:(i + 1) * N, r * N:] += np.sqrt(m) * R_rep[i * N:(i + 1) * N][:, fcols]
@@ -370,13 +374,13 @@ class Compiled(CompiledBase):
                 bk = np.zeros((size, rhs_u.shape[1]), dtype=complex)
                 for j in range(r):
                     for sh in range(m):
-                        bk[j * N:(j + 1) * N] += (omega ** (-sh * k)) * rhs_u[cols[j][sh]] / np.sqrt(m)
+                        bk[j * N:(j + 1) * N] += (omega ** (-sh * k)) * rhs_u[csl[j][sh]] / np.sqrt(m)
                 if k == 0 and nf:
                     bk[r * N:] = rhs_u[fcols]
                 zk = lu_solve(blocks[k], bk)
                 for j in range(r):
                     for sh in range(m):
-                        out[cols[j][sh]] += (omega ** (sh * k)) * zk[j * N:(j + 1) * N] / np.sqrt(m)
+                        out[csl[j][sh]] += (omega ** (sh * k)) * zk[j * N:(j + 1) * N] / np.sqrt(m)
                 if k == 0 and nf:
                     out[fcols] += zk[r * N:]
             return out.real
@@ -398,7 +402,7 @@ class Compiled(CompiledBase):
             cap = np.eye(rows0.size) + R0 @ Ye
             ZU = Yb - Ye @ np.linalg.solve(cap, R0 @ Yb)
             ZU[rows0] = 0.0
-        Z = np.zeros((n, ncol)); Z[nxs:] = ZU; Z[:nxs] = W @ ZU + GB
+        Z = np.zeros((n, ncol)); Z[nxs:] = ZU; Z[:nxs] = GB if wzero else W @ ZU + GB
         return Z
 
     def closed_loop_dense(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
@@ -513,11 +517,13 @@ class StationarySolver(EngineBase):
         W = c.grid.mass
         keep = self._identified(agent)                                       # delayed rows: zero where they read nothing
         BW = (Bk * W[None, :, None]).reshape(nW * N, nR * N)                # the channels stacked: one product each
-        Gram = (BW.T @ Bk.reshape(nW * N, nR * N))[np.ix_(keep, keep)]
-        Gram += 1e-14 * np.trace(Gram) / Gram.shape[0] * np.eye(Gram.shape[0])
+        Gram = BW.T @ Bk.reshape(nW * N, nR * N)
         rhs = BW.T @ actions.transpose(2, 1, 0).reshape(nW * N, nU)            # column ui: sum_k (Bk W)' actions[ui, :, k]
+        if not keep.all():
+            Gram = Gram[np.ix_(keep, keep)]; rhs = rhs[keep]
+        Gram += 1e-14 * np.trace(Gram) / Gram.shape[0] * np.eye(Gram.shape[0])
         g = np.zeros((nU, nR * N))
-        g[:, keep] = np.linalg.solve(Gram, rhs[keep]).T                        # one factorisation for every control
+        g[:, keep] = np.linalg.solve(Gram, rhs).T                              # one factorisation for every control
         return g.reshape(nU, nR, N)
 
     def _identified(self, agent: Agent) -> np.ndarray:
@@ -546,7 +552,10 @@ class StationarySolver(EngineBase):
         # row is zero below the delay, the lead reads nothing beyond the window), so the reduced system
         # is as well conditioned as an undelayed one and is solved directly
         try:
-            gamma[keep] = np.linalg.solve(Amat[np.ix_(keep, keep)], -bvec[keep])
+            if keep.all():                                    # no delayed row: the system as assembled, no copy
+                gamma[:] = np.linalg.solve(Amat, -bvec)
+            else:
+                gamma[keep] = np.linalg.solve(Amat[np.ix_(keep, keep)], -bvec[keep])
         except np.linalg.LinAlgError:
             raise ValueError(f"the best-response system of {agent.name} is singular: two of its rows may carry the "
                              "same information, a control may have no quadratic term in its current value (a "
@@ -605,7 +614,8 @@ class StationarySolver(EngineBase):
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])          # (m, N, nW)
-        G = np.einsum("ink,nm,jmk->ij", zeta, c.cost_mass(), zeta)   # <zeta_i, zeta_j> over ages and channels
+        MZ = np.tensordot(zeta, c.cost_mass(), axes=([1], [0]))        # (m, nW, N): the mass applied to every atom kernel
+        G = np.tensordot(MZ, zeta, axes=([1, 2], [2, 1]))              # <zeta_i, zeta_j> over ages and channels
         return float(0.5 * np.sum(Q * G))
 
     expected_loss = expected_cost                       # the older name

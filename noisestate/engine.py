@@ -17,6 +17,12 @@ from .accel import solve_fixed_point
 from .spec import Agent, Model
 
 
+def _is_eye(M: np.ndarray) -> bool:
+    """Whether M is exactly the identity (a product with it is then skipped: X @ I is X to the bit)."""
+    n = M.shape[0]
+    return M.ndim == 2 and M.shape[1] == n and np.count_nonzero(M) == n and bool(np.all(np.diagonal(M) == 1.0))
+
+
 class EngineBase:
     """The passive-world best response and the outer fixed point, written once against a small
     kernel algebra that each compiled model supplies:
@@ -50,6 +56,7 @@ class EngineBase:
         self._qa: Dict[str, np.ndarray] = {}                # agent -> (Q zeta) as an operator on the primary kernels
         self._rphys: Dict[str, np.ndarray] = {}             # agent -> physical impulse responses (all reactions off)
         self._second_order_cache: Dict[str, dict] = {}       # representative -> its second-order check, shared with tied agents
+        self._loss_forms: Dict[str, np.ndarray] = {}         # agent -> the loss form on the world (map-independent)
 
     # ------------------------------------------------------------ ties
     def _fill_ties(self, d: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
@@ -208,6 +215,7 @@ class EngineBase:
         AO = [c.atom_op(at) for at in atoms]
         # the nonzero N x N blocks of every atom operator (one block, the shift into the atom's primary)
         AO_blocks = [[(p, A[:, p * N:(p + 1) * N]) for p in range(len(c.prim)) if np.any(A[:, p * N:(p + 1) * N])] for A in AO]
+        AO_eye = [[_is_eye(blk) for p, blk in blocks] for blocks in AO_blocks]      # an undelayed atom reads through the identity
         Fu = []
         for ui, u in enumerate(agent.controls):
             # op = sum_j M_j (Q zeta)_j with M_j the operator on atom j: identity for the instantaneous
@@ -231,8 +239,8 @@ class EngineBase:
             op = np.zeros((N, n_prim))
             for i in range(len(atoms)):
                 if np.any(MQ[i]):
-                    for p, blk in AO_blocks[i]:
-                        op[:, p * N:(p + 1) * N] += MQ[i] @ blk
+                    for (p, blk), eye in zip(AO_blocks[i], AO_eye[i]):
+                        op[:, p * N:(p + 1) * N] += MQ[i] if eye else MQ[i] @ blk
             Fu.append(op)
         return Fu
 
@@ -309,10 +317,7 @@ class EngineBase:
             return None
         from scipy.sparse.linalg import LinearOperator, eigsh
         N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
-        atoms, Q, q = c.loss[agent.name]
-        AO = np.concatenate([c.atom_op(at) for at in atoms], axis=0)           # (m N, n_prim N)
-        QM = np.kron(Q, c.cost_mass())                                           # the loss form on the atoms
-        GAO = AO.T @ (QM @ AO)                                                   # symmetric loss form on the world
+        GAO = self._loss_form(agent)                                             # symmetric loss form on the world
         idx = np.where(keep)[0]
 
         def T(delta_full):                     # strategy -> world, per channel: (n_prim N, nW)
@@ -336,17 +341,35 @@ class EngineBase:
             return Tt(GAO @ T(full))[idx]
         n = idx.size
         if n <= self.SECOND_ORDER_DENSE:
-            # the form explicitly: T per channel as a matrix (n_prim N x n), M = sum_k T_k' G T_k
-            Mfull = np.zeros((n, n))
+            # the form explicitly, M = sum_k T_k' G T_k with T_k = [Resp_u G_k]_u, associated as
+            # M[u, v] = sum_k G_k' (Resp_u' G Resp_v) G_k: the inner form H_uv is N x N (through the responding
+            # primaries' nodes only), and the sum over channels is one product of the stacked row operators,
+            # restricted per channel to the rows whose column block of G_k is not identically zero
             nz = np.where(np.any(np.stack([np.any(Rv != 0, axis=1) for Rv in Resp]), axis=0))[0]   # primaries' nodes that respond
             GAOnz = GAO[np.ix_(nz, nz)]
+            Rnz = [np.ascontiguousarray(Rv[nz]) for Rv in Resp]                                    # (nz, N)
+            GR = [GAOnz @ Rv for Rv in Rnz]
+            rowsof = {}                                                                             # rows with a nonzero block -> channels
             for k in range(nW):
-                Tk = np.zeros((nz.size, n))
-                for ui in range(nU):
-                    cols = np.where((idx >= ui * nR * N) & (idx < (ui + 1) * nR * N))[0]
-                    if cols.size:
-                        Tk[:, cols] = Resp[ui][nz] @ Gk[k][:, idx[cols] - ui * nR * N]
-                Mfull += Tk.T @ (GAOnz @ Tk)
+                rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * N:(r + 1) * N]))
+                if rows_k:
+                    rowsof.setdefault(rows_k, []).append(k)
+            parts = []
+            for rows_k, ks in rowsof.items():
+                cols = np.concatenate([np.arange(r * N, (r + 1) * N) for r in rows_k])
+                parts.append((cols, np.ascontiguousarray(Gk[ks][:, :, cols])))                     # (n_k, N, |cols|)
+            Mall = np.zeros((nU * nR * N, nU * nR * N))
+            for ui in range(nU):
+                for vi in range(ui, nU):
+                    Huv = Rnz[ui].T @ GR[vi]                                                        # (N, N)
+                    Muv = np.zeros((nR * N, nR * N))
+                    for cols, Gg in parts:
+                        HG = Huv @ Gg                                                               # every channel of the group
+                        Muv[np.ix_(cols, cols)] += Gg.reshape(-1, cols.size).T @ HG.reshape(-1, cols.size)
+                    Mall[ui * nR * N:(ui + 1) * nR * N, vi * nR * N:(vi + 1) * nR * N] = Muv
+                    if vi != ui:
+                        Mall[vi * nR * N:(vi + 1) * nR * N, ui * nR * N:(ui + 1) * nR * N] = Muv.T   # H_vu = H_uv'
+            Mfull = Mall if n == Mall.shape[0] else Mall[np.ix_(idx, idx)]
             w = np.linalg.eigvalsh((Mfull + Mfull.T) / 2)
             lo, hi = float(w[0]), float(w[-1])
         else:
@@ -358,6 +381,30 @@ class EngineBase:
                 return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
         scale = max(abs(lo), abs(hi), 1e-300)
         return {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale), "converged": True}
+
+    def _loss_form(self, agent: Agent) -> np.ndarray:
+        """The loss form on the primary kernels, AO' kron(Q, mass) AO for the stacked atom operators AO,
+        assembled block by block over the atoms' primary blocks (each atom reads one primary through one
+        N x N block; an undelayed atom through the identity, whose products are skipped).  Map-independent,
+        cached per agent."""
+        if agent.name not in self._loss_forms:
+            c = self.c; N = c.N; n = len(c.prim) * N
+            atoms, Q, q = c.loss[agent.name]
+            mass = c.cost_mass()
+            AO = [c.atom_op(at) for at in atoms]
+            blocks = [[(p, A[:, p * N:(p + 1) * N]) for p in range(len(c.prim)) if np.any(A[:, p * N:(p + 1) * N])] for A in AO]
+            GAO = np.zeros((n, n))
+            for i in range(len(atoms)):
+                for j in range(len(atoms)):
+                    if Q[i, j] == 0.0:
+                        continue
+                    W = Q[i, j] * mass
+                    for p, Ai in blocks[i]:
+                        for p2, Aj in blocks[j]:
+                            WA = W if _is_eye(Aj) else W @ Aj
+                            GAO[p * N:(p + 1) * N, p2 * N:(p2 + 1) * N] += WA if _is_eye(Ai) else Ai.T @ WA
+            self._loss_forms[agent.name] = GAO
+        return self._loss_forms[agent.name]
 
     # ------------------------------------------------ maps from kernels
 
@@ -399,8 +446,13 @@ class EngineBase:
         chunks = self._causal_chunks() if nKn else []
         Hc = [np.ascontiguousarray(Hs.reshape(nRn, N, N * nKn)[:, lo:hi, lo * nKn:]).reshape(nRn * (hi - lo), (N - lo) * nKn)
               for lo, hi in chunks]                                             # rows of ages in the chunk, columns of nodes not younger
-        # instantaneous entries: (row, channel, weighted shift on the row operator, on the projection)
+        # instantaneous entries: (row, channel, weighted shift on the row operator, on the projection); a shift that is the
+        # identity (an undelayed row's own noise) is applied as the scaling by its weight, which is what the product gives
         ent = [(r, k, w * c.instant(age, delay[r]), w * c.instant_adjoint(age, delay[r])) for r in range(nR) for (k, age, w) in inst[r]]
+        ent = [(r, k, Sg, Sh, (w if _is_eye(c.instant(age, delay[r])) else None), (w if _is_eye(c.instant_adjoint(age, delay[r])) else None))
+               for (r, k, Sg, Sh), (r_, k_, age, w) in zip(ent, [(r, k, age, w) for r in range(nR) for (k, age, w) in inst[r]])]
+        rmul = lambda X, S, w: X * w if w is not None else X @ S            # X @ S with S = w I
+        lmul = lambda S, w, X: w * X if w is not None else S @ X            # S @ X with S = w I
         nG = nU * nR * N
         Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
         A6 = Amat.reshape(nU, nR, N, nU, nR, N); B3 = bvec.reshape(nU, nR, N)
@@ -408,8 +460,8 @@ class EngineBase:
             phi = Fu[ui] @ Zpass                                                # (N, nW): the FOC of the passive world
             if nKn:
                 B3[ui][Rn] += (Hs @ phi[:, Kn].reshape(-1)).reshape(nRn, N)
-            for (r, k, Sg, Sh) in ent:
-                B3[ui, r] += Sh @ phi[:, k]
+            for (r, k, Sg, Sh, wg, wh) in ent:
+                B3[ui, r] += lmul(Sh, wh, phi[:, k])
             for vi in range(nU):
                 FR = Fu[ui] @ Resp[vi]
                 FRG = (FR @ Gs).reshape(N, nKn, nRn * N) if nKn else None      # [(j, ki), (ri, j')]
@@ -417,16 +469,16 @@ class EngineBase:
                     T = (H_ @ FRG[lo:].reshape((N - lo) * nKn, nRn * N)).reshape(nRn, hi - lo, nRn, N)
                     for ri, r in enumerate(Rn):
                         A6[ui, r, lo:hi, vi][:, Rn, :] += T[ri]
-                for (r, k, Sg, Sh) in ent:
+                for (r, k, Sg, Sh, wg, wh) in ent:
                     if k in kpos:                                               # the channel also has regular kernels
                         ki = kpos[k]
-                        X = (Hs.reshape(nRn * N, N, nKn)[:, :, ki] @ (FR @ Sg)).reshape(nRn, N, N)     # H_reg FR G_inst
+                        X = (Hs.reshape(nRn * N, N, nKn)[:, :, ki] @ rmul(FR, Sg, wg)).reshape(nRn, N, N)     # H_reg FR G_inst
                         for ri, rr in enumerate(Rn):
                             A6[ui, rr, :, vi, r] += X[ri]
-                        A6[ui, r, :, vi][:, Rn, :] += (Sh @ FRG[:, ki, :]).reshape(N, nRn, N)        # H_inst FR G_reg
-                    for (r2, k2, Sg2, Sh2) in ent:
+                        A6[ui, r, :, vi][:, Rn, :] += lmul(Sh, wh, FRG[:, ki, :]).reshape(N, nRn, N)        # H_inst FR G_reg
+                    for (r2, k2, Sg2, Sh2, wg2, wh2) in ent:
                         if k2 == k:
-                            A6[ui, r, :, vi, r2] += Sh @ (FR @ Sg2)                                   # H_inst FR G_inst
+                            A6[ui, r, :, vi, r2] += lmul(Sh, wh, rmul(FR, Sg2, wg2))                       # H_inst FR G_inst
         return Amat, bvec
 
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):

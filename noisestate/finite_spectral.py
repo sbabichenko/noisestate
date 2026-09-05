@@ -71,6 +71,8 @@ class SpectralCompiled(CompiledBase):
         self.trow_by_pit: Dict[Tuple[int, int], np.ndarray] = {k: np.concatenate(v) for k, v in rows.items()}
         self.panel_of_node = np.concatenate([np.full(pc.n, pc.p) for pc in g.pieces])
         self._map_shifts: Dict[float, np.ndarray] = {}
+        self._row_ops: Dict[tuple, tuple] = {}            # (agent, row, excluded) -> row_op result (map-independent)
+        self._state_parts: Dict[tuple, tuple] = {}        # (excluded, impulses) -> state part of the closed loop
 
     # ------------------------------------------------------------ reads
     def _expm_batch(self, ds: np.ndarray) -> np.ndarray:
@@ -152,7 +154,20 @@ class SpectralCompiled(CompiledBase):
 
     def row_op(self, agent: str, r: int, excluded: set):
         """Seen row r of `agent` as (regular operator on Z, {source: [(age, weight)]}),
-        the regular part already shifted by the observation delay."""
+        the regular part already shifted by the observation delay.  Map-independent, so cached per
+        (agent, row, excluded controls); the operator is shared and must not be written to."""
+        key = (agent, r, frozenset(excluded))
+        if key not in self._row_ops:
+            reg, deltas = self._row_op(agent, r, excluded)
+            self._row_ops[key] = (reg, deltas, self._nonzero_blocks(reg))
+        reg, deltas, _ = self._row_ops[key]
+        return reg, {k: list(v) for k, v in deltas.items()}
+
+    def _nonzero_blocks(self, reg: np.ndarray):
+        """The primaries whose N x N block of the row operator is not identically zero."""
+        return [p for p in range(len(self.prim)) if np.any(reg[:, p * self.N:(p + 1) * self.N])]
+
+    def _row_op(self, agent: str, r: int, excluded: set):
         name, drift, E, delay = self.rows[agent][r]
         S = self.read(delay, delay)
         reg = np.zeros((self.N, len(self.prim) * self.N))
@@ -225,12 +240,19 @@ class SpectralCompiled(CompiledBase):
         return lp.with_known(yker)
 
     # ------------------------------------------------ kernel algebra (see EngineBase)
-    def conv_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
-        out = np.zeros((Y.shape[1], self.N, self.N))
-        for k in range(Y.shape[1]):
-            if np.abs(Y[:, k]).max() > 0:
-                out[k] = self.conv_right(Y[:, k], delay)
+    def _many(self, lp, K: np.ndarray, extra=None) -> np.ndarray:
+        """with_known over the nonzero columns of K (N, m) at once: (m, N, N), zero for a zero column."""
+        out = np.zeros((K.shape[1], self.N, self.N))
+        nz = [k for k in range(K.shape[1]) if np.abs(K[:, k]).max() > 0]
+        if nz:
+            out[nz] = lp.with_known_many(K[:, nz], extra)
         return out
+
+    def conv_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
+        g = self.g
+        lp = self._path(("conv_right", delay), r_lo=g.s + delay, r_hi=g.t,
+                        point_fn=lambda k, r: (np.full_like(r, g.t[k] - delay), g.t[k] - r), known_fn=lambda k, r: (r, r - g.s[k]))
+        return self._many(lp, Y)
 
     def instant(self, age: float, delay: float = 0.0) -> np.ndarray:
         if delay > 0 and abs(age - delay) < 1e-12:
@@ -243,18 +265,18 @@ class SpectralCompiled(CompiledBase):
         return self.read(-delay, -age)
 
     def response(self, Ru: np.ndarray, own: int) -> np.ndarray:
-        N = self.N; Cu = np.zeros((len(self.prim) * N, N))
-        for p in range(len(self.prim)):
-            if p != own and np.abs(Ru[p]).max() > 0:
-                Cu[p * N:(p + 1) * N] = self.response_op(Ru[p])
-        return Cu
+        g = self.g; N = self.N
+        lp = self._path(("response",), r_lo=g.s, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
+                        known_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r))
+        K = Ru.T.copy(); K[:, own] = 0.0
+        return self._many(lp, K).reshape(len(self.prim) * N, N)
 
     def continuation(self, Rj: np.ndarray) -> np.ndarray:
-        out = np.zeros((Rj.shape[1], self.N, self.N))
-        for j in range(Rj.shape[1]):
-            if np.abs(Rj[:, j]).max() > 0:
-                out[j] = self.continuation_op(Rj[:, j])
-        return out
+        g = self.g
+        lp = self._path(("continuation",), r_lo=g.t, r_hi=np.full(self.N, self.T), point_fn=lambda k, r: (r, r - g.s[k]),
+                        known_fn=lambda k, r: (r, r - g.t[k]))
+        disc = np.exp(-self.rho * (lp.r - g.t[lp.rows])) if lp.rows is not None else None
+        return self._many(lp, Rj, disc)
 
     def own_lag_read(self, lag: float) -> np.ndarray:
         return self.read(-lag, -lag)
@@ -264,13 +286,17 @@ class SpectralCompiled(CompiledBase):
         return self.g.mass_matrix(rho=self.rho)
 
     def projection_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
-        N = self.N; H = np.zeros((N, Y.shape[1] * N))
-        for k in range(Y.shape[1]):
-            yk = Y[:, k]
-            if np.abs(yk).max() > 0:
-                raw = self.read(-delay, -delay) @ yk if delay else yk
-                H[:, k * N:(k + 1) * N] = self.projection_op(raw, delay)
-        return H
+        g = self.g; N = self.N; u = g.s
+        lp = self._path(("projection", delay), r_lo=np.zeros(N), r_hi=u,
+                        point_fn=lambda k, r: (np.full_like(r, g.t[k] + delay), g.t[k] + delay - r),
+                        known_fn=lambda k, r: (np.full_like(r, u[k]), u[k] - r))
+        raw = Y
+        if delay:
+            raw = np.zeros_like(Y)
+            for k in range(Y.shape[1]):
+                if np.abs(Y[:, k]).max() > 0:
+                    raw[:, k] = self.read(-delay, -delay) @ Y[:, k]
+        return np.ascontiguousarray(self._many(lp, raw).transpose(1, 0, 2)).reshape(N, Y.shape[1] * N)
 
     # ------------------------------------------------------- closed loop
     row = row_op                                          # the engines' common name
@@ -279,35 +305,17 @@ class SpectralCompiled(CompiledBase):
         """maps[agent]: (n_ctrl, n_rows, N) nodal raw maps g(t, b).  Columns: Brownian channels,
         then one impulse column per control in impulse_controls (unit mass at the shock time).
         Returns Z (n_prim N, ncol)."""
-        g = self.g; N = self.N; nW = self.nW
+        N = self.N; nW = self.nW
         imp = list(impulse_controls)
         n = len(self.prim) * N; ncol = nW + len(imp)
         M = np.zeros((n, n)); B = np.zeros((n, ncol))
         excl = set(next(a for a in self.model.agents if a.name == excluded).controls) if excluded else set()
-        # states
+        # states: map-independent, cached per (excluded, impulses) as the nonzero blocks
         if self.nX:
-            EA = self.expA(g.a)                                             # (N, nX, nX)
-            for k in range(nW):
-                v = self.sigma[:, k]
-                for i in range(self.nX):
-                    B[self.block(self.prim[i]), k] += EA[:, i, :] @ v
-            inp = np.zeros((self.nX, N, n))
-            for si, (nm, lag), c in self.state_inputs:
-                if nm in excl:
-                    continue
-                inp[si] += c * self.atom_op((nm, lag))
-            for i in range(self.nX):
-                for j in range(self.nX):
-                    M[self.block(self.prim[i])] += self.Vol[i, j] @ inp[j]
-            for col, u in enumerate(imp):
-                for si, (nm, lag), c in self.state_inputs:
-                    if nm != u:
-                        continue
-                    v = np.zeros(self.nX); v[si] = c
-                    EAd = self.expA(np.maximum(g.a - lag, 0.0)) if lag else EA
-                    on = (g.a0 >= lag - 1e-12) if lag else np.ones(N, dtype=bool)
-                    for i in range(self.nX):
-                        B[self.block(self.prim[i]), nW + col] += on * (EAd[:, i, :] @ v)
+            blocks, B0 = self._state_part(excluded, excl, imp)
+            for (i, p), blk in blocks.items():
+                M[self.block(self.prim[i]), p * N:(p + 1) * N] = blk
+            B[:] = B0
         # controls from maps
         for a in self.model.agents:
             if a.name == excluded:
@@ -317,8 +325,11 @@ class SpectralCompiled(CompiledBase):
                 bl = self.block(u)
                 for r, (rname, drift, E, delay) in enumerate(self.rows[a.name]):
                     reg, deltas = self.row_op(a.name, r, excl)
+                    nzb = self._row_ops[(a.name, r, frozenset(excl))][2]
                     gker = gm[ui, r]
-                    M[bl] += self.conv_left(gker, delay) @ reg
+                    C = self.conv_left(gker, delay)
+                    for p in nzb:                                       # the zero blocks of reg contribute nothing
+                        M[bl, p * N:(p + 1) * N] += C @ reg[:, p * N:(p + 1) * N]
                     for src, dl in deltas.items():
                         if src in self.channels:
                             col = self.channels.index(src)
@@ -330,17 +341,72 @@ class SpectralCompiled(CompiledBase):
                             B[bl, col] += w * (self.instant(age, delay) @ gker)
         return self._solve_causal(M, B)
 
+    def _state_part(self, excluded, excl: set, imp: list):
+        """The state rows of the closed-loop system without the maps: the nonzero N x N blocks of the
+        Volterra propagation of the state inputs, {(state, primary): block}, and the shock and impulse
+        columns B0 (n, ncol).  Map-independent, cached per (excluded agent, impulse controls)."""
+        key = (excluded, tuple(imp))
+        if key in self._state_parts:
+            return self._state_parts[key]
+        g = self.g; N = self.N; nW = self.nW; n = len(self.prim) * N
+        B0 = np.zeros((n, nW + len(imp)))
+        EA = self.expA(g.a)                                             # (N, nX, nX)
+        for k in range(nW):
+            v = self.sigma[:, k]
+            for i in range(self.nX):
+                B0[self.block(self.prim[i]), k] += EA[:, i, :] @ v
+        inp = np.zeros((self.nX, N, n))
+        for si, (nm, lag), c in self.state_inputs:
+            if nm in excl:
+                continue
+            inp[si] += c * self.atom_op((nm, lag))
+        blocks: Dict[Tuple[int, int], np.ndarray] = {}
+        for i in range(self.nX):
+            for j in range(self.nX):
+                for p in self._nonzero_blocks(inp[j]):
+                    blk = self.Vol[i, j] @ inp[j][:, p * N:(p + 1) * N]
+                    if (i, p) in blocks:
+                        blocks[(i, p)] += blk
+                    else:
+                        blocks[(i, p)] = blk
+        for col, u in enumerate(imp):
+            for si, (nm, lag), c in self.state_inputs:
+                if nm != u:
+                    continue
+                v = np.zeros(self.nX); v[si] = c
+                EAd = self.expA(np.maximum(g.a - lag, 0.0)) if lag else EA
+                on = (g.a0 >= lag - 1e-12) if lag else np.ones(N, dtype=bool)
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), nW + col] += on * (EAd[:, i, :] @ v)
+        self._state_parts[key] = (blocks, B0)
+        return blocks, B0
+
+    @cached_property
+    def _panel_ranges(self):
+        """Node ranges [lo, hi) of every time panel: pieces are stored panel by panel, so each panel's
+        nodes are contiguous within every primary's block."""
+        panel = self.panel_of_node
+        return [(int(np.searchsorted(panel, p)), int(np.searchsorted(panel, p, side="right"))) for p in range(self.g.P)]
+
     def _solve_causal(self, M: np.ndarray, B: np.ndarray) -> np.ndarray:
         """Solve (I - M) Z = B exploiting causality: a kernel value at time panel p depends only on
         values at panels <= p, so with nodes grouped by panel the system is block lower triangular
-        and is solved by block forward substitution (one dense solve per panel)."""
-        Z = np.zeros_like(B)
-        for p, idx in enumerate(self._panel_idx):
-            rhs = B[idx].copy()
+        and is solved by block forward substitution (one dense solve per panel).  The panel blocks are
+        strided views of M reshaped by (primary, node), copied contiguously (the same blocks, in the
+        same (primary, node) order, as gathering the panel's indices)."""
+        n_prim = len(self.prim); N = self.N; ncol = B.shape[1]
+        M4 = M.reshape(n_prim, N, n_prim, N); B3 = B.reshape(n_prim, N, ncol)
+        Z = np.zeros_like(B); Z3 = Z.reshape(n_prim, N, ncol)
+        ranges = self._panel_ranges
+        for p, (lo, hi) in enumerate(ranges):
+            np_ = n_prim * (hi - lo)
+            rhs = B3[:, lo:hi].reshape(np_, ncol).copy()
             for q in range(p):
-                jdx = self._panel_idx[q]
-                rhs -= (-M[np.ix_(idx, jdx)]) @ Z[jdx]        # (I - M) has -M off the diagonal blocks
-            Z[idx] = np.linalg.solve(np.eye(len(idx)) - M[np.ix_(idx, idx)], rhs)
+                lq, hq = ranges[q]; nq_ = n_prim * (hq - lq)
+                blk = M4[:, lo:hi, :, lq:hq].reshape(np_, nq_)
+                rhs -= (-blk) @ Z3[:, lq:hq].reshape(nq_, ncol)   # (I - M) has -M off the diagonal blocks
+            diag = M4[:, lo:hi, :, lo:hi].reshape(np_, np_)
+            Z3[:, lo:hi] = np.linalg.solve(np.eye(np_) - diag, rhs).reshape(n_prim, hi - lo, ncol)
         return Z
 
 
@@ -391,6 +457,7 @@ class SpectralFiniteSolver(EngineBase):
         Bk = self._row_operator(agent, rows, inst)
         gmap = np.zeros((nU, nR, N))
         shifts = [c.panel_shift(c.rows[agent.name][r][3]) if c.rows[agent.name][r][3] > 0 else 0 for r in range(nR)]
+        systems: Dict[int, list] = {}                     # size -> [(cols, G, [rhs per control])]: solved in one call per size
         for (p, it), idx in sorted(c.trow_by_pit.items()):
             tv = g.t[idx[0]]
             w = g.row_weights(tv, side=(-1 if tv >= g.bp[p + 1] - 1e-12 else +1))[idx]
@@ -404,9 +471,14 @@ class SpectralFiniteSolver(EngineBase):
             if np.trace(G) <= 0:
                 continue
             G = G + self.MAP_RIDGE * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
+            rhs = [sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW)) for ui in range(nU)]
+            systems.setdefault(len(cols), []).append((cols, G, rhs))
+        for size, items in systems.items():
+            Gs = np.stack([G for _, G, _ in items])
             for ui in range(nU):
-                rhs = sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW))
-                gmap[ui].reshape(-1)[cols] = np.linalg.solve(G, rhs)
+                sol = np.linalg.solve(Gs, np.stack([rhs[ui] for _, _, rhs in items])[:, :, None])   # one LAPACK solve per system, as before
+                for (cols, _, _), x in zip(items, sol[:, :, 0]):
+                    gmap[ui].reshape(-1)[cols] = x
         return gmap
 
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:

@@ -90,6 +90,7 @@ class TriangleGrid:
         self.mass_matrices = {}              # rho -> mass_matrix(rho)
         self.read_cache = {}                 # (dt, da) -> read matrix (filled by the spectral engine)
         self.paths = {}                      # key -> LinePath (filled by the spectral engine)
+        self._row_weights = {}               # (t, side) -> row_weights(t, side)
 
     # ------------------------------------------------------------ lookup
     def panel_of(self, x, side=+1):
@@ -152,7 +153,14 @@ class TriangleGrid:
     # --------------------------------------------------------- quadrature
     def row_weights(self, t: float, side=+1) -> np.ndarray:
         """Weights w (N,) with int_0^t f(t, a) da = w @ f, for a time node t (exact on the
-        row's polynomial spaces).  Uses Clenshaw-Curtis on each piece crossed at time t."""
+        row's polynomial spaces).  Uses Clenshaw-Curtis on each piece crossed at time t.
+        Cached per (t, side): the array is shared, so index or copy it rather than write to it."""
+        key = (float(t), int(side))
+        if key not in self._row_weights:
+            self._row_weights[key] = self._row_weights_at(float(t), side)
+        return self._row_weights[key]
+
+    def _row_weights_at(self, t: float, side=+1) -> np.ndarray:
         w = np.zeros(self.N)
         p = int(self.panel_of(t, side))
         for pc in self.pieces:
@@ -318,18 +326,49 @@ class LinePath:
 
     def apply_weights(self, wts: np.ndarray) -> np.ndarray:
         """Operator with total quadrature weights wts (already including the base weights)."""
-        from scipy.sparse import diags
         if self.rows is None:
             return np.zeros((self.n_out, self.N))
-        return (self.R @ (diags(wts) @ self.I)).toarray()
+        return self._weighted_sum(np.asarray(wts, dtype=float))
+
+    @cached_property
+    def _sum_layout(self):
+        """Layout of the weighted row sum R (diag(d) I): the quadrature points are grouped by output node in
+        increasing order, so the sum is the CSR matrix with I's data scaled row by row and the row pointers
+        of each node's group collapsed into one row, made dense (duplicate columns add in point order, which
+        is also the order the sparse product accumulates in: the two agree to the bit).  Returns (indptr of
+        the collapsed rows, per-entry row index or None when every row of I has the same count)."""
+        if not np.all(np.diff(self.rows) >= 0):
+            return None
+        nq = len(self.rows)
+        starts = np.searchsorted(self.rows, np.arange(self.n_out + 1))
+        indptr = self.I.indptr[starts]
+        counts = np.diff(self.I.indptr)
+        uniform = counts.size > 0 and bool(np.all(counts == counts[0]))
+        rowidx = None if uniform else np.repeat(np.arange(nq), counts)
+        return indptr, rowidx
+
+    def _weighted_sum(self, d: np.ndarray) -> np.ndarray:
+        """R @ (diag(d) @ I) as a dense (n_out, N) array."""
+        layout = self._sum_layout
+        if layout is None or not np.issubdtype(d.dtype, np.floating):
+            from scipy.sparse import diags
+            return (self.R @ (diags(d) @ self.I)).toarray()
+        indptr, rowidx = layout
+        I = self.I
+        if rowidx is None:
+            data = (I.data.reshape(len(d), -1) * d[:, None]).reshape(-1)
+        else:
+            data = I.data * d[rowidx]
+        from scipy.sparse import _sparsetools
+        out = np.zeros((self.n_out, self.N))
+        _sparsetools.csr_todense(self.n_out, self.N, indptr, I.indices, data, out)
+        return out
 
     def apply(self, factor: np.ndarray) -> np.ndarray:
         """Operator with weight = base weight x factor (factor evaluated at the quadrature points)."""
         if self.rows is None:
             return np.zeros((self.n_out, self.N), dtype=np.result_type(factor, float))
-        from scipy.sparse import diags
-        M = (self.R @ (diags(self.w * factor) @ self.I))
-        return M.toarray()
+        return self._weighted_sum(self.w * factor)
 
     def with_known(self, kernel: np.ndarray, extra: Optional[np.ndarray] = None) -> np.ndarray:
         """Operator whose weight is the known kernel read along the path (times `extra` per point)."""
@@ -339,5 +378,16 @@ class LinePath:
         if extra is not None:
             f = f * extra
         return self.apply(f)
+
+    def with_known_many(self, kernels: np.ndarray, extra: Optional[np.ndarray] = None) -> np.ndarray:
+        """with_known for every column of kernels (N, m) at once: (m, n_out, N).  One sparse read of all the
+        kernels (the sparse product accumulates each column exactly as the single-kernel read does)."""
+        m = kernels.shape[1]
+        if self.rows is None:
+            return np.zeros((m, self.n_out, self.N))
+        F = self.J @ kernels                                       # (nq, m)
+        if extra is not None:
+            F = F * extra[:, None]
+        return np.stack([self.apply(F[:, i]) for i in range(m)])
 
 
