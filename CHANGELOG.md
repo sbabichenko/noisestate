@@ -26,6 +26,18 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Age grid operators built from their block-Toeplitz core.  On uniform panels of width w the
+  convolution tensor satisfies T[a, i, j] = K[p - q - r, alpha, beta, gamma] with p, q, r the panels
+  and alpha, beta, gamma the local nodes, the offset p - q - r in {0, 1}; the correlation tensor the
+  same with a factor exp(-rho q w).  The operators are now assembled from the two-piece core on one
+  panel plus dense slabs for the non-uniform tail (agent work; reconstruction exact to 2e-15).  The
+  Chapter 5 grid holds 20 MB instead of 131 (6.6 MB per extra discount rate instead of 66), grids
+  with only uniform panels hold no dense tensor at all (the delayed Chapter 3 solve drops from 2.9 s
+  to 0.33 s), operator construction is 4 to 5 times faster, and the Chapter 5 example solves in 5.6 s
+  at 126 ms per evaluation.  An FFT application of the same structure to the downstream products was
+  implemented, verified and rejected: 5 to 9 times slower than the dense products at 16 panels and
+  3.4 times at 64, with a crossover extrapolated near 300 uniform panels, because OpenBLAS runs the
+  dense products at 270 GFlop/s and the Toeplitz saving is only a factor P/8n in flops.
 - Symmetric closed loop: only the modes k <= m/2 are factorised and solved; a conjugate pair's
   contribution is twice the real part of one member's.  Agrees with the general solve to 7e-16 (the
   real part is taken directly, so nothing drifts); the Chapter 5 example solves in 6.0 s.

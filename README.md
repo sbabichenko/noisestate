@@ -108,7 +108,11 @@ warm-started point costs a handful of best responses, which is what a slider in 
 `to_dict()` is the payload such a front end would render (grid, kernels per quantity and
 channel, raw maps, costs, and the first-order-condition decomposition).
 
-Grids and their operator caches are shared across solves in a process (`noisestate.clear_grid_cache()`
+On panels of equal width the convolution and correlation tensors are block-Toeplitz in the panel
+index, so the age grid stores a two-piece core on one panel and dense slabs for any non-uniform tail
+(20 MB instead of 131 on the Chapter 5 grid) and assembles its operators from them; applying that
+structure to the downstream products by FFT was measured and is slower than dense products below
+about 300 uniform panels.  Grids and their operator caches are shared across solves in a process (`noisestate.clear_grid_cache()`
 releases them; a large stationary grid holds a few hundred MB of convolution tensors).  The cache keeps at
 most 32 grids and at most 1.5 GB of their tensors, paths and read matrices (`noisestate.grid_cache.BUDGET_BYTES`),
 dropping the least recently used grids beyond that.

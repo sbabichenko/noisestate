@@ -25,8 +25,10 @@ spectrally accurate for kernels that are smooth within panels.
 from __future__ import annotations
 
 from functools import cached_property
+from typing import Optional
 
 import numpy as np
+from numpy.lib.stride_tricks import as_strided
 from numpy.polynomial import legendre
 
 
@@ -102,8 +104,9 @@ class AgeGrid:
         self.panel_of_node = np.repeat(np.arange(self.P), self.n)
         self._bw = bary_weights(self.n)
         self.mass = np.concatenate([clenshaw_curtis(self.n, bp[p], bp[p + 1]) for p in range(self.P)])
-        self._corr_flat = {}                 # rho -> corr_tensor as [(a, j), i] (the only stored form; corr_tensor is a view of it)
-        self._corr_blocks = {}               # rho -> panel blocks of corr_tensor (see _tensor_blocks)
+        self._corr = {}                      # rho -> corr_tensor
+        self._corr_flat = {}                 # rho -> corr_tensor as [(a, j), i]
+        self._corr_parts = {}                # rho -> (core, tail slab, panel factors) on uniform panels
         self._shift_cache = {}               # tau -> shift matrix
 
     # ------------------------------------------------------------ basics
@@ -249,111 +252,231 @@ class AgeGrid:
             ws.append(0.5 * (e1 - e0) * wg)
         return np.concatenate(xs), np.concatenate(ws)
 
-    @cached_property
-    def conv_tensor(self) -> np.ndarray:
-        """T[a, i, j] = int_0^a l_i(b) l_j(a - b) db  (node a)."""
-        T = np.zeros((self.N, self.N, self.N))
+    def _conv_rows(self, ks) -> np.ndarray:
+        """conv_tensor rows of the nodes ks: T[a, i, j] = int_0^a l_i(b) l_j(a - b) db, (len(ks), N, N)."""
+        T = np.zeros((len(ks), self.N, self.N))
         bp = list(self.breakpoints)
         m = self.n + 2
-        for k, a in enumerate(self.nodes):
+        for t, k in enumerate(ks):
+            a = self.nodes[k]
             if a <= 1e-14:
                 continue
             cuts = bp + [a - b for b in bp]
             xs, ws = self._gauss_pieces(0.0, a, cuts, m)
             Li = self.interp(xs, side=+1)          # l_i(b)
             Lj = self.interp(a - xs, side=-1)      # l_j(a-b): approach from the left
-            T[k] = (Li * ws[:, None]).T @ Lj
+            T[t] = (Li * ws[:, None]).T @ Lj
         return T
 
+    def _corr_rows(self, rho: float, ks, jlo: int = 0) -> np.ndarray:
+        """corr_tensor rows of the nodes ks for the columns j >= jlo: T[a, i, j] = int e^{-rho s} l_i(s) l_j(a + s) ds,
+        (len(ks), N, N - jlo).  The integral runs over the s at which a + s is in the panel of node jlo or beyond
+        (below it every l_j with j >= jlo vanishes); the pieces are those of the full integral, so the entries agree
+        with the full one to round-off."""
+        T = np.zeros((len(ks), self.N, self.N - jlo))
+        if jlo >= self.N:
+            return T
+        bp = list(self.breakpoints)
+        m = self.n + 2
+        start = self.breakpoints[self.panel_of_node[jlo]] if jlo else 0.0
+        for t, k in enumerate(ks):
+            a = self.nodes[k]
+            top = self.L - a; lo = max(0.0, start - a)
+            if top - lo <= 1e-14:
+                continue
+            cuts = bp + [b - a for b in bp]
+            xs, ws = self._gauss_pieces(lo, top, cuts, m)
+            Li = self.interp(xs, side=+1)          # l_i(s)
+            Lj = self.interp(a + xs, side=+1)      # l_j(a+s)
+            w = ws * np.exp(-rho * xs)
+            T[t] = (Li * w[:, None]).T @ Lj[:, jlo:]
+        return T
+
+    @cached_property
+    def conv_tensor(self) -> np.ndarray:
+        """T[a, i, j] = int_0^a l_i(b) l_j(a - b) db  (node a).  Dense; the operators below do not need it
+        on a grid with uniform leading panels (see uniform_panels)."""
+        return self._conv_rows(range(self.N))
+
     def corr_tensor(self, rho: float = 0.0) -> np.ndarray:
-        """T[a, i, j] = int_0^{L-a} e^{-rho s} l_i(s) l_j(a + s) ds  (node a).  A (non-contiguous) view of the
-        stored [(a, j), i] layout that every operator uses; nothing else is kept."""
-        return self._corr_flat_for(rho).reshape(self.N, self.N, self.N).transpose(0, 2, 1)
-
-    def _corr_flat_for(self, rho: float) -> np.ndarray:
-        """corr_tensor(rho) stored as [(a, j), i]: each node's N x N slab is computed as before and written
-        transposed into place, so the raw [a, i, j] tensor is never materialised (one slab at a time)."""
+        """T[a, i, j] = int_0^{L-a} e^{-rho s} l_i(s) l_j(a + s) ds  (node a).  Dense, as conv_tensor."""
         key = float(rho)
-        if key not in self._corr_flat:
-            N = self.N
-            flat = np.zeros((N * N, N))
-            bp = list(self.breakpoints)
-            m = self.n + 2
-            for k, a in enumerate(self.nodes):
-                top = self.L - a
-                if top <= 1e-14:
-                    continue
-                cuts = bp + [b - a for b in bp]
-                xs, ws = self._gauss_pieces(0.0, top, cuts, m)
-                Li = self.interp(xs, side=+1)          # l_i(s)
-                Lj = self.interp(a + xs, side=+1)      # l_j(a+s)
-                w = ws * np.exp(-rho * xs)
-                flat[k * N:(k + 1) * N] = ((Li * w[:, None]).T @ Lj).T
-            self._corr_flat[key] = flat
-        return self._corr_flat[key]
+        if key not in self._corr:
+            self._corr[key] = self._corr_rows(key, range(self.N))
+        return self._corr[key]
 
+    # ------------------------------------------- uniform panels: core and tail
+    @cached_property
+    def uniform_panels(self) -> int:
+        """Number of leading panels of equal width w.  On them both tensors are block-Toeplitz in the panel
+        index: for node a in panel p with local index alpha, i in panel q (local beta), j in panel r (gamma),
+
+            conv_tensor[a, i, j] = K[p - q - r, alpha, beta, gamma],                      p - q - r in {0, 1},
+            corr_tensor[a, i, j] = exp(-rho q w) K_rho[r - p - q, alpha, beta, gamma],    r - p - q in {0, 1},
+
+        whenever a and j are in uniform panels (i is then uniform as well: b <= a for the convolution, and
+        the correlation reads i at the lag between a and the older j), and zero at every other panel triple.
+        The cores K, K_rho (2, n, n, n) are integrals over the two pieces of one panel (_unit_core); what
+        involves the tail (the rows of tail nodes a for the convolution, the columns of tail nodes j for the
+        correlation) is kept dense.  Below two uniform panels the dense tensors are used throughout."""
+        widths = np.diff(self.breakpoints)
+        off = np.where(np.abs(widths - widths[0]) > 1e-12 * widths[0])[0]
+        return int(off[0]) if len(off) else self.P
+
+    @property
+    def _compact(self) -> bool:
+        return self.uniform_panels >= 2
+
+    def _unit_core(self, rho: Optional[float]) -> np.ndarray:
+        """The core on one panel [0, w] with local nodes xi.  rho None (convolution):
+            K[0, al] = int_0^{xi_al} l_beta(s) l_gamma(xi_al - s) ds,   K[1, al] = int_{xi_al}^w l_beta(s) l_gamma(w + xi_al - s) ds;
+        rho a float (correlation):
+            K[0, al] = int_0^{w - xi_al} e^{-rho s} l_beta(s) l_gamma(xi_al + s) ds,   K[1, al] = int_{w - xi_al}^w e^{-rho s} l_beta(s) l_gamma(xi_al + s - w) ds.
+        The Gauss rule and the pieces are those of the dense quadrature on that panel, so the entries agree to round-off."""
+        n = self.n; w = float(self.breakpoints[1]); xi = cheb_lobatto(n, 0.0, w)
+        xg, wg = legendre.leggauss(n + 2)
+        K = np.zeros((2, n, n, n))
+        for al in range(n):
+            cut = xi[al] if rho is None else w - xi[al]
+            if cut <= 1e-13:
+                pieces = [(0.0, w, 1)]
+            elif cut >= w - 1e-13:
+                pieces = [(0.0, w, 0)]
+            else:
+                pieces = [(0.0, cut, 0), (cut, w, 1)]
+            for lo, hi, d in pieces:
+                xs = 0.5 * (hi - lo) * xg + 0.5 * (lo + hi); ws = 0.5 * (hi - lo) * wg
+                Li = bary_rows(xs, xi, self._bw)
+                if rho is None:
+                    Lj = bary_rows(xi[al] + d * w - xs, xi, self._bw)
+                else:
+                    Lj = bary_rows(xi[al] + xs - d * w, xi, self._bw); ws = ws * np.exp(-rho * xs)
+                K[d, al] = (Li * ws[:, None]).T @ Lj
+        return K
+
+    @cached_property
+    def _conv_core(self) -> np.ndarray:
+        return self._unit_core(None)
+
+    @cached_property
+    def _conv_core_flat(self) -> np.ndarray:
+        return self._conv_core.reshape(2, self.n * self.n, self.n)                                        # [d, (alpha, beta), gamma]
+
+    @cached_property
+    def _conv_core_flat_left(self) -> np.ndarray:
+        return np.ascontiguousarray(self._conv_core.transpose(0, 1, 3, 2)).reshape(2, self.n * self.n, self.n)   # [d, (alpha, gamma), beta]
+
+    @cached_property
+    def _conv_tail_flat(self) -> np.ndarray:
+        Nu = self.uniform_panels * self.n
+        return self._conv_rows(range(Nu, self.N)).reshape((self.N - Nu) * self.N, self.N)             # [(a, i), j], tail a
+
+    @cached_property
+    def _conv_tail_flat_left(self) -> np.ndarray:
+        Nu = self.uniform_panels * self.n
+        T = self._conv_tail_flat.reshape(self.N - Nu, self.N, self.N)
+        return np.ascontiguousarray(T.transpose(0, 2, 1)).reshape((self.N - Nu) * self.N, self.N)      # [(a, j), i], tail a
+
+    def _corr_compact(self, rho: float):
+        """(core [d, (alpha, gamma), beta], slab [(a, j), i] over the tail j, panel factors exp(-rho w q))."""
+        key = float(rho)
+        if key not in self._corr_parts:
+            n, Nu = self.n, self.uniform_panels * self.n
+            KL = np.ascontiguousarray(self._unit_core(key).transpose(0, 1, 3, 2)).reshape(2, n * n, n)
+            slab = self._corr_rows(key, range(self.N), jlo=Nu)                                          # (a, i, tail j)
+            flat = np.ascontiguousarray(slab.transpose(0, 2, 1)).reshape(self.N * (self.N - Nu), self.N)
+            fac = np.exp(-key * float(self.breakpoints[1]) * np.arange(self.uniform_panels))
+            self._corr_parts[key] = (KL, flat, fac)
+        return self._corr_parts[key]
+
+    def _panel_blocks(self, KK: np.ndarray, X: np.ndarray, fac: Optional[np.ndarray] = None) -> np.ndarray:
+        """M (m, Pu, n, n) with M[Delta] = KK[0] X[Delta] + KK[1] X[Delta - 1]: the core contracted with the
+        uniform panels of the kernels X (Pu n, m), each panel scaled by fac when given."""
+        n, Pu = self.n, self.uniform_panels; m = X.shape[1]
+        Xp = X.reshape(Pu, n, m)
+        if fac is not None:
+            Xp = Xp * fac[:, None, None]
+        A = (KK.reshape(2 * n * n, n) @ Xp.transpose(1, 0, 2).reshape(n, Pu * m)).reshape(2, n, n, Pu, m)
+        M = A[0].copy(); M[:, :, 1:] += A[1][:, :, :-1]
+        return np.ascontiguousarray(M.transpose(3, 2, 0, 1))
+
+    def _toeplitz_fill(self, C: np.ndarray, M: np.ndarray, lower: bool) -> None:
+        """Write M[Delta] into every panel block (p, q) of C (m, N, N) with p - q = Delta (lower) or q - p = Delta."""
+        m, N, _ = C.shape; n, Pu = self.n, self.uniform_panels
+        s0, s1, s2 = C.strides; flat = C.reshape(-1)
+        for D in range(Pu):
+            off = D * n * (N if lower else 1)
+            V = as_strided(flat[off:], shape=(m, Pu - D, n, n), strides=(s0, n * (s1 + s2), s1, s2))
+            V[...] = M[:, D, None]
+
+    def _conv_assemble(self, KK: np.ndarray, tail: np.ndarray, Y: np.ndarray) -> np.ndarray:
+        N, Nu = self.N, self.uniform_panels * self.n; m = Y.shape[1]
+        C = np.zeros((m, N, N))
+        self._toeplitz_fill(C, self._panel_blocks(KK, Y[:Nu]), lower=True)
+        if N > Nu:
+            C[:, Nu:, :] = (tail @ Y).reshape(N - Nu, N, m).transpose(2, 0, 1)
+        return C
+
+    def footprint(self) -> int:
+        """Bytes held by the cached operator arrays (tensors, cores, tail slabs, flats, correlation parts)."""
+        owners = {}
+        arrays = [v for v in self.__dict__.values() if isinstance(v, np.ndarray)]
+        arrays += [v for v in self._corr.values()] + [v for v in self._corr_flat.values()]
+        arrays += [a for parts in self._corr_parts.values() for a in parts]
+        for v in arrays:
+            o = v if v.base is None else v.base
+            owners[id(o)] = o.nbytes
+        return int(sum(owners.values()))
+
+    # ----------------------------------------------------------- operators
     def conv_op(self, y: np.ndarray) -> np.ndarray:
         """Matrix C with (C g)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel y."""
         return self.conv_ops(y[:, None])[0]
 
-    # The tensors are block sparse by panel: a convolution at an age in panel p reads only nodes of
-    # panels <= p in both factors, a correlation only older ages in the kernel and younger ones in the
-    # operator's argument.  Each batched product is therefore done per panel of the output age, over the
-    # bounding index ranges of that panel's nonzero entries (taken from the tensor itself, so any zero
-    # pattern is handled, and the ranges only ever include zeros, never drop a nonzero): the same sums
-    # with the exactly zero terms left out, so the result agrees with the full product to round-off.
-    def _tensor_blocks(self, T: np.ndarray, contract: int):
-        """Per output-age panel, (a0, a1, o0, o1, c0, c1, block) with the block [(a, out), contracted] of the
-        entries T[a, :, :] restricted to the nonzero ranges of the output index (o) and the contracted index (c)."""
-        out_axis = 3 - contract
-        blocks = []
-        for p in range(self.P):
-            a0, a1 = p * self.n, (p + 1) * self.n
-            nz = T[a0:a1] != 0
-            o_any = nz.any(axis=(0, contract)); c_any = nz.any(axis=(0, out_axis))
-            if not o_any.any():
-                continue
-            oi = np.where(o_any)[0]; ci = np.where(c_any)[0]
-            o0, o1, c0, c1 = int(oi[0]), int(oi[-1]) + 1, int(ci[0]), int(ci[-1]) + 1
-            blk = T[a0:a1, o0:o1, c0:c1] if out_axis == 1 else T[a0:a1, c0:c1, o0:o1].transpose(0, 2, 1)
-            blocks.append((a0, a1, o0, o1, c0, c1, np.ascontiguousarray(blk).reshape((a1 - a0) * (o1 - o0), c1 - c0)))
-        return blocks
-
-    @staticmethod
-    def _apply_blocks(blocks, N: int, Y: np.ndarray) -> np.ndarray:
-        """(m, N, N) with out[k, a, o] = sum_c T[a, o, c] Y[c, k] from the panel blocks."""
-        m = Y.shape[1]; YT = Y.T
-        out = np.zeros((m, N, N))
-        for a0, a1, o0, o1, c0, c1, blk in blocks:                          # the product transposed: rows of the
-            out[:, a0:a1, o0:o1] = (YT[:, c0:c1] @ blk.T).reshape(m, a1 - a0, o1 - o0)     # output written contiguously
-        return out
-
     def conv_ops(self, Y: np.ndarray) -> np.ndarray:
-        """Batched conv_op: Y (N, m) -> (m, N, N), out[k, a, j] = sum_i T[a, i, j] Y[i, k]."""
-        return self._apply_blocks(self._conv_blocks, self.N, Y)
+        """Batched conv_op: Y (N, m) -> (m, N, N).  Uniform panels: block lower-triangular Toeplitz from the
+        core and the tail rows from the stored slab; otherwise one BLAS product with the dense tensor."""
+        Y = np.asarray(Y, dtype=float); N = self.N
+        if not self._compact:
+            return (self._conv_flat @ Y).reshape(N, N, -1).transpose(2, 0, 1)
+        return self._conv_assemble(self._conv_core_flat, self._conv_tail_flat, Y)
 
     @cached_property
-    def _conv_blocks(self):
-        return self._tensor_blocks(self.conv_tensor, contract=2)
+    def _conv_flat(self) -> np.ndarray:
+        return self.conv_tensor.reshape(self.N * self.N, self.N)              # [(a, i), j]
 
     def corr_ops(self, W: np.ndarray, rho: float = 0.0) -> np.ndarray:
-        """Batched corr_op: W (N, m) -> (m, N, N), out[k, a, j] = sum_i T[a, i, j] W[i, k]."""
+        """Batched corr_op: W (N, m) -> (m, N, N).  Uniform panels: block upper-triangular Toeplitz from the
+        core (the panels of W scaled by exp(-rho w q)) and the tail columns from the stored slab."""
+        W = np.asarray(W, dtype=float); N = self.N
         key = float(rho)
-        if key not in self._corr_blocks:
-            self._corr_blocks[key] = self._tensor_blocks(self.corr_tensor(rho), contract=1)
-        return self._apply_blocks(self._corr_blocks[key], self.N, W)
+        if not self._compact:
+            if key not in self._corr_flat:
+                T = self.corr_tensor(rho)
+                self._corr_flat[key] = np.ascontiguousarray(T.transpose(0, 2, 1)).reshape(N * N, N)   # [(a, j), i]
+            return (self._corr_flat[key] @ W).reshape(N, N, -1).transpose(2, 0, 1)
+        KL, slab, fac = self._corr_compact(key)
+        Nu = self.uniform_panels * self.n; m = W.shape[1]
+        C = np.zeros((m, N, N))
+        self._toeplitz_fill(C, self._panel_blocks(KL, W[:Nu], fac), lower=False)
+        if N > Nu:
+            C[:, :, Nu:] = (slab @ W).reshape(N, N - Nu, m).transpose(2, 0, 1)
+        return C
 
     def conv_op_left(self, g: np.ndarray) -> np.ndarray:
         """Matrix C with (C y)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel g."""
         return self.conv_ops_left(g[:, None])[0]
 
     def conv_ops_left(self, G: np.ndarray) -> np.ndarray:
-        """Batched conv_op_left: G (N, m) -> (m, N, N), out[k, a, i] = sum_j T[a, i, j] G[j, k]."""
-        return self._apply_blocks(self._conv_blocks_left, self.N, G)
+        """Batched conv_op_left: G (N, m) -> (m, N, N), as conv_ops with the roles of i and j exchanged."""
+        G = np.asarray(G, dtype=float); N = self.N
+        if not self._compact:
+            return (self._conv_flat_left @ G).reshape(N, N, -1).transpose(2, 0, 1)
+        return self._conv_assemble(self._conv_core_flat_left, self._conv_tail_flat_left, G)
 
     @cached_property
-    def _conv_blocks_left(self):
-        return self._tensor_blocks(self.conv_tensor, contract=1)
+    def _conv_flat_left(self) -> np.ndarray:
+        return np.ascontiguousarray(self.conv_tensor.transpose(0, 2, 1)).reshape(self.N * self.N, self.N)   # [(a, j), i]
 
     def corr_op(self, w: np.ndarray, rho: float = 0.0) -> np.ndarray:
         """Matrix C with (C z)(a) = int_0^{L-a} e^{-rho s} w(s) z(a+s) ds for fixed w."""
@@ -361,9 +484,8 @@ class AgeGrid:
 
     def corr_op_right(self, z: np.ndarray, rho: float = 0.0) -> np.ndarray:
         """Matrix C with (C w)(a) = int_0^{L-a} e^{-rho s} w(s) z(a+s) ds for fixed z."""
-        return np.einsum("aji,j->ai", self._corr_flat_for(rho).reshape(self.N, self.N, self.N), z)   # from the [(a, j), i] layout
+        return np.einsum("aij,j->ai", self.corr_tensor(rho), z)
 
-    # ------------------------------------------------------------- helpers
     @staticmethod
     def breakpoints_from_delays(L: float, delays, unit: float | None = None,
                                 unit_range: float | None = None, growth: float = 2.0):
