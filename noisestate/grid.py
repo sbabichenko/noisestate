@@ -102,8 +102,7 @@ class AgeGrid:
         self.panel_of_node = np.repeat(np.arange(self.P), self.n)
         self._bw = bary_weights(self.n)
         self.mass = np.concatenate([clenshaw_curtis(self.n, bp[p], bp[p + 1]) for p in range(self.P)])
-        self._corr = {}                      # rho -> corr_tensor
-        self._corr_flat = {}                 # rho -> corr_tensor as [(a, j), i]
+        self._corr_flat = {}                 # rho -> corr_tensor as [(a, j), i] (the only stored form; corr_tensor is a view of it)
         self._shift_cache = {}               # tau -> shift matrix
 
     # ------------------------------------------------------------ basics
@@ -266,10 +265,17 @@ class AgeGrid:
         return T
 
     def corr_tensor(self, rho: float = 0.0) -> np.ndarray:
-        """T[a, i, j] = int_0^{L-a} e^{-rho s} l_i(s) l_j(a + s) ds  (node a)."""
+        """T[a, i, j] = int_0^{L-a} e^{-rho s} l_i(s) l_j(a + s) ds  (node a).  A (non-contiguous) view of the
+        stored [(a, j), i] layout that every operator uses; nothing else is kept."""
+        return self._corr_flat_for(rho).reshape(self.N, self.N, self.N).transpose(0, 2, 1)
+
+    def _corr_flat_for(self, rho: float) -> np.ndarray:
+        """corr_tensor(rho) stored as [(a, j), i]: each node's N x N slab is computed as before and written
+        transposed into place, so the raw [a, i, j] tensor is never materialised (one slab at a time)."""
         key = float(rho)
-        if key not in self._corr:
-            T = np.zeros((self.N, self.N, self.N))
+        if key not in self._corr_flat:
+            N = self.N
+            flat = np.zeros((N * N, N))
             bp = list(self.breakpoints)
             m = self.n + 2
             for k, a in enumerate(self.nodes):
@@ -281,9 +287,9 @@ class AgeGrid:
                 Li = self.interp(xs, side=+1)          # l_i(s)
                 Lj = self.interp(a + xs, side=+1)      # l_j(a+s)
                 w = ws * np.exp(-rho * xs)
-                T[k] = (Li * w[:, None]).T @ Lj
-            self._corr[key] = T
-        return self._corr[key]
+                flat[k * N:(k + 1) * N] = ((Li * w[:, None]).T @ Lj).T
+            self._corr_flat[key] = flat
+        return self._corr_flat[key]
 
     def conv_op(self, y: np.ndarray) -> np.ndarray:
         """Matrix C with (C g)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel y."""
@@ -300,11 +306,7 @@ class AgeGrid:
 
     def corr_ops(self, W: np.ndarray, rho: float = 0.0) -> np.ndarray:
         """Batched corr_op: W (N, m) -> (m, N, N)."""
-        key = float(rho)
-        if key not in self._corr_flat:
-            T = self.corr_tensor(rho)
-            self._corr_flat[key] = np.ascontiguousarray(T.transpose(0, 2, 1)).reshape(self.N * self.N, self.N)   # [(a, j), i]
-        return (self._corr_flat[key] @ W).reshape(self.N, self.N, -1).transpose(2, 0, 1)
+        return (self._corr_flat_for(rho) @ W).reshape(self.N, self.N, -1).transpose(2, 0, 1)
 
     def conv_op_left(self, g: np.ndarray) -> np.ndarray:
         """Matrix C with (C y)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel g."""
@@ -325,7 +327,7 @@ class AgeGrid:
 
     def corr_op_right(self, z: np.ndarray, rho: float = 0.0) -> np.ndarray:
         """Matrix C with (C w)(a) = int_0^{L-a} e^{-rho s} w(s) z(a+s) ds for fixed z."""
-        return np.einsum("aij,j->ai", self.corr_tensor(rho), z)
+        return np.einsum("aji,j->ai", self._corr_flat_for(rho).reshape(self.N, self.N, self.N), z)   # from the [(a, j), i] layout
 
     # ------------------------------------------------------------- helpers
     @staticmethod

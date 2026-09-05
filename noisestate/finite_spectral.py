@@ -71,7 +71,7 @@ class SpectralCompiled(CompiledBase):
         self.trow_by_pit: Dict[Tuple[int, int], np.ndarray] = {k: np.concatenate(v) for k, v in rows.items()}
         self.panel_of_node = np.concatenate([np.full(pc.n, pc.p) for pc in g.pieces])
         self._map_shifts: Dict[float, np.ndarray] = {}
-        self._row_ops: Dict[tuple, tuple] = {}            # (agent, row, excluded) -> row_op result (map-independent)
+        self._row_ops: Dict[tuple, tuple] = {}            # (agent, row, excluded) -> (nonzero blocks, deltas) of the seen row (map-independent)
         self._state_parts: Dict[tuple, tuple] = {}        # (excluded, impulses) -> state part of the closed loop
 
     # ------------------------------------------------------------ reads
@@ -152,35 +152,44 @@ class SpectralCompiled(CompiledBase):
             M[:, self.block(name)] += c * self.read(lag, lag)
         return M
 
-    def row_op(self, agent: str, r: int, excluded: set):
-        """Seen row r of `agent` as (regular operator on Z, {source: [(age, weight)]}),
-        the regular part already shifted by the observation delay.  Map-independent, so cached per
-        (agent, row, excluded controls); the operator is shared and must not be written to."""
+    def row_blocks(self, agent: str, r: int, excluded: set):
+        """Regular part of seen row r of `agent` (already shifted by the observation delay) as the N x N
+        operators on the primary kernels it reads, {primary: operator}, and the instantaneous entries
+        {source: [(age, weight)]}.  Map-independent, so cached per (agent, row, excluded controls) as the
+        nonzero blocks only; the operators are shared and must not be written to."""
         key = (agent, r, frozenset(excluded))
         if key not in self._row_ops:
-            reg, deltas = self._row_op(agent, r, excluded)
-            self._row_ops[key] = (reg, deltas, self._nonzero_blocks(reg))
-        reg, deltas, _ = self._row_ops[key]
-        return reg, {k: list(v) for k, v in deltas.items()}
+            self._row_ops[key] = self._row_blocks(agent, r, excluded)
+        blocks, deltas = self._row_ops[key]
+        return blocks, {k: list(v) for k, v in deltas.items()}
+
+    def row_op(self, agent: str, r: int, excluded: set):
+        """row_blocks assembled as one operator (N x n_prim N) on the primary vector (built on demand)."""
+        blocks, deltas = self.row_blocks(agent, r, excluded)
+        reg = np.zeros((self.N, len(self.prim) * self.N))
+        for n, op in blocks.items():
+            reg[:, self.block(n)] += op
+        return reg, deltas
 
     def _nonzero_blocks(self, reg: np.ndarray):
         """The primaries whose N x N block of the row operator is not identically zero."""
         return [p for p in range(len(self.prim)) if np.any(reg[:, p * self.N:(p + 1) * self.N])]
 
-    def _row_op(self, agent: str, r: int, excluded: set):
+    def _row_blocks(self, agent: str, r: int, excluded: set):
         name, drift, E, delay = self.rows[agent][r]
         S = self.read(delay, delay)
-        reg = np.zeros((self.N, len(self.prim) * self.N))
+        blocks: Dict[str, np.ndarray] = {}
         deltas: Dict[str, List[Tuple[float, float]]] = {}
         for (n, l), c in drift.items():
             if n in excluded:
                 deltas.setdefault(n, []).append((delay + l, c))
             else:
-                reg[:, self.block(n)] += c * (S @ self.read(l, l))
+                op = c * (S @ self.read(l, l))
+                blocks[n] = blocks[n] + op if n in blocks else op
         for k, ch in enumerate(self.channels):
             if E[k] != 0.0:
                 deltas.setdefault(ch, []).append((delay, E[k]))
-        return reg, deltas
+        return blocks, deltas
 
     # ------------------------------------------------------ line operators
     # Each family of line integrals is a cached quadrature structure (triangle.LinePath);
@@ -191,10 +200,29 @@ class SpectralCompiled(CompiledBase):
         panel = np.concatenate([np.full(pc.n, pc.p) for pc in self.g.pieces])
         return [np.concatenate([q * self.N + np.where(panel == p)[0] for q in range(len(self.prim))]) for p in range(self.g.P)]
 
+    # One quadrature structure per line geometry.  conv_right(d) is conv_left(d) with the roles of the
+    # unknown and the known exchanged (the same points, cuts and weights; the read matrices I and J swap),
+    # and the response path is conv_left at delay 0 (r from s to t, unknown at (r, r - s), known at
+    # (t, t - r)); both are served from the conv_left path without building a second set of read matrices.
+    @staticmethod
+    def _path_alias(key):
+        """(the key whose path is built, whether this key is its swap)."""
+        if key == ("response",):
+            return ("conv_left", 0.0), False
+        if key[0] == "conv_right":
+            return ("conv_left", key[1]), True
+        return key, False
+
     def _path(self, key, **kw):
-        if key not in self.g.paths:
-            self.g.paths[key] = self.g.path(self.g.t, self.g.a, side_t=self.g.side_t, **kw)
-        return self.g.paths[key]
+        paths = self.g.paths
+        if key not in paths:
+            base, swap = self._path_alias(key)
+            if base not in paths:
+                if swap:                    # build the base geometry: the unknown reads what this key's known reads
+                    kw = dict(kw, point_fn=kw["known_fn"], known_fn=kw["point_fn"])
+                paths[base] = self.g.path(self.g.t, self.g.a, side_t=self.g.side_t, **kw)
+            paths[key] = paths[base].swapped() if swap else paths[base]
+        return paths[key]
 
     # The map on a row observed with delay d is stored at the shifted time: the nodal value at (t', b) is
     # g(t' + d, b), the weight the control at t' + d puts on the observation increment of age b.  The
@@ -324,12 +352,11 @@ class SpectralCompiled(CompiledBase):
             for ui, u in enumerate(a.controls):
                 bl = self.block(u)
                 for r, (rname, drift, E, delay) in enumerate(self.rows[a.name]):
-                    reg, deltas = self.row_op(a.name, r, excl)
-                    nzb = self._row_ops[(a.name, r, frozenset(excl))][2]
+                    blocks, deltas = self.row_blocks(a.name, r, excl)
                     gker = gm[ui, r]
                     C = self.conv_left(gker, delay)
-                    for p in nzb:                                       # the zero blocks of reg contribute nothing
-                        M[bl, p * N:(p + 1) * N] += C @ reg[:, p * N:(p + 1) * N]
+                    for nm, op in blocks.items():                       # only the primaries the row reads
+                        M[bl, self.block(nm)] += C @ op
                     for src, dl in deltas.items():
                         if src in self.channels:
                             col = self.channels.index(src)
@@ -532,4 +559,5 @@ class SpectralFiniteSolver(EngineBase):
             if out["second_order"] is not None:
                 res.second_order[a.name] = out["second_order"]
             res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
+        self._loss_forms.clear()                  # the second-order check is done: its (n_prim N)^2 form is not kept
 

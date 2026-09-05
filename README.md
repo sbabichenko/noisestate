@@ -109,7 +109,9 @@ warm-started point costs a handful of best responses, which is what a slider in 
 channel, raw maps, costs, and the first-order-condition decomposition).
 
 Grids and their operator caches are shared across solves in a process (`noisestate.clear_grid_cache()`
-releases them; a large stationary grid holds a few hundred MB of convolution tensors).
+releases them; a large stationary grid holds a few hundred MB of convolution tensors).  The cache keeps at
+most 32 grids and at most 1.5 GB of their tensors, paths and read matrices (`noisestate.grid_cache.BUDGET_BYTES`),
+dropping the least recently used grids beyond that.
 
 ## How it works
 

@@ -56,7 +56,8 @@ class EngineBase:
         self._qa: Dict[str, np.ndarray] = {}                # agent -> (Q zeta) as an operator on the primary kernels
         self._rphys: Dict[str, np.ndarray] = {}             # agent -> physical impulse responses (all reactions off)
         self._second_order_cache: Dict[str, dict] = {}       # representative -> its second-order check, shared with tied agents
-        self._loss_forms: Dict[str, np.ndarray] = {}         # agent -> the loss form on the world (map-independent)
+        self._loss_forms: Dict[str, np.ndarray] = {}         # agent -> the loss form on the world (map-independent; built for the
+                                                            # tie representatives' second-order check in _finish and released there)
 
     # ------------------------------------------------------------ ties
     def _fill_ties(self, d: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:

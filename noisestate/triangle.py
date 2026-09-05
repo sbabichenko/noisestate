@@ -324,6 +324,16 @@ class LinePath:
         self.n_out, self.N = n_out, N
         self.rows = None; self.r = None; self.w = None; self.I = None; self.J = None; self.R = None
 
+    def swapped(self) -> "LinePath":
+        """The same path with the unknown's and the known's read matrices exchanged: the integral of a
+        product of two kernels along the same line, with the other factor as the unknown.  Shares every
+        array (nothing is copied), so the two operators of a geometry cost one set of read matrices."""
+        lp = LinePath(self.n_out, self.N)
+        lp.rows, lp.r, lp.w, lp.R = self.rows, self.r, self.w, self.R
+        lp.I, lp.J = self.J, self.I
+        lp.out_t = getattr(self, "out_t", None); lp.out_a = getattr(self, "out_a", None)
+        return lp
+
     def apply_weights(self, wts: np.ndarray) -> np.ndarray:
         """Operator with total quadrature weights wts (already including the base weights)."""
         if self.rows is None:
