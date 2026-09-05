@@ -1,6 +1,6 @@
 """Bounding and watching a solve (2026-09-05 audit): max_evaluations, deadline, progress, diagnostics=False,
 the stability budget, the Newton-Krylov inner budget, and a non-finite residual."""
-import json, os, time, warnings, numpy as np, pytest
+import json, os, warnings, numpy as np, pytest
 import noisestate as ns
 from noisestate.accel import solve_fixed_point
 from noisestate.cli import main
@@ -64,7 +64,7 @@ def test_progress_is_called_per_evaluation_and_can_cancel():
     assert not res.converged and res.iterations == 2 and res.message.startswith("coarse start: 2 evaluations")
 
 
-def test_diagnostics_off_skips_the_checks_and_is_faster():
+def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
     S = ns.make_solver(_ch3(nodes=96, window=10.0)); full = S.solve(); w = full.maps
     off = S.solve(init=w, diagnostics=False)
     assert off.converged and off.second_order == {} and off.foc == {} and off.representation_error == {} and off.resolution_ok is None
@@ -73,13 +73,16 @@ def test_diagnostics_off_skips_the_checks_and_is_faster():
     assert "diagnostics skipped" in off.summary() and any(d["name"] == "diagnostics" and d["ok"] is None for d in off.diagnose())
     assert "diagnostics skipped" not in full.summary() and "diagnostics" not in [d["name"] for d in full.diagnose()]
     assert json.loads(json.dumps(off.to_dict()))["options"]["solve"]["diagnostics"] is False
+    # the checks are the best responses after the fixed point (one per agent, with the decomposition, which
+    # halves the time of this warm-started solve); with diagnostics=False none is made
+    calls = []; best_response = type(S).best_response
 
-    def timed(**kw):
-        best = np.inf
-        for _ in range(3):
-            t = time.time(); S.solve(init=w, **kw); best = min(best, time.time() - t)
-        return best
-    assert timed(diagnostics=False) < timed()                    # 2x on this model: the pass is two best responses and an eigh
+    def counted(self, agent, maps, want_decomp=False):
+        calls.append(want_decomp)
+        return best_response(self, agent, maps, want_decomp)
+    monkeypatch.setattr(type(S), "best_response", counted)
+    r = S.solve(init=w, diagnostics=False); assert len(calls) == 2 * r.iterations and not any(calls)
+    calls.clear(); r = S.solve(init=w); assert len(calls) == 2 * r.iterations + 2 and calls[-2:] == [True, True]
     # the cell engine (no checks of its own) accepts the option as well
     d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite_cells", "window": 1.0, "nodes": 12}
     assert ns.solve(ns.Model.from_dict(d), diagnostics=False).converged
@@ -106,19 +109,33 @@ def test_non_finite_best_response_stops_with_a_clear_error():
 
 def test_newton_polish_inner_budget_holds():
     """scipy's newton_krylov replaces LGMRES's outer loop by the Newton steps, so the inner_maxiter it was
-    given bounded nothing (24 evaluations per step on this system); inner_m does: at most 15 evaluations of
-    the map per step plus the line search."""
+    given bounded nothing; inner_m does: a step is at most 15 fresh Krylov vectors, plus the min(step - 1, 10)
+    directions carried from earlier steps (scipy does not keep their products: one evaluation each) and the
+    line search (one evaluation, two when it backtracks), with one evaluation at the start of the polish and
+    one for the residual it reports."""
+    def polish(A, b, steps):
+        calls = [0]
+
+        def F(x):
+            calls[0] += 1
+            return A @ x - b
+        z, rn, ev, ok, msg = solve_fixed_point(F, np.zeros(len(b)), tol=1e-14, anderson_iters=1, max_newton=steps)
+        assert ev == calls[0] and "newton polish" in msg
+        return ev - 2                                            # Anderson made two evaluations before its cap
+
+    def budget(steps, line_search):
+        return 2 + sum(15 + min(j, 10) + line_search for j in range(steps))
     rng = np.random.default_rng(1); n = 120
     A = rng.standard_normal((n, n)) / np.sqrt(n) + 2.0 * np.eye(n); b = rng.standard_normal(n)
-    calls = [0]
-
-    def F(x):
-        calls[0] += 1
-        return A @ x - b
-    z, rn, ev, ok, msg = solve_fixed_point(F, np.zeros(n), tol=1e-14, anderson_iters=1, max_newton=3)
-    assert ev == calls[0] and "newton polish" in msg
-    polish = ev - 2                                              # Anderson made two evaluations before its cap
-    assert 3 * 15 <= polish <= 3 * (15 + 4) + 1
+    # 48: the first step's inner loop meets its 1e-3 forcing tolerance after 10 vectors, the later steps run
+    # all 15; the old inner_m=30 made 73
+    assert budget(3, 1) - 14 <= polish(A, b, 3) <= budget(3, 2)
+    # an ill-conditioned system runs every step's 15 fresh vectors, so the count is the formula itself, out
+    # to twelve steps where ten directions are carried: 53 and 259 (98 and 439 with inner_m=30)
+    rng = np.random.default_rng(2); n = 200
+    Q, _ = np.linalg.qr(rng.standard_normal((n, n))); A = Q @ np.diag(np.logspace(-4, 0, n)) @ Q.T; b = rng.standard_normal(n)
+    assert budget(3, 1) <= polish(A, b, 3) <= budget(3, 2)
+    assert budget(12, 1) <= polish(A, b, 12) <= budget(12, 2)
 
 
 def test_stability_budget_bounds_the_best_response_rounds(monkeypatch):

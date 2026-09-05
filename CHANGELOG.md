@@ -18,16 +18,18 @@
   `--deadline` on `solve` and `sweep`.
 - The Newton-Krylov polish's inner budget holds: scipy's `newton_krylov` replaces LGMRES's outer loop
   by the Newton steps, so the `inner_maxiter=15` it was given bounded nothing and a step could take
-  30 evaluations of the best-response map (LGMRES's `inner_m`); the call passes `inner_m=15` (a
-  linear test system: 24 evaluations per step before, 16 after; no shipped example reaches the
-  polish, so their numbers are unchanged).  `stability()` makes at most
-  `STABILITY_MAX_EVALUATIONS` (200) rounds of best responses, a number it passed to ARPACK as a count
-  of restarts (up to 18 rounds each): the Arnoldi iteration is stopped at 170 and the power-iteration
-  fallback gets the remaining 30, `method` saying so.  A best-response map that returns a non-finite
-  value (an overflow: a lead term at a discount rate times the window above 709) stops the iteration
-  with a `RuntimeError` naming the evaluation; every test of the Anderson loop is False on NaN, so it
-  iterated on NaN and the next evaluation's closed loop died with a bare `LinAlgError: Singular
-  matrix`.
+  30 fresh Krylov vectors (LGMRES's `inner_m`), each an evaluation of the best-response map; the
+  call passes `inner_m=15`.  A step also re-multiplies the up to 10 directions LGMRES carries from
+  earlier steps and makes the line search's evaluation, so it costs 16 to 26 evaluations (28 seen
+  when the line search backtracks) against 31 to 49 before (linear test systems: 12 steps take 259
+  against 439; no shipped example reaches the polish, so their numbers are unchanged).
+  `stability()` makes at most `STABILITY_MAX_EVALUATIONS` (200) rounds of best responses, a number
+  it passed to ARPACK as a count of restarts (up to 18 rounds each): the Arnoldi iteration is
+  stopped at 170 and the power-iteration fallback gets the remaining 30, `method` saying so.  A
+  best-response map that returns a non-finite value (an overflow: a lead term at a discount rate
+  times the window above 709) stops the iteration with a `RuntimeError` naming the evaluation;
+  every test of the Anderson loop is False on NaN, so it iterated on NaN and the next evaluation's
+  closed loop died with a bare `LinAlgError: Singular matrix`.
 - Finite engines: a singular best-response system raises the stationary engine's `ValueError` (`the
   best-response system of market_maker is singular: ...`) instead of falling through to a
   least-squares solve that returned a zero strategy as a converged equilibrium with cost 0, a clean
@@ -91,9 +93,17 @@
   cites the package's Chapter 5 reference instead of dissertation-tree files; `solve()`'s docstring
   names `start` (not the removed `method`) and `stability()`'s lists `method` and
   `fixed_point_residual`.
+- CLI: a missing or unreadable model file, bad YAML and an output path that cannot be written exit 2
+  with `error: ...`, as the exit-status contract says; they raised through `main` (a traceback and
+  exit 1, the code of a solve that did not converge).  The `diagnostics=False` test counts the best
+  responses a solve makes (none after the fixed point) instead of timing it on a shared CPU.
 - Version 0.3.0: `solve()` takes `max_evaluations`, `deadline`, `progress` and `diagnostics`, the
   payload's model name key is `name` and `res.solve_kw["start"]` is a string, so a minor bump rather
-  than a patch.
+  than a patch.  `__version__` (the payload's `version`, `noisestate --version`) is
+  `pyproject.toml`'s when the package is imported from a source tree (a checkout on the path, an
+  editable install bumped since it was installed), else the installed distribution's: this branch
+  reported the installed 0.2.4 on every payload it wrote.  `tests/test_payload.py` checks it against
+  `pyproject.toml`.
 
 ## 0.2.4 (2026-09-04) — second review round
 

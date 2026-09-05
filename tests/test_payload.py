@@ -56,3 +56,11 @@ def test_cli_version(capsys):
     with pytest.raises(SystemExit) as e:
         main(["--version"])
     assert e.value.code == 0 and capsys.readouterr().out.strip() == f"noisestate {ns.__version__}"
+
+
+def test_version_is_the_source_tree_s():
+    # __version__ (the payload's `version`, --version) is pyproject.toml's when the package is imported from a
+    # checkout, not the installed distribution's (an editable install bumped since it was installed said 0.2.4)
+    import re
+    text = open(os.path.join(HERE, "..", "pyproject.toml")).read()
+    assert ns.__version__ == re.search(r'^version = "([^"]+)"', text, re.M).group(1) != "unknown"

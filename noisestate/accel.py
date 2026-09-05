@@ -125,7 +125,9 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
     try:
         try:
             # scipy's KrylovJacobian replaces LGMRES's outer loop by the Newton steps (maxiter 1), so its
-            # inner_maxiter is not the budget of a step: inner_m is, one evaluation of F per inner step
+            # inner_maxiter is not the budget of a step: inner_m bounds the fresh Krylov vectors (one
+            # evaluation of F each); a step also re-multiplies the up to outer_k=10 directions carried from
+            # earlier steps (store_outer_Av is False) and makes the line search's, 16 to 26 in all
             z2 = newton_krylov(Fb, z, f_tol=tol * max(1.0, float(np.linalg.norm(z))), maxiter=max_newton,
                                method="lgmres", inner_inner_m=15, verbose=verbose)
             note = "newton polish: {n} evaluations, residual {r:.2e}"

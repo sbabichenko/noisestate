@@ -18,6 +18,17 @@ def test_cli_validate_solve_sweep_on_every_engine(tmp_path):
     assert main(["sweep", os.path.join(EX, "ch3_two_player.yaml"), "p2", "3,5", "-o", str(sw)]) == 0
     sw_rows = json.load(open(sw)); assert len(sw_rows) == 2 and all(r["param"] == "p2" and r["result"]["params"]["p2"] == r["value"] for r in sw_rows)
 
+def test_cli_file_errors_are_usage_errors(tmp_path, capsys):
+    # a missing model file, bad YAML and an output path that cannot be written print `error: ...` and exit 2
+    # as the contract says; they raised through main (a traceback and exit 1, the code of an unconverged solve)
+    assert main(["solve", str(tmp_path / "missing.yaml")]) == 2
+    assert capsys.readouterr().err.startswith("error: ")
+    bad = tmp_path / "bad.yaml"; bad.write_text("name: x\nagents: [\n")
+    assert main(["validate", str(bad)]) == 2
+    assert capsys.readouterr().err.startswith("error: ")
+    assert main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "-o", str(tmp_path / "no_such_dir" / "out.json")]) == 2
+    assert capsys.readouterr().err.startswith("error: ")
+
 def test_top_level_solve_rejects_unknown_options():
     import pytest
     with pytest.raises(TypeError, match="unknown option"):

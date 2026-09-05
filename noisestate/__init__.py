@@ -14,11 +14,25 @@ __all__ = ["Model", "ModelBuilder", "ConvergenceError", "BaseResult", "Stationar
            "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "load", "solve", "sweep",
            "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache"]
 
-try:
-    from importlib.metadata import version as _version
-    __version__ = _version("noisestate")
-except Exception:                                   # not installed as a distribution
-    __version__ = "unknown"
+def _read_version() -> str:
+    """The version pyproject.toml declares when the package is imported from a source tree (a checkout on
+    the path, an editable install bumped since it was installed), else the installed distribution's."""
+    import os, re
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pyproject.toml")) as fh:
+            text = fh.read()
+        if re.search(r'^name\s*=\s*"noisestate"', text, re.M):
+            return re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1)
+    except (OSError, AttributeError):
+        pass
+    try:
+        from importlib.metadata import version
+        return version("noisestate")
+    except Exception:                                   # not installed as a distribution
+        return "unknown"
+
+
+__version__ = _read_version()
 
 
 def read_yaml(path: str) -> dict:

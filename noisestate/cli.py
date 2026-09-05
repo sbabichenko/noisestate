@@ -1,7 +1,8 @@
 """Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--param k=v ...] [--max-evaluations N]
 [--deadline S]`; `--version`.
-Exit status: 0 converged (a sweep: every point), 1 solved but not converged, 2 a usage error or an error
-the package raises (a model or solver problem, printed as `error: ...` on stderr)."""
+Exit status: 0 converged (a sweep: every point), 1 solved but not converged, 2 a usage error (a bad option, a
+missing or unreadable model file, bad YAML, an output path that cannot be written) or an error the package
+raises (a model or solver problem), printed as `error: ...` on stderr."""
 from __future__ import annotations
 
 import argparse
@@ -51,7 +52,8 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     try:
         return _run(p, args)
-    except (ValueError, TypeError, NotImplementedError, RuntimeError, ImportError, np.linalg.LinAlgError) as exc:   # a model error: the message
+    except (ValueError, TypeError, NotImplementedError, RuntimeError, ImportError, np.linalg.LinAlgError,
+            OSError, yaml.YAMLError) as exc:              # a model, solver or file error: the message, exit 2
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

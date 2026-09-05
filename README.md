@@ -36,7 +36,8 @@ noisestate --version
 
 The exit status is 0 for a converged solve (a sweep: every point converged), 1 for a solve
 that ran but did not converge (the summary is still printed and `-o` still written), and 2
-for a usage error or an error the package raises, a model or solver problem, printed as
+for a usage error (a bad option, a missing or unreadable model file, bad YAML, an output path
+that cannot be written) or an error the package raises, a model or solver problem, printed as
 `error: ...` on stderr.
 
 ```python
@@ -178,9 +179,11 @@ strategy is recovered by projecting the resulting action kernel on the agent's
 closed-loop rows, and the equilibrium is the fixed point of the best-response map
 (all engines iterate on the action kernels with Tikhonov-regularised Anderson
 acceleration, the outer solver of the Chapter 5 market solver, and derive the raw
-maps by projection; a Newton-Krylov polish runs if Anderson stalls, at most 15 evaluations of
-the map per Newton step in its inner LGMRES iteration.  `solve(variable=
-"maps")` iterates on the raw maps instead, which is what happens with ties in any case).
+maps by projection; a Newton-Krylov polish runs if Anderson stalls, about 15 to 25 evaluations of
+the map per Newton step: at most 15 fresh Krylov vectors in its inner LGMRES iteration, plus the up
+to 10 directions carried from earlier steps, multiplied afresh each step, and the line search.
+`solve(variable="maps")` iterates on the raw maps instead, which is what happens with ties in any
+case).
 Both variables are kept because each fails somewhere the other does not: on the delayed
 Chapter 1 finite model the raw maps stall at a residual of 9e-7 after 313 evaluations
 where the action kernels converge in 16; with ties only the raw maps carry over between
