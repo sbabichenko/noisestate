@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import math
 import re
+import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -386,6 +387,31 @@ class Model:
             missing = [u for u in a.controls if u not in atoms]
             if missing:
                 raise ValueError(f"agent {a.name}: control(s) {missing} do not enter its loss; the best response would be undetermined")
+            for u in a.controls:
+                own = {}                                           # lag -> coefficient of the square of u@lag
+                for term in a.loss:
+                    if len(term) != 3:
+                        continue
+                    try:
+                        coef = float(term[0])
+                    except (TypeError, ValueError):
+                        continue
+                    e1, e2 = (self.expand({atom: 1.0}) for atom in term[1:])
+                    for (n, l), c1 in e1.items():
+                        if n == u and l >= 0 and (n, l) in e2:
+                            own[l] = own.get(l, 0.0) + coef * c1 * e2[(n, l)]
+                cur = own.get(0.0, 0.0)
+                lagged = sorted(l for l, v in own.items() if l > 0 and v > 0)
+                if cur > 0 or (cur == 0 and lagged and not a.myopic):     # a lagged read pins a non-myopic agent's control
+                    continue
+                why = (f"; a negative coefficient makes the loss unbounded below in {u}" if cur < 0 else
+                       f"; its quadratic term in the lagged read {u}@{lagged[0]:g} does not enter a myopic agent's "
+                       "first-order condition" if lagged else "")
+                warnings.warn(f"agent {a.name}: control {u} has no strictly positive quadratic term in its own current "
+                              f"value in the loss (the coefficient of {u} squared is {cur:g}{why}); the first-order "
+                              "condition then has no term in the control itself and determines it only through the "
+                              "quantities it moves, so the best-response system is usually singular (every engine "
+                              "refuses it) or the problem ill-posed", UserWarning)
         hz = self.horizon
         if hz.nodes != int(hz.nodes):
             raise ValueError(f"horizon.nodes must be an integer, got {hz.nodes!r}")

@@ -188,6 +188,19 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
 
 * A model file with a misspelled key, an unused channel, or a control that does not enter its
   owner's loss is rejected with a message naming the offending item.
+* A singular best-response system is refused on every engine with a `ValueError` naming the agent
+  and the usual causes: a control with no quadratic term in its current value whose effect on the
+  loss goes through nothing else (Kyle-Back with the market maker's `[1, P, P]` dropped), a
+  quadratic only in a lagged read of the control (free within the lag of the window's edge), two
+  rows carrying the same information, a zero noise loading.  The finite engines used to fall
+  through to a least-squares solve and report a zero strategy as a converged equilibrium with a
+  clean `check()`; they now LU-factor the system on its kept unknowns and refuse a reciprocal
+  condition estimate below `EngineBase.FOC_RCOND` (1e-10; the worst regular system in the tests
+  is at 2.6e-3).  On the cell engine's Krylov branch (above 200 unknowns) the test is one probe per
+  control, which catches a control its first-order condition does not respond to; a partial
+  deficiency there ends as a non-converged linear solve.  Validation warns (`UserWarning`) when a
+  control has no strictly positive quadratic term in its own current value, or in a lagged read of
+  it for a non-myopic agent, which is the usual cause.
 * `converged` means the residual of the fixed point is at or below `tol`, where the residual is
   the norm of the update divided by the larger of one and the norm of the iterate (so for a
   solution of norm below one it is an absolute residual).  `res.message` says what the outer

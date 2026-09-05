@@ -501,13 +501,10 @@ class SpectralFiniteSolver(EngineBase):
         return keep
 
     def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
+        """The system on the kept unknowns, solved directly; a singular one raises (see _solve_regular)."""
         keep = np.tile(self._identified(agent), len(agent.controls))
         gamma = np.zeros(Amat.shape[0])
-        A = Amat[np.ix_(keep, keep)]
-        try:
-            gamma[keep] = np.linalg.solve(A, -bvec[keep])
-        except np.linalg.LinAlgError:
-            gamma[keep] = np.linalg.lstsq(A, -bvec[keep], rcond=1e-10)[0]
+        gamma[keep] = self._solve_regular(agent, Amat[np.ix_(keep, keep)], -bvec[keep])
         return gamma
 
     def _project(self, agent: Agent, Zfull: np.ndarray, cact: np.ndarray) -> np.ndarray:

@@ -24,7 +24,7 @@ from typing import Dict, Optional
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, lgmres
 
-from .engine import EngineBase
+from .engine import EngineBase, singular_system_message
 from .compile import CompiledBase, reject_leads
 from .results import CellResult
 from .spec import Agent, Atom, Model
@@ -255,20 +255,42 @@ class FiniteSolver(EngineBase):
             gam = np.zeros((nU, nR, N, N)); gam[:, :, tri] = gvec.reshape(nU, nR, nfree)
             return project(foc(full_world(action_from_gamma(gam))))[:, :, tri].reshape(-1)
 
-        b = affine(np.zeros(nU * nR * nfree))
-        op = LinearOperator((nU * nR * nfree, nU * nR * nfree), matvec=lambda v: affine(v) - b)
-        if nU * nR * nfree <= 200:
-            M = np.column_stack([op.matvec(e) for e in np.eye(nU * nR * nfree)])
-            gvec = np.linalg.lstsq(M, -b, rcond=1e-13)[0]       # delayed rows give zero columns (see stationary)
+        n = nU * nR * nfree
+        b = affine(np.zeros(n))
+        op = LinearOperator((n, n), matvec=lambda v: affine(v) - b)
+        # a row seen with a delay of d cells is zero at cells v < d, so the map there multiplies nothing:
+        # those unknowns have zero rows and columns and stay at zero (see stationary)
+        keep = np.zeros((nU, nR, N, N), dtype=bool)
+        for r, (rname, drift, E, dly) in enumerate(c.rows[agent.name]):
+            keep[:, r] = tri & (np.arange(N)[None, :] >= dly)
+        keep = keep[:, :, tri].reshape(-1)
+        if n <= 200:
+            M = np.column_stack([op.matvec(e) for e in np.eye(n)])
+            gvec = np.zeros(n)
+            gvec[keep] = self._solve_regular(agent, M[np.ix_(keep, keep)], -b[keep])
         else:
+            # no matrix to factor here: one random probe per control catches a control whose whole block
+            # the operator annihilates (no quadratic term in itself and nothing it moves in the loss); a
+            # partial deficiency inside a block is not caught, and an inconsistent singular system then
+            # ends as the non-converged solve below
+            rng = np.random.default_rng(0); resp = {}
+            for ui, u in enumerate(agent.controls):
+                g = np.zeros(n); blk = slice(ui * nR * nfree, (ui + 1) * nR * nfree)
+                g[blk] = rng.standard_normal(nR * nfree) * keep[blk]
+                if keep[blk].any():                          # a control with no kept unknown has nothing to probe
+                    resp[u] = np.linalg.norm(op.matvec(g)) / np.linalg.norm(g)
+            if resp and not min(resp.values()) > self.FOC_RCOND * max(resp.values()):
+                u = min(resp, key=resp.get)
+                raise ValueError(singular_system_message(agent.name) + f" (its first-order condition does not respond to its strategy for {u})")
             x0 = self._warm.get(agent.name)
-            if x0 is not None and x0.shape[0] != nU * nR * nfree:
+            if x0 is not None and x0.shape[0] != n:
                 x0 = None
             gvec, info = lgmres(op, -b, x0=x0, rtol=1e-12, atol=0, maxiter=400)
             if info != 0:
                 gvec, info = lgmres(op, -b, x0=gvec, rtol=1e-12, atol=0, maxiter=1000)
             if info != 0:
-                raise RuntimeError(f"cell engine: the best-response linear solve did not converge (lgmres info {info})")
+                raise RuntimeError(f"cell engine: the best-response linear solve did not converge (lgmres info {info}); "
+                                   f"the system of {agent.name} may be singular (a control with no quadratic term in itself)")
             self._warm[agent.name] = gvec.copy()
         gam = np.zeros((nU, nR, N, N)); gam[:, :, tri] = gvec.reshape(nU, nR, nfree)
         cact = action_from_gamma(gam)

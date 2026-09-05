@@ -9,9 +9,11 @@ conversion from action kernels to maps.
 from __future__ import annotations
 
 import time
+import warnings
 from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
+import scipy.linalg as sla
 
 from .accel import solve_fixed_point
 from .spec import Agent, Model
@@ -21,6 +23,13 @@ def _is_eye(M: np.ndarray) -> bool:
     """Whether M is exactly the identity (a product with it is then skipped: X @ I is X to the bit)."""
     n = M.shape[0]
     return M.ndim == 2 and M.shape[1] == n and np.count_nonzero(M) == n and bool(np.all(np.diagonal(M) == 1.0))
+
+
+def singular_system_message(name: str) -> str:
+    """The error every engine raises on a singular best-response system, naming its usual causes."""
+    return (f"the best-response system of {name} is singular: two of its rows may carry the same information, a "
+            "control may have no quadratic term in its current value (a quadratic in a lagged read, D@tau, leaves "
+            "the strategy free within tau of the window's edge), or a row's noise loading may be zero")
 
 
 class EngineBase:
@@ -272,6 +281,28 @@ class EngineBase:
     def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
         """gamma solving Amat gamma = -bvec, with the engine's regularisation."""
         raise NotImplementedError
+
+    FOC_RCOND = 1e-10    # a best-response system whose reciprocal condition estimate is below this is singular
+
+    def _solve_regular(self, agent: Agent, A: np.ndarray, b: np.ndarray) -> np.ndarray:
+        """x solving A x = b for the best-response system of `agent` on its kept unknowns, refusing a
+        singular one: A is LU-factored, the reciprocal of its 1-norm condition number is estimated
+        from the factors (LAPACK gecon, O(n^2) after the factorisation), and an estimate below
+        FOC_RCOND raises the ValueError naming the usual causes.  Singular systems sit at 1e-16 or
+        exactly 0; the worst regular finite-engine system in the tests sits at 2.6e-3.  The finite
+        engines use this (a least-squares fallback used to return a zero strategy as converged); the
+        stationary engine keeps the exact test of np.linalg.solve, because a deliberately non-convex
+        model in the tests solves a system at 1e-23 whose strategy its second-order check must flag."""
+        if A.shape[0] == 0:
+            return np.zeros(0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", sla.LinAlgWarning)               # an exactly zero pivot: raised below
+            lu, piv = sla.lu_factor(A, check_finite=False)
+        gecon, = sla.get_lapack_funcs(("gecon",), (lu,))
+        rcond = float(gecon(lu, np.linalg.norm(A, 1))[0])
+        if not rcond > self.FOC_RCOND:
+            raise ValueError(singular_system_message(agent.name) + f" (reciprocal condition estimate {rcond:.1e})")
+        return sla.lu_solve((lu, piv), b, check_finite=False)
 
     def _project(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray) -> np.ndarray:
         """Raw maps (nU, nR, N) reproducing the action kernels on the agent's closed-loop rows."""

@@ -25,7 +25,7 @@ from scipy.linalg import lu_factor, lu_solve
 
 from .grid import AgeGrid
 from .grid_cache import age_grid
-from .engine import EngineBase
+from .engine import EngineBase, singular_system_message
 from .compile import CompiledBase, close_under_delays
 from .symmetry import find_cyclic_symmetry
 from .results import StationaryResult
@@ -612,10 +612,7 @@ class StationarySolver(EngineBase):
             else:
                 gamma[keep] = np.linalg.solve(Amat[np.ix_(keep, keep)], -bvec[keep])
         except np.linalg.LinAlgError:
-            raise ValueError(f"the best-response system of {agent.name} is singular: two of its rows may carry the "
-                             "same information, a control may have no quadratic term in its current value (a "
-                             "quadratic in a lagged read, D@tau, leaves the strategy free at ages above "
-                             "window - tau), or a row's noise loading may be zero") from None
+            raise ValueError(singular_system_message(agent.name)) from None
         return gamma
 
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:

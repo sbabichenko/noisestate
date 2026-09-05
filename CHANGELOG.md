@@ -199,6 +199,21 @@
 - The delayed-row least-squares cutoff is documented as immaterial (costs move by 1e-7 across
   cutoffs 1e-9 to 1e-6), and the jump-interpolation floor on the representation error for
   delayed rows and lagged control reads is recorded as a known open item.
+- Finite engines: a singular best-response system raises the stationary engine's `ValueError`
+  (`the best-response system of market_maker is singular: ...`) instead of falling through to a
+  least-squares solve that returned a zero strategy as a converged equilibrium with cost 0, a clean
+  `check()` and `second_order ok` (Kyle-Back with the market maker's `[1, P, P]` term dropped, on
+  both finite engines).  The kept unknowns are LU-factored and a reciprocal condition estimate below
+  `EngineBase.FOC_RCOND` (1e-10) is singular: singular systems sit at 1e-16 or 0, the worst regular
+  finite-engine system in the tests at 2.6e-3, and the results are unchanged.  The cell engine's
+  Krylov branch (above 200 unknowns) probes each control's block instead, and its non-converged
+  message names the singular cause.  A quadratic only in a lagged read of the control
+  (`[r, D@0.5, D@0.5]` without `[r, D, D]`) is singular on the finite horizon as well: the control is
+  free over the last lag.  Validation warns (`UserWarning`) when a control has no strictly positive
+  quadratic term in its own current value, or in a lagged read of it for a non-myopic agent, saying
+  why the best response is then usually singular; the Chapter 5 firms' prices, penalised through a
+  lagged read, do not warn, and no shipped example does.  The message lives once
+  (`engine.singular_system_message`) and says "within tau of the window's edge".
 
 ## 0.2.3 (2026-09-04) — release review
 

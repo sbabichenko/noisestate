@@ -86,9 +86,12 @@ def test_window_tail_ignores_random_walk_states_and_flags_the_undiscounted_kyle_
 
 def test_second_order_flags_non_convex_losses():
     d = _ch3(); d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["-r1", "D1", "D1"]]
-    r = ns.solve(d); assert not r.second_order["player1"]["ok"] and "NOT A MINIMUM" in r.summary() and r.second_order["player2"]["ok"]
+    with pytest.warns(UserWarning, match="unbounded below in D1"):              # validation flags the negative own term
+        r = ns.solve(d)
+    assert not r.second_order["player1"]["ok"] and "NOT A MINIMUM" in r.summary() and r.second_order["player2"]["ok"]
     d = _ch3(); d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["r1", "D1", "X"]]
-    assert not ns.solve(d).second_order["player1"]["ok"]
+    with pytest.warns(UserWarning, match="coefficient of D1 squared is 0"):    # and the missing one (a system at rcond 1e-23)
+        assert not ns.solve(d).second_order["player1"]["ok"]
     assert all(v["ok"] for v in ns.solve(_ch3()).second_order.values())
     assert json.loads(json.dumps(ns.solve(_ch3()).to_dict()))["second_order"]["player1"]["ok"]
 
