@@ -50,7 +50,8 @@ res.action_kernel("D1")      # closed-loop kernel of a control
 res.maps["player1"]          # raw strategy g[u][r](b) on the agent's signal rows, b the age of the increment as the
                              # agent sees it (a delayed row's raw increment is older by the delay: res.MAP_CONVENTION)
 res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"} kernels of the first-order condition
-res.means["X"]               # stationary mean of a state or control (targets, constant drifts; see Means)
+res.means["X"]               # mean of a state or control (targets, constant drifts, initial states; see Means): a
+                             # constant (stationary) or the path on the time nodes res.means_t (finite; res.mean("X", t))
 res.cost_parts["player1"]    # {"variance", "mean"}: the two parts of res.costs["player1"]
 ```
 
@@ -84,7 +85,9 @@ horizon: {kind: stationary, discount: rho, window: 8.0, nodes: 24}
 * **States.** `drift` is linear in atoms (other states, controls, lagged controls,
   definitions), plus an optional constant under the key `const`
   (`drift: {X: -a, D: 1.0, const: 0.3}`), which moves the means only; `noise` gives the
-  loading on each channel.
+  loading on each channel; on a finite horizon an optional `initial` value
+  (`X: {drift: ..., noise: ..., initial: 1.0}`, zero by default) starts the mean path there
+  (a stationary model, which has no initial time, rejects it).
 * **Definitions.** Named linear combinations of atoms, usable anywhere:
   `Pidx: {P0@tau: 0.333, P1@tau: 0.333, P2@tau: 0.333}`.
 * **Signals.** Each row has a linear `drift` (states, other agents' controls,
@@ -114,36 +117,48 @@ in YAML.
 ## Means
 
 The kernels are the zero-mean part of the equilibrium: every quantity as a linear functional of the
-shocks.  Linear loss terms (targets) and constant drifts move the means, deterministic paths that
-are common knowledge; the kernels do not depend on them, and the means are linear in them.  In a
-stationary model the means are constants, one per state and control, and the stationary engine
-solves them at the end of every solve (with `diagnostics=False` as well; they are part of the
-answer, not a check).  A control's mean first-order condition is the kernels' first-order condition
-applied to a constant path, with no information constraint: the instantaneous derivative of
-`1/2 z'Qz + q'z` in the control, its discounted own lagged reads, and the continuation through the
-DC gains `int_0^L e^{-rho a} R(a) da` of the passive-world impulse responses, the very responses the
-best response computes (a deviation of one agent's mean is seen by the others through their signals
-and answered through their equilibrium kernels); the mean dynamics (`A xbar` plus the control and
-lagged inputs at their constants plus the constant drift equal to zero) close the system, and it is
-one direct linear solve, no iteration.  The limits are exact: with no information (kernels zero) the
-means are the open-loop Nash equilibrium of the deterministic game, with perfect information the
-closed-loop (feedback) Nash equilibrium, one agent alone gets the deterministic optimum; under
-private information they lie between (the separation failure), which `tests/test_means.py` checks
-against the closed forms and the coupled Riccati equations.
+shocks.  Linear loss terms (targets), constant drifts and, on a finite horizon, initial states move
+the means, deterministic paths that are common knowledge; the kernels do not depend on them, and the
+means are linear in them.  Every engine solves them at the end of every solve (with
+`diagnostics=False` as well; they are part of the answer, not a check).  A control's mean
+first-order condition is the kernels' first-order condition applied to a deterministic path, with
+no information constraint: the instantaneous derivative of `1/2 z'Qz + q'z` in the control, its
+discounted own lagged reads, and the continuation `int_t^T e^{-rho (t' - t)} R(t', t) g(t') dt'`
+through the passive-world impulse responses, the very responses the best response computes (a
+deviation of one agent's mean is seen by the others through their signals and answered through
+their equilibrium kernels), with the targets `q` and the initial state as the driver in place of
+the shocks; the mean dynamics close the system, and it is one direct linear solve, no iteration.
+In a stationary model the means are constants, one per state and control, the continuation the DC
+gain `int_0^L e^{-rho a} R(a) da` and the dynamics `A xbar` plus the inputs at their constants plus
+the constant drift equal to zero.  On a finite horizon they are paths on [0, T]: the spectral engine
+carries a path on the time nodes of its triangle as a kernel constant in shock age, on which the
+kernels' own operators restricted to the line `s = 0` (a kernel's response to a shock at time 0)
+are the path's, so the continuation is the same spectral line integral as the kernels' and a lagged
+read is the path at `t - lag` (zero before 0), and the state is `xbar(t) = e^{At} x0 + int_0^t
+e^{A(t-r)} (inputs + const) dr`; the cell engine does the same on its cells, first order in the cell
+length like its kernels, as a cross-check.  The limits are exact: with no information (kernels
+zero) the means are the open-loop Nash equilibrium of the deterministic game, with perfect
+information the closed-loop (feedback) Nash equilibrium, one agent alone gets the deterministic
+optimum; under private information they lie between (the separation failure), which
+`tests/test_means.py` and `tests/test_means_finite.py` check against the closed forms, the coupled
+Riccati equations and the dissertation's Chapter 1 solver (Validation), and
+`examples/ch1_mean_sweep.py` shows on the Chapter 1 game with targets.
 
 `res.means` has every state, control and definition and each signal row's mean drift rate
-(`"agent.row"`); `res.cost_parts[agent]` is `{"variance", "mean"}`, the mean part being the flow
-`1/2 zbar'Q zbar + q'zbar` per unit time (the constant `theta^2` of a target is not in the model),
-and `res.costs[agent]` is their sum; the summary, `to_dict()` and the CLI JSON carry all three.
-Without a driver (no linear term, no constant drift) every mean is exactly zero, with no solve.  A
-random walk with no inputs (Kyle-Back's `V`, the Chapter 5 market's demand level `q`) has no
-stationary mean and is pinned at 0, so the means of what it enters are relative to its level
-(`model.notes` says so); a random walk with a constant drift and no feedback, and a singular mean
-system (a state whose mean no first-order condition determines), are refused with a `ValueError`.
-The continuation integrals are truncated at the window like the kernels' own, which is what
-`window_tail` reports; the flag says so when the means are nonzero.  The finite engines do not
-solve the means yet: a constant drift is rejected there (`NotImplementedError`, like leads) and a
-linear loss term is accepted and noted as not solved.
+(`"agent.row"`), as a constant (stationary) or as the path on the time nodes `res.means_t`
+(finite; `res.mean(name, t)` interpolates on the spectral engine, and its `plot()` adds the paths
+as a last row); `res.cost_parts[agent]` is `{"variance", "mean"}`, the mean part being the flow
+`1/2 zbar'Q zbar + q'zbar` per unit time, or its discounted integral over [0, T] (the constant
+`theta^2` of a target is not in the model), and `res.costs[agent]` is their sum; the summary,
+`to_dict()` and the CLI JSON carry all three.  Without a driver (no linear term, no constant drift,
+no initial state) every mean is exactly zero, with no solve.  A random walk with no inputs
+(Kyle-Back's `V`, the Chapter 5 market's demand level `q`) has no stationary mean and is pinned at
+0, so the means of what it enters are relative to its level (`model.notes` says so); a random walk
+with a constant drift and no feedback, and a singular mean system (a state whose mean no
+first-order condition determines, a control with no quadratic term in its current value), are
+refused with a `ValueError`.  On the stationary engine the continuation integrals are truncated at
+the window like the kernels' own, which is what `window_tail` reports; the flag says so when the
+means are nonzero.
 
 ## Sweeps and interactive use
 
@@ -257,6 +272,7 @@ uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
 | 1 | finite-horizon two-player game | `spec_ch1` (16 x 16 nodes, Tikhonov 1e-7) and the Chapter 1 grid solver (160 nodes, first order); `tests/test_ch1_refs.py` | converged at 12 nodes per side: cost 0.39690577, stable to 1e-11 to 20 nodes, and the cell scheme's Richardson pairs close on it as h^2 (0.396956 at 80/160 cells, 0.396918 at 160/320); the kernels at lags >= 0.1 agree with the references to their own error, 2e-3 to 4.9e-2 (the largest on a player's response to its own signal noise) for `spec_ch1` and 3e-3 to 3e-2 for the grid solver, which the package is closer to than `spec_ch1` is on every control kernel; near the diagonal `spec_ch1`'s own README reports weakly determined modes (0.35 apart below lag 0.1) and the cell scheme's Richardson limit agrees with the spectral engine to 2e-3; the dissertation's solvers put the cost 3e-4 lower (`spec_ch1` 0.39665; its README estimates the penalty's bias at +6e-4 on 0.39689-0.39690) |
 | finite, discounted | one agent, rho = 0.5 (and 0 as the control) on [0, 3] | closed form: discounted Riccati equation, Kalman filter, closed-loop impulse responses (`tests/test_finite_discount.py`) | cost within 2e-8 and kernels within 6e-5 at 12 nodes per side; the cell scheme's error halves from 48 to 96 cells and its Richardson pair is within 5e-4 |
 | means, stationary | one agent with a target, dX = (-a X + D) dt + dW; two agents with opposite targets and private signals | closed form ubar = theta a / (1 + r a (a + rho)); the open-loop and the closed-loop (coupled algebraic Riccati) Nash constants of the deterministic game (`tests/test_means.py`) | the windowed closed form to 3e-15, the exact one to the window's truncation e^{-(a + rho) L} (2.8e-8 at a = 1, rho = 0, L = 16); open-loop to 4e-8 at signal precision 1e-6, then monotone toward closed-loop, 0.5622 at precision 1000 against 0.5570 (open-loop 0.6667) |
+| means, finite (Chapter 1 with targets) | the Chapter 1 game with targets b1 = 1, b2 = -1, T = 1, r = 0.1, precisions p1 = p2 = p (`examples/ch1_mean_sweep.py`) | the dissertation's spectral solver (`spec_ch1`, 12 x 16 nodes, Tikhonov 1e-7, its Dbar1(0) converged to 0.03%): Dbar1(0), Dbar1(T/2), Jbar1 at p = 0.1, 1, 10, 100, 1000 and the p = 10 paths (`tests/refs/ch1_mean_p10.txt`); the cell engine's Richardson pairs (40, 80) and (80, 160); the deterministic LQ closed form (Riccati, solve_ivp at rtol 1e-12) for one agent (`tests/test_means_finite.py`) | 12 nodes per side, converged to 2e-5 up to p = 100 (20 nodes at p = 1000): Dbar1(0) = 9.93670, 9.47573, 7.79470, 5.98010, 5.10638 against the reference's 9.93688, 9.47708, 7.79761, 5.98117, 5.11630 (1.9e-5, 1.4e-4, 3.7e-4, 1.8e-4, 1.9e-3), Dbar1(T/2) to 1.1e-5, 7.7e-5, 1.9e-4, 5.3e-4, 1.8e-3, Jbar1 (the reference's includes the target's constant b^2 T = 1) to 5.7e-5, 4.3e-4, 1.1e-3, 1.3e-3, 3.1e-3; the p = 10 path within 1.4e-2 of the reference at every t (1.9e-3 of Dbar1(0), the largest at t = 0.075), where the cell engine's Richardson limits close on the package's path as h^2 (4.8e-3 then 1.2e-3 at T/2) and not on the reference, and the reference's variance cost is off by the same order (9e-5 at p = 10, 2e-4 at 100, 1.1e-3 at 1000): the gaps are the reference's own error; one agent alone within 1e-11 of the Riccati paths and 1e-10 of the cost, with a target, an initial state, and discounted (two states as well); open-loop 10 (1 - t) to 6.5e-9 at precision 1e-8, then monotone toward the closed-loop 4.6469 |
 
 Kyle-Back with two traders: the reference grid solver (`kb_multi.py`), Richardson-
 extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
@@ -381,9 +397,9 @@ The checks:
 * `res.cost_kind` and `model.notes` name what the numbers are: stationary costs are flow losses
   per unit time, finite-horizon costs are discounted integrals; a row that observes a control
   directly sees only its predictable part; a myopic agent ignores its effect on future flows; a
-  linear loss term or a constant drift moves only the means, which the stationary engine solves
-  and the finite engines do not yet, and has no effect on the kernels; a random walk with no inputs
-  has no stationary mean and is pinned at 0.  `noisestate validate` prints the notes.  A parameter that nothing references is an
+  linear loss term, a constant drift or an initial state moves only the means, which every engine
+  solves, and has no effect on the kernels; a random walk with no inputs has no stationary mean
+  and is pinned at 0.  `noisestate validate` prints the notes.  A parameter that nothing references is an
   error, the usual sign of a misspelled name elsewhere in the file; so are a drift that depends on
   a future value, a zero noise loading, `breakpoints` that do not end at the window, a
   `myopic` that is not a boolean, a lag, delay or lead that is not below the window, a
@@ -427,10 +443,9 @@ The checks:
 
 Scalar states and controls (write vector models as several scalars); no exact
 (noise-free) observation of a state that is not itself a channel.  Means (targets, constant
-drifts) are solved on the stationary engine, where they are constants, and not yet on the
-finite engines, where a constant drift is rejected and a linear loss term is accepted and noted
-as not solved; a random walk with no inputs has no stationary mean and is pinned at 0 (see
-Means).  Lead atoms (`X@-0.5`) are accepted only in a
+drifts, initial states) are solved as constants on the stationary engine, where a random walk
+with no inputs has no stationary mean and is pinned at 0 and an initial state is rejected, and
+as paths on the finite engines (see Means).  Lead atoms (`X@-0.5`) are accepted only in a
 stationary loss cross term with the agent's own current control (`[c, D, X@-0.5]`),
 where the covariance is computed exactly (its first-order condition carries the extra
 term from flows before *t* that read the quantity after *t*); a led quantity squared,
@@ -450,11 +465,12 @@ the action-kernel path is the default and the more accurate one.  A game can hav
 several equilibria: `ties` selects the symmetric one, an untied solve from a zero
 start may land on another.
 
-The finite engines start every state at zero and integrate flow losses only: there is no
+The finite engines start every state at its `initial` value (a known number, zero by
+default, which moves the mean path only) and integrate flow losses only: there is no
 initial state distribution (a value drawn once at t = 0 from a given covariance) and no
 terminal cost x(T)'Qx(T), so the canonical finite-horizon Kyle-Back model and LQ games
 with a terminal penalty are outside the grammar; a state with an empty `drift` and `noise`
-validates and is carried as zero.  The Chapter 4 example is the stationary variant, where
+validates and is carried as its initial value.  The Chapter 4 example is the stationary variant, where
 V is a random walk on the window and the agents keep receiving V shocks.
 
 On the finite spectral engine the time and age panels are the multiples of the

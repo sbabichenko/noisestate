@@ -9,6 +9,9 @@ passive world with the per-date first-order condition (instantaneous term,
 discounted continuation through the impulse responses, delayed reads) affine
 in the map on the passive rows; raw map by projection, one Gram per time
 node; Anderson fixed point over the action kernels (or the raw maps), Newton-Krylov polish.
+The means (targets, constant drifts, initial states) are deterministic paths on
+the time nodes, solved at the end from every control's mean first-order condition
+and the mean dynamics as one linear system (see SpectralFiniteSolver.mean_system).
 """
 from __future__ import annotations
 
@@ -18,9 +21,12 @@ from functools import cached_property
 import warnings
 
 import numpy as np
+from numpy.polynomial import legendre
+from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
 
 from .engine import EngineBase
-from .compile import CompiledBase, close_under_delays, reject_constants, reject_leads
+from .compile import CompiledBase, close_under_delays, reject_leads
+from .grid import bary_rows
 from .results import TriangleResult
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
@@ -42,7 +48,6 @@ class SpectralCompiled(CompiledBase):
     def __init__(self, model: Model):
         super().__init__(model)
         reject_leads(model, 'spectral finite engine')
-        reject_constants(model, 'spectral finite engine')
         hz = model.horizon
         self.T = float(hz.window)
         lags = model.all_lags()
@@ -95,6 +100,19 @@ class SpectralCompiled(CompiledBase):
         self.trows: List[Tuple[int, np.ndarray]] = [(k[0], np.concatenate(v)) for k, v in sorted(rows.items())]
         self.trow_by_pit: Dict[Tuple[int, int], np.ndarray] = {k: np.concatenate(v) for k, v in rows.items()}
         self.panel_of_node = np.concatenate([np.full(pc.n, pc.p) for pc in g.pieces])
+        # the mean paths live on the time nodes, panel by panel (both one-sided values at a breakpoint): the
+        # nodes of each panel's triangle piece on the line s = 0 (age = t), `diag`, where a kernel is the
+        # response to a shock at time 0; mean_embed carries a path as the kernel constant in shock age
+        tri = [g._piece_by_pq[(p, p)] for p in range(g.P)]
+        self.tm = np.concatenate([pc.tn for pc in tri])
+        self.Nt = len(self.tm)
+        self.diag = np.concatenate([pc.offset + np.arange(pc.nt) * pc.na + pc.na - 1 for pc in tri])
+        self.mean_embed = np.zeros((self.N, self.Nt))
+        for pc in g.pieces:
+            for it in range(pc.nt):
+                self.mean_embed[pc.offset + it * pc.na + np.arange(pc.na), pc.p * g.nt + it] = 1.0
+        self._time_mass: Dict[float, np.ndarray] = {}
+        self._mean_reads: Dict[float, np.ndarray] = {}
         self._map_shifts: Dict[float, np.ndarray] = {}
         self._row_ops: Dict[tuple, tuple] = {}            # (agent, row, excluded) -> (nonzero blocks, deltas) of the seen row (map-independent)
         self._state_parts: Dict[tuple, tuple] = {}        # (excluded, impulses) -> state part of the closed loop
@@ -352,6 +370,34 @@ class SpectralCompiled(CompiledBase):
         """The discounted Gram matrix under which expected_cost integrates products of kernels."""
         return self.g.mass_matrix(rho=self.rho)
 
+    # ------------------------------------------------------------ means
+    def time_mass(self, rho: float) -> np.ndarray:
+        """Weights w (Nt,) with int_0^T e^{-rho t} f(t) dt = w @ f for a path f on the time nodes: Gauss quadrature
+        of the interpolant on every panel (exact for a polynomial of the panel's degree at rho = 0)."""
+        key = round(float(rho), 12)
+        if key not in self._time_mass:
+            xg, wg = legendre.leggauss(self.g.nt + 2)
+            w = np.zeros(self.Nt)
+            for p in range(self.g.P):
+                pc = self.g._piece_by_pq[(p, p)]
+                tq = 0.5 * (pc.t1 - pc.t0) * xg + 0.5 * (pc.t1 + pc.t0); tw = 0.5 * (pc.t1 - pc.t0) * wg
+                w[p * pc.nt:(p + 1) * pc.nt] = (tw * np.exp(-key * tq)) @ bary_rows(tq, pc.tn, pc.wt)
+            self._time_mass[key] = w
+        return self._time_mass[key]
+
+    def mean_read(self, lag: float) -> np.ndarray:
+        """(Nt x Nt) reading a path on the time nodes at t - lag, zero before 0, from each node's side of its panel:
+        the kernels' read of a lagged atom on the line s = 0 (exact on the panels for the model's lags, which are
+        breakpoints; the interpolant within a panel for any other lag, a definition's)."""
+        key = round(float(lag), 12)
+        if key not in self._mean_reads:
+            if key == 0.0:
+                self._mean_reads[key] = np.eye(self.Nt)
+            else:
+                t = self.tm - key
+                self._mean_reads[key] = self.g.interp(t, t, side_t=self.g.side_t[self.diag]) @ self.mean_embed
+        return self._mean_reads[key]
+
     def projection_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
         g = self.g; N = self.N; u = g.s
         lp = self._path(("projection", delay), r_lo=np.zeros(N), r_hi=u,
@@ -590,6 +636,100 @@ class SpectralFiniteSolver(EngineBase):
         g, gc = self.c.g, coarse.compiled.g
         I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a)
         return {a.name: np.einsum("fn,urn->urf", I, coarse.maps[a.name]) for a in self.model.agents}
+
+    # ------------------------------------------------------------ means
+    MEAN_RCOND = 1e-12          # a mean system whose reciprocal condition estimate is below this is singular
+
+    def mean_system(self, maps: Dict[str, np.ndarray]):
+        """The linear system M zbar = b of the mean paths on the time nodes (states then controls, Nt values
+        each) under the strategies `maps`.  A path is carried as a kernel constant in shock age (mean_embed),
+        on which the kernels' own operators restricted to the line s = 0 (the nodes `diag`: a kernel's
+        response to a shock at time 0) are the path's: a lagged read is the path at t - lag, zero before 0,
+        the Volterra propagation integrates from 0 and the continuation reads the path along s = 0.  A
+        state's rows are its mean dynamics, xbar(t) = e^{At} x0 + int_0^t e^{A(t-r)} (inputs at their mean
+        paths + const) dr.  A control's rows are its owner's mean first-order condition at every time node:
+        the kernels' first-order condition (_foc_operators: the instantaneous derivative of 1/2 z'Qz + q'z in
+        the control, the discounted own lagged reads, the continuation int_t^T e^{-rho (t'-t)} R(t', t) g(t')
+        dt' through the passive-world impulse responses, the other agents answering through their
+        equilibrium kernels, the agent's own control passive) applied to the mean paths with no information
+        constraint (a deterministic path is common knowledge) and the targets q as the driver in place of
+        the shocks.  Linear in (q, x0, const): one direct solve, no iteration."""
+        c = self.c; N, Nt, nP, nX, nW = c.N, c.Nt, len(c.prim), c.nX, c.nW
+        E, diag = c.mean_embed, c.diag
+        blk = lambda i: slice(i * Nt, (i + 1) * Nt)
+        M = np.zeros((nP * Nt, nP * Nt)); b = np.zeros(nP * Nt); ones = np.ones(N)
+        if nX:
+            blocks, B0 = c._state_part(None, set(), [])
+            for i in range(nX):
+                M[blk(i), blk(i)] = np.eye(Nt)
+            for (i, p), B in blocks.items():
+                M[blk(i), blk(p)] -= B[diag] @ E
+            EA = c.expA(c.tm)
+            for i in range(nX):
+                b[blk(i)] = EA[:, i, :] @ c.x0 + sum((c.const[j] * (c.Vol[i, j][diag] @ ones) for j in range(nX) if c.const[j]), 0.0)
+        for a in self.model.agents:
+            atoms, Q, q = c.loss[a.name]
+            R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)[:, nW:]
+            R = self._impulse_responses(a, maps, R)
+            Fu, Ms = self._foc_operators(a, R, atoms=True)
+            for ui, u in enumerate(a.controls):
+                row = blk(c.index[u])
+                Fd = Fu[ui][diag].reshape(Nt, nP, N)
+                for p in range(nP):
+                    M[row, blk(p)] = Fd[:, p, :] @ E
+                b[row] = -sum((q[j] * (Ms[ui][j][diag] @ ones) for j in range(len(atoms)) if q[j]), 0.0)
+        return M, b
+
+    def solve_means(self, maps: Dict[str, np.ndarray]) -> np.ndarray:
+        """The mean paths of the primaries (states then controls, Nt values each) under `maps`: exactly zero,
+        with no solve, when nothing drives them (every q zero, no constant drift, no initial state); else
+        the direct solve of mean_system, refusing a singular system."""
+        c = self.c
+        if not (c.x0.any() or c.const.any() or any(q.any() for atoms, Q, q in c.loss.values())):
+            return np.zeros(len(c.prim) * c.Nt)
+        M, b = self.mean_system(maps)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", LinAlgWarning)
+            lu, piv = lu_factor(M, check_finite=False)
+        gecon, = get_lapack_funcs(("gecon",), (lu,))
+        rcond = float(gecon(lu, np.linalg.norm(M, 1))[0])
+        if not rcond > self.MEAN_RCOND:
+            raise ValueError(f"the mean system is singular (reciprocal condition estimate {rcond:.1e}): a control's mean "
+                             "first-order condition is empty (no quadratic term in the control's current value); the kernels "
+                             "do not depend on the means, so the model solves without its targets, constant drifts and initial states")
+        return lu_solve((lu, piv), b, check_finite=False)
+
+    def _mean_atoms(self, zbar: np.ndarray, atoms) -> np.ndarray:
+        """The loss atoms' mean paths (m, Nt) from the primaries' paths: the kernels' atom operators on the embedded
+        paths, read on the line s = 0 (a lagged atom is the path at t - lag, zero before 0)."""
+        c = self.c; Nt = c.Nt
+        Zm = np.concatenate([c.mean_embed @ zbar[p * Nt:(p + 1) * Nt] for p in range(len(c.prim))])
+        return np.stack([(c.atom_op(at) @ Zm)[c.diag] for at in atoms])
+
+    def mean_cost(self, agent: Agent, zbar: np.ndarray) -> float:
+        """The mean part of the agent's discounted cost, int_0^T e^{-rho t} (1/2 zbar'Q zbar + q'zbar) dt over its
+        loss atoms at the mean paths `zbar` (the constant of a target, theta^2, is not in the model): spectral
+        quadrature on the time panels."""
+        atoms, Q, q = self.c.loss[agent.name]
+        zeta = self._mean_atoms(zbar, atoms); w = self.c.time_mass(self.c.rho)
+        return float(0.5 * np.einsum("it,ij,jt,t->", zeta, Q, zeta, w) + q @ (zeta @ w))
+
+    def _mean_part(self, res) -> None:
+        """res.means: the path on the time nodes res.means_t of every state, control and definition and of the
+        mean drift rate of every signal row ("agent.row", at the time of the observation, its delay not applied);
+        res.cost_parts and the mean part added to res.costs."""
+        c = self.c; m = self.model; Nt = c.Nt
+        zbar = self.solve_means(res.maps)
+        blk = lambda nm: slice(c.index[nm] * Nt, (c.index[nm] + 1) * Nt)
+        value = lambda expr: sum((coef * (c.mean_read(lag) @ zbar[blk(nm)]) for (nm, lag), coef in expr.items()), np.zeros(Nt))
+        res.means = {name: zbar[blk(name)].copy() for name in c.prim}
+        res.means.update({d.name: value(m.expand({d.name: 1.0})) for d in m.definitions})
+        res.means.update({f"{a.name}.{r.name}": value(m.expand(r.drift)) for a in m.agents for r in a.signals})
+        res.means_t = c.tm.copy()
+        for a in m.agents:
+            mean = self.mean_cost(a, zbar)
+            res.cost_parts[a.name] = {"variance": res.costs[a.name], "mean": mean}
+            res.costs[a.name] += mean
 
     def _diagnostics(self, res) -> None:
         self._second_order_cache.clear()

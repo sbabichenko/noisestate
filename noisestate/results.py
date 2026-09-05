@@ -5,9 +5,10 @@
     res.costs[agent]                             stationary flow loss per unit time, or the discounted
                                                  integral over [0, T] (res.cost_kind says which): the variance
                                                  part (the shocks) plus the mean part (targets, constant drifts)
-    res.cost_parts[agent]                        {"variance", "mean"}, the two parts (stationary engine)
-    res.means[name]                              stationary mean of every state, control and definition, and
-                                                 the mean drift rate of every signal row as "agent.row"
+    res.cost_parts[agent]                        {"variance", "mean"}, the two parts
+    res.means[name]                              mean of every state, control and definition, and the mean drift rate of
+                                                 every signal row as "agent.row": a constant (stationary) or the path on the
+                                                 time nodes res.means_t (finite; the spectral res.mean(name, t) interpolates)
     res.kernel(name, channel=None)               closed-loop kernel of a state or control
     res.maps[agent]                              raw strategies on the agent's signal rows, indexed by the age of the
                                                  increment as the agent sees it (a delayed row's raw increment is older
@@ -58,7 +59,8 @@ class BaseResult:
     solve_kw: dict = field(default_factory=dict)
     second_order: Dict[str, dict] = field(default_factory=dict)   # agent -> {"min", "max", "ok"}: is the best response a minimum
     foc: Dict[str, dict] = field(default_factory=dict)            # agent -> control -> {"foc", "physical", "wedge"} kernels
-    means: Dict[str, float] = field(default_factory=dict)         # quantity -> its mean (empty where the engine does not solve them)
+    means: Dict[str, object] = field(default_factory=dict)        # quantity -> its mean, a float or a path (empty where not solved)
+    means_t: Optional[np.ndarray] = None                          # the time nodes of the mean paths (finite engines)
     cost_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> {"variance", "mean"} parts of its cost
     kind: str = "base"
 
@@ -71,6 +73,11 @@ class BaseResult:
         (the time of the control, the age or time of the raw increment): to_dict() puts them beside the
         row's delay so a consumer of the payload can place a delayed row's map without this code."""
         raise NotImplementedError
+
+    @property
+    def means_driven(self) -> bool:
+        """Whether any mean is nonzero."""
+        return any(np.any(np.asarray(v) != 0.0) for v in self.means.values())
 
     @property
     def resolution_ok(self) -> Optional[bool]:
@@ -169,7 +176,7 @@ class BaseResult:
         if tail is not None:
             row("window", float(tail), self.WINDOW_TAIL_TOL, bool(tail <= self.WINDOW_TAIL_TOL),
                 f"WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window"
-                + ("; the means' continuation integrals are truncated there as well)" if any(v != 0.0 for v in self.means.values()) else ")"),
+                + ("; the means' continuation integrals are truncated there as well)" if self.means_driven else ")"),
                 "raise horizon.window")
         for a, so in self.second_order.items():
             if so.get("converged") is False:
@@ -300,7 +307,8 @@ class BaseResult:
                "map_convention": self.MAP_CONVENTION, "kernels": {}, "maps": {}, "foc": {},
                "costs": {k: float(v) for k, v in self.costs.items()},
                "cost_parts": {a: {k: float(v) for k, v in p.items()} for a, p in self.cost_parts.items()},
-               "means": {k: float(v) for k, v in self.means.items()}}
+               "means": {k: (v.tolist() if isinstance(v, np.ndarray) else float(v)) for k, v in self.means.items()},
+               "means_t": None if self.means_t is None else self.means_t.tolist()}
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
         out["diagnostics"] = [{k: (None if v is None else v) for k, v in d.items()} for d in self.diagnose()]
         out["resolution_ok"] = None if self.resolution_ok is None else bool(self.resolution_ok)
@@ -409,7 +417,7 @@ class StationaryResult(BaseResult):
             for u in a.controls:
                 k = self.kernel(u)
                 lines.append(f"    {u}(0+) on channels: " + ", ".join(f"{ch}={k[0, j]:+.4f}" for j, ch in enumerate(self.channels)))
-        if any(v != 0.0 for v in self.means.values()):
+        if self.means_driven:
             lines.append("  means: " + ", ".join(f"{n}={self.means[n]:+.6f}" for n in c.prim))
         return "\n".join(lines)
 
@@ -462,6 +470,11 @@ class TriangleResult(BaseResult):
         t = np.asarray(t, dtype=float); s = np.asarray(s, dtype=float)
         return self.grid.interp(t, t - s) @ self.kernel(name, channel)
 
+    def mean(self, name: str, t) -> np.ndarray:
+        """The mean path of `name` (any key of res.means) interpolated at the times t (from above at a breakpoint)."""
+        t = np.atleast_1d(np.asarray(t, dtype=float))
+        return self.grid.interp(t, t) @ (self.compiled.mean_embed @ np.asarray(self.means[name], dtype=float))
+
     def grid_info(self) -> dict:
         g = self.grid
         return {"kind": "finite", "breakpoints": [float(b) for b in g.bp], "nodes_per_side": g.nt,
@@ -473,7 +486,12 @@ class TriangleResult(BaseResult):
                  f"{self.seconds:.1f}s; triangle grid {c.g.P} panels, {len(c.g.pieces)} pieces x {c.g.nt}x{c.g.na} nodes "
                  f"= {c.N} nodes on [0, {c.T}], rho={c.rho}"]
         for a in self.model.agents:
-            lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.8f}")
+            parts = self.cost_parts.get(a.name)
+            lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.8f}"
+                         + (f" (variance {parts['variance']:+.8f}, mean {parts['mean']:+.8f})" if parts and parts["mean"] != 0.0 else ""))
+        if self.means_driven:
+            at = np.array([0.0, 0.5 * c.T, c.T])
+            lines.append("  means at t = 0, T/2, T: " + ", ".join(f"{n}=" + "/".join(f"{v:+.4f}" for v in self.mean(n, at)) for n in c.prim))
         return "\n".join(lines)
 
 
@@ -529,7 +547,11 @@ class CellResult(BaseResult):
         lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.iterations} evaluations, "
                  f"{self.seconds:.1f}s; {c.N} cells on [0, {c.T}], rho={c.rho}"]
         for a in self.model.agents:
-            lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.6f}")
+            parts = self.cost_parts.get(a.name)
+            lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.6f}"
+                         + (f" (variance {parts['variance']:+.6f}, mean {parts['mean']:+.6f})" if parts and parts["mean"] != 0.0 else ""))
+        if self.means_driven:
+            lines.append("  means at t = 0, T/2: " + ", ".join(f"{n}={self.means[n][0]:+.4f}/{self.means[n][c.N // 2]:+.4f}" for n in c.prim))
         return "\n".join(lines)
 
 
@@ -544,10 +566,12 @@ def _pyplot():
 
 
 def _plot_by_shock_time(res, curves, path: str) -> None:
-    """Finite horizon: one panel per (quantity, channel), the kernel against the shock time s at a few dates t."""
+    """Finite horizon: one panel per (quantity, channel), the kernel against the shock time s at a few dates t;
+    a last row with the mean paths against t when they are nonzero."""
     plt = _pyplot()
     names = res.model.state_names + res.model.control_names; chans = res.channels
-    fig, axes = plt.subplots(len(names), len(chans), figsize=(3.6 * len(chans), 2.5 * len(names)), squeeze=False)
+    means = res.means_driven and res.means_t is not None
+    fig, axes = plt.subplots(len(names) + means, len(chans), figsize=(3.6 * len(chans), 2.5 * (len(names) + means)), squeeze=False)
     for i, name in enumerate(names):
         for k, ch in enumerate(chans):
             ax = axes[i, k]
@@ -556,4 +580,11 @@ def _plot_by_shock_time(res, curves, path: str) -> None:
             ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name} on {ch}", fontsize=9); ax.set_xlabel("shock time s")
             if i == 0 and k == 0:
                 ax.legend(fontsize=6, frameon=False)
+    if means:
+        ax = axes[-1, 0]
+        for name in names:
+            ax.plot(res.means_t, res.means[name], lw=1, label=name)
+        ax.axhline(0, color="k", lw=0.4); ax.set_title("mean paths", fontsize=9); ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
+        for ax in axes[-1, 1:]:
+            ax.axis("off")
     fig.suptitle(f"{res.model.name}  (residual {res.residual:.1e})", fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)

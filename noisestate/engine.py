@@ -216,29 +216,31 @@ class EngineBase:
             self._qa[agent.name] = np.kron(Q, np.eye(c.N)) @ AO
         return self._qa[agent.name]
 
-    def _foc_operators(self, agent: Agent, R: np.ndarray):
+    def _foc_operators(self, agent: Agent, R: np.ndarray, atoms: bool = False):
         """Per control, the operator (N x n_prim N) mapping the primary kernels of one channel to the
         first-order-condition kernel: instantaneous derivative, discounted continuation through the
         impulse responses R, delayed reads of own lagged controls, and the past-date term of a lead.
-        Called with the physical impulse responses (all reactions off) for the wedge decomposition."""
+        Called with the physical impulse responses (all reactions off) for the wedge decomposition.
+        With atoms=True returns (Fu, Ms), Ms the per-control operators M (n_atoms, N, N) on the loss
+        atoms' kernels that Fu contracts with Q (the mean part applies them to the targets q)."""
         c = self.c; N = c.N; n_prim = len(c.prim) * N
-        atoms, Q, q = c.loss[agent.name]
-        AO = [c.atom_op(at) for at in atoms]
+        atms, Q, q = c.loss[agent.name]
+        AO = [c.atom_op(at) for at in atms]
         # the nonzero N x N blocks of every atom operator (one block, the shift into the atom's primary)
         AO_blocks = [[(p, A[:, p * N:(p + 1) * N]) for p in range(len(c.prim)) if np.any(A[:, p * N:(p + 1) * N])] for A in AO]
         AO_eye = [[_is_eye(blk) for p, blk in blocks] for blocks in AO_blocks]      # an undelayed atom reads through the identity
-        Fu = []
+        Fu, Ms = [], []
         for ui, u in enumerate(agent.controls):
             # op = sum_j M_j (Q zeta)_j with M_j the operator on atom j: identity for the instantaneous
             # term, continuation, delayed own read, lead term; contracted as sum_i (sum_j Q_ji M_j) AO_i
             # so the products are N x N x N per atom block instead of N x N x n_prim N per atom
-            M = np.zeros((len(atoms), N, N))
-            if (u, 0.0) in atoms:
-                M[atoms.index((u, 0.0))] += np.eye(N)
+            M = np.zeros((len(atms), N, N))
+            if (u, 0.0) in atms:
+                M[atms.index((u, 0.0))] += np.eye(N)
             if not agent.myopic:
-                Rj = np.stack([AO[j] @ R[:, ui] for j in range(len(atoms))], axis=1)   # impulse responses of every atom
+                Rj = np.stack([AO[j] @ R[:, ui] for j in range(len(atms))], axis=1)   # impulse responses of every atom
                 CR = c.continuation(Rj)
-                for j, (name, lag) in enumerate(atoms):
+                for j, (name, lag) in enumerate(atms):
                     if name in agent.controls:
                         if name == u and lag > 0:          # delayed read of the control itself
                             M[j] += np.exp(-c.rho * lag) * c.own_lag_read(lag)
@@ -248,12 +250,12 @@ class EngineBase:
                         M[j] += self._lead_term(agent, R[:, ui], name, lag)
             MQ = np.tensordot(Q.T, M, axes=1)              # MQ[i] = sum_j Q[j, i] M_j
             op = np.zeros((N, n_prim))
-            for i in range(len(atoms)):
+            for i in range(len(atms)):
                 if np.any(MQ[i]):
                     for (p, blk), eye in zip(AO_blocks[i], AO_eye[i]):
                         op[:, p * N:(p + 1) * N] += MQ[i] if eye else MQ[i] @ blk
-            Fu.append(op)
-        return Fu
+            Fu.append(op); Ms.append(M)
+        return (Fu, Ms) if atoms else Fu
 
     def _lead_term(self, agent: Agent, Ru: np.ndarray, name: str, lag: float) -> np.ndarray:
         """The FOC term of a lead (name@lag, lag < 0) from flows before t that read the quantity after t."""
@@ -668,9 +670,8 @@ class EngineBase:
             self._diagnostics(res)
 
     def _mean_part(self, res) -> None:
-        """The means (targets, constant drifts) and the mean part of every cost, added to res.costs: part of the
-        answer, computed whether or not the diagnostics are (hook; the stationary engine solves them, the finite
-        engines do not yet and leave res.means and res.cost_parts empty)."""
+        """The means (targets, constant drifts, initial states) and the mean part of every cost, added to
+        res.costs: part of the answer, computed whether or not the diagnostics are (hook: every engine solves them)."""
 
     def _diagnostics(self, res) -> None:
         """The checks the engine computes at the equilibrium: the first-order-condition decomposition, the

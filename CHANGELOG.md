@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+- Mean paths on the finite engines.  Targets (linear loss terms), constant drifts and the new
+  per-state `initial` value (`X: {drift: ..., noise: ..., initial: 1.0}`; zero by default, a number
+  or a parameter expression, refused in a stationary model, which has no initial time) move the
+  means of the states and controls on a finite horizon, deterministic paths on [0, T] that the
+  finite engines now solve at the end of every solve, `diagnostics=False` included.  The spectral
+  engine carries a path on the time nodes of its triangle as a kernel constant in shock age, on
+  which the kernels' own operators restricted to the line s = 0 (the nodes `SpectralCompiled.diag`,
+  a kernel's response to a shock at time 0) are the path's: a control's mean first-order condition
+  at every time node is `_foc_operators` (the instantaneous derivative of `1/2 z'Qz + q'z` in the
+  control, the discounted own lagged reads, the continuation `int_t^T e^{-rho (t'-t)} R(t', t) g(t')
+  dt'` through the passive-world impulse responses, the other agents answering through their
+  kernels) applied to the paths with no information constraint and the targets `q` as the driver in
+  place of the shocks, the state's rows are `xbar(t) = e^{At} x0 + int_0^t e^{A(t-r)} (inputs +
+  const) dr` through the same Volterra operator, and the whole is one direct linear solve
+  (`SpectralFiniteSolver.mean_system`, `solve_means`, `mean_cost`), linear in the targets, x0 and
+  the constants.  The cell engine solves the same system on its cells, first order in the cell
+  length like its kernels (`FiniteSolver.mean_system`), so no engine rejects a constant drift any
+  more (`reject_constants` is gone).  `res.means[name]` is the path on the time nodes `res.means_t`
+  (every state, control and definition and each signal row's mean drift rate), `res.mean(name, t)`
+  interpolates it on the spectral engine, `res.cost_parts[agent]` is `{"variance", "mean"}` with
+  the mean part the discounted integral of `1/2 zbar'Q zbar + q'zbar` over [0, T] (spectral
+  quadrature on the time panels; the constant theta^2 of a target is not in the model) and
+  `res.costs` their sum; the summary prints the parts and the means at t = 0, T/2 and T,
+  `to_dict()` and the CLI JSON carry `means`, `means_t` and `cost_parts`, and `plot()` adds the
+  paths as a last row.  Exactly zero, with no solve, without a driver, so the shipped finite
+  examples are identical to the release before the means to every digit.  Validation
+  (`tests/test_means_finite.py`, the README's table): the Chapter 1 game with targets b1 = 1, b2 =
+  -1 (`examples/ch1_mean_sweep.py`, which sweeps the signal precision) against the dissertation's
+  spectral solver: Dbar1(0) and Dbar1(T/2) within 0.1% up to precision 100 (1.9e-5 to 5.3e-4) and
+  Jbar within 0.1% up to precision 1 (once the target's constant b^2 T, which the reference
+  includes, is set aside), 1.1e-3 and 1.3e-3 at 10 and 100; the p = 10 path within 1.4e-2 at every
+  t (1.9e-3 of Dbar1(0), the largest at t = 0.075); at precision 1000 (sharp kernels: 20 nodes per
+  side) 2e-3 on every number.  Those gaps are the reference's own error: the cell engine's
+  Richardson limits close on the spectral paths as h^2 (4.8e-3 then 1.2e-3 at T/2), and the
+  reference's variance cost is off by the same order (9e-5 at 10, 2e-4 at 100, 1.1e-3 at 1000).
+  One agent alone reproduces the deterministic finite-horizon LQ optimum (Riccati, solve_ivp at
+  rtol 1e-12) within 1e-11 on the paths and 1e-10 on the cost, with a target, an initial state and a
+  discount, for one and two states; the means are linear in the targets and the mean cost
+  quadratic, with the kernels identical to the bit; with signals that carry nothing the paths are
+  the open-loop Nash 10 (1 - t) to 6.5e-9; on the delayed example with targets and x0 the mean
+  system's residual is 6e-16, the mean dynamics agree with solve_ivp to 2.5e-12 and the
+  first-order condition is the derivative of the mean cost to 1e-11 (central differences through
+  the response operator).  Existing tests: `tests/test_means.py` no longer expects the finite
+  engines to leave `res.means` empty or to refuse a constant drift.  New: `State.initial`,
+  `Structure.x0`, `SpectralCompiled.tm`, `Nt`, `diag`, `mean_embed`, `time_mass`, `mean_read`,
+  `TriangleResult.mean`, `BaseResult.means_t`, `means_driven`; `EngineBase._foc_operators(atoms=True)`
+  returns the per-atom operators as well.
 - Means on the stationary engine.  Linear loss terms (a target theta on X is `[1, X, X], [-2*theta, X]`)
   and a constant in a state's drift (`drift: {X: -a, D: 1.0, const: 0.3}`; the key `const` is new,
   allowed in a state's drift only, without a lag, and reserved as a name) move the means of the states
@@ -20,8 +67,8 @@
   orders 1.1400, a mean part of -0.5117 on a variance part of 4.6290).  A random walk with no inputs
   (Kyle-Back's V, the market's q) has no stationary mean and is pinned at 0, which `model.notes` says;
   a random walk with a constant drift and no feedback, and a singular mean system, are refused with a
-  `ValueError`.  The finite engines do not solve the means yet: a constant drift is rejected there
-  (`NotImplementedError`, like leads) and a linear term noted as not solved.  Checked against closed
+  `ValueError`.  (The finite engines did not solve the means in this entry's commit: a constant
+  drift was rejected there and a linear term noted as not solved; the entry above lifts that.)  Checked against closed
   forms (`tests/test_means.py`): one agent with a target reproduces the windowed closed form to 3e-15
   and the exact `ubar = theta a / (1 + r a (a + rho))` to the window's truncation e^{-(a+rho)L}; a
   constant drift is the shifted target (the same ubar, xbar shifted by kappa/a, the mean cost larger

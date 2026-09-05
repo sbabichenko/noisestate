@@ -138,8 +138,8 @@ def test_means_are_part_of_the_answer_payload_and_cli(tmp_path):
     import yaml
     path.write_text(yaml.safe_dump(m.to_dict()))
     assert main(["solve", str(path), "-o", str(out)]) == 0 and abs(json.load(open(out))["means"]["D"] - 0.5) < 1e-6
-    fin = ns.solve(os.path.join(EX, "ch1_two_player_finite.yaml")).check()
-    assert fin.means == {} and fin.cost_parts == {} and "means" in fin.to_dict()
+    fin = ns.solve(os.path.join(EX, "ch1_two_player_finite.yaml")).check()     # the spectral finite engine: paths, all zero here
+    assert all(np.array_equal(v, np.zeros(len(fin.means_t))) for v in fin.means.values()) and fin.cost_parts["player1"]["mean"] == 0.0
 
 
 def test_validation_of_constants_and_singular_mean_systems():
@@ -159,9 +159,8 @@ def test_validation_of_constants_and_singular_mean_systems():
     bad = json.loads(json.dumps(d)); bad["states"]["const"] = {"drift": {}, "noise": {"w0": 1.0}}
     with pytest.raises(ValueError, match="reserved"):
         ns.Model.from_dict(bad)
-    fin = json.loads(json.dumps(d)); fin["horizon"] = {"kind": "finite", "window": 1.0, "nodes": 4}
-    with pytest.raises(NotImplementedError, match="constant drift"):
-        ns.solve(fin)
+    fin = json.loads(json.dumps(d)); fin["horizon"] = {"kind": "finite_cells", "window": 1.0, "nodes": 4}     # the finite engines: paths
+    assert ns.solve(fin).check().means["D"].shape == (4,)
     walk = json.loads(json.dumps(d)); walk["states"]["X"]["drift"] = {"const": 0.3}      # a random walk with a drift and no inputs
     with pytest.raises(ValueError, match="no stationary mean"):
         ns.solve(walk)

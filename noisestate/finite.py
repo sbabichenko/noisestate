@@ -15,7 +15,9 @@ condition is affine in the map on the passive rows and is solved with a
 Krylov method), raw map by projection, and an Anderson fixed point over the raw maps.
 
 The scheme is first order in h (Euler state step, cell-averaged controls);
-refine N or Richardson-extrapolate for high accuracy.
+refine N or Richardson-extrapolate for high accuracy.  The means (targets,
+constant drifts, initial states) are solved on the cells at the end, the same
+first-order condition on the mean paths (see FiniteSolver.mean_system).
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ import numpy as np
 from scipy.sparse.linalg import LinearOperator, lgmres
 
 from .engine import EngineBase, singular_system_message
-from .compile import CompiledBase, reject_constants, reject_leads
+from .compile import CompiledBase, reject_leads
 from .results import CellResult
 from .spec import Agent, Atom, Model
 
@@ -34,7 +36,6 @@ class FiniteCompiled(CompiledBase):
     def __init__(self, model: Model):
         super().__init__(model)
         reject_leads(model, 'cell engine')
-        reject_constants(model, 'cell engine')
         hz = model.horizon
         self.T = float(hz.window)
         self.N = int(hz.nodes)
@@ -317,4 +318,88 @@ class FiniteSolver(EngineBase):
         disc = np.exp(-c.rho * c.times)
         G = np.einsum("itc,jtc,t->ij", zeta, zeta, disc) * c.h * c.h    # sum_t h e^{-rho t} sum_j h zeta zeta
         return float(0.5 * np.sum(Q * G))
+
+    # ------------------------------------------------------------ means
+    def _shift(self, lag: float) -> np.ndarray:
+        """(N x N) reading a cell path at cell i - lag / h, zero before the first cell (a negative lag reads ahead, zero past T)."""
+        d = self.c.lag_cells(lag); N = self.c.N
+        return np.eye(N, k=-d)
+
+    def mean_system(self, maps: Dict[str, np.ndarray]):
+        """The linear system M zbar = b of the mean paths on the cells (states then controls, N values each) under
+        the strategies `maps`: the spectral engine's formulation (finite_spectral.SpectralFiniteSolver.mean_system)
+        on the cells.  A state's rows are the Euler march of its mean dynamics from x0; a control's rows are its
+        owner's mean first-order condition in every cell, the best response's per-cell condition (the instantaneous
+        derivative of 1/2 z'Qz + q'z in the control, the discounted own lagged reads, the continuation h sum_{tau > i}
+        e^{-rho (tau - i) h} R[tau, i] g[tau] through the passive-world impulse columns) applied to the mean paths
+        with no information constraint and the targets q as the driver.  First order in h, like the kernels."""
+        c = self.c; N, h, nW, nX, nP = c.N, c.h, c.nW, c.nX, len(c.prim); NB = nW * N
+        blk = lambda i: slice(i * N, (i + 1) * N)
+        M = np.zeros((nP * N, nP * N)); b = np.zeros(nP * N)
+        step = np.eye(N) - np.eye(N, k=-1)                                 # x[i] - x[i-1] on rows i >= 1; x[0] on row 0
+        for i in range(nX):
+            M[blk(i), blk(i)] = step
+            for j in range(nX):
+                M[blk(i), blk(j)] -= h * c.A[i, j] * np.eye(N, k=-1)
+            b[blk(i)][0] = c.x0[i]; b[blk(i)][1:] = h * c.const[i]
+        for si, (nm, lag), coef in c.state_inputs:
+            M[blk(si), blk(c.index[nm])] -= h * coef * (np.eye(N, k=-1) @ self._shift(lag))
+        dm = np.exp(-c.rho * h * (np.arange(N)[None, :] - np.arange(N)[:, None])) * np.triu(np.ones((N, N)), 1)
+        for a in self.model.agents:
+            atoms, Q, q = c.loss[a.name]
+            Zp = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)
+            for ui, u in enumerate(a.controls):
+                R = Zp[:, :, NB + ui * N:NB + (ui + 1) * N]                   # (n_prim, N, N): [., tau, i]
+                Ms = np.zeros((len(atoms), N, N))                            # the operator on each atom's mean path
+                if (u, 0.0) in atoms:
+                    Ms[atoms.index((u, 0.0))] += np.eye(N)
+                if not a.myopic:
+                    for j, (nm, lag) in enumerate(atoms):
+                        if nm in a.controls:
+                            if nm == u and lag > 0:
+                                Ms[j] += np.exp(-c.rho * lag) * self._shift(-lag)
+                            continue
+                        Ms[j] += h * (c.atom_kernel(R, (nm, lag)).T * dm)
+                row = blk(c.index[u])
+                for j, (nm_j, lag_j) in enumerate(atoms):
+                    MQ = sum((Q[j, i] * Ms[i] for i in range(len(atoms)) if Q[j, i]), np.zeros((N, N)))
+                    if MQ.any():
+                        M[row, blk(c.index[nm_j])] += MQ @ self._shift(lag_j)
+                    if q[j]:
+                        b[row] -= q[j] * Ms[j].sum(axis=1)
+        return M, b
+
+    def solve_means(self, maps: Dict[str, np.ndarray]) -> np.ndarray:
+        """The mean paths on the cells (states then controls): exactly zero, with no solve, when nothing drives them;
+        else the direct solve of mean_system (a singular one raises)."""
+        c = self.c
+        if not (c.x0.any() or c.const.any() or any(q.any() for atoms, Q, q in c.loss.values())):
+            return np.zeros(len(c.prim) * c.N)
+        M, b = self.mean_system(maps)
+        return np.linalg.solve(M, b)
+
+    def mean_cost(self, agent: Agent, zbar: np.ndarray) -> float:
+        """The mean part of the agent's discounted cost, h sum_i e^{-rho t_i} (1/2 zbar'Q zbar + q'zbar) over its loss
+        atoms at the mean paths (the constant theta^2 of a target is not in the model)."""
+        c = self.c; N = c.N
+        atoms, Q, q = c.loss[agent.name]
+        zeta = np.stack([self._shift(lag) @ zbar[c.index[nm] * N:(c.index[nm] + 1) * N] for (nm, lag) in atoms])
+        w = c.h * np.exp(-c.rho * c.times)
+        return float(0.5 * np.einsum("it,ij,jt,t->", zeta, Q, zeta, w) + q @ (zeta @ w))
+
+    def _mean_part(self, res) -> None:
+        """res.means: the cell path (res.means_t = the cell times) of every state, control and definition and of the
+        mean drift rate of every signal row ("agent.row"); res.cost_parts and the mean part added to res.costs."""
+        c = self.c; m = self.model; N = c.N
+        zbar = self.solve_means(res.maps)
+        blk = lambda nm: slice(c.index[nm] * N, (c.index[nm] + 1) * N)
+        value = lambda expr: sum((coef * (self._shift(lag) @ zbar[blk(nm)]) for (nm, lag), coef in expr.items()), np.zeros(N))
+        res.means = {name: zbar[blk(name)].copy() for name in c.prim}
+        res.means.update({d.name: value(m.expand({d.name: 1.0})) for d in m.definitions})
+        res.means.update({f"{a.name}.{r.name}": value(m.expand(r.drift)) for a in m.agents for r in a.signals})
+        res.means_t = c.times.copy()
+        for a in m.agents:
+            mean = self.mean_cost(a, zbar)
+            res.cost_parts[a.name] = {"variance": res.costs[a.name], "mean": mean}
+            res.costs[a.name] += mean
 
