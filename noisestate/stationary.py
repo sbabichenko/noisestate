@@ -125,10 +125,10 @@ class Compiled(CompiledBase):
     def conv_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
         return self.grid.conv_ops(Y)                      # the seen row is already shifted by the delay
 
-    def instant(self, age: float) -> np.ndarray:
+    def instant(self, age: float, delay: float = 0.0) -> np.ndarray:
         return self.shift(age)
 
-    def instant_adjoint(self, age: float) -> np.ndarray:
+    def instant_adjoint(self, age: float, delay: float = 0.0) -> np.ndarray:
         return self.shift(-age)
 
     def response(self, Ru: np.ndarray, own: int) -> np.ndarray:

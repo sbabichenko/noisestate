@@ -68,6 +68,9 @@ class SpectralCompiled(CompiledBase):
                 idx = pc.offset + it * pc.na + np.arange(pc.na)
                 rows.setdefault((pc.p, it), []).append(idx)
         self.trows: List[Tuple[int, np.ndarray]] = [(k[0], np.concatenate(v)) for k, v in sorted(rows.items())]
+        self.trow_by_pit: Dict[Tuple[int, int], np.ndarray] = {k: np.concatenate(v) for k, v in rows.items()}
+        self.panel_of_node = np.concatenate([np.full(pc.n, pc.p) for pc in g.pieces])
+        self._map_shifts: Dict[float, np.ndarray] = {}
 
     # ------------------------------------------------------------ reads
     def _expm_batch(self, ds: np.ndarray) -> np.ndarray:
@@ -104,6 +107,32 @@ class SpectralCompiled(CompiledBase):
                 M[g.a0 < da - 1e-12] = 0.0
         cache[key] = M
         return M
+
+    def panel_shift(self, delay: float) -> int:
+        """Number of time panels in a delay: the breakpoints are closed under the delays, so every panel
+        shifted by a delay is again a panel."""
+        g = self.g
+        k = int(np.sum((g.bp > 1e-12) & (g.bp <= delay + 1e-12)))
+        if abs(g.bp[k] - delay) > 1e-9 * max(1.0, self.T):
+            raise ValueError(f"delay {delay} is not a breakpoint of {g.bp}")
+        return k
+
+    def map_shift(self, delay: float) -> np.ndarray:
+        """S (N x N) with (S g)(t, a) = g(t - delay, a - delay) for a map stored at the shifted time: the
+        exact node-to-node shift on the delay-aligned pieces (piece (p, q) to (p - k, q - k), same local
+        node), zero where the read leaves the domain.  Unlike read(delay, delay) it keeps the nodes of a
+        triangle's degenerate bottom row distinct, so no map node is left unread."""
+        key = round(float(delay), 12)
+        if key not in self._map_shifts:
+            g = self.g; k = self.panel_shift(delay); S = np.zeros((self.N, self.N))
+            for pc in g.pieces:
+                if pc.p - k < 0 or pc.q - k < 0:
+                    continue
+                tgt = g._piece_by_pq[(pc.p - k, pc.q - k)]
+                assert abs(tgt.t0 + delay - pc.t0) < 1e-9 and abs(tgt.t1 + delay - pc.t1) < 1e-9, "panels are not closed under the delay"
+                S[pc.offset + np.arange(pc.n), tgt.offset + np.arange(pc.n)] = 1.0
+            self._map_shifts[key] = S
+        return self._map_shifts[key]
 
     def block(self, name: str) -> slice:
         i = self.index[name]
@@ -149,21 +178,25 @@ class SpectralCompiled(CompiledBase):
 
     def _path(self, key, **kw):
         if key not in self.g.paths:
-            self.g.paths[key] = self.g.path(self.g.t, self.g.a, **kw)
+            self.g.paths[key] = self.g.path(self.g.t, self.g.a, side_t=self.g.side_t, **kw)
         return self.g.paths[key]
 
+    # The map on a row observed with delay d is stored at the shifted time: the nodal value at (t', b) is
+    # g(t' + d, b), the weight the control at t' + d puts on the observation increment of age b.  The
+    # map's domain b <= t - d is then the standard triangle b <= t', its instantaneous read from the
+    # action grid is the exact node shift map_shift(d), and nothing is masked inside a piece.
     def conv_left(self, gker: np.ndarray, delay: float) -> np.ndarray:
-        """(C y)(t, s) = int_{s+delay}^{t} g(t, t - u) y(u, s) du  for a fixed map kernel g."""
+        """(C y)(t, s) = int_{s+delay}^{t} g(t, t - u) y(u, s) du  for a fixed map kernel g (stored at t - delay)."""
         g = self.g
         lp = self._path(("conv_left", delay), r_lo=g.s + delay, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
-                        known_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r))
+                        known_fn=lambda k, r: (np.full_like(r, g.t[k] - delay), g.t[k] - r))
         return lp.with_known(gker)
 
     def conv_right(self, yker: np.ndarray, delay: float) -> np.ndarray:
-        """(C g)(t, s) = int_{s+delay}^{t} g(t, t - u) y_seen(u, s) du  for a fixed seen row y_seen."""
+        """(C g)(t, s) = int_{s+delay}^{t} g(t, t - u) y_seen(u, s) du  for a fixed seen row y_seen (g stored at t - delay)."""
         g = self.g
         lp = self._path(("conv_right", delay), r_lo=g.s + delay, r_hi=g.t,
-                        point_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r), known_fn=lambda k, r: (r, r - g.s[k]))
+                        point_fn=lambda k, r: (np.full_like(r, g.t[k] - delay), g.t[k] - r), known_fn=lambda k, r: (r, r - g.s[k]))
         return lp.with_known(yker)
 
     def response_op(self, rker: np.ndarray) -> np.ndarray:
@@ -182,12 +215,13 @@ class SpectralCompiled(CompiledBase):
         return lp.with_known(rker, disc)
 
     def projection_op(self, yker: np.ndarray, delay: float) -> np.ndarray:
-        """(H phi)(t, b) = int_0^{u - delay} phi(t, s) y_raw(u - delay, s) ds with u = t - b."""
+        """(H phi)(t', b) = int_0^{u} phi(t' + delay, s) y_raw(u, s) ds with u = t' - b, at the map node (t', b)
+        of a row observed with delay (the map stored at the shifted time t' = t - delay)."""
         g = self.g
         u = g.s
-        lp = self._path(("projection", delay), r_lo=np.zeros(self.N), r_hi=np.maximum(u - delay, 0.0),
-                        point_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r),
-                        known_fn=lambda k, r: (np.full_like(r, u[k] - delay), u[k] - delay - r))
+        lp = self._path(("projection", delay), r_lo=np.zeros(self.N), r_hi=u,
+                        point_fn=lambda k, r: (np.full_like(r, g.t[k] + delay), g.t[k] + delay - r),
+                        known_fn=lambda k, r: (np.full_like(r, u[k]), u[k] - r))
         return lp.with_known(yker)
 
     # ------------------------------------------------ kernel algebra (see EngineBase)
@@ -198,11 +232,15 @@ class SpectralCompiled(CompiledBase):
                 out[k] = self.conv_right(Y[:, k], delay)
         return out
 
-    def instant(self, age: float) -> np.ndarray:
-        return self.read(0.0, age)
+    def instant(self, age: float, delay: float = 0.0) -> np.ndarray:
+        if delay > 0 and abs(age - delay) < 1e-12:
+            return self.map_shift(delay)
+        return self.read(delay, age)
 
-    def instant_adjoint(self, age: float) -> np.ndarray:
-        return self.read(0.0, -age)
+    def instant_adjoint(self, age: float, delay: float = 0.0) -> np.ndarray:
+        if delay > 0 and abs(age - delay) < 1e-12:
+            return self.map_shift(delay).T
+        return self.read(-delay, -age)
 
     def response(self, Ru: np.ndarray, own: int) -> np.ndarray:
         N = self.N; Cu = np.zeros((len(self.prim) * N, N))
@@ -289,7 +327,7 @@ class SpectralCompiled(CompiledBase):
                         else:
                             continue
                         for (age, w) in dl:
-                            B[bl, col] += w * (self.read(0.0, age) @ gker)
+                            B[bl, col] += w * (self.instant(age, delay) @ gker)
         return self._solve_causal(M, B)
 
     def _solve_causal(self, M: np.ndarray, B: np.ndarray) -> np.ndarray:
@@ -318,16 +356,17 @@ class SpectralFiniteSolver(EngineBase):
 
     # ------------------------------------------------ best-response pieces
     def _identified(self, agent: Agent) -> np.ndarray:
-        """A row observed with delay d carries nothing about shocks younger than d, so the map on it at
-        (t, b) reads nothing for b > t - d: those entries are removed from every solve and left at zero.
-        With them in, the FOC system has exact null directions, and a ridge over them makes the
-        fixed-point map noisy at the 1e-8 level (the residual floor this engine used to have)."""
+        """The map on a row observed with delay d is stored at the shifted time t' = t - d, so its nodes on
+        the time panels above T - d belong to controls after the horizon and are read by nothing: those
+        entries are removed from every solve and left at zero.  (The nodes are whole panels, so nothing is
+        masked inside a piece; with a mask cutting through a piece the interpolant of the map between the
+        kept nodes and the zeroed ones is meaningless, and the delayed rows were not exact.)"""
         c = self.c; g = c.g; N = c.N
         keep = np.ones(len(agent.signals) * N, dtype=bool)
         for r in range(len(agent.signals)):
             d = c.rows[agent.name][r][3]
             if d > 0:
-                keep[r * N:(r + 1) * N] = g.a <= g.t - d + 1e-12
+                keep[r * N:(r + 1) * N] = c.panel_of_node + c.panel_shift(d) < g.P
         return keep
 
     def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
@@ -351,14 +390,15 @@ class SpectralFiniteSolver(EngineBase):
         rows, inst = self._seen_rows(agent, Zfull, set())
         Bk = self._row_operator(agent, rows, inst)
         gmap = np.zeros((nU, nR, N))
-        keep = self._identified(agent)
-        for (p, idx) in c.trows:
+        shifts = [c.panel_shift(c.rows[agent.name][r][3]) if c.rows[agent.name][r][3] > 0 else 0 for r in range(nR)]
+        for (p, it), idx in sorted(c.trow_by_pit.items()):
             tv = g.t[idx[0]]
             w = g.row_weights(tv, side=(-1 if tv >= g.bp[p + 1] - 1e-12 else +1))[idx]
-            cols = np.concatenate([r * N + idx for r in range(nR)])
-            cols = cols[keep[cols]]                                 # only the entries this time row identifies
-            if cols.size == 0:
+            # the action at this time row reads each row's map at the row shifted by the observation delay
+            parts = [r * N + c.trow_by_pit[(p - shifts[r], it)] for r in range(nR) if p - shifts[r] >= 0]
+            if not parts:
                 continue
+            cols = np.concatenate(parts)
             Bsub = Bk[:, idx][:, :, cols]
             G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
             if np.trace(G) <= 0:

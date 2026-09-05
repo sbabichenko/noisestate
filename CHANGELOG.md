@@ -26,6 +26,15 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Finite engine: delayed rows discretised exactly.  Two defects found by an agent against the
+  closed-form one-agent delayed problem: quadrature reads at a node on the top edge of a time panel
+  took the next panel's bottom row (the top row of every panel was fitted without its convolution
+  term), and a delayed row's map was interpolated through forced zeros inside the piece the delay
+  line cuts.  The map of a row observed with delay d is now stored at the shifted time t - d, so
+  every read is node to node, and one-sided reads follow the output node's side.  Representation
+  error on the one-agent model 5e-2 (flat) to 7e-5, 3e-6, 1e-7, 6e-10 at 4 to 8 nodes; costs
+  converge to 1e-7; the delayed Chapter 1 example's undelayed player drops from 6e-3 to 5e-10.
+  `res.maps` for a delayed row is indexed at the shifted time.
 - Cyclic symmetry (`noisestate/symmetry.py`): a single tie group listed in cycle order is checked to be
   a relabelling that leaves the model unchanged (semantically, on expanded atoms); the stationary
   closed loop then solves one block per Fourier mode over the cycle, built from the representative

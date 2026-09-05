@@ -228,6 +228,8 @@ class TriangleGrid:
         """Quadrature structure of a family of line integrals (one per output node):
             F_k = int_{r_lo[k]}^{r_hi[k]} w(k, r) f(point_fn(k, r)) dr,
         cut at every r where the read point crosses a breakpoint (and at extra_cuts).
+        side_t may be one side per output node: a read at a breakpoint time (the node's own time, or its
+        shift by a delay) then takes that node's side.
         The result caches the unknown's interpolation rows at the quadrature points and,
         if known_fn(k, r) -> (t, a) is given, the interpolation rows of a known kernel
         there, so operators for any weight are two sparse products (see LinePath)."""
@@ -260,13 +262,20 @@ class TriangleGrid:
         for k in np.unique(lp.rows):
             sel = lp.rows == k
             tt, aa = point_fn(int(k), lp.r[sel]); pt[sel] = tt; pa[sel] = aa
-        lp.I = self.interp_sparse(pt, pa, side_t=side_t, side_a=side_a)
+        # a read at a breakpoint time (the output node's own time, or its shift by a delay) takes the
+        # node's side of it (side_t per node), so a node on the top edge of its piece reads the time
+        # row of its own limit, not the next panel's; every other read is interior to the cuts
+        side_t = np.asarray(side_t)
+        at_bp = lambda tt: np.min(np.abs(tt[:, None] - self.bp[None, :]), axis=1) < 1e-12
+        st_I = np.where(at_bp(pt), side_t[lp.rows], +1) if side_t.ndim == 1 else side_t
+        lp.I = self.interp_sparse(pt, pa, side_t=st_I, side_a=side_a)
         if known_fn is not None:
             kt = np.empty_like(lp.r); ka = np.empty_like(lp.r)
             for k in np.unique(lp.rows):
                 sel = lp.rows == k
                 tt, aa = known_fn(int(k), lp.r[sel]); kt[sel] = tt; ka[sel] = aa
-            lp.J = self.interp_sparse(kt, ka)
+            st_J = np.where(at_bp(kt), side_t[lp.rows], +1) if side_t.ndim == 1 else +1
+            lp.J = self.interp_sparse(kt, ka, side_t=st_J)
         lp.out_t = out_t; lp.out_a = out_a
         lp.R = csr_matrix((np.ones(len(lp.rows)), (lp.rows, np.arange(len(lp.rows)))), shape=(n_out, len(lp.rows)))
         return lp

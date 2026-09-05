@@ -5,7 +5,8 @@
     res.costs[agent]                             stationary flow loss per unit time, or the discounted
                                                  integral over [0, T] (res.cost_kind says which)
     res.kernel(name, channel=None)               closed-loop kernel of a state or control
-    res.maps[agent]                              raw strategies on the agent's signal rows
+    res.maps[agent]                              raw strategies on the agent's signal rows (finite engine: the map
+                                                 of a row observed with delay d is stored at the shifted time t - d)
     res.to_dict()                                JSON-ready payload (grid, kernels, maps, costs, FOC parts)
     res.summary()                                one paragraph
 

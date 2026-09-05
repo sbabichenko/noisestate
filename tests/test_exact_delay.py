@@ -84,3 +84,24 @@ def test_stationary_engine_matches_the_exact_delayed_solution():
     for name, ch, exact in (("X", "w0", X0), ("X", "w1", X1), ("D", "w0", D0), ("D", "w1", D1)):
         assert np.abs(res.kernel(name, ch) - exact).max() < 2e-5, (name, ch)
     assert np.abs(res.kernel("D", "w1")[res.ages < delta - 1e-12]).max() == 0.0             # exactly causal
+
+
+def test_finite_engine_on_the_delayed_problem_converges_spectrally():
+    """The finite engine at T = 3 on the same one-agent delayed model: the representation error falls
+    spectrally with the nodes per side and the cost settles (there is no closed form for the finite
+    horizon's discounted integral, so convergence is the check)."""
+    import noisestate as ns
+    model = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
+             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": h}, "noise": {"w1": 1.0}, "delay": delta}},
+                              "loss": [[1.0, "X", "X"], [r, "D", "D"]]}},
+             "horizon": {"kind": "finite", "window": 3.0, "nodes": 5}}
+    r5 = ns.solve(model).check(); model["horizon"]["nodes"] = 6; r6 = ns.solve(model).check()
+    assert r5.representation_error["a"] < 1e-5 and r6.representation_error["a"] < 1e-6
+    assert abs(r5.costs["a"] - r6.costs["a"]) < 2e-6 and r6.second_order["a"]["ok"]
+    assert np.abs(r6.kernel("D", "w1")[r6.grid.a < delta - 1e-12]).max() == 0.0
+
+
+def test_delayed_ch1_example_both_players_representable():
+    import os, noisestate as ns
+    r = ns.solve(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "ch1_delayed_finite.yaml")).check()
+    assert all(v < 1e-8 for v in r.representation_error.values()), r.representation_error

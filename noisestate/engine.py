@@ -22,8 +22,8 @@ class EngineBase:
     kernel algebra that each compiled model supplies:
 
         conv_rows(Y, delay)      (N, m) row kernels -> (m, N, N): gamma on a row -> its action
-        instant(age)             (N, N): the instantaneous entry of a row, gamma(. - age)
-        instant_adjoint(age)     (N, N): its adjoint, phi(. + age)
+        instant(age, delay)      (N, N): the instantaneous entry of a row observed with `delay`, gamma(. - age)
+        instant_adjoint(age, delay)  (N, N): its adjoint, phi(. + age)
         response(Ru, own)        (n_prim, N) impulse responses -> (n_prim N, N): action -> world
         continuation(Rj)         (N, m) -> (m, N, N): discounted continuation through impulse responses
         own_lag_read(lag)        (N, N): the FOC term of a delayed read of the control itself
@@ -40,7 +40,7 @@ class EngineBase:
     ACTIONS = True                  # whether the engine can iterate on action kernels
     SECOND_ORDER_TOL = 1e-4         # curvature (relative to the largest) below which a negative value is window truncation
     SECOND_ORDER_QUADRATIC = True   # whether the objective is a quadratic form in the strategy at every discount
-    SECOND_ORDER_DENSE = 2500       # strategy dimension up to which the form is built densely (always settles, 2.7 s at 1600); Lanczos above
+    SECOND_ORDER_DENSE = 4000       # strategy dimension up to which the form is built densely (always settles, 2.7 s at 1600); Lanczos above
 
     def __init__(self, model: Model, verbose: bool = False, **options):
         self.model = model
@@ -158,7 +158,7 @@ class EngineBase:
         for r in range(nR):
             Gk[:, :, r * N:(r + 1) * N] += c.conv_rows(rows[r], c.rows[agent.name][r][3])
             for (k, age, w) in inst[r]:
-                Gk[k, :, r * N:(r + 1) * N] += w * c.instant(age)
+                Gk[k, :, r * N:(r + 1) * N] += w * c.instant(age, c.rows[agent.name][r][3])
         return Gk
 
     def _response_operators(self, agent: Agent, R: np.ndarray):
@@ -220,7 +220,7 @@ class EngineBase:
         for r in range(nR):
             H[r * N:(r + 1) * N] += c.projection_rows(rows[r], c.rows[agent.name][r][3])
             for (k, age, w) in inst[r]:
-                H[r * N:(r + 1) * N, k * N:(k + 1) * N] += w * c.instant_adjoint(age)
+                H[r * N:(r + 1) * N, k * N:(k + 1) * N] += w * c.instant_adjoint(age, c.rows[agent.name][r][3])
         return H
 
     # ----------------------------------------------------- best response
