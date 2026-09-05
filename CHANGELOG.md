@@ -26,6 +26,14 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Finite engine: a lagged atom in a loss (`D@tau`) is read node to node through the map shift
+  instead of the interpolating read, which copied one node onto a triangle piece's degenerate corner
+  row (mass norm 5 to 9 instead of 1) and made the loss form indefinite on directions of almost no
+  mass.  The negative second-order curvature reported for own-lag cross terms was this: it is gone
+  (6 nodes, c = 0.15: -2.8e-5 to +1.9e-5) with costs and kernels unchanged to every printed digit.
+  On the stationary engine the discrete objective was shown convex by three independent
+  constructions of its Hessian (the delay-aligned shift is an isometry of the cost's Gram norm, so
+  r > |c| suffices); the earlier note misattributed the item.
 - Triangle grid: a read point within round-off of a breakpoint is snapped to it before its panel is
   chosen by the requested side; before, a read time t - a with t and a on the same panel edge chose
   its panel by the sign of an ulp (found by an agent sharing quadrature paths across pieces).

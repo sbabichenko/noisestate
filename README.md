@@ -279,10 +279,18 @@ The checks:
 
 ## Known open items
 
-* A loss cross term between a control and its own lagged read (`[c, D@tau, D]`) gives a second-order
-  curvature of -1e-4 to -3e-4 relative to the largest at 4 to 8 nodes (worse at larger `c`),
-  although the continuous form is positive definite; the delayed and undelayed versions agree.
-  Predates the delay work (a delayed version used to report a vacuous zero).  Not understood.
+* (Resolved.)  A loss cross term between a control and its own lagged read (`[c, D@tau, D]`) gave the
+  finite engine a second-order curvature of -3e-5 to -6e-5 relative to the largest at 6 to 8 nodes per
+  side for `c = 0.15`, `r = 0.5` (positive at 4 nodes and at `c = 0.05`; the delayed and undelayed rows
+  agreed).  The stationary engine never showed it: on delay-aligned panels its shift is an exact
+  contraction of the cost's Gram norm, its loss form is positive definite, and the reported curvature is
+  the Hessian of the discrete flow loss in the map on the passive rows (rebuilt independently to every
+  printed digit; +2.4e-3 at 6 nodes, +1.8e-3 at `c = 0.15`).  On the triangle the lagged atom read
+  through `read(lag, lag)`, which copies one source node onto a triangle's whole degenerate corner row:
+  a 0/1 matrix of mass norm 4.8 (4 nodes) to 9.0 (6 nodes), so the discrete cross term was not bounded
+  by `|c|` times the own term on every nodal vector and the loss form itself was indefinite.  Lagged
+  atoms now read through the node-to-node `map_shift` (mass norm exactly 1): the form is positive
+  definite, the curvature positive (+1.9e-5 at 6 nodes, +7e-6 at 8), and costs and kernels unchanged.
 
 * The Chapter 5 cycle-market example has a second-order curvature of -3e-5 (relative to the
   largest) in the firms' best response at 6 and 8 nodes per panel, in the map on the order rows at

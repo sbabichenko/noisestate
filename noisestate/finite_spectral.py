@@ -141,9 +141,17 @@ class SpectralCompiled(CompiledBase):
         return slice(i * self.N, (i + 1) * self.N)
 
     def atom_op(self, atom: Atom) -> np.ndarray:
+        """N x (n_prim N) matrix giving the kernel of `name@lag` from the primary vector.  A lagged atom reads
+        through map_shift (the exact node-to-node shift on the delay-aligned pieces, a triangle's degenerate
+        corner nodes kept distinct), not read(lag, lag): that read copies one source node onto the whole
+        degenerate row, which is not a contraction in the cost's mass norm (norm 4.8 at 4 and 9.0 at 6 nodes
+        per side), so a cross term c D(t) D(t - tau) with |c| < r was not bounded by the own term r D(t)^2 on
+        every nodal vector and the loss form of the second-order check turned indefinite (-2.8e-5 at 6 nodes,
+        -4.3e-5 at 8 for c = 0.15, r = 0.5).  On the solution kernels, which are single-valued at those nodes,
+        the two reads agree; costs and equilibria are unchanged."""
         name, lag = atom
         M = np.zeros((self.N, len(self.prim) * self.N))
-        M[:, self.block(name)] = self.read(lag, lag)
+        M[:, self.block(name)] = self.map_shift(lag) if lag > 0 else self.read(lag, lag)
         return M
 
     def expr_op(self, expr) -> np.ndarray:
