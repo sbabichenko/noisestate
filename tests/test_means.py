@@ -178,3 +178,20 @@ def test_validation_of_constants_and_singular_mean_systems():
     # a random walk driven by a control whose target pins it: well posed, xbar = theta at any discount
     sing["agents"]["a"]["loss"] = [[1.0, "V", "V"], [-2.0 * 1.5, "V"], [1.0, "D", "D"]]; sing["horizon"]["discount"] = 0.5
     res = ns.solve(sing).check(); assert abs(res.means["V"] - 1.5) < 1e-12 and abs(res.means["D"]) < 1e-12
+
+
+@pytest.mark.parametrize("rho", [0.0, 0.5])
+def test_lead_cross_term_in_a_driven_model(rho):
+    """A lead cross term 2c D X@-tau (allowed: the own current control against a led quantity) enters the mean
+    first-order condition through the response of X weighted by e^{rho tau}, the kernels' lead convention (the
+    flows before t that read the quantity after t): r ubar + c xbar + DC_L [(xbar - theta) + e^{rho tau} c ubar] = 0
+    with xbar = ubar / a, so ubar = DC_L theta / (r + c / a + DC_L / a + e^{rho tau} c DC_L); at rho = 0 the weight
+    is one and the lead is the lag's mean."""
+    a, r, theta, c, tau = 1.0, 1.0, 1.0, 0.3, 2.0
+    d = one_agent(a, r, theta, rho).to_dict(); d["agents"]["a"]["loss"].append([2.0 * c, "D", f"X@-{tau:g}"])
+    res = ns.solve(ns.Model.from_dict(d)).check(); L = d["horizon"]["window"]
+    DC = (1.0 - np.exp(-(a + rho) * L)) / (a + rho); w = np.exp(rho * tau)
+    ub = DC * theta / (r + c / a + DC / a + w * c * DC); xb = ub / a
+    assert abs(res.means["D"] - ub) < 1e-10 and abs(res.means["X"] - xb) < 1e-10
+    assert abs(res.cost_parts["a"]["mean"] - ((xb - theta) ** 2 - theta ** 2 + r * ub ** 2 + 2.0 * c * ub * xb)) < 1e-10
+    assert "-0.000000" not in res.summary()

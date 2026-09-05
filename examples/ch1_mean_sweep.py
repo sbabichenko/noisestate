@@ -26,7 +26,7 @@ def model(p: float, nodes: int, b=(1.0, -1.0)) -> ns.Model:
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--nodes", type=int, default=12, help="nodes per side of the triangle (12 is converged to 1e-6 up to p = 100)")
+    ap.add_argument("--nodes", type=int, default=12, help="nodes per side of the triangle (12 is converged to 2e-5 up to p = 100; 20 at p = 1000)")
     ap.add_argument("--paths", action="store_true", help="print the mean paths on a grid of 11 times")
     ap.add_argument("--p", default="0.1,1,10,100,1000", help="comma-separated signal precisions")
     args = ap.parse_args(argv)

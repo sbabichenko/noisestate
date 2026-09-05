@@ -59,7 +59,7 @@ class BaseResult:
     solve_kw: dict = field(default_factory=dict)
     second_order: Dict[str, dict] = field(default_factory=dict)   # agent -> {"min", "max", "ok"}: is the best response a minimum
     foc: Dict[str, dict] = field(default_factory=dict)            # agent -> control -> {"foc", "physical", "wedge"} kernels
-    means: Dict[str, object] = field(default_factory=dict)        # quantity -> its mean, a float or a path (empty where not solved)
+    means: Dict[str, object] = field(default_factory=dict)        # quantity -> its mean, a float (stationary) or a path (finite); zero when nothing drives it
     means_t: Optional[np.ndarray] = None                          # the time nodes of the mean paths (finite engines)
     cost_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> {"variance", "mean"} parts of its cost
     kind: str = "base"
@@ -74,10 +74,16 @@ class BaseResult:
         row's delay so a consumer of the payload can place a delayed row's map without this code."""
         raise NotImplementedError
 
+    MEAN_ZERO = 1e-12          # below this a mean is round-off (the mean system is solved only when something drives it)
+
     @property
     def means_driven(self) -> bool:
-        """Whether any mean is nonzero."""
-        return any(np.any(np.asarray(v) != 0.0) for v in self.means.values())
+        """Whether any mean is nonzero beyond round-off."""
+        return any(np.max(np.abs(np.asarray(v, dtype=float))) > self.MEAN_ZERO for v in self.means.values() if np.size(v))
+
+    def _mz(self, v: float) -> float:
+        """A mean for printing: round-off shown as an unsigned zero."""
+        return float(v) if abs(float(v)) > self.MEAN_ZERO else 0.0
 
     @property
     def resolution_ok(self) -> Optional[bool]:
@@ -418,7 +424,7 @@ class StationaryResult(BaseResult):
                 k = self.kernel(u)
                 lines.append(f"    {u}(0+) on channels: " + ", ".join(f"{ch}={k[0, j]:+.4f}" for j, ch in enumerate(self.channels)))
         if self.means_driven:
-            lines.append("  means: " + ", ".join(f"{n}={self.means[n]:+.6f}" for n in c.prim))
+            lines.append("  means: " + ", ".join(f"{n}={self._mz(self.means[n]):+.6f}" for n in c.prim))
         return "\n".join(lines)
 
 
@@ -491,7 +497,7 @@ class TriangleResult(BaseResult):
                          + (f" (variance {parts['variance']:+.8f}, mean {parts['mean']:+.8f})" if parts and parts["mean"] != 0.0 else ""))
         if self.means_driven:
             at = np.array([0.0, 0.5 * c.T, c.T])
-            lines.append("  means at t = 0, T/2, T: " + ", ".join(f"{n}=" + "/".join(f"{v:+.4f}" for v in self.mean(n, at)) for n in c.prim))
+            lines.append("  means at t = 0, T/2, T: " + ", ".join(f"{n}=" + "/".join(f"{self._mz(v):+.4f}" for v in self.mean(n, at)) for n in c.prim))
         return "\n".join(lines)
 
 
@@ -551,7 +557,7 @@ class CellResult(BaseResult):
             lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.6f}"
                          + (f" (variance {parts['variance']:+.6f}, mean {parts['mean']:+.6f})" if parts and parts["mean"] != 0.0 else ""))
         if self.means_driven:
-            lines.append("  means at t = 0, T/2: " + ", ".join(f"{n}={self.means[n][0]:+.4f}/{self.means[n][c.N // 2]:+.4f}" for n in c.prim))
+            lines.append("  means at t = 0, T/2: " + ", ".join(f"{n}={self._mz(self.means[n][0]):+.4f}/{self._mz(self.means[n][c.N // 2]):+.4f}" for n in c.prim))
         return "\n".join(lines)
 
 
