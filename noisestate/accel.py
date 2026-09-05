@@ -103,7 +103,12 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
             raise _Stop(f"stopped at the evaluation budget (max_evaluations={max_evaluations})")
         if k and deadline is not None and time.time() - t0 >= deadline:
             raise _Stop(f"stopped at the deadline ({deadline:g} s)")
-        r = F(x); state["evals"] = k + 1
+        try:
+            r = F(x)
+        except Exception as e:                        # the map's own errors (a singular system) pass through the polish
+            e._from_map = True
+            raise
+        state["evals"] = k + 1
         rn = float(np.linalg.norm(r) / max(1.0, np.linalg.norm(x))); _finite_or_raise(rn, k + 1)
         if rn < state["best_rn"]:
             state["best_x"], state["best_rn"] = np.array(x, dtype=float), rn
@@ -134,6 +139,11 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
         except NoConvergence as e:
             z2 = np.asarray(e.args[0])
             note = "newton polish stopped without converging after {n} evaluations (residual {r:.2e})"
+        except ValueError as e:                       # scipy's Krylov Jacobian on a step it cannot invert
+            if getattr(e, "_from_map", False):
+                raise
+            z2 = z
+            note = f"newton polish failed ({e}) after {{n}} evaluations (residual {{r:.2e}})"
         r2 = float(np.linalg.norm(Fb(z2)) / max(1.0, np.linalg.norm(z2)))
         msg.append(note.format(n=state["evals"] - ev, r=r2))
     except _Stop as stop:

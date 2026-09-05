@@ -89,15 +89,7 @@ def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
 
 
 def test_non_finite_best_response_stops_with_a_clear_error():
-    # the stationary lead term multiplies exp(rho v) by a mask: at rho * window = 900 the exponential is
-    # inf and inf * 0 is NaN in every first-order condition; the second evaluation's closed loop used to
-    # die with a bare LinAlgError
-    d = ns.read_yaml(CH3); d["agents"]["player1"]["loss"].append([0.1, "D1", "X@-0.5"]); d["horizon"]["discount"] = 300.0
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        with pytest.raises(RuntimeError, match="non-finite value at evaluation 1"):
-            ns.solve(ns.Model.from_dict(d))
-    # and at the level of the iteration, at whichever evaluation it happens
+    # a map that returns a non-finite value stops the iteration at that evaluation, whichever it is
     calls = [0]
 
     def F(x):
@@ -158,3 +150,49 @@ def test_cli_and_sweep_forward_the_bounds(tmp_path, capsys):
     assert main(["sweep", CH3, "p2", "3,5", "-o", str(out), "--max-evaluations", "2"]) == 1
     rows = json.load(open(out)); assert [r["evaluations"] for r in rows] == [2, 2] and not any(r["converged"] for r in rows)
     rows = sweep(CH3, "p2", [3.0, 5.0], solve_kw={"max_evaluations": 2}); assert all(r["evaluations"] == 2 and not r["converged"] for r in rows)
+
+
+def test_lead_term_under_a_discount_neither_overflows_nor_is_silent():
+    """The stationary lead term weights the flows before t that read the quantity after t by exp(rho v),
+    v within the lead: taken on every node of the window it overflowed at rho * window > 709 (inf times
+    the mask's zero is NaN in every first-order condition).  It is now taken within the lead only, so the
+    model compiles and solves cleanly; and a discount that makes exp(rho tau) large is announced at
+    compile, since those weights dominate the best-response system (README, Limits)."""
+    d = ns.read_yaml(CH3); d["agents"]["player1"]["loss"].append([0.1, "D1", "X@-0.5"]); d["horizon"].update(unit=0.5, nodes=8)
+    d["horizon"]["discount"] = 0.5                                        # exp(0.25) = 1.3: nothing to say
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        mild = ns.solve(ns.Model.from_dict(d))
+    assert mild.converged and np.isfinite(mild.costs["player1"])
+    d["horizon"]["discount"] = 300.0                                      # rho * window = 900, exp(rho tau) = 1e65
+    with pytest.warns(UserWarning, match="lead X@-0.5 under the discount rate 300"):
+        S = ns.StationarySolver(ns.Model.from_dict(d))
+    agent = S.model.agents[0]; Ru = np.zeros((len(S.c.prim) * S.c.N, 1)); Ru[S.c.block("X")] = 1.0
+    assert np.isfinite(S._lead_term(agent, Ru[:, 0], "X", -0.5)).all()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = S.solve(max_evaluations=60)                                 # clean either way: the myopic limit converges in 3
+    assert np.isfinite(res.residual) and (not res.converged or np.isfinite(res.costs["player1"]))
+    d["horizon"]["discount"] = 20.0                                       # exp(rho tau) = 2e4: the fixed point runs away, cleanly
+    with pytest.warns(UserWarning, match="lead X@-0.5"):
+        res = ns.solve(ns.Model.from_dict(d), max_evaluations=60)
+    assert not res.converged and np.isfinite(res.residual) and "NOT converged" in res.summary()
+
+
+def test_scipy_jacobian_failure_in_the_polish_is_a_non_convergence_not_a_value_error():
+    """newton_krylov raises ValueError("Jacobian inversion yielded zero vector") when its Krylov step is
+    zero; the polish reports that as non-convergence with the Anderson iterate.  A ValueError raised by the
+    map itself (the singular best-response system) still propagates."""
+    def F(x):                                         # a constant residual: no fixed point, a zero Jacobian
+        return np.full_like(x, 0.5)
+    z, rn, ev, ok, msg = solve_fixed_point(F, np.zeros(3), tol=1e-12, anderson_iters=5, max_newton=3)
+    assert not ok and "newton polish failed" in msg and np.isfinite(z).all()
+    calls = [0]
+
+    def G(x):
+        calls[0] += 1
+        if calls[0] > 5:
+            raise ValueError("the best-response system of a is singular")
+        return np.full_like(x, 0.5)
+    with pytest.raises(ValueError, match="singular"):
+        solve_fixed_point(G, np.zeros(3), tol=1e-12, anderson_iters=5, max_newton=3)

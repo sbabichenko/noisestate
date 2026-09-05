@@ -247,9 +247,9 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
   well.  A `TypeError` is a wrong argument (an unknown solve option, `naive_observers` that is not
   a mapping), a `NotImplementedError` a feature the engine does not have (leads on the finite
   engines).  A `RuntimeError` is a solver problem: the cell engine's Krylov best response not
-  converging, a best-response map that returns a non-finite value (an overflow, such as a lead term
-  at a discount rate times the window above 709; the iteration stops at that evaluation instead of
-  running on NaN), and `ConvergenceError` (a `RuntimeError`) from `check()`.  A fixed-point iteration
+  converging, a best-response map that returns a non-finite value (an overflow; the iteration stops
+  at that evaluation instead of running on NaN), and `ConvergenceError` (a `RuntimeError`) from
+  `check()`.  A fixed-point iteration
   that does not reach `tol`, or is stopped at `max_evaluations` or `deadline`, does not raise:
   `solve()` returns the result with `converged=False` and
   `res.message` says what happened, `sweep()` records the point as a row with `converged: False` and
@@ -386,8 +386,14 @@ where the covariance is computed exactly (its first-order condition carries the 
 term from flows before *t* that read the quantity after *t*); a led quantity squared,
 or a lead on a control, would need the part of the kernel on shocks arriving after *t*,
 which the age grid does not carry, and is rejected (write the flow with lags: at
-discount 0 the time average of *X(t+tau)^2* equals that of *X(t)^2*).  The finite
-engines reject leads.  With lagged *state* feedback in a drift
+discount 0 the time average of *X(t+tau)^2* equals that of *X(t)^2*).  Under a discount
+rate *rho* the flows before *t* that read the quantity after *t* enter that extra term
+weighted by up to *exp(rho tau)* relative to the current flow, so a lead with a heavy
+discount is a different problem from the undiscounted one: on the Chapter 3 game with a
+cross term of 0.1 in *X@-0.5* the cost is unchanged to a few percent up to *rho tau* of
+2.5, a thousand times larger at 10, and the fixed point fails above that; the compile warns
+when *exp(rho tau)* exceeds 100, and the second-order check is not made at a positive
+discount.  The finite engines reject leads.  With lagged *state* feedback in a drift
 (`X@0.5` in the drift of `X`), the map and action-kernel iterations agree only to
 first order in the node count (1.6e-5 at 24 nodes per panel on the Chapter 3 game);
 the action-kernel path is the default and the more accurate one.  A game can have

@@ -18,6 +18,7 @@ the best-response map over all raw maps.
 """
 from __future__ import annotations
 
+import warnings
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -34,6 +35,8 @@ from .spec import Agent, Atom, Model
 
 class Compiled(CompiledBase):
     """Grid, index maps and constant operators for a stationary model."""
+    LEAD_WEIGHT_WARN = 100.0     # warn when a lead's past flows outweigh the current one by more than this
+
 
     def __init__(self, model: Model):
         super().__init__(model)
@@ -59,6 +62,14 @@ class Compiled(CompiledBase):
         self.grid = age_grid(tuple(round(float(b), 12) for b in bp), hz.nodes)   # shared, with its operator caches
         self.N = self.grid.N
         self.rho = float(hz.discount)
+        if self.rho > 0:
+            leads = {(n, -l) for a in model.agents for term in a.loss for atom in term[1:] for (n, l) in model.expand({atom: 1.0}) if l < 0}
+            for n, tau in sorted(leads):
+                if self.rho * tau > np.log(self.LEAD_WEIGHT_WARN):
+                    warnings.warn(f"lead {n}@-{tau:g} under the discount rate {self.rho:g}: the flows before t that read the quantity "
+                                  f"after t enter the first-order condition weighted by up to exp(rho tau) = {np.exp(self.rho * tau):.1e} "
+                                  "relative to the current flow, which dominates the best-response system; its second-order "
+                                  "condition is not checked at a positive discount (README, Limits)", stacklevel=2)
         self._atom_cache: Dict[tuple, np.ndarray] = {}
         self._elim: Dict[frozenset, tuple] = {}
         self._elim_wzero: Dict[frozenset, bool] = {}
@@ -509,7 +520,9 @@ class StationarySolver(EngineBase):
         # discounted objective has a further term over those past dates:
         #   int_0^{|lag|} e^{rho v} r(|lag| - v) (Q zeta)_j(a - v) dv   (a convolution with k(v))
         c = self.c; v = c.grid.nodes
-        kv = np.exp(c.rho * v) * (c.grid.interp(-lag - v) @ Ru[c.block(name)]) * (v <= -lag + 1e-12)
+        m = v <= -lag + 1e-12                          # only the dates t - v within the lead (the exponential
+        kv = np.zeros(c.N)                             # of rho v at the far end of the window would overflow)
+        kv[m] = np.exp(c.rho * v[m]) * (c.grid.interp(-lag - v[m]) @ Ru[c.block(name)])
         return c.grid.conv_op(kv)
 
     def _project(self, agent: Agent, Z: np.ndarray, actions: np.ndarray) -> np.ndarray:

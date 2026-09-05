@@ -104,6 +104,12 @@
   editable install bumped since it was installed), else the installed distribution's: this branch
   reported the installed 0.2.4 on every payload it wrote.  `tests/test_payload.py` checks it against
   `pyproject.toml`.
+- Stationary lead term: the exponential of the discount is taken within the lead only (it overflowed
+  at a discount rate times the window above 709 and made every first-order condition NaN); a lead
+  whose past flows outweigh the current one by more than 100 (exp(rho tau)) is announced at compile.
+  The Newton polish reports scipy's "Jacobian inversion yielded zero vector" as non-convergence with
+  the Anderson iterate instead of raising a ValueError, while a ValueError from the map itself (a
+  singular best-response system) still propagates.
 
 ## 0.2.4 (2026-09-04) — second review round
 
