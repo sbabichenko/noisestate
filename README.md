@@ -136,7 +136,10 @@ evaluation with `{"evaluation", "residual", "phase", "seconds"}` (phase `anderso
 cancelled.  `diagnostics=False` skips the checks at the end (the first-order-condition decomposition,
 the second-order check and the representation error: `res.foc` and `res.second_order` stay empty,
 `res.resolution_ok` is None and the summary says `diagnostics skipped`) and fills the costs only; a
-warm-started re-solve of the Chapter 3 game at 96 nodes takes half the time.  The bounds and
+warm-started re-solve of the Chapter 3 game at 96 nodes takes half the time.  With
+`start="coarse"` the budget applies to the coarse and the fine iteration separately, and the
+deadline bounds the iterations only, not the compile, the interpolation or the checks at the end:
+a hard bound for a front end also passes `diagnostics=False`.  The bounds and
 `diagnostics=False` are recorded in `res.solve_kw` and are not inherited by `refine()`;
 `sweep(..., solve_kw={...})` forwards all four to every point, and the CLI has `--max-evaluations`
 and `--deadline` on `solve` and `sweep` (a bounded point exits 1 like any unconverged solve).
@@ -209,7 +212,7 @@ uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
 |---|---|---|---|
 | 3 | two-player stationary tracking game | `solve_spectral` | 1e-11 at L = 10 (1e-5 at L = 3, window truncation) |
 | 4 | Kyle-Back, one trader, rho = 0 and 0.5; the stationary variant, V a random walk on the window (see Limits) | `kb_spectral_q` | 1e-4 at 24 nodes, 1e-5 at 48 |
-| 5 | purchase-order market on a 3-cycle with delay | `spectral_market` sweep (16 nodes/panel) | 8 nodes/panel: 0.05-0.2% (quotes), 0.4-1.5% (orders); 6 s at 4 BLAS threads (37 evaluations) |
+| 5 | purchase-order market on a 3-cycle with delay | `spectral_market` sweep (16 nodes/panel) | 8 nodes/panel: 0.05-0.2% (quotes), 0.4-1.5% (orders); 6 s at 4 BLAS threads (37 evaluations); flagged under-resolved (representation error 1.3e-5 at 8 nodes, a floor of 1.2e-6 from 12 nodes on, the costs unchanged to 1e-7 across 8 to 16) |
 | 1 + delays | control lag and a delayed observation, finite horizon | cell scheme, Richardson-extrapolated | cost within 1e-4, kernels within 1e-3 at smooth ages; exact zero response before the observation delay |
 | 1 | finite-horizon two-player game | `spec_ch1` (16 x 16 nodes, Tikhonov 1e-7) and the Chapter 1 grid solver (160 nodes, first order); `tests/test_ch1_refs.py` | converged at 12 nodes per side: cost 0.39690577, stable to 1e-11 to 20 nodes, and the cell scheme's Richardson pairs close on it as h^2 (0.396956 at 80/160 cells, 0.396918 at 160/320); the kernels at lags >= 0.1 agree with the references to their own error, 2e-3 to 4.9e-2 (the largest on a player's response to its own signal noise) for `spec_ch1` and 3e-3 to 3e-2 for the grid solver, which the package is closer to than `spec_ch1` is on every control kernel; near the diagonal `spec_ch1`'s own README reports weakly determined modes (0.35 apart below lag 0.1) and the cell scheme's Richardson limit agrees with the spectral engine to 2e-3; the dissertation's solvers put the cost 3e-4 lower (`spec_ch1` 0.39665; its README estimates the penalty's bias at +6e-4 on 0.39689-0.39690) |
 | finite, discounted | one agent, rho = 0.5 (and 0 as the control) on [0, 3] | closed form: discounted Riccati equation, Kalman filter, closed-loop impulse responses (`tests/test_finite_discount.py`) | cost within 2e-8 and kernels within 6e-5 at 12 nodes per side; the cell scheme's error halves from 48 to 96 cells and its Richardson pair is within 5e-4 |

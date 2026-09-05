@@ -29,7 +29,8 @@ def singular_system_message(name: str) -> str:
     """The error every engine raises on a singular best-response system, naming its usual causes."""
     return (f"the best-response system of {name} is singular: two of its rows may carry the same information, a "
             "control may have no quadratic term in its current value (a quadratic in a lagged read, D@tau, leaves "
-            "the strategy free within tau of the window's edge), or a row's noise loading may be zero")
+            "the strategy free within tau of the window's edge), a row's noise loading may be zero, or the system "
+            "may be too ill-conditioned at this resolution (a very small control penalty, a long window)")
 
 
 class EngineBase:
@@ -601,7 +602,8 @@ class EngineBase:
         the second-order check and the representation error: res.foc and res.second_order stay empty,
         res.resolution_ok is None and the summary says so) and fills the costs only, for a preview.
         The options as given are recorded in res.solve_kw (the bounds and diagnostics=False when given; the
-        progress callable is not), so solve(**res.solve_kw) repeats the solve."""
+        progress callable is not, nor is init), so solve(**res.solve_kw) repeats a solve that was not
+        warm-started (a sweep row after the first, or refine(), was: its record starts from zero)."""
         if max_evaluations is not None and max_evaluations < 1:
             raise ValueError(f"max_evaluations must be at least 1, not {max_evaluations}")
         if deadline is not None and deadline < 0:

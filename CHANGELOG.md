@@ -51,8 +51,9 @@
   solves instead of dying on a bare assertion in `map_shift`.  The compile warns with the panel and
   piece counts when the closure adds panels: the kernels kink at `T - k tau`, so such a window costs
   about twice the panels and four times the pieces (the delayed example at window 1.1 takes 120 s
-  against 3 s at 1.0, 8 nodes).  `TriangleGrid.breakpoints` no longer merges a trailing panel that
-  is a lag (a delay of 0.9 at window 1 was reported as 'not a breakpoint').  A lag off the panel unit
+  against 3 s at 1.0, 8 nodes).  `TriangleGrid.breakpoints` no longer merges a short trailing panel
+  (only a round-off remainder is dropped): a delay of 0.9 at window 1 was reported as 'not a
+  breakpoint', and a window off the lag by less than a quarter unit gets one more panel.  A lag off the panel unit
   is rejected with the common divisor to set as `horizon.unit` (0.25 and 0.3: 0.05), and the
   remaining checks in `map_shift` and `panel_shift` are `ValueError`s naming the lag and the panels.
 - Result payload provenance: `to_dict()` (the CLI's `-o` and `sweep -o` JSON) carries the package
