@@ -63,8 +63,8 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
     """Solve the model at each value of `param` (a key of `params`), warm-starting each point from
     the linear extrapolation of the last two equilibria in the parameter (a secant predictor;
     markedly more robust at hard points such as a small trading cost).
-    Returns [{"value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the given
-    order; "change" is the relative change of the raw maps from the previous point (on the same grid)
+    Returns [{"param", "value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the
+    given order; "change" is the relative change of the raw maps from the previous point (on the same grid)
     and "jump" flags a change more than five times the sweep's median (a possible branch jump)."""
     base = _load_dict(model)
     if param not in (base.get("params") or {}):
@@ -92,7 +92,7 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
             a1, a0 = warm_start(res), warm_start(prev)
             num = max(np.abs(a1[k] - a0[k]).max() for k in a1); den = max(max(np.abs(a0[k]).max() for k in a0), 1e-12)
             change = float(num / den)
-        rows.append({"value": float(v), "result": res, "seconds": time.time() - t0, "evaluations": int(res.iterations),
+        rows.append({"param": param, "value": float(v), "result": res, "seconds": time.time() - t0, "evaluations": int(res.iterations),
                      "converged": bool(res.converged), "change": change})
         if verbose:
             print(f"{param} = {v:g}: {'ok' if res.converged else 'NOT converged'} in {res.iterations} evaluations, {time.time()-t0:.1f}s", flush=True)

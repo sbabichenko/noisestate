@@ -31,6 +31,7 @@ Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml; matplotlib only for `--plot`
 ```bash
 noisestate validate examples/ch4_kyle_back.yaml
 noisestate solve examples/ch4_kyle_back.yaml -o kb.json --plot kb.pdf --param rho=0.5
+noisestate --version
 ```
 
 ```python
@@ -40,7 +41,8 @@ print(res.summary())
 res.ages                     # shock ages (Chebyshev nodes on the panels)
 res.kernel("X")              # closed-loop kernel of X, one column per channel
 res.action_kernel("D1")      # closed-loop kernel of a control
-res.maps["player1"]          # raw strategy g[u][r](b) on the agent's signal rows
+res.maps["player1"]          # raw strategy g[u][r](b) on the agent's signal rows, b the age of the increment as the
+                             # agent sees it (a delayed row's raw increment is older by the delay: res.MAP_CONVENTION)
 res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"} kernels of the first-order condition
 ```
 
@@ -107,8 +109,13 @@ rows[-1]["result"].summary(); rows[-1]["result"].to_dict()                   # J
 point starts from a secant extrapolation of the previous two equilibria in the parameter, which is
 what carries the Kyle-Back sweep down to a trading cost of 0.01 where a plain restart fails.  A
 warm-started point costs a handful of best responses, which is what a slider in a front end needs;
-`to_dict()` is the payload such a front end would render (grid, kernels per quantity and
-channel, raw maps, costs, and the first-order-condition decomposition).
+`to_dict()` is the payload such a front end would render, and it carries its own provenance: the
+package `version`, the `params`, the `model` spec (`Model.from_dict` rebuilds it), the `horizon`,
+the engine and solve `options`, then the grid, kernels per quantity and channel, raw maps, costs
+and the first-order-condition decomposition.  `agents` lists each agent's controls and signal rows
+with their `delay` and the axes of the row's map (`map_time`, `map_age` or `map_shock_time`, per
+`map_convention`), since a delayed row's map is not indexed like an undelayed one: the finite engine
+stores it at the shifted time t - delay.  Every sweep row names its `param`.
 
 On panels of equal width the convolution and correlation tensors are block-Toeplitz in the panel
 index, so the age grid stores a two-piece core on one panel and dense slabs for any non-uniform tail

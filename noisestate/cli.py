@@ -1,4 +1,4 @@
-"""Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--param k=v ...]`."""
+"""Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--param k=v ...]`; `--version`."""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ import sys
 import numpy as np
 import yaml
 
-from . import solve as _solve
+from . import __version__, solve as _solve
 from .spec import Model
 from .sweep import sweep
 
@@ -22,6 +22,7 @@ def save_result(res, path: str) -> None:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="noisestate", description="Solve an LQG game with private information from a model file.")
+    p.add_argument("--version", action="version", version=f"noisestate {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("solve", help="solve a model file (YAML)")
     s.add_argument("model")
@@ -54,7 +55,7 @@ def _run(p, args) -> int:
     if args.cmd == "sweep":
         rows = sweep(d, args.param, [float(x) for x in args.values.split(",")], verbose=args.verbose)
         with open(args.out, "w") as fh:
-            json.dump([{"value": r["value"], "converged": r["converged"], "evaluations": r["evaluations"],
+            json.dump([{"param": r["param"], "value": r["value"], "converged": r["converged"], "evaluations": r["evaluations"],
                         "seconds": r["seconds"], "result": r["result"].to_dict()} for r in rows], fh)
         print("wrote", args.out, f"({len(rows)} points, {sum(r['seconds'] for r in rows):.1f}s)")
         return 0 if all(r["converged"] for r in rows) else 1

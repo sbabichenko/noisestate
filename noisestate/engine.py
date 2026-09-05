@@ -588,7 +588,8 @@ class EngineBase:
         strategies are weakly identified); "maps" iterates on the raw maps, which is also what happens
         with ties (tied agents' action kernels differ by a channel permutation) and on the cell engine.
         init: action kernels or raw maps per agent, either is accepted.  start="coarse" (with no init)
-        solves first at half the nodes and starts from that equilibrium interpolated to this grid."""
+        solves first at half the nodes and starts from that equilibrium interpolated to this grid.
+        The options as given are recorded in res.solve_kw, so solve(**res.solve_kw) repeats the solve."""
         tol = self.TOL if tol is None else tol
         damping = self.DAMPING if damping is None else damping
         max_newton = self.MAX_NEWTON if max_newton is None else max_newton
@@ -604,31 +605,32 @@ class EngineBase:
             raise ValueError("this engine iterates on raw maps: pass raw maps as init")
         if variable == "actions":
             if kind is None:
-                start = {a.name: np.zeros(self.action_shapes[a.name]) for a in self.model.agents}
+                x0 = {a.name: np.zeros(self.action_shapes[a.name]) for a in self.model.agents}
             else:
-                start = init if kind == "actions" else self.actions_from_maps(init)
+                x0 = init if kind == "actions" else self.actions_from_maps(init)
             pack, unpack, respond = self.pack_actions, self.unpack_actions, self.response_actions
         else:
             if kind is None:
-                start = self.zero_maps()
+                x0 = self.zero_maps()
             else:
-                start = init if kind == "maps" else self.maps_from_actions(init)
+                x0 = init if kind == "maps" else self.maps_from_actions(init)
             pack, unpack, respond = self.pack, self.unpack, self.response_map
 
         def F(zz):
             evals[0] += 1
             return pack(respond(unpack(zz))) - zz
-        z, resid, _, converged, message = solve_fixed_point(F, pack(start), tol=tol, verbose=self.verbose, damping=damping,
+        z, resid, _, converged, message = solve_fixed_point(F, pack(x0), tol=tol, verbose=self.verbose, damping=damping,
                                                             max_newton=max_newton, M=self.ANDERSON_M)
         maps = self.maps_from_actions(unpack(z)) if variable == "actions" else unpack(z)
         Z = self.c.closed_loop(maps)
         if coarse_evals:
             message = f"coarse start: {coarse_evals} evaluations at {self._coarse_nodes} nodes; " + message
         res = self.RESULT(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                          iterations=evals[0], seconds=time.time() - t0, message=message, solver_class=type(self),
+                          iterations=evals[0], seconds=0.0, message=message, solver_class=type(self),
                           solver_kw=self.solver_kw,
                           solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start": start})
         self._finish(res)
+        res.seconds = time.time() - t0            # the diagnostics of _finish are part of the solve's time
         return res
 
     def _finish(self, res) -> None:

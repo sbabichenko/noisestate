@@ -11,10 +11,12 @@ def test_cli_validate_solve_sweep_on_every_engine(tmp_path):
         out = tmp_path / f"{name}.json"; plot = tmp_path / f"{name}.png"
         assert main(["solve", path, "-o", str(out), "--plot", str(plot)]) == 0
         d = json.load(open(out)); assert d["converged"] and d["kernels"] and d["grid"]["kind"] in ("stationary", "finite", "finite_cells")
+        assert d["version"] == ns.__version__ and d["params"] and d["model"]["name"] == d["name"] and d["horizon"]["nodes"]
+        assert d["agents"]["player1"]["controls"] == ["D1"] and "delay" in d["agents"]["player1"]["signals"]["y1"] and d["map_convention"]
         assert plot.stat().st_size > 1000
     sw = tmp_path / "sw.json"
     assert main(["sweep", os.path.join(EX, "ch3_two_player.yaml"), "p2", "3,5", "-o", str(sw)]) == 0
-    assert len(json.load(open(sw))) == 2
+    sw_rows = json.load(open(sw)); assert len(sw_rows) == 2 and all(r["param"] == "p2" and r["result"]["params"]["p2"] == r["value"] for r in sw_rows)
 
 def test_top_level_solve_rejects_unknown_options():
     import pytest

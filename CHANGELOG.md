@@ -214,6 +214,17 @@
   why the best response is then usually singular; the Chapter 5 firms' prices, penalised through a
   lagged read, do not warn, and no shipped example does.  The message lives once
   (`engine.singular_system_message`) and says "within tau of the window's edge".
+- Result payload provenance: `to_dict()` (the CLI's `-o` and `sweep -o` JSON) carries the package
+  `version`, the `params`, the `model` spec (`Model.from_dict` rebuilds it; the name is now `name`),
+  the numeric `horizon`, the engine and solve `options`, and per agent its `controls` and `signals`
+  with their `delay` and the axes of the row's map (`map_age` on the stationary engine, `map_time`
+  and `map_age` on the finite engine, `map_time` and `map_shock_time` on the cell engine), with
+  `map_convention` saying in words how `maps[agent][u][row]` is indexed: the finite engine stores a
+  delayed row's map at the shifted time t - delay, which a plot over `grid.t` drew early.  Sweep
+  rows name their `param`.  `res.solve_kw["start"]` is the option string (it held the starting
+  arrays, so the recorded options were neither JSON nor a repeat of the solve); `solve(**res.solve_kw)`
+  repeats a coarse start.  `res.seconds` is stamped after the diagnostics (12% under on Chapter 5).
+  `noisestate --version`.
 
 ## 0.2.3 (2026-09-04) — release review
 

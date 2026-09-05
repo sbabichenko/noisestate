@@ -5,9 +5,12 @@
     res.costs[agent]                             stationary flow loss per unit time, or the discounted
                                                  integral over [0, T] (res.cost_kind says which)
     res.kernel(name, channel=None)               closed-loop kernel of a state or control
-    res.maps[agent]                              raw strategies on the agent's signal rows (finite engine: the map
-                                                 of a row observed with delay d is stored at the shifted time t - d)
-    res.to_dict()                                JSON-ready payload (grid, kernels, maps, costs, FOC parts)
+    res.maps[agent]                              raw strategies on the agent's signal rows, indexed by the age of the
+                                                 increment as the agent sees it (a delayed row's raw increment is older
+                                                 by the delay; the finite engine stores a delayed row's map at the
+                                                 shifted time t - delay): res.MAP_CONVENTION, to_dict()["agents"]
+    res.to_dict()                                JSON-ready payload (version, params, model spec, options, grid, kernels,
+                                                 maps with their axes, costs, FOC parts)
     res.summary()                                one paragraph
 
 Kernel layout by engine:
@@ -19,7 +22,7 @@ Kernel layout by engine:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -51,6 +54,13 @@ class BaseResult:
 
     RESOLUTION_TOL = 1e-6
     WINDOW_TAIL_TOL = 0.02
+    MAP_CONVENTION = ""             # how maps[agent][u][row] is indexed, in words, for a consumer of to_dict()
+
+    def map_axes(self, delay: float) -> dict:
+        """Where the values of a map on a row observed with `delay` belong, as arrays over the map's nodes
+        (the time of the control, the age or time of the raw increment): to_dict() puts them beside the
+        row's delay so a consumer of the payload can place a delayed row's map without this code."""
+        raise NotImplementedError
 
     @property
     def resolution_ok(self) -> Optional[bool]:
@@ -243,13 +253,23 @@ class BaseResult:
         return rep
 
     def to_dict(self) -> dict:
-        """JSON-serialisable view: grid, kernels per quantity and channel, raw maps, costs, and the
-        first-order-condition decomposition where the engine provides it."""
-        c = self.compiled
-        out = {"model": self.model.name, "engine": self.kind, "converged": bool(self.converged),
+        """JSON-serialisable view.  Provenance: the package version, the parameter values, the model spec
+        (`model`, which Model.from_dict rebuilds), the horizon and the engine and solve options.  Then the
+        grid, the kernels per quantity and channel, the raw maps with each agent's controls and signal rows
+        (delay and map axes, see MAP_CONVENTION), costs, and the first-order-condition decomposition where
+        the engine provides it."""
+        from . import __version__
+        c = self.compiled; m = self.model
+        out = {"version": __version__, "name": m.name, "engine": self.kind, "converged": bool(self.converged),
                "residual": float(self.residual), "evaluations": int(self.iterations), "seconds": float(self.seconds),
-               "message": self.message, "grid": self.grid_info(), "discount": float(c.rho),
-               "channels": self.channels, "kernels": {}, "maps": {}, "foc": {},
+               "message": self.message, "params": {k: float(v) for k, v in m.params.items()}, "model": m.to_dict(),
+               "horizon": {k: v for k, v in asdict(m.horizon).items() if v is not None},
+               "options": {"solver": dict(self.solver_kw), "solve": dict(self.solve_kw)},
+               "grid": self.grid_info(), "discount": float(c.rho), "channels": self.channels,
+               "agents": {a.name: {"controls": list(a.controls),
+                                   "signals": {r.name: {"delay": float(r.delay), **self.map_axes(r.delay)} for r in a.signals}}
+                          for a in m.agents},
+               "map_convention": self.MAP_CONVENTION, "kernels": {}, "maps": {}, "foc": {},
                "costs": {k: float(v) for k, v in self.costs.items()}}
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
         out["diagnostics"] = [{k: (None if v is None else v) for k, v in d.items()} for d in self.diagnose()]
@@ -282,10 +302,17 @@ class BaseResult:
 @dataclass
 class StationaryResult(BaseResult):
     kind: str = "stationary"
+    MAP_CONVENTION = ("maps[agent][u][row][n] is the weight the control puts on the increment of the row as the agent "
+                      "sees it (delayed) at age ages[n] before the control; that increment entered the raw row at age "
+                      "agents[agent].signals[row].map_age[n] = ages[n] + delay, and the map is zero where map_age is "
+                      "beyond the window")
 
     @property
     def ages(self) -> np.ndarray:
         return self.compiled.grid.nodes
+
+    def map_axes(self, delay: float) -> dict:
+        return {"map_age": (self.ages + delay).tolist()}
 
     @property
     def window_tail(self) -> float:
@@ -356,10 +383,19 @@ class StationaryResult(BaseResult):
 @dataclass
 class TriangleResult(BaseResult):
     kind: str = "finite"
+    MAP_CONVENTION = ("the map on a row observed with delay d is stored at the shifted time t - d: maps[agent][u][row][n] "
+                      "is the weight the control at time agents[agent].signals[row].map_time[n] = grid.t[n] + delay puts "
+                      "on the increment of the row as the agent sees it at age grid.age[n]; that increment entered the raw "
+                      "row at time grid.s[n] (age map_age[n] = grid.age[n] + delay before the control), and the map is zero "
+                      "where map_time is beyond the horizon")
 
     @property
     def grid(self):
         return self.compiled.g
+
+    def map_axes(self, delay: float) -> dict:
+        g = self.grid
+        return {"map_time": (g.t + delay).tolist(), "map_age": (g.a + delay).tolist()}
 
     def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         """Closed-loop kernel at the triangle nodes (res.grid.t, res.grid.s): (N, nW) or (N,)."""
@@ -410,10 +446,17 @@ class TriangleResult(BaseResult):
 @dataclass
 class CellResult(BaseResult):
     kind: str = "finite_cells"
+    MAP_CONVENTION = ("maps[agent][u][row][i][v] is the weight the control in cell i (time grid.t[i]) puts on the increment "
+                      "of the row as the agent sees it in cell v; that increment entered the raw row in cell v - delay / h "
+                      "(time agents[agent].signals[row].map_shock_time[v] = grid.t[v] - delay), and cells v below the delay "
+                      "are zero")
 
     @property
     def times(self) -> np.ndarray:
         return self.compiled.times
+
+    def map_axes(self, delay: float) -> dict:
+        return {"map_time": self.times.tolist(), "map_shock_time": (self.times - delay).tolist()}
 
     def _kernel_change(self, fine) -> float:
         # compare at the coarse cell times: fine cell index = round(t / h_fine)
