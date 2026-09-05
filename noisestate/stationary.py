@@ -516,9 +516,23 @@ class StationarySolver(EngineBase):
         Bk = self._row_operator(agent, rows, inst)
         W = c.grid.mass
         keep = self._identified(agent)                                       # delayed rows: zero where they read nothing
-        BW = (Bk * W[None, :, None]).reshape(nW * N, nR * N)                # the channels stacked: one product each
-        Gram = BW.T @ Bk.reshape(nW * N, nR * N)
-        rhs = BW.T @ actions.transpose(2, 1, 0).reshape(nW * N, nU)            # column ui: sum_k (Bk W)' actions[ui, :, k]
+        # the Gram sum_k Bk' W Bk over the action nodes in causal chunks: the row operators are convolutions (and
+        # lagged instantaneous reads), so the action at an age reads only map nodes of its own and earlier panels,
+        # and a chunk's part of the Gram is one symmetric rank-k update (dsyrk on the sqrt(W)-scaled block) on the
+        # map nodes up to the chunk's top age on every row: the same sums as the full product without its zero terms
+        from scipy.linalg.blas import dsyrk
+        sw = np.sqrt(W)
+        B4 = Bk.reshape(nW, N, nR, N)
+        Gram = np.zeros((nR * N, nR * N)); G4 = Gram.reshape(nR, N, nR, N)
+        for lo, hi in self._causal_chunks():
+            if np.any(B4[:, lo:hi, :, hi:]):                                 # a lead among the instantaneous reads: no causal chunks
+                lo, hi = 0, N
+            X = (B4[:, lo:hi, :, :hi] * sw[None, lo:hi, None, None]).reshape(nW * (hi - lo), nR * hi)
+            G4[:, :hi, :, :hi] += dsyrk(1.0, X, trans=1).reshape(nR, hi, nR, hi)     # upper triangle (local order = global order)
+            if hi == N and lo == 0:
+                break
+        Gram = np.triu(Gram); Gram = Gram + Gram.T - np.diag(np.diagonal(Gram))
+        rhs = Bk.reshape(nW * N, nR * N).T @ (actions * W[None, :, None]).transpose(2, 1, 0).reshape(nW * N, nU)   # column ui: sum_k Bk' W actions[ui, :, k]
         if not keep.all():
             Gram = Gram[np.ix_(keep, keep)]; rhs = rhs[keep]
         Gram += 1e-14 * np.trace(Gram) / Gram.shape[0] * np.eye(Gram.shape[0])

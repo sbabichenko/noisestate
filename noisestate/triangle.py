@@ -123,10 +123,10 @@ class TriangleGrid:
             I[np.ix_(sel, np.arange(pc.offset, pc.offset + pc.n))] = (Rt[:, :, None] * Rx[:, None, :]).reshape(len(sel), -1)
         return I
 
-    def interp_sparse(self, t, a, side_t=+1, side_a=+1):
-        """interp() as a CSR matrix built directly: each point touches one piece's nt x na nodes, so the
-        dense form (npts x N) is wasteful for the tens of thousands of quadrature points of a path."""
-        from scipy.sparse import csr_matrix
+    def interp_factors(self, t, a, side_t=+1, side_a=+1):
+        """The interpolation at (t, a) as its factors: [(piece, point indices, Rt (m, nt), Rx (m, na))] over the
+        pieces the points fall in (a point outside the domain is in no piece); the interpolation row of a point is
+        the outer product Rt Rx' over the piece's nodes."""
         t = np.atleast_1d(np.asarray(t, dtype=float)); a = np.atleast_1d(np.asarray(a, dtype=float))
         inside = (a >= -1e-12) & (a <= t + 1e-12) & (t <= self.T + 1e-12) & (t >= -1e-12)
         tc = np.clip(t, 0.0, self.T); ac = np.clip(a, 0.0, tc)
@@ -134,13 +134,24 @@ class TriangleGrid:
         p = np.where(st > 0, self.panel_of(tc, +1), self.panel_of(tc, -1))
         q = np.where(sa > 0, self.panel_of(ac, +1), self.panel_of(ac, -1))
         q = np.minimum(q, p)
-        rows, cols, vals = [], [], []
+        out = []
         for pc in self.pieces:
             sel = np.where(inside & (p == pc.p) & (q == pc.q))[0]
             if len(sel) == 0:
                 continue
             tt, xx = pc.local_coords(tc[sel], ac[sel])
-            Rt = _bary_rows(tt, pc.tn, pc.wt); Rx = _bary_rows(xx, pc.xn, pc.wx)
+            out.append((pc, sel, _bary_rows(tt, pc.tn, pc.wt), _bary_rows(xx, pc.xn, pc.wx)))
+        return out
+
+    def interp_sparse(self, t, a, side_t=+1, side_a=+1, factors=None):
+        """interp() as a CSR matrix built directly: each point touches one piece's nt x na nodes, so the
+        dense form (npts x N) is wasteful for the tens of thousands of quadrature points of a path."""
+        from scipy.sparse import csr_matrix
+        t = np.atleast_1d(np.asarray(t, dtype=float))
+        if factors is None:
+            factors = self.interp_factors(t, a, side_t, side_a)
+        rows, cols, vals = [], [], []
+        for pc, sel, Rt, Rx in factors:
             vals.append((Rt[:, :, None] * Rx[:, None, :]).reshape(len(sel), -1).ravel())
             rows.append(np.repeat(sel, pc.n)); cols.append(np.tile(np.arange(pc.offset, pc.offset + pc.n), len(sel)))
         if not rows:
@@ -283,7 +294,8 @@ class TriangleGrid:
                 sel = lp.rows == k
                 tt, aa = known_fn(int(k), lp.r[sel]); kt[sel] = tt; ka[sel] = aa
             st_J = np.where(at_bp(kt), side_t[lp.rows], +1) if side_t.ndim == 1 else +1
-            lp.J = self.interp_sparse(kt, ka, side_t=st_J)
+            lp.Jf = self.interp_factors(kt, ka, side_t=st_J)            # the known kernel is read through its factors
+            lp.J = self.interp_sparse(kt, ka, side_t=st_J, factors=lp.Jf)
         lp.out_t = out_t; lp.out_a = out_a
         lp.R = csr_matrix((np.ones(len(lp.rows)), (lp.rows, np.arange(len(lp.rows)))), shape=(n_out, len(lp.rows)))
         return lp
@@ -322,7 +334,19 @@ class LinePath:
 
     def __init__(self, n_out: int, N: int):
         self.n_out, self.N = n_out, N
-        self.rows = None; self.r = None; self.w = None; self.I = None; self.J = None; self.R = None
+        self.rows = None; self.r = None; self.w = None; self.I = None; self.J = None; self.R = None; self.Jf = None
+
+    def read(self, kernels: np.ndarray) -> np.ndarray:
+        """J @ kernels (nq, m) for kernels (N, m): the known kernels at the quadrature points, read piece by piece
+        through the interpolation factors as dense products Rt (K_piece) Rx' (the same sums as the sparse product,
+        associated over the piece's time nodes first; identical to round-off)."""
+        K = kernels if kernels.ndim == 2 else kernels[:, None]
+        m = K.shape[1]
+        F = np.zeros((self.J.shape[0], m))
+        for pc, sel, Rt, Rx in self.Jf:
+            KB = K[pc.offset:pc.offset + pc.n].reshape(pc.nt, pc.na * m)
+            F[sel] = np.einsum("qjc,qj->qc", (Rt @ KB).reshape(len(sel), pc.na, m), Rx)
+        return F if kernels.ndim == 2 else F[:, 0]
 
     def swapped(self) -> "LinePath":
         """The same path with the unknown's and the known's read matrices exchanged: the integral of a
@@ -384,7 +408,7 @@ class LinePath:
         """Operator whose weight is the known kernel read along the path (times `extra` per point)."""
         if self.rows is None:
             return np.zeros((self.n_out, self.N))
-        f = self.J @ kernel
+        f = self.read(kernel) if self.Jf is not None else self.J @ kernel
         if extra is not None:
             f = f * extra
         return self.apply(f)
@@ -395,7 +419,7 @@ class LinePath:
         m = kernels.shape[1]
         if self.rows is None:
             return np.zeros((m, self.n_out, self.N))
-        F = self.J @ kernels                                       # (nq, m)
+        F = self.read(kernels) if self.Jf is not None else self.J @ kernels     # (nq, m)
         if extra is not None:
             F = F * extra[:, None]
         return np.stack([self.apply(F[:, i]) for i in range(m)])

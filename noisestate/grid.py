@@ -103,6 +103,7 @@ class AgeGrid:
         self._bw = bary_weights(self.n)
         self.mass = np.concatenate([clenshaw_curtis(self.n, bp[p], bp[p + 1]) for p in range(self.P)])
         self._corr_flat = {}                 # rho -> corr_tensor as [(a, j), i] (the only stored form; corr_tensor is a view of it)
+        self._corr_blocks = {}               # rho -> panel blocks of corr_tensor (see _tensor_blocks)
         self._shift_cache = {}               # tau -> shift matrix
 
     # ------------------------------------------------------------ basics
@@ -295,31 +296,64 @@ class AgeGrid:
         """Matrix C with (C g)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel y."""
         return self.conv_ops(y[:, None])[0]
 
+    # The tensors are block sparse by panel: a convolution at an age in panel p reads only nodes of
+    # panels <= p in both factors, a correlation only older ages in the kernel and younger ones in the
+    # operator's argument.  Each batched product is therefore done per panel of the output age, over the
+    # bounding index ranges of that panel's nonzero entries (taken from the tensor itself, so any zero
+    # pattern is handled, and the ranges only ever include zeros, never drop a nonzero): the same sums
+    # with the exactly zero terms left out, so the result agrees with the full product to round-off.
+    def _tensor_blocks(self, T: np.ndarray, contract: int):
+        """Per output-age panel, (a0, a1, o0, o1, c0, c1, block) with the block [(a, out), contracted] of the
+        entries T[a, :, :] restricted to the nonzero ranges of the output index (o) and the contracted index (c)."""
+        out_axis = 3 - contract
+        blocks = []
+        for p in range(self.P):
+            a0, a1 = p * self.n, (p + 1) * self.n
+            nz = T[a0:a1] != 0
+            o_any = nz.any(axis=(0, contract)); c_any = nz.any(axis=(0, out_axis))
+            if not o_any.any():
+                continue
+            oi = np.where(o_any)[0]; ci = np.where(c_any)[0]
+            o0, o1, c0, c1 = int(oi[0]), int(oi[-1]) + 1, int(ci[0]), int(ci[-1]) + 1
+            blk = T[a0:a1, o0:o1, c0:c1] if out_axis == 1 else T[a0:a1, c0:c1, o0:o1].transpose(0, 2, 1)
+            blocks.append((a0, a1, o0, o1, c0, c1, np.ascontiguousarray(blk).reshape((a1 - a0) * (o1 - o0), c1 - c0)))
+        return blocks
+
+    @staticmethod
+    def _apply_blocks(blocks, N: int, Y: np.ndarray) -> np.ndarray:
+        """(m, N, N) with out[k, a, o] = sum_c T[a, o, c] Y[c, k] from the panel blocks."""
+        m = Y.shape[1]; YT = Y.T
+        out = np.zeros((m, N, N))
+        for a0, a1, o0, o1, c0, c1, blk in blocks:                          # the product transposed: rows of the
+            out[:, a0:a1, o0:o1] = (YT[:, c0:c1] @ blk.T).reshape(m, a1 - a0, o1 - o0)     # output written contiguously
+        return out
+
     def conv_ops(self, Y: np.ndarray) -> np.ndarray:
-        """Batched conv_op: Y (N, m) -> (m, N, N), one BLAS product instead of m contractions."""
-        N = self.N
-        return (self._conv_flat @ Y).reshape(N, N, -1).transpose(2, 0, 1)
+        """Batched conv_op: Y (N, m) -> (m, N, N), out[k, a, j] = sum_i T[a, i, j] Y[i, k]."""
+        return self._apply_blocks(self._conv_blocks, self.N, Y)
 
     @cached_property
-    def _conv_flat(self) -> np.ndarray:
-        return self.conv_tensor.reshape(self.N * self.N, self.N)              # [(a, i), j]
+    def _conv_blocks(self):
+        return self._tensor_blocks(self.conv_tensor, contract=2)
 
     def corr_ops(self, W: np.ndarray, rho: float = 0.0) -> np.ndarray:
-        """Batched corr_op: W (N, m) -> (m, N, N)."""
-        return (self._corr_flat_for(rho) @ W).reshape(self.N, self.N, -1).transpose(2, 0, 1)
+        """Batched corr_op: W (N, m) -> (m, N, N), out[k, a, j] = sum_i T[a, i, j] W[i, k]."""
+        key = float(rho)
+        if key not in self._corr_blocks:
+            self._corr_blocks[key] = self._tensor_blocks(self.corr_tensor(rho), contract=1)
+        return self._apply_blocks(self._corr_blocks[key], self.N, W)
 
     def conv_op_left(self, g: np.ndarray) -> np.ndarray:
         """Matrix C with (C y)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel g."""
         return self.conv_ops_left(g[:, None])[0]
 
     def conv_ops_left(self, G: np.ndarray) -> np.ndarray:
-        """Batched conv_op_left: G (N, m) -> (m, N, N), one pass over the tensor for all m kernels."""
-        N = self.N
-        return (self._conv_flat_left @ G).reshape(N, N, -1).transpose(2, 0, 1)
+        """Batched conv_op_left: G (N, m) -> (m, N, N), out[k, a, i] = sum_j T[a, i, j] G[j, k]."""
+        return self._apply_blocks(self._conv_blocks_left, self.N, G)
 
     @cached_property
-    def _conv_flat_left(self) -> np.ndarray:
-        return np.ascontiguousarray(self.conv_tensor.transpose(0, 2, 1)).reshape(self.N * self.N, self.N)   # [(a, j), i]
+    def _conv_blocks_left(self):
+        return self._tensor_blocks(self.conv_tensor, contract=1)
 
     def corr_op(self, w: np.ndarray, rho: float = 0.0) -> np.ndarray:
         """Matrix C with (C z)(a) = int_0^{L-a} e^{-rho s} w(s) z(a+s) ds for fixed w."""

@@ -26,6 +26,18 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Memory at no speed cost: the raw correlation tensor is not stored (only its flat layout, which
+  `corr_tensor` views); loss forms are released after the finishing step; the finite engine's
+  conv_left, conv_right and response paths share one quadrature path with the interpolants swapped;
+  the grid cache is bounded by bytes (1.5 GB) as well as count; the finite row operators are cached
+  as their nonzero blocks.  Ch5 age grid 131 MB to 66 MB per discount rate, finite paths 300 MB to
+  150 MB.  All bitwise.
+- Third speed round, round-off-level reassociations allowed (costs within 1e-11, maps within 1e-10
+  of the previous results, evaluation counts unchanged): the age-grid tensor products run per panel
+  over the nonzero index ranges (the tensors are 93 to 95 percent exact zeros), the stationary map
+  projection's Gram is a symmetric rank update per causal chunk, and the finite engine reads known
+  kernels through the stored barycentric factors as dense products instead of sparse matvecs.  Ch5
+  example 7.0 s to 6.4 s (161 to 147 ms per evaluation), delayed Chapter 1 finite 3.1 s.
 - Second speed round (two agents, exact to round-off, bitwise where stated).  Stationary: the cost
   integrals as two matrix products instead of a three-index einsum (89 ms to 1 ms); the second-order
   form associated as M[u, v] = sum_k G_k' (Resp_u' G Resp_v) G_k over the responding primaries with
