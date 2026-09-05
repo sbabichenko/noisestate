@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from functools import cached_property
+import warnings
 
 import numpy as np
 
@@ -26,6 +27,17 @@ from .triangle import TriangleGrid
 from .grid_cache import triangle_grid
 
 
+def _common_unit_hint(lags, kmax: int = 100) -> str:
+    """' (u works)' for the largest u = min(lags) / k, k <= kmax, of which every lag is a multiple; the lags
+    are incommensurable at that resolution otherwise, which no panel grid carries."""
+    lo = min(lags)
+    for k in range(1, kmax + 1):
+        u = lo / k
+        if all(abs(l / u - round(l / u)) < 1e-9 for l in lags):
+            return f" ({u:g} works)"
+    return f" (none above {lo / kmax:g}: the finite engines need commensurable lags)"
+
+
 class SpectralCompiled(CompiledBase):
     def __init__(self, model: Model):
         super().__init__(model)
@@ -34,17 +46,29 @@ class SpectralCompiled(CompiledBase):
         self.T = float(hz.window)
         lags = model.all_lags()
         bp = list(hz.breakpoints) if hz.breakpoints else TriangleGrid.breakpoints(self.T, lags, hz.unit)
-        for l in lags:                   # explicit breakpoints must contain every lag (checked before the closure below)
-            if not any(abs(l - b) < 1e-12 for b in bp):
-                raise ValueError(f"lag {l} is not a breakpoint of the time/age partition {bp}; set horizon.unit "
-                                 "so that every lag is a multiple of it")
-        delays = sorted({float(r.delay) for a in model.agents for r in a.signals if r.delay > 0})
-        if delays:                       # pieces closed under the row delays: the delay line must run along piece edges
-            bp = close_under_delays(bp, delays)
-        for l in lags:
-            if not any(abs(l - b) < 1e-9 * max(1.0, self.T) for b in bp):
-                raise ValueError(f"lag {l} is not a breakpoint of the time/age partition {bp}; set horizon.unit "
-                                 "so that every lag is a multiple of it")
+        missing = [l for l in lags if not any(abs(l - b) < 1e-12 for b in bp)]
+        if missing:                      # every lag must be on the panels before the closure: closing under a lag off
+            # the unit grid would shatter the panels down to the lags' common divisor, or never terminate
+            if hz.breakpoints:
+                raise ValueError(f"lag/delay {missing[0]} is not a breakpoint of horizon.breakpoints {bp}"
+                                 + (f" (nor {missing[1:]})" if len(missing) > 1 else "") + "; list every lag and delay "
+                                 "of the model among them, or drop horizon.breakpoints (the panels are then built from the lags)")
+            unit = hz.unit or min(lags)
+            raise ValueError(f"lag(s)/delay(s) {missing} are not multiples of the panel unit {unit} "
+                             f"({'horizon.unit' if hz.unit else 'the smallest lag'}); set horizon.unit to a common divisor "
+                             f"of the lags {lags}{_common_unit_hint(lags)}")
+        # pieces closed under every lag (row delays, drift and loss lags): a lagged read and a delayed row's map are
+        # then node-to-node shifts (map_shift) and the lag lines run along piece edges.  A window that is not a
+        # multiple of a lag gets the breakpoints T - k lag as well (the kernels kink there: a control acting after
+        # the lag is idle within the last lag), about twice the panels and four times the pieces.
+        closed = close_under_delays(bp, lags) if lags else bp
+        if len(closed) > len(bp):
+            added = [round(float(b), 6) for b in closed if not any(abs(b - x) < 1e-9 for x in bp)]
+            P0, P1 = len(bp) - 1, len(closed) - 1
+            warnings.warn(f"the time panels are closed under the lag(s) {lags}: breakpoints {added} added ({P1} panels, "
+                          f"{P1 * (P1 + 1) // 2} pieces, instead of {P0} panels, {P0 * (P0 + 1) // 2} pieces); a window that "
+                          "is a multiple of every lag, with breakpoints closed under them, avoids the extra panels")
+        bp = closed
         self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes)   # shared
         g = self.g
         self.N = g.N
@@ -111,12 +135,14 @@ class SpectralCompiled(CompiledBase):
         return M
 
     def panel_shift(self, delay: float) -> int:
-        """Number of time panels in a delay: the breakpoints are closed under the delays, so every panel
-        shifted by a delay is again a panel."""
+        """Number of time panels in a lag: the breakpoints are closed under the lags, so every panel
+        shifted by a lag is again a panel."""
         g = self.g
         k = int(np.sum((g.bp > 1e-12) & (g.bp <= delay + 1e-12)))
         if abs(g.bp[k] - delay) > 1e-9 * max(1.0, self.T):
-            raise ValueError(f"delay {delay} is not a breakpoint of {g.bp}")
+            raise ValueError(f"lag {delay} is not a breakpoint of the time panels {[float(b) for b in g.bp]}; the panels "
+                             "are built from the model's lags and delays (horizon.unit, horizon.breakpoints) and closed "
+                             "under them, so a lag read here must be one of the model's")
         return k
 
     def map_shift(self, delay: float) -> np.ndarray:
@@ -131,7 +157,11 @@ class SpectralCompiled(CompiledBase):
                 if pc.p - k < 0 or pc.q - k < 0:
                     continue
                 tgt = g._piece_by_pq[(pc.p - k, pc.q - k)]
-                assert abs(tgt.t0 + delay - pc.t0) < 1e-9 and abs(tgt.t1 + delay - pc.t1) < 1e-9, "panels are not closed under the delay"
+                tol = 1e-9 * max(1.0, self.T)
+                if abs(tgt.t0 + delay - pc.t0) > tol or abs(tgt.t1 + delay - pc.t1) > tol:
+                    raise ValueError(f"the time panels {[float(b) for b in g.bp]} are not closed under the lag {delay}: the panel "
+                                     f"[{pc.t0:g}, {pc.t1:g}] shifted back by the lag is not a panel; drop horizon.breakpoints, "
+                                     f"or set horizon.unit to a common divisor of the lags and of the window {self.T}")
                 S[pc.offset + np.arange(pc.n), tgt.offset + np.arange(pc.n)] = 1.0
             self._map_shifts[key] = S
         return self._map_shifts[key]

@@ -33,6 +33,16 @@
   is window-invariant in the mass norm, turns positive when embedded in a wider window, and the
   untruncated Hessian is positive definite); the example and the two-firm variant pass with an edge
   note, the non-convex models stay flagged.
+- Finite spectral engine: the triangle's panels are closed under every lag (drift and loss lags, row
+  delays), not the row delays only, so a lagged atom on a window that is not a multiple of its lag
+  (a loss term `D1@0.3` at window 1.0; `ch1_delayed_finite` at window 1.1 without the delayed row)
+  solves instead of dying on a bare assertion in `map_shift`.  The compile warns with the panel and
+  piece counts when the closure adds panels: the kernels kink at `T - k tau`, so such a window costs
+  about twice the panels and four times the pieces (the delayed example at window 1.1 takes 120 s
+  against 3 s at 1.0, 8 nodes).  `TriangleGrid.breakpoints` no longer merges a trailing panel that is a lag (a
+  delay of 0.9 at window 1 was reported as 'not a breakpoint').  A lag off the panel unit is
+  rejected with the common divisor to set as `horizon.unit` (0.25 and 0.3: 0.05), and the remaining
+  checks in `map_shift` and `panel_shift` are `ValueError`s naming the lag and the panels.
 - Finite engine: a lagged atom in a loss (`D@tau`) is read node to node through the map shift
   instead of the interpolating read, which copied one node onto a triangle piece's degenerate corner
   row (mass norm 5 to 9 instead of 1) and made the loss form indefinite on directions of almost no

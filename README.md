@@ -87,7 +87,9 @@ horizon: {kind: stationary, discount: rho, window: 8.0, nodes: 24}
   panel and optional `unit`/`unit_range`/`breakpoints` (panels are aligned to the
   delays automatically); or `finite` with `window` = T and `nodes` per side of
   each piece of the triangle (12 is usually converged; 6-8 when delays cut the
-  domain into small pieces); `finite_cells` selects the first-order cell scheme.
+  domain into small pieces; the panels are the lags' multiples closed under every
+  lag, see Limits for a window that is not a multiple of them); `finite_cells`
+  selects the first-order cell scheme.
 * Coefficients may be numbers or expressions in the parameters (`"sqrt(p1)"`).
 
 The same structure is available from Python through `ModelBuilder` (see
@@ -198,7 +200,8 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
   (zero at the lag), the upper copy the right limit, and a lead is the exact transpose of the lag.
   With that, the breakpoints closed under adding and subtracting every row delay (so the map's
   panels and the action's panels are unions of each other shifted by the delay; beyond `unit_range`
-  a delayed model's panels become uniform), and the map removed where the row reads nothing, the
+  a delayed model's panels become uniform; the finite triangle is closed under every lag as well,
+  so a lagged read is a node-to-node shift), and the map removed where the row reads nothing, the
   delayed problem is discretised exactly: on a one-agent problem with a delayed observation whose
   solution is known in closed form (certainty equivalence and a delay-differential system,
   `tests/test_exact_delay.py`) the cost agrees to 7e-11 and the kernels to 6e-6 at 16 nodes per
@@ -325,3 +328,15 @@ first order in the node count (1.6e-5 at 24 nodes per panel on the Chapter 3 gam
 the action-kernel path is the default and the more accurate one.  A game can have
 several equilibria: `ties` selects the symmetric one, an untied solve from a zero
 start may land on another.
+
+On the finite spectral engine the time and age panels are the multiples of the
+lags closed under every lag and delay, so a lagged read and a delayed row are exact
+node-to-node shifts.  A window that is not a multiple of a lag doubles the panels
+(the kernels kink at `T - k tau` as well as at `k tau`: a control acting after the
+lag is idle within the last lag), which quadruples the pieces and multiplies the
+dense operators and the solve time by far more: `examples/ch1_delayed_finite.yaml`
+solves in 3 s at `window: 1.0` (5 panels, 10 pieces) and in about 120 s at
+`window: 1.1` (9 panels, 45 pieces) at 8 nodes per side.  The compile warns with the
+counts when the closure adds panels; a window that is a multiple of every lag, or
+fewer nodes per side, keeps the cost down.  Lags that are not multiples of one unit
+(0.25 and 0.3 without `horizon.unit: 0.05`) are rejected with the unit to set.

@@ -212,13 +212,18 @@ class TriangleGrid:
 
     # ------------------------------------------------------ helpers
     @staticmethod
-    def breakpoints(T: float, delays, unit: Optional[float] = None) -> List[float]:
-        delays = [float(d) for d in delays if d and d > 0]
-        if not delays:
+    def breakpoints(T: float, lags, unit: Optional[float] = None) -> List[float]:
+        """Uniform time/age panels of width `unit` (default: the smallest lag) up to T, then T.  When T is
+        not a multiple of the unit the last panel is the remainder, however short: nothing is merged, since
+        a trailing breakpoint can itself be a lag (a delay of 0.9 on a window of 1), and the compile closes
+        the panels under the lags anyway, which adds T - k unit back.  Only a remainder within round-off of
+        the unit (T a multiple of it to 1e-9) is dropped."""
+        lags = [float(d) for d in lags if d and d > 0]
+        if not lags:
             return [0.0, T]
-        unit = unit or min(delays)
+        unit = unit or min(lags)
         bp = list(np.arange(0.0, T - 1e-12, unit)) + [T]
-        if T - bp[-2] < 0.25 * unit and len(bp) > 2:
+        if T - bp[-2] < 1e-9 * max(1.0, T):
             bp.pop(-2)
         return bp
 
