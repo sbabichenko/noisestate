@@ -225,6 +225,19 @@
   arrays, so the recorded options were neither JSON nor a repeat of the solve); `solve(**res.solve_kw)`
   repeats a coarse start.  `res.seconds` is stamped after the diagnostics (12% under on Chapter 5).
   `noisestate --version`.
+- Tests: both finite engines against the closed form of a discounted one-agent finite-horizon problem
+  (`tests/test_finite_discount.py`: discounted Riccati equation, Kalman filter, closed-loop impulse
+  responses) where the only discounted finite test asserted `cost > 0`: the spectral engine at 12 nodes
+  per side matches the cost to 2e-8 and the kernels to 6e-5 at rho = 0 and 0.5, the cell engine's error
+  halves from 48 to 96 cells and its Richardson pair is within 5e-4.  The Chapter 1 references
+  (`tests/refs/ch1_spec_p3_p3.txt`, `ch1_grid_N160.json`), read by no test, are read by
+  `tests/test_ch1_refs.py` at lags >= 0.1 with tolerances at their own error (2e-3 to 4.9e-2 against
+  `spec_ch1`, 3e-3 to 3e-2 against the grid solver, which the package is closer to than `spec_ch1` is on
+  every control kernel);
+  the README's Chapter 1 row claimed kernel agreement with `spec_ch1` to 1e-3, which was false, and the
+  pinned cost 0.39690577 is now stated as the package's own converged value (the cell engine's Richardson
+  pairs (80, 160) and (160, 320) give 0.396956 and 0.396918, closing on it as h^2; the dissertation's
+  solvers report 0.39665 and 0.39657).
 
 ## 0.2.3 (2026-09-04) — release review
 

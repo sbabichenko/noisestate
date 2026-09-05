@@ -57,4 +57,4 @@ def test_sweep_and_finite_discounting():
     assert all(r["converged"] for r in rows)
     df = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); df["horizon"]["nodes"] = 8; df["horizon"]["discount"] = 0.5
     r = ns.solve(ns.Model.from_dict(df)).check()
-    assert r.costs["player1"] > 0
+    assert 0 < r.costs["player1"] < 0.3969      # 0.2926, below the undiscounted 0.39690577; the closed form is in test_finite_discount.py
