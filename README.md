@@ -22,9 +22,9 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest -q tests        # regression tests against the chapter solvers
 ```
 
-Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml; matplotlib only for `--plot`
-(`pip install -e ".[plot]"`).  The examples and reference data live in the repository
-(`examples/`, `tests/refs/`), not in the wheel.  MIT licence.
+Python >= 3.10.  Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml; matplotlib only for
+`--plot` (`pip install -e ".[plot]"`).  The examples and reference data live in the
+repository (`examples/`, `tests/refs/`), not in the wheel.  MIT licence.
 
 ## Use
 
@@ -33,6 +33,11 @@ noisestate validate examples/ch4_kyle_back.yaml
 noisestate solve examples/ch4_kyle_back.yaml -o kb.json --plot kb.pdf --param rho=0.5
 noisestate --version
 ```
+
+The exit status is 0 for a converged solve (a sweep: every point converged), 1 for a solve
+that ran but did not converge (the summary is still printed and `-o` still written), and 2
+for a usage error or an error the package raises, a model or solver problem, printed as
+`error: ...` on stderr.
 
 ```python
 import noisestate as ns
@@ -50,7 +55,7 @@ res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"} kernels of the first
 
 ```yaml
 name: ch4_kyle_back
-params: {eps: 0.2, rho: 0.0, gamma1: 1.0, sigma_V: 1.0, sigma_Z: 1.0}
+params: {eps: 0.2, rho: 0.5, gamma1: 1.0, sigma_V: 1.0, sigma_Z: 1.0}
 channels: [wV, wZ, w1]                          # Brownian channels
 states:
   V: {drift: {}, noise: {wV: sigma_V}}          # dV = sigma_V dW_V (random walk on the window)
@@ -95,7 +100,10 @@ horizon: {kind: stationary, discount: rho, window: 8.0, nodes: 24}
 * Coefficients may be numbers or expressions in the parameters (`"sqrt(p1)"`).
 
 The same structure is available from Python through `ModelBuilder` (see
-`examples/make_ch5_cycle_market.py`, which builds an N-firm cycle in a loop).
+`examples/make_ch5_cycle_market.py`, which builds an N-firm cycle in a loop); its `finite()`
+takes `T`, `nodes` and `discount` only, so a finite horizon's `breakpoints` or `unit` and the
+`finite_cells` kind are set on the dict (`ModelBuilder.to_dict()`, then `Model.from_dict`) or
+in YAML.
 
 ## Sweeps and interactive use
 
@@ -181,8 +189,8 @@ uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
 | chapter | model | reference | agreement |
 |---|---|---|---|
 | 3 | two-player stationary tracking game | `solve_spectral` | 1e-11 at L = 10 (1e-5 at L = 3, window truncation) |
-| 4 | Kyle-Back, one trader, rho = 0 and 0.5 | `kb_spectral_q` | 1e-4 at 24 nodes, 1e-5 at 48 |
-| 5 | purchase-order market on a 3-cycle with delay | `spectral_market` sweep (16 nodes/panel) | 8 nodes/panel: 0.05-0.2% (quotes), 0.4-1.5% (orders), 19 s |
+| 4 | Kyle-Back, one trader, rho = 0 and 0.5; the stationary variant, V a random walk on the window (see Limits) | `kb_spectral_q` | 1e-4 at 24 nodes, 1e-5 at 48 |
+| 5 | purchase-order market on a 3-cycle with delay | `spectral_market` sweep (16 nodes/panel) | 8 nodes/panel: 0.05-0.2% (quotes), 0.4-1.5% (orders); 6 s at 4 BLAS threads (37 evaluations) |
 | 1 + delays | control lag and a delayed observation, finite horizon | cell scheme, Richardson-extrapolated | cost within 1e-4, kernels within 1e-3 at smooth ages; exact zero response before the observation delay |
 | 1 | finite-horizon two-player game | `spec_ch1` (16 x 16 nodes, Tikhonov 1e-7) and the Chapter 1 grid solver (160 nodes, first order); `tests/test_ch1_refs.py` | converged at 12 nodes per side: cost 0.39690577, stable to 1e-11 to 20 nodes, and the cell scheme's Richardson pairs close on it as h^2 (0.396956 at 80/160 cells, 0.396918 at 160/320); the kernels at lags >= 0.1 agree with the references to their own error, 2e-3 to 4.9e-2 (the largest on a player's response to its own signal noise) for `spec_ch1` and 3e-3 to 3e-2 for the grid solver, which the package is closer to than `spec_ch1` is on every control kernel; near the diagonal `spec_ch1`'s own README reports weakly determined modes (0.35 apart below lag 0.1) and the cell scheme's Richardson limit agrees with the spectral engine to 2e-3; the dissertation's solvers put the cost 3e-4 lower (`spec_ch1` 0.39665; its README estimates the penalty's bias at +6e-4 on 0.39689-0.39690) |
 | finite, discounted | one agent, rho = 0.5 (and 0 as the control) on [0, 3] | closed form: discounted Riccati equation, Kalman filter, closed-loop impulse responses (`tests/test_finite_discount.py`) | cost within 2e-8 and kernels within 6e-5 at 12 nodes per side; the cell scheme's error halves from 48 to 96 cells and its Richardson pair is within 5e-4 |
@@ -214,6 +222,15 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
   solution of norm below one it is an absolute residual).  `res.message` says what the outer
   solver did, `res.summary()` shows it when the solve did not converge, and `res.check()` raises
   `ConvergenceError` so a pipeline cannot use a failed solve by accident.
+* Errors are typed by whose problem they are.  A `ValueError` is a model problem: a file that does
+  not validate, a parameter that is not the model's, a lag off the panels, a singular best-response
+  system.  A `TypeError` is a wrong argument (an unknown solve option, `naive_observers` that is not
+  a mapping), a `NotImplementedError` a feature the engine does not have (leads on the finite
+  engines).  A `RuntimeError` is a solver problem: the cell engine's Krylov best response not
+  converging, and `ConvergenceError` (a `RuntimeError`) from `check()`.  A fixed-point iteration that
+  does not reach `tol` does not raise: `solve()` returns the result with `converged=False` and
+  `res.message` says what happened, `sweep()` records the point as a row with `converged: False` and
+  goes on, and `check()` is the raise.  The CLI prints any of these as `error: ...` and exits 2.
 * A signal row with a positive `delay` is uninformative about shocks younger than the delay; the
   map on that row is set to zero at ages above `window - delay`, where it reads nothing within the
   window.  A kernel read at a lag (a delayed row, `P@tau`) jumps at the lag, and the panels'
@@ -285,10 +302,11 @@ The checks:
   the method that produced it.  This is a different question from whether the fixed-point
   solver converged: the Kyle-Back example converges under Anderson mixing while its radius is
   1.4, so naive best-response adjustment would not find that equilibrium.
-* Every sweep row has `change` (relative change of the raw maps from the previous point, on the
-  same grid) and `jump` (that change is more than five times the sweep's median), so a branch
-  jump between neighbouring points is visible instead of silently plotted as a curve.  The
-  change is per point, not per unit of the parameter, so a geometric sweep is not flagged.
+* Every sweep row has `change` (relative change of the strategy from the previous point on the
+  same grid: the raw maps, or the action kernels on the finite spectral engine) and `jump` (that
+  change is more than five times the sweep's median), so a branch jump between neighbouring points
+  is visible instead of silently plotted as a curve.  The change is per point, not per unit of the
+  parameter, so a geometric sweep is not flagged.
 * `res.cost_kind` and `model.notes` name what the numbers are: stationary costs are flow losses
   per unit time, finite-horizon costs are discounted integrals; a row that observes a control
   directly sees only its predictable part; a myopic agent ignores its effect on future flows; a
@@ -299,10 +317,11 @@ The checks:
   `myopic` that is not a boolean, a lag, delay or lead that is not below the window, a
   `unit_range` above the window, and a misspelled agent in `naive_observers`.
 * `refine()` and `stability()` rebuild the engine that produced the result, with the same options
-  (naive observers, ridge, tolerances).  A built model is single-sourced: its coefficients are
-  numbers, so `model.params` is read-only and `model.with_params(p=4.0)` returns a new model, while
-  the horizon fields (`nodes`, `window`, ...) may be changed on the object or through
-  `model.with_horizon(nodes=32)`; `solve`, `sweep`, `refine` and `stability` all see the same model.
+  (naive observers, tolerances, iteration variable).  A built model is single-sourced: its
+  coefficients are numbers, so `model.params` is read-only and `model.with_params(p=4.0)` returns a
+  new model, while the horizon fields (`nodes`, `window`, ...) may be changed on the object or
+  through `model.with_horizon(nodes=32)`; `solve`, `sweep`, `refine` and `stability` all see the
+  same model.
 * `ties` are checked structurally: rows, losses, delays and coefficients up to relabelling, the
   dynamics of each agent's private states, and whether a row's noise channel also drives a state.
 
@@ -349,6 +368,13 @@ first order in the node count (1.6e-5 at 24 nodes per panel on the Chapter 3 gam
 the action-kernel path is the default and the more accurate one.  A game can have
 several equilibria: `ties` selects the symmetric one, an untied solve from a zero
 start may land on another.
+
+The finite engines start every state at zero and integrate flow losses only: there is no
+initial state distribution (a value drawn once at t = 0 from a given covariance) and no
+terminal cost x(T)'Qx(T), so the canonical finite-horizon Kyle-Back model and LQ games
+with a terminal penalty are outside the grammar; a state with an empty `drift` and `noise`
+validates and is carried as zero.  The Chapter 4 example is the stationary variant, where
+V is a random walk on the window and the agents keep receiving V shocks.
 
 On the finite spectral engine the time and age panels are the multiples of the
 lags closed under every lag and delay, so a lagged read and a delayed row are exact

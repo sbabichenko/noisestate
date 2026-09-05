@@ -1,5 +1,6 @@
-"""Generate the Chapter 5 purchase-order market on a directed cycle of N firms
-(notes/ch5_market_model.md Part A; spectral_market.cpp calibration defaults).
+"""Generate the Chapter 5 purchase-order market on a directed cycle of N firms (the dissertation's
+Chapter 5 model; the defaults below are the calibration of its `spectral_market` solver, whose sweep
+point `tests/refs/ch5_s1_2.5_u16_endo.txt` is what `tests/test_ch5.py` checks the package against).
 
 Firm v quotes P_v and orders o_v (input from supplier v-1, delivered after tau).
 Delayed rows: pi_v = P_v@tau (price in force), i_v = o_v@tau (input arriving),

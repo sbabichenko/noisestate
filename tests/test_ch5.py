@@ -1,4 +1,4 @@
-"""Chapter 5 cycle market vs the recorded sweep point (slow: ~20 s at 4 threads, 1-2 min on a loaded machine). Run with NOISESTATE_SLOW=1."""
+"""Chapter 5 cycle market vs the recorded sweep point (slow: ~6 s at 4 threads, longer on a loaded machine). Run with NOISESTATE_SLOW=1."""
 import os, numpy as np, pytest
 import noisestate as ns
 HERE = os.path.dirname(os.path.abspath(__file__))

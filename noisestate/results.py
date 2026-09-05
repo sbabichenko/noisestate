@@ -203,7 +203,9 @@ class BaseResult:
         under naive best-response adjustment (tatonnement-stable); above one, they grow, and the
         equilibrium is one that adjustment dynamics would not find.  With untied=True (default) a
         tied model is assessed on the untied game, so asymmetric deviations are allowed.
-        Returns {"radius", "eigenvalues", "stable", "evaluations", "untied"}; also stored in
+        Returns {"radius", "eigenvalues", "stable", "evaluations", "untied", "method",
+        "fixed_point_residual"} (method is "arnoldi", "power iteration ..." when ARPACK did not settle,
+        or "zero" for a single agent whose best response does not depend on itself); also stored in
         self.stability_report."""
         from scipy.sparse.linalg import LinearOperator, eigs
         k, eps, tol, max_evaluations = self.STABILITY_K, self.STABILITY_EPS, self.STABILITY_TOL, self.STABILITY_MAX_EVALUATIONS

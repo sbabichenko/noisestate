@@ -64,7 +64,8 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
     the linear extrapolation of the last two equilibria in the parameter (a secant predictor;
     markedly more robust at hard points such as a small trading cost).
     Returns [{"param", "value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the
-    given order; "change" is the relative change of the raw maps from the previous point (on the same grid)
+    given order; "change" is the relative change of the strategy from the previous point on the same grid
+    (the raw maps; the action kernels on the finite spectral engine)
     and "jump" flags a change more than five times the sweep's median (a possible branch jump)."""
     base = _load_dict(model)
     if param not in (base.get("params") or {}):

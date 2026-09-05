@@ -238,6 +238,20 @@
   pinned cost 0.39690577 is now stated as the package's own converged value (the cell engine's Richardson
   pairs (80, 160) and (160, 320) give 0.396956 and 0.396918, closing on it as h^2; the dissertation's
   solvers report 0.39665 and 0.39657).
+- Documentation.  The README states the exception contract (`ValueError` a model problem, `TypeError`
+  a wrong argument, `NotImplementedError` a feature an engine lacks, `RuntimeError` and
+  `ConvergenceError` a solver problem; a solve that does not reach `tol` returns `converged=False` and
+  does not raise) and the CLI's exit status (0 converged, 1 not converged, 2 a usage error or an error
+  the package raises).  Limits says the finite engines have no initial state distribution and no
+  terminal cost (the finite-horizon Kyle-Back model is outside the grammar; a state with empty `drift`
+  and `noise` is carried as zero) and the Kyle-Back validation row is marked as the stationary variant.
+  Stale claims fixed: the Chapter 5 example solves in 6 s at 4 threads (the table said 19 s), Install
+  states Python >= 3.10, the model-file listing shows the shipped `rho: 0.5`, the sweep `change` is
+  the action kernels on the finite spectral engine, `ridge` is gone from the refine/stability note,
+  `ModelBuilder.finite()`'s fields are stated.  `extras/patches/README.md` points at `extras/patches/`
+  and `examples/make_ch5_cycle_market.py` cites the package's Chapter 5 reference instead of
+  dissertation-tree files; `solve()`'s docstring names `start` (not the removed `method`) and
+  `stability()`'s lists `method` and `fixed_point_residual`.
 
 ## 0.2.3 (2026-09-04) — release review
 

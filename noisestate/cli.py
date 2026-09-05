@@ -1,4 +1,6 @@
-"""Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--param k=v ...]`; `--version`."""
+"""Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--param k=v ...]`; `--version`.
+Exit status: 0 converged (a sweep: every point), 1 solved but not converged, 2 a usage error or an error
+the package raises (a model or solver problem, printed as `error: ...` on stderr)."""
 from __future__ import annotations
 
 import argparse
