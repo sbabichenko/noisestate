@@ -26,6 +26,10 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Stationary closed loop: the states are eliminated through a cached factorisation of the
+  propagator part (map-independent) and the control rows are assembled block-wise over the
+  primaries a row reads; the solve is over the controls only.  Identical to the dense solve to
+  round-off; on the Chapter 5 market the closed loop drops from 390 ms to 48 ms.
 - Stationary engine: delayed rows and lagged reads are discretised exactly.  A kernel read at a
   lag jumps there; the duplicated breakpoint nodes now carry the two one-sided limits (the lower
   copy reads the left limit, zero at the lag; the upper copy the right limit) and a lead is the

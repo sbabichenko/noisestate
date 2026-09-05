@@ -130,9 +130,17 @@ class EngineBase:
         instantaneous entries [(channel index, age, weight)] per row.  Controls in `excluded` are
         switched off (their impulses come through impulse channels instead)."""
         c = self.c; rows, inst = [], []
+        blockwise = hasattr(c, "row_blocks")
         for r in range(len(agent.signals)):
-            regular, deltas = c.row(agent.name, r, excluded)
-            rows.append(regular @ Z)
+            if blockwise:
+                blocks, deltas = c.row_blocks(agent.name, r, excluded)
+                y = np.zeros((c.N, Z.shape[1]))
+                for nm, op in blocks.items():                            # only the primaries the row reads
+                    y += op @ Z[c.block(nm)]
+                rows.append(y)
+            else:
+                regular, deltas = c.row(agent.name, r, excluded)
+                rows.append(regular @ Z)
             inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
         return rows, inst
 

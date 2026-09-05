@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+from scipy.linalg import lu_factor, lu_solve
 
 from .grid import AgeGrid
 from .grid_cache import age_grid
@@ -58,6 +59,7 @@ class Compiled(CompiledBase):
         self.N = self.grid.N
         self.rho = float(hz.discount)
         self._atom_cache: Dict[tuple, np.ndarray] = {}
+        self._elim: Dict[frozenset, tuple] = {}
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
 
     @staticmethod
@@ -100,24 +102,33 @@ class Compiled(CompiledBase):
         return M
 
     # ------------------------------------------------------- closed loop
-    def row_seen(self, agent: str, r: int, excluded: set) -> Tuple[np.ndarray, Dict[str, List[Tuple[float, float]]]]:
-        """Regular part of row r as seen by the agent (delayed), as an operator on the
-        primary vector, and the instantaneous entries per source: channel names for
-        Brownian noise, control names for observed-control impulses.  Controls in
-        `excluded` (the agent whose reaction is switched off) contribute impulses
-        through their own impulse channel instead of through a kernel."""
+    def row_blocks(self, agent: str, r: int, excluded: set):
+        """Regular part of row r as seen by the agent (delayed), as (N x N) operators on the primary
+        kernels it reads, {primary: operator}, and the instantaneous entries per source: channel
+        names for Brownian noise, control names for observed-control impulses.  Controls in
+        `excluded` (the agent whose reaction is switched off) contribute impulses through their own
+        impulse channel instead of through a kernel."""
         name, drift, E, delay = self.rows[agent][r]
         S = self.shift(delay)
-        regular = np.zeros((self.N, len(self.prim) * self.N))
+        blocks: Dict[str, np.ndarray] = {}
         deltas: Dict[str, List[Tuple[float, float]]] = {}      # source -> [(age, weight)]
         for (n, l), c in drift.items():
             if n in excluded:
                 deltas.setdefault(n, []).append((delay + l, c))
             else:
-                regular[:, self.block(n)] += c * (S @ self.shift(l))
+                op = c * (S @ self.shift(l)) if l else c * S
+                blocks[n] = blocks[n] + op if n in blocks else op
         for k, ch in enumerate(self.channels):
             if E[k] != 0.0:
                 deltas.setdefault(ch, []).append((delay, E[k]))
+        return blocks, deltas
+
+    def row_seen(self, agent: str, r: int, excluded: set) -> Tuple[np.ndarray, Dict[str, List[Tuple[float, float]]]]:
+        """row_blocks assembled as one operator (N x n_prim N) on the primary vector."""
+        blocks, deltas = self.row_blocks(agent, r, excluded)
+        regular = np.zeros((self.N, len(self.prim) * self.N))
+        for n, op in blocks.items():
+            regular[:, self.block(n)] += op
         return regular, deltas
 
     row = row_seen                                        # the engines' common name
@@ -148,12 +159,86 @@ class Compiled(CompiledBase):
         """The Gram matrix under which expected_cost integrates products of kernels."""
         return self.grid.mass_matrix
 
+    def _state_elimination(self, excl: frozenset):
+        """The map-independent part of the closed loop, per set of excluded controls: with the states
+        eliminated, Z_X = W Z_U + G B_X where G = (I - P U_X)^{-1} carries the lagged-state feedback
+        and W = G P U_U the controls' effect on the states.  Cached: only the control rows of the
+        closed loop depend on the strategies, so each solve is of size n_controls N, not n_prim N."""
+        key = excl
+        if key not in self._elim:
+            nX, N, n = self.nX, self.N, len(self.prim) * self.N
+            U = np.zeros((nX * N, n))                     # input to the propagator, (node, comp) ordering
+            for i, (nm, lag), c in self.state_inputs:
+                if nm in excl:
+                    continue
+                U[i::nX, :] += c * self.atom_op((nm, lag))
+            perm = np.arange(nX * N).reshape(N, nX).T.reshape(-1)     # prim index -> (node, comp) index
+            PX, P0X = self.Pin[perm], self.P0[perm]
+            PU = PX @ U
+            lu = lu_factor(np.eye(nX * N) - PU[:, :nX * N])
+            W = lu_solve(lu, PU[:, nX * N:])
+            self._elim[key] = (lu, W, P0X, perm)
+        return self._elim[key]
+
     def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
                     impulse_controls: Sequence = ()):
         """Solve the closed loop for the Brownian channels and for unit impulses in
         `impulse_controls` (whose owning agent's reactions are switched off when it is
         `excluded`).  maps[agent] has shape (n_controls, n_rows, N).
-        Returns Z with shape (n_prim N, nW + len(impulse_controls))."""
+        Returns Z with shape (n_prim N, nW + len(impulse_controls)).  The states are eliminated
+        through the cached propagator part (see _state_elimination); the solve is over the controls."""
+        nX, nU, N = self.nX, self.nU, self.N
+        n = len(self.prim) * N; nxs = nX * N
+        ncol = self.nW + len(impulse_controls)
+        excl = frozenset(self.model.agents[[a.name for a in self.model.agents].index(excluded)].controls) if excluded else frozenset()
+        B = np.zeros((n, ncol))
+        if nX:
+            lu, W, P0X, perm = self._state_elimination(excl)
+            for k in range(self.nW):
+                B[:nxs, k] += P0X @ self.sigma[:, k]
+            for j, u in enumerate(impulse_controls):
+                col = self.nW + j
+                for i, (nm, lag), c in self.state_inputs:
+                    if nm != u:
+                        continue
+                    v = np.zeros(nX); v[i] = c
+                    B[:nxs, col] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
+            GB = lu_solve(lu, B[:nxs])
+        # control rows: the strategies
+        MU = np.zeros((nU * N, n))
+        for a in self.model.agents:
+            if a.name == excluded:
+                continue
+            g = maps[a.name]
+            for ui, u in enumerate(a.controls):
+                bl = slice(self.block(u).start - nxs, self.block(u).stop - nxs)
+                for r in range(len(a.signals)):
+                    blocks, deltas = self.row_blocks(a.name, r, excl)
+                    gur = g[ui, r]
+                    C = self.grid.conv_op_left(gur)
+                    for nm, op in blocks.items():                       # only the primaries the row reads
+                        MU[bl, self.block(nm)] += C @ op
+                    for src, dl in deltas.items():
+                        if src in self.channels:
+                            col = self.channels.index(src)
+                        elif src in impulse_controls:
+                            col = self.nW + list(impulse_controls).index(src)
+                        else:
+                            continue
+                        for (age, w) in dl:
+                            B[nxs + bl.start:nxs + bl.stop, col] += w * (self.shift(age) @ gur)
+        Z = np.zeros((n, ncol))
+        if nX:
+            MUX, MUU = MU[:, :nxs], MU[:, nxs:]
+            Z[nxs:] = np.linalg.solve(np.eye(nU * N) - MUU - MUX @ W, B[nxs:] + MUX @ GB)
+            Z[:nxs] = W @ Z[nxs:] + GB
+        else:
+            Z[:] = np.linalg.solve(np.eye(nU * N) - MU, B)
+        return Z
+
+    def closed_loop_dense(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
+                          impulse_controls: Sequence = ()):
+        """closed_loop as one dense solve over every primary kernel (the reference for the elimination; tests)."""
         n = len(self.prim) * self.N
         ncol = self.nW + len(impulse_controls)
         M = np.zeros((n, n))
@@ -206,6 +291,7 @@ class Compiled(CompiledBase):
                             B[bl, col] += w * (self.shift(age) @ gur)
         Z = np.linalg.solve(np.eye(n) - M, B)
         return Z
+
 
 
 # ------------------------------------------------------------------- solver
