@@ -252,6 +252,30 @@
   and `examples/make_ch5_cycle_market.py` cites the package's Chapter 5 reference instead of
   dissertation-tree files; `solve()`'s docstring names `start` (not the removed `method`) and
   `stability()`'s lists `method` and `fixed_point_residual`.
+- Bounding and watching a solve.  `solve(max_evaluations=N)` caps the best-response evaluations (Anderson
+  mixing and the Newton-Krylov polish together, the count `res.iterations` reports) and `deadline=S` the
+  wall time in seconds; at least one evaluation is made, and past either bound the best iterate so far
+  comes back with `converged=False` and `res.message` naming the bound (nothing raises; `check()` does).
+  A coarse start is bounded the same way and skips its own diagnostics.  `progress=callback` is called
+  after every evaluation with `{"evaluation", "residual", "phase", "seconds"}` (phase `anderson` or
+  `newton`, `coarse ` prefixed during a coarse start); an exception it raises propagates, which is how a
+  solve is cancelled.  `diagnostics=False` skips the checks at the end (first-order-condition
+  decomposition, second-order check, representation error: `res.foc` and `res.second_order` stay empty,
+  `res.resolution_ok` is None, the summary says `diagnostics skipped`) and fills the costs only; a
+  warm-started re-solve of the Chapter 3 game at 96 nodes takes half the time.  The bounds and
+  `diagnostics=False` are recorded in `res.solve_kw` and not inherited by `refine()`;
+  `sweep(solve_kw=...)` forwards all four; the CLI has `--max-evaluations` and `--deadline` on `solve`
+  and `sweep`.  The Newton-Krylov polish's inner budget holds: scipy's `newton_krylov` replaces LGMRES's
+  outer loop by the Newton steps, so the `inner_maxiter=15` it was given bounded nothing and a step could
+  take 30 evaluations of the best-response map (LGMRES's `inner_m`); the call passes `inner_m=15` (a
+  linear test system: 24 evaluations per step before, 16 after; no shipped example reaches the polish, so
+  their numbers are unchanged).  `stability()` makes at most `STABILITY_MAX_EVALUATIONS` (200) rounds of
+  best responses, a number it passed to ARPACK as a count of restarts (up to 18 rounds each): the Arnoldi
+  iteration is stopped at 170 and the power-iteration fallback gets the remaining 30, `method` saying so.
+  A best-response map that returns a non-finite value (an overflow: a lead term at a discount rate times
+  the window above 709) stops the iteration with a `RuntimeError` naming the evaluation; every test of
+  the Anderson loop is False on NaN, so it iterated on NaN and the next evaluation's closed loop died with
+  a bare `LinAlgError: Singular matrix`.
 
 ## 0.2.3 (2026-09-04) — release review
 

@@ -581,7 +581,8 @@ class EngineBase:
         return self.interpolate_maps(res)
 
     def solve(self, init: Optional[Dict[str, np.ndarray]] = None, tol: Optional[float] = None, damping: Optional[float] = None,
-              max_newton: Optional[int] = None, variable: str = "actions", start: str = "zero"):
+              max_newton: Optional[int] = None, variable: str = "actions", start: str = "zero", max_evaluations: Optional[int] = None,
+              deadline: Optional[float] = None, progress: Optional[Callable[[dict], None]] = None, diagnostics: bool = True):
         """Find the equilibrium: Anderson mixing on the fixed point of the best-response map (damping is
         the mixing weight), then a Newton-Krylov polish if it stalls.  variable="actions" iterates on
         the agents' action kernels, with the raw maps recovered by projection (better conditioned where
@@ -589,14 +590,32 @@ class EngineBase:
         with ties (tied agents' action kernels differ by a channel permutation) and on the cell engine.
         init: action kernels or raw maps per agent, either is accepted.  start="coarse" (with no init)
         solves first at half the nodes and starts from that equilibrium interpolated to this grid.
-        The options as given are recorded in res.solve_kw, so solve(**res.solve_kw) repeats the solve."""
+        max_evaluations bounds the best-response evaluations (Anderson mixing and the polish together, the
+        count res.iterations reports) and deadline the wall time of the solve in seconds; at least one
+        evaluation is made, and past either bound the best iterate so far is returned with converged=False
+        and res.message naming the bound (no exception; check() raises).  A coarse start is bounded the same
+        way.  progress(info) is called after every evaluation with {"evaluation": the count so far,
+        "residual": the relative residual, "phase": "anderson" or "newton" (prefixed "coarse " during a coarse
+        start), "seconds": since the solve began}; an exception it raises propagates, which is how a solve is
+        cancelled.  diagnostics=False skips the checks at the end (the first-order-condition decomposition,
+        the second-order check and the representation error: res.foc and res.second_order stay empty,
+        res.resolution_ok is None and the summary says so) and fills the costs only, for a preview.
+        The options as given are recorded in res.solve_kw (the bounds and diagnostics=False when given; the
+        progress callable is not), so solve(**res.solve_kw) repeats the solve."""
+        if max_evaluations is not None and max_evaluations < 1:
+            raise ValueError(f"max_evaluations must be at least 1, not {max_evaluations}")
+        if deadline is not None and deadline < 0:
+            raise ValueError(f"deadline must be a number of seconds, not {deadline}")
         tol = self.TOL if tol is None else tol
         damping = self.DAMPING if damping is None else damping
         max_newton = self.MAX_NEWTON if max_newton is None else max_newton
         t0 = time.time(); evals = [0]
         coarse_evals = 0
         if init is None and start == "coarse":
-            init = self.coarse_start(tol=tol, damping=damping, max_newton=max_newton, variable=variable)
+            # the coarse solve's checks are never read; it gets the same bounds (on its own count, on this clock)
+            init = self.coarse_start(tol=tol, damping=damping, max_newton=max_newton, variable=variable, diagnostics=False,
+                                     max_evaluations=max_evaluations, deadline=deadline, progress=None if progress is None else
+                                     (lambda info: progress({**info, "phase": "coarse " + info["phase"], "seconds": time.time() - t0})))
             coarse_evals = getattr(self, "_coarse_evals", 0)
         if variable == "actions" and (self.model.ties or not self.ACTIONS):
             variable = "maps"
@@ -620,7 +639,8 @@ class EngineBase:
             evals[0] += 1
             return pack(respond(unpack(zz))) - zz
         z, resid, _, converged, message = solve_fixed_point(F, pack(x0), tol=tol, verbose=self.verbose, damping=damping,
-                                                            max_newton=max_newton, M=self.ANDERSON_M)
+                                                            max_newton=max_newton, M=self.ANDERSON_M, max_evaluations=max_evaluations,
+                                                            deadline=deadline, progress=progress, t0=t0)
         maps = self.maps_from_actions(unpack(z)) if variable == "actions" else unpack(z)
         Z = self.c.closed_loop(maps)
         if coarse_evals:
@@ -628,15 +648,24 @@ class EngineBase:
         res = self.RESULT(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
                           iterations=evals[0], seconds=0.0, message=message, solver_class=type(self),
                           solver_kw=self.solver_kw,
-                          solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start": start})
+                          solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start": start,
+                                    **{k: v for k, v in (("max_evaluations", max_evaluations), ("deadline", deadline)) if v is not None},
+                                    **({} if diagnostics else {"diagnostics": False})})
         self._finish(res)
         res.seconds = time.time() - t0            # the diagnostics of _finish are part of the solve's time
         return res
 
     def _finish(self, res) -> None:
-        """Fill the engine's own outputs on a fresh result: costs, and what else it computes."""
+        """Fill the engine's own outputs on a fresh result: the costs, then, unless the result's options say
+        diagnostics=False, the engine's checks at the equilibrium."""
         for a in self.model.agents:
             res.costs[a.name] = self.expected_cost(a, res.Z)
+        if res.solve_kw.get("diagnostics", True) is not False:
+            self._diagnostics(res)
+
+    def _diagnostics(self, res) -> None:
+        """The checks the engine computes at the equilibrium: the first-order-condition decomposition, the
+        second-order check and the representation error (hook; the cell engine has none)."""
 
     def actions_from_maps(self, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Action kernels the raw maps produce in their own closed loop."""

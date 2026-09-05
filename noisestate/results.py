@@ -31,6 +31,10 @@ from .accel import ConvergenceError
 from .spec import Model
 
 
+class _StabilityBudget(Exception):
+    """Raised by stability()'s matvec at its evaluation budget, so ARPACK unwinds to the fallback."""
+
+
 @dataclass
 class BaseResult:
     model: Model
@@ -113,7 +117,9 @@ class BaseResult:
         n0 = int(hz.get("nodes", 16))
         n1 = 2 * n0 if self.kind == "finite_cells" else max(n0 + 2, int(math.ceil(n0 * factor)))   # cells: keep lags aligned
         hz["nodes"] = n1
-        kw = {k: v for k, v in self.solve_kw.items() if k not in ("init", "start")}; kw.update(solve_kw)
+        # this solve's bounds and a skipped diagnostics pass are not the refinement's
+        kw = {k: v for k, v in self.solve_kw.items() if k not in ("init", "start", "max_evaluations", "deadline", "diagnostics")}
+        kw.update(solve_kw)
         solver = self._make_solver(Model.from_dict(d))
         try:                                                  # start the fine solve from this equilibrium, interpolated
             kw.setdefault("init", solver.interpolate_maps(self))
@@ -147,6 +153,9 @@ class BaseResult:
             rows.append({"name": name, "value": value, "threshold": threshold, "ok": ok, "flag": flag, "advice": advice})
         row("converged", float(self.residual), self.solve_kw.get("tol"), bool(self.converged),
             "NOT converged", self.message)
+        if self.solve_kw.get("diagnostics") is False:
+            row("diagnostics", None, None, None, "diagnostics skipped (solve(diagnostics=False): no second-order check, "
+                "first-order-condition decomposition or representation error)", "solve again with diagnostics=True")
         rep = max(self.representation_error.values()) if self.representation_error else None
         row("resolution", rep, self.RESOLUTION_TOL, self.resolution_ok,
             f"UNDER-RESOLVED (representation error {rep:.1e}: raise horizon.nodes)" if rep is not None else "", "raise horizon.nodes")
@@ -183,18 +192,19 @@ class BaseResult:
 
     def _status(self) -> str:
         """One line: the outcome, then every check that failed or has no verdict, and the informational
-        rows (refinement, stability) whenever they were computed."""
+        rows (refinement, stability, a skipped diagnostics pass) whenever they were computed."""
         rows = self.diagnose()
         parts = []
         for d in rows:
             if d["name"] == "converged":
                 parts.append("converged" if d["ok"] else f"NOT converged ({d['advice']})")
-            elif d["name"] in ("refinement", "stability") or d["ok"] is False or (d["ok"] is None and d["name"].startswith("second_order")):
+            elif d["name"] in ("refinement", "stability", "diagnostics") or d["ok"] is False or (d["ok"] is None and d["name"].startswith("second_order")):
                 if d["flag"]:
                     parts.append(d["flag"])
         return "; ".join(parts)
 
     STABILITY_K, STABILITY_EPS, STABILITY_TOL, STABILITY_MAX_EVALUATIONS = 2, 1e-6, 1e-3, 200
+    STABILITY_FALLBACK = 30         # of those evaluations, the rounds kept for the power iteration when Arnoldi does not settle
 
     def stability(self, untied: bool = True) -> dict:
         """Stability of this equilibrium under best-response dynamics: the eigenvalues of largest
@@ -204,9 +214,11 @@ class BaseResult:
         equilibrium is one that adjustment dynamics would not find.  With untied=True (default) a
         tied model is assessed on the untied game, so asymmetric deviations are allowed.
         Returns {"radius", "eigenvalues", "stable", "evaluations", "untied", "method",
-        "fixed_point_residual"} (method is "arnoldi", "power iteration ..." when ARPACK did not settle,
-        or "zero" for a single agent whose best response does not depend on itself); also stored in
-        self.stability_report."""
+        "fixed_point_residual"} (method is "arnoldi", "power iteration ..." when ARPACK did not settle or
+        was stopped, or "zero" for a single agent whose best response does not depend on itself); also
+        stored in self.stability_report.  At most STABILITY_MAX_EVALUATIONS rounds of best responses are
+        made (each matvec is one): the Arnoldi iteration is stopped STABILITY_FALLBACK short of that and
+        the power iteration gets the rest, with "method" saying so."""
         from scipy.sparse.linalg import LinearOperator, eigs
         k, eps, tol, max_evaluations = self.STABILITY_K, self.STABILITY_EPS, self.STABILITY_TOL, self.STABILITY_MAX_EVALUATIONS
         model = self.model
@@ -218,13 +230,15 @@ class BaseResult:
         z0 = S.pack(maps)
         F0 = S.pack(S.response_map(S.unpack(z0)))
         scale = max(1.0, float(np.linalg.norm(z0)))
-        count = [1]
+        count = [1]; cap = [None]                            # rounds made (F0 is one); the count at which matvec stops
 
         def matvec(v):
             v = np.asarray(v, dtype=float).ravel()
             nv = np.linalg.norm(v)
             if nv == 0:
                 return np.zeros_like(v)
+            if cap[0] is not None and count[0] >= cap[0]:
+                raise _StabilityBudget()
             h = eps * scale / nv
             count[0] += 1
             return (S.pack(S.response_map(S.unpack(z0 + h * v))) - F0) / h
@@ -236,11 +250,16 @@ class BaseResult:
         if np.linalg.norm(matvec(v)) <= 1e-12 * np.linalg.norm(v):
             vals = np.array([0.0]); method = "zero"          # a single agent: its best response does not depend on itself
         else:
+            cap[0] = max(count[0] + 1, max_evaluations - self.STABILITY_FALLBACK)      # ARPACK's maxiter counts restarts, not rounds
             try:
                 vals = eigs(op, k=kk, which="LM", tol=tol, maxiter=max_evaluations, v0=v, return_eigenvectors=False)
+            except _StabilityBudget:
+                method = f"power iteration (arnoldi stopped at the evaluation budget of {max_evaluations})"
             except Exception:                               # ARPACK did not settle: power iteration, and say so
-                method = "power iteration (arnoldi did not converge)"; lam = 0.0
-                for _ in range(30):
+                method = "power iteration (arnoldi did not converge)"
+            if method != "arnoldi":
+                steps = min(self.STABILITY_FALLBACK, max(1, max_evaluations - count[0])); cap[0] = count[0] + steps; lam = 0.0
+                for _ in range(steps):
                     w = matvec(v); nw = np.linalg.norm(w)
                     lam = nw / np.linalg.norm(v)
                     if nw == 0:

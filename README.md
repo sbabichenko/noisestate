@@ -125,6 +125,21 @@ with their `delay` and the axes of the row's map (`map_time`, `map_age` or `map_
 `map_convention`), since a delayed row's map is not indexed like an undelayed one: the finite engine
 stores it at the shifted time t - delay.  Every sweep row names its `param`.
 
+A solve can be bounded and watched, which a slider needs.  `solve(..., max_evaluations=N)` caps the
+best-response evaluations (Anderson mixing and the Newton-Krylov polish together, the count
+`res.iterations` reports) and `deadline=S` the wall time in seconds; at least one evaluation is made,
+and past either bound the best iterate so far comes back with `converged=False` and `res.message`
+naming the bound (nothing raises; `check()` does).  `progress=callback` is called after every
+evaluation with `{"evaluation", "residual", "phase", "seconds"}` (phase `anderson` or `newton`,
+`coarse ` prefixed during a coarse start); an exception it raises propagates, which is how a solve is
+cancelled.  `diagnostics=False` skips the checks at the end (the first-order-condition decomposition,
+the second-order check and the representation error: `res.foc` and `res.second_order` stay empty,
+`res.resolution_ok` is None and the summary says `diagnostics skipped`) and fills the costs only; a
+warm-started re-solve of the Chapter 3 game at 96 nodes takes half the time.  The bounds and
+`diagnostics=False` are recorded in `res.solve_kw` and are not inherited by `refine()`;
+`sweep(..., solve_kw={...})` forwards all four to every point, and the CLI has `--max-evaluations`
+and `--deadline` on `solve` and `sweep` (a bounded point exits 1 like any unconverged solve).
+
 On panels of equal width the convolution and correlation tensors are block-Toeplitz in the panel
 index, so the age grid stores a two-piece core on one panel and dense slabs for any non-uniform tail
 (20 MB instead of 131 on the Chapter 5 grid) and assembles its operators from them; applying that
@@ -163,7 +178,8 @@ strategy is recovered by projecting the resulting action kernel on the agent's
 closed-loop rows, and the equilibrium is the fixed point of the best-response map
 (all engines iterate on the action kernels with Tikhonov-regularised Anderson
 acceleration, the outer solver of the Chapter 5 market solver, and derive the raw
-maps by projection; a Newton-Krylov polish runs if Anderson stalls.  `solve(variable=
+maps by projection; a Newton-Krylov polish runs if Anderson stalls, at most 15 evaluations of
+the map per Newton step in its inner LGMRES iteration.  `solve(variable=
 "maps")` iterates on the raw maps instead, which is what happens with ties in any case).
 Both variables are kept because each fails somewhere the other does not: on the delayed
 Chapter 1 finite model the raw maps stall at a residual of 9e-7 after 313 evaluations
@@ -224,11 +240,15 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
   `ConvergenceError` so a pipeline cannot use a failed solve by accident.
 * Errors are typed by whose problem they are.  A `ValueError` is a model problem: a file that does
   not validate, a parameter that is not the model's, a lag off the panels, a singular best-response
-  system.  A `TypeError` is a wrong argument (an unknown solve option, `naive_observers` that is not
+  system; a solve bound out of range (`max_evaluations` below one, a negative `deadline`) is one as
+  well.  A `TypeError` is a wrong argument (an unknown solve option, `naive_observers` that is not
   a mapping), a `NotImplementedError` a feature the engine does not have (leads on the finite
   engines).  A `RuntimeError` is a solver problem: the cell engine's Krylov best response not
-  converging, and `ConvergenceError` (a `RuntimeError`) from `check()`.  A fixed-point iteration that
-  does not reach `tol` does not raise: `solve()` returns the result with `converged=False` and
+  converging, a best-response map that returns a non-finite value (an overflow, such as a lead term
+  at a discount rate times the window above 709; the iteration stops at that evaluation instead of
+  running on NaN), and `ConvergenceError` (a `RuntimeError`) from `check()`.  A fixed-point iteration
+  that does not reach `tol`, or is stopped at `max_evaluations` or `deadline`, does not raise:
+  `solve()` returns the result with `converged=False` and
   `res.message` says what happened, `sweep()` records the point as a row with `converged: False` and
   goes on, and `check()` is the raise.  The CLI prints any of these as `error: ...` and exits 2.
 * A signal row with a positive `delay` is uninformative about shocks younger than the delay; the
@@ -301,7 +321,9 @@ The checks:
 * `stability()` reports the spectral radius of the best-response map (tatonnement stability) and
   the method that produced it.  This is a different question from whether the fixed-point
   solver converged: the Kyle-Back example converges under Anderson mixing while its radius is
-  1.4, so naive best-response adjustment would not find that equilibrium.
+  1.4, so naive best-response adjustment would not find that equilibrium.  It makes at most
+  `STABILITY_MAX_EVALUATIONS` (200) rounds of best responses: the Arnoldi iteration is stopped at 170
+  and a power iteration gets the remaining 30, with `method` saying so.
 * Every sweep row has `change` (relative change of the strategy from the previous point on the
   same grid: the raw maps, or the action kernels on the finite spectral engine) and `jump` (that
   change is more than five times the sweep's median), so a branch jump between neighbouring points

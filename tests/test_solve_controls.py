@@ -1,0 +1,143 @@
+"""Bounding and watching a solve (2026-09-05 audit): max_evaluations, deadline, progress, diagnostics=False,
+the stability budget, the Newton-Krylov inner budget, and a non-finite residual."""
+import json, os, time, warnings, numpy as np, pytest
+import noisestate as ns
+from noisestate.accel import solve_fixed_point
+from noisestate.cli import main
+from noisestate.sweep import sweep
+HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
+CH3 = os.path.join(EX, "ch3_two_player.yaml")
+
+
+def _ch3(**horizon):
+    d = ns.read_yaml(CH3); d["horizon"].update(horizon)
+    return ns.Model.from_dict(d)
+
+
+def test_evaluation_budget_returns_the_best_iterate_unconverged():
+    res = ns.solve(_ch3(), max_evaluations=3)
+    assert not res.converged and res.iterations == 3 and "evaluation budget" in res.message and "max_evaluations=3" in res.message
+    assert "NOT converged" in res.summary() and "evaluation budget" in res.summary()
+    row = [d for d in res.diagnose() if d["name"] == "converged"][0]; assert row["ok"] is False and "evaluation budget" in row["advice"]
+    assert res.solve_kw["max_evaluations"] == 3 and np.isfinite(res.costs["player1"])
+    with pytest.raises(ns.ConvergenceError):
+        res.check()
+    assert res.refine()["converged"]                                     # the bound is this solve's, not the refinement's
+    # the budget counts the polish as well, and the best iterate comes back, not the last
+    d = ns.read_yaml(CH3); d["params"]["p1"] = d["params"]["p2"] = 1e200        # Anderson stalls at 2.6e-7, then a long polish
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        log = []; r = ns.solve(ns.Model.from_dict(d), max_evaluations=100, progress=log.append)
+    assert not r.converged and r.iterations == len(log) == 100 and "newton polish" in r.message and "evaluation budget" in r.message
+    assert {x["phase"] for x in log} == {"anderson", "newton"} and r.residual == min(x["residual"] for x in log)
+    with pytest.raises(ValueError, match="at least 1"):
+        ns.solve(_ch3(), max_evaluations=0)
+
+
+def test_deadline_zero_returns_after_one_evaluation():
+    res = ns.solve(_ch3(), deadline=0)
+    assert not res.converged and res.iterations == 1 and "deadline" in res.message and np.isfinite(res.residual)
+    with pytest.raises(ValueError, match="deadline"):
+        ns.solve(_ch3(), deadline=-1)
+
+
+def test_progress_is_called_per_evaluation_and_can_cancel():
+    log = []; res = ns.solve(_ch3(), progress=log.append)
+    assert res.converged and len(log) == res.iterations and [x["evaluation"] for x in log] == list(range(1, res.iterations + 1))
+    assert all(set(x) == {"evaluation", "residual", "phase", "seconds"} for x in log)
+    assert all(x["phase"] == "anderson" for x in log) and np.isclose(log[-1]["residual"], res.residual, rtol=1e-12)
+    assert all(log[i]["seconds"] <= log[i + 1]["seconds"] for i in range(len(log) - 1)) and log[-1]["seconds"] <= res.seconds
+
+    class Cancelled(Exception):
+        pass
+
+    def cancel(info):
+        if info["evaluation"] == 2:
+            raise Cancelled()
+    with pytest.raises(Cancelled):
+        ns.solve(_ch3(), progress=cancel)
+    log = []; res = ns.solve(_ch3(), start="coarse", progress=log.append)   # a coarse start reports its phase, on the one clock
+    phases = [x["phase"] for x in log]
+    assert phases[0] == "coarse anderson" and phases[-1] == "anderson" and res.converged and "coarse start" in res.message
+    assert all(log[i]["seconds"] <= log[i + 1]["seconds"] for i in range(len(log) - 1))
+    res = ns.solve(_ch3(), start="coarse", max_evaluations=2)                # both solves bounded
+    assert not res.converged and res.iterations == 2 and res.message.startswith("coarse start: 2 evaluations")
+
+
+def test_diagnostics_off_skips_the_checks_and_is_faster():
+    S = ns.make_solver(_ch3(nodes=96, window=10.0)); full = S.solve(); w = full.maps
+    off = S.solve(init=w, diagnostics=False)
+    assert off.converged and off.second_order == {} and off.foc == {} and off.representation_error == {} and off.resolution_ok is None
+    assert full.second_order and full.foc and full.resolution_ok
+    assert all(abs(off.costs[k] - full.costs[k]) < 1e-9 for k in full.costs) and off.solve_kw["diagnostics"] is False
+    assert "diagnostics skipped" in off.summary() and any(d["name"] == "diagnostics" and d["ok"] is None for d in off.diagnose())
+    assert "diagnostics skipped" not in full.summary() and "diagnostics" not in [d["name"] for d in full.diagnose()]
+    assert json.loads(json.dumps(off.to_dict()))["options"]["solve"]["diagnostics"] is False
+
+    def timed(**kw):
+        best = np.inf
+        for _ in range(3):
+            t = time.time(); S.solve(init=w, **kw); best = min(best, time.time() - t)
+        return best
+    assert timed(diagnostics=False) < timed()                    # 2x on this model: the pass is two best responses and an eigh
+    # the cell engine (no checks of its own) accepts the option as well
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite_cells", "window": 1.0, "nodes": 12}
+    assert ns.solve(ns.Model.from_dict(d), diagnostics=False).converged
+
+
+def test_non_finite_best_response_stops_with_a_clear_error():
+    # the stationary lead term multiplies exp(rho v) by a mask: at rho * window = 900 the exponential is
+    # inf and inf * 0 is NaN in every first-order condition; the second evaluation's closed loop used to
+    # die with a bare LinAlgError
+    d = ns.read_yaml(CH3); d["agents"]["player1"]["loss"].append([0.1, "D1", "X@-0.5"]); d["horizon"]["discount"] = 300.0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with pytest.raises(RuntimeError, match="non-finite value at evaluation 1"):
+            ns.solve(ns.Model.from_dict(d))
+    # and at the level of the iteration, at whichever evaluation it happens
+    calls = [0]
+
+    def F(x):
+        calls[0] += 1
+        return np.full_like(x, np.nan) if calls[0] == 3 else -0.5 * x
+    with pytest.raises(RuntimeError, match="evaluation 3"):
+        solve_fixed_point(F, np.ones(4), tol=1e-12, max_newton=0)
+
+
+def test_newton_polish_inner_budget_holds():
+    """scipy's newton_krylov replaces LGMRES's outer loop by the Newton steps, so the inner_maxiter it was
+    given bounded nothing (24 evaluations per step on this system); inner_m does: at most 15 evaluations of
+    the map per step plus the line search."""
+    rng = np.random.default_rng(1); n = 120
+    A = rng.standard_normal((n, n)) / np.sqrt(n) + 2.0 * np.eye(n); b = rng.standard_normal(n)
+    calls = [0]
+
+    def F(x):
+        calls[0] += 1
+        return A @ x - b
+    z, rn, ev, ok, msg = solve_fixed_point(F, np.zeros(n), tol=1e-14, anderson_iters=1, max_newton=3)
+    assert ev == calls[0] and "newton polish" in msg
+    polish = ev - 2                                              # Anderson made two evaluations before its cap
+    assert 3 * 15 <= polish <= 3 * (15 + 4) + 1
+
+
+def test_stability_budget_bounds_the_best_response_rounds(monkeypatch):
+    res = ns.solve(_ch3()).check()
+    monkeypatch.setattr(ns.BaseResult, "STABILITY_MAX_EVALUATIONS", 5)
+    st = res.stability()
+    assert st["evaluations"] <= 5 and "evaluation budget" in st["method"] and 0 < st["radius"] < 1 and "power iteration" in res.summary()
+    monkeypatch.setattr(ns.BaseResult, "STABILITY_MAX_EVALUATIONS", 200)
+    full = res.stability()
+    assert full["method"] == "arnoldi" and full["evaluations"] < 200 and abs(full["radius"] - st["radius"]) < 0.1
+
+
+def test_cli_and_sweep_forward_the_bounds(tmp_path, capsys):
+    assert main(["solve", CH3, "--max-evaluations", "2"]) == 1
+    assert "evaluation budget" in capsys.readouterr().out
+    assert main(["solve", CH3, "--deadline", "0"]) == 1
+    assert "deadline" in capsys.readouterr().out
+    assert main(["solve", CH3, "--max-evaluations", "0"]) == 2
+    out = tmp_path / "sw.json"
+    assert main(["sweep", CH3, "p2", "3,5", "-o", str(out), "--max-evaluations", "2"]) == 1
+    rows = json.load(open(out)); assert [r["evaluations"] for r in rows] == [2, 2] and not any(r["converged"] for r in rows)
+    rows = sweep(CH3, "p2", [3.0, 5.0], solve_kw={"max_evaluations": 2}); assert all(r["evaluations"] == 2 and not r["converged"] for r in rows)

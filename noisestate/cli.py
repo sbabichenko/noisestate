@@ -1,4 +1,5 @@
-"""Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--param k=v ...]`; `--version`.
+"""Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--param k=v ...] [--max-evaluations N]
+[--deadline S]`; `--version`.
 Exit status: 0 converged (a sweep: every point), 1 solved but not converged, 2 a usage error or an error
 the package raises (a model or solver problem, printed as `error: ...` on stderr)."""
 from __future__ import annotations
@@ -34,6 +35,8 @@ def main(argv=None) -> int:
     s.add_argument("--window", type=float, help="override the lag window L")
     s.add_argument("--param", action="append", default=[], help="override a parameter, k=v (repeatable)")
     s.add_argument("--tol", type=float, default=None, help="fixed-point tolerance (default: the engine's own, 1e-10 stationary, 1e-8 finite)")
+    s.add_argument("--max-evaluations", type=int, metavar="N", help="stop after N best-response evaluations (the result is then not converged; exit 1)")
+    s.add_argument("--deadline", type=float, metavar="S", help="stop after S seconds of wall time (likewise)")
     s.add_argument("--stability", action="store_true", help="also report the stability of the equilibrium under best-response dynamics")
     s.add_argument("--refine", action="store_true", help="re-solve on a finer grid and report how much costs and kernels move")
     s.add_argument("-v", "--verbose", action="store_true")
@@ -42,6 +45,8 @@ def main(argv=None) -> int:
     w = sub.add_parser("sweep", help="solve along one parameter with warm starts; write a JSON list")
     w.add_argument("model"); w.add_argument("param"); w.add_argument("values", help="comma-separated values")
     w.add_argument("-o", "--out", required=True, help="output .json")
+    w.add_argument("--max-evaluations", type=int, metavar="N", help="per point, as for solve")
+    w.add_argument("--deadline", type=float, metavar="S", help="per point, as for solve")
     w.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
     try:
@@ -54,8 +59,10 @@ def main(argv=None) -> int:
 def _run(p, args) -> int:
     with open(args.model) as fh:
         d = yaml.safe_load(fh)
+    bounds = {k: v for k, v in (("max_evaluations", getattr(args, "max_evaluations", None)), ("deadline", getattr(args, "deadline", None)))
+              if v is not None}
     if args.cmd == "sweep":
-        rows = sweep(d, args.param, [float(x) for x in args.values.split(",")], verbose=args.verbose)
+        rows = sweep(d, args.param, [float(x) for x in args.values.split(",")], solve_kw=bounds, verbose=args.verbose)
         with open(args.out, "w") as fh:
             json.dump([{"param": r["param"], "value": r["value"], "converged": r["converged"], "evaluations": r["evaluations"],
                         "seconds": r["seconds"], "result": r["result"].to_dict()} for r in rows], fh)
@@ -89,7 +96,7 @@ def _run(p, args) -> int:
             p.error("--window must be positive")
         d.setdefault("horizon", {})["window"] = args.window
     m = Model.from_dict(d)
-    kw = {} if args.tol is None else {"tol": args.tol}
+    kw = dict(bounds) if args.tol is None else {"tol": args.tol, **bounds}
     res = _solve(m, verbose=args.verbose, refine=args.refine, stability=args.stability, **kw)
     print(res.summary())
     if args.out:

@@ -62,7 +62,9 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
           solve_kw: Optional[dict] = None, verbose: bool = False) -> List[dict]:
     """Solve the model at each value of `param` (a key of `params`), warm-starting each point from
     the linear extrapolation of the last two equilibria in the parameter (a secant predictor;
-    markedly more robust at hard points such as a small trading cost).
+    markedly more robust at hard points such as a small trading cost).  solver_kw goes to each point's
+    engine, solve_kw to each point's solve() (tol, variable, max_evaluations, deadline, progress,
+    diagnostics, ...); a point stopped at a bound is a row with converged False, and the sweep goes on.
     Returns [{"param", "value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the
     given order; "change" is the relative change of the strategy from the previous point on the same grid
     (the raw maps; the action kernels on the finite spectral engine)

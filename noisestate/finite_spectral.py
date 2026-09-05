@@ -590,11 +590,10 @@ class SpectralFiniteSolver(EngineBase):
         I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a)
         return {a.name: np.einsum("fn,urn->urf", I, coarse.maps[a.name]) for a in self.model.agents}
 
-    def _finish(self, res) -> None:
+    def _diagnostics(self, res) -> None:
         self._second_order_cache.clear()
         order = [a for a in self.model.agents if self.c.rep[a.name] == a.name] + [a for a in self.model.agents if self.c.rep[a.name] != a.name]
         for a in order:
-            res.costs[a.name] = self.expected_cost(a, res.Z)
             g, out = self.best_response(a, res.maps, want_decomp=True)
             res.foc[a.name] = out["decomp"]
             if out["second_order"] is not None:
