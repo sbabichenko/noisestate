@@ -19,7 +19,7 @@ from functools import cached_property
 import numpy as np
 
 from .engine import EngineBase
-from .compile import CompiledBase, reject_leads
+from .compile import CompiledBase, close_under_delays, reject_leads
 from .results import TriangleResult
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
@@ -34,6 +34,13 @@ class SpectralCompiled(CompiledBase):
         self.T = float(hz.window)
         lags = model.all_lags()
         bp = list(hz.breakpoints) if hz.breakpoints else TriangleGrid.breakpoints(self.T, lags, hz.unit)
+        for l in lags:                   # explicit breakpoints must contain every lag (checked before the closure below)
+            if not any(abs(l - b) < 1e-12 for b in bp):
+                raise ValueError(f"lag {l} is not a breakpoint of the time/age partition {bp}; set horizon.unit "
+                                 "so that every lag is a multiple of it")
+        delays = sorted({float(r.delay) for a in model.agents for r in a.signals if r.delay > 0})
+        if delays:                       # pieces closed under the row delays: the delay line must run along piece edges
+            bp = close_under_delays(bp, delays)
         for l in lags:
             if not any(abs(l - b) < 1e-9 * max(1.0, self.T) for b in bp):
                 raise ValueError(f"lag {l} is not a breakpoint of the time/age partition {bp}; set horizon.unit "

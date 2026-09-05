@@ -26,7 +26,7 @@ from scipy.linalg import lu_factor, lu_solve
 from .grid import AgeGrid
 from .grid_cache import age_grid
 from .engine import EngineBase
-from .compile import CompiledBase
+from .compile import CompiledBase, close_under_delays
 from .results import StationaryResult
 from .spec import Agent, Atom, Model
 
@@ -54,31 +54,13 @@ class Compiled(CompiledBase):
         # row delay.  With geometric panels beyond unit_range this makes the panels uniform.
         delays = sorted({float(r[3]) for rr in self.rows.values() for r in rr if r[3] > 0})
         if delays:
-            bp = self.close_under_delays(bp, delays)
+            bp = close_under_delays(bp, delays)
         self.grid = age_grid(tuple(round(float(b), 12) for b in bp), hz.nodes)   # shared, with its operator caches
         self.N = self.grid.N
         self.rho = float(hz.discount)
         self._atom_cache: Dict[tuple, np.ndarray] = {}
         self._elim: Dict[frozenset, tuple] = {}
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
-
-    @staticmethod
-    def close_under_delays(bp, delays, eps: float = 1e-9):
-        """The breakpoints with b - d and b + d added for every breakpoint b and row delay d, repeated
-        until closed within [0, L].  Both directions: the map on a delayed row at ages [b, b'] is read
-        by the action at ages [b + d, b' + d], and each must be a union of panels of the other, or
-        the finer side has modes the coarser side cannot see (a singular system)."""
-        bp = sorted(float(b) for b in bp); L = bp[-1]
-        changed = True
-        while changed:
-            changed = False
-            for d in delays:
-                for b in list(bp):
-                    for c in (b - d, b + d):
-                        if eps < c < L - eps and not any(abs(c - x) < eps for x in bp):
-                            bp.append(c); changed = True
-            bp = sorted(bp)
-        return bp
 
     # ------------------------------------------------------------- operators
     def shift(self, tau: float) -> np.ndarray:

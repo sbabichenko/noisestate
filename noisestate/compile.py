@@ -119,3 +119,21 @@ def reject_leads(model: Model, engine: str) -> None:
             for atom in term[1:]:
                 if any(l < 0 for (n, l) in model.expand({atom: 1.0})):
                     raise NotImplementedError(f"{engine}: lead atoms ({atom}) in losses are supported by the stationary engine only")
+
+
+def close_under_delays(bp, delays, eps: float = 1e-9):
+    """The breakpoints with b - d and b + d added for every breakpoint b and row delay d, repeated until
+    closed within [0, L].  Both directions: the map on a delayed row over an interval is read by the
+    action over that interval shifted by the delay, and each must be a union of panels of the other,
+    or the finer side has modes the coarser side cannot see (a singular system)."""
+    bp = sorted(float(b) for b in bp); L = bp[-1]
+    changed = True
+    while changed:
+        changed = False
+        for d in delays:
+            for b in list(bp):
+                for c in (b - d, b + d):
+                    if eps < c < L - eps and not any(abs(c - x) < eps for x in bp):
+                        bp.append(c); changed = True
+        bp = sorted(bp)
+    return bp
