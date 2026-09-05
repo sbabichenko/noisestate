@@ -246,6 +246,11 @@ The checks:
   at the window, and on coarse panels the discrete strategies find a little curvature of either
   sign there (the Chapter 5 example sits at -3e-5 with 6 nodes per panel); the value is reported
   in `res.second_order` and `to_dict()` either way.
+  A windowed stationary objective omits the flows past the edge that read the strategy within the
+  last lag, so a cross term between a control and lagged quantities can look indefinite there.  When
+  the check finds a negative direction it re-evaluates that direction, zero-extended, on a window
+  longer by two lags with the same maps (one operator build, no new fixed point): positive there
+  means truncation, reported as `embedded` and a `window edge` note rather than a saddle.
   Discounted stationary models are not checked (their objective is not a quadratic form in the
   stationary kernel).  Up to a strategy dimension of 1000 the form is built densely and always
   settles; above that a Lanczos iteration is used, and when it does not settle the report says so
@@ -292,14 +297,16 @@ The checks:
   atoms now read through the node-to-node `map_shift` (mass norm exactly 1): the form is positive
   definite, the curvature positive (+1.9e-5 at 6 nodes, +7e-6 at 8), and costs and kernels unchanged.
 
-* The Chapter 5 cycle-market example has a second-order curvature of -3e-5 (relative to the
-  largest) in the firms' best response at 6 and 8 nodes per panel, in the map on the order rows at
-  ages 8 to 16; the two-firm variant on a window of 6 (`tests/test_stability.py`) has -6.7e-4 at
-  6 nodes and -2.1e-3 at 14, and is flagged `NOT A MINIMUM`.  Whether this is the window
-  truncation of the objective or a genuine flat direction of the firm's problem through the other
-  firms' reactions has not been established; the flag threshold of 1e-4 lets the shipped example
-  pass, and the value is reported.  Things to try: more nodes on the geometric panels, a longer
-  window with a shift-invert eigensolver, a positive `rP`.
+* (Resolved.)  The Chapter 5 cycle-market example reported a second-order curvature of -3e-5 to
+  -4.6e-5, the two-firm variant on a short window -7e-4 to -2e-3.  It is window truncation: a
+  firm's own price enters its loss quadratically only through lagged reads, which within the
+  largest lag of the window edge fall past it, so on that slab only the current-time cross term
+  between orders and prices acts, and it is indefinite.  The direction lives on the last panel,
+  its mass-weighted value is identical at windows 24, 36 and 48, it is positive when embedded in a
+  wider window, and the untruncated Hessian is positive definite on every grid tried; a quadratic
+  in the firm's current price above c^2/r removes it (0.25 for two firms, 0.5 for three).  The
+  check now re-evaluates a negative direction on a window longer by two lags and reports the
+  truncation as such.
 
 ## Limits
 

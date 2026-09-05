@@ -544,6 +544,43 @@ class StationarySolver(EngineBase):
         g[:, keep] = np.linalg.solve(Gram, rhs).T                              # one factorisation for every control
         return g.reshape(nU, nR, N)
 
+    def _embedded_curvature(self, agent: Agent, maps, idx, vec):
+        """The quadratic form of a strategy direction (vec over the kept stacked map nodes idx) on a window
+        longer by two lags, with the same maps zero-extended: positive means the negative curvature on this
+        window was its truncation (flows past the edge that read the strategy within the last lag).  One
+        operator build on the longer grid, no fixed point."""
+        c = self.c; N = c.N; nR, nU = len(agent.signals), len(agent.controls)
+        lags = [l for (nm, l) in c.loss[agent.name][0] if l > 0] + [r.delay for a in self.model.agents for r in a.signals if r.delay > 0]
+        if not lags:
+            return None
+        ext = c.grid.L + 2.0 * max(lags)
+        bp = [float(b) for b in c.grid.breakpoints] + [ext]
+        try:
+            S2 = type(self)(self.model.with_horizon(window=ext, breakpoints=bp), **self.solver_kw)
+        except Exception:
+            return None
+        c2 = S2.c; N2 = c2.N; g2 = c2.grid
+        sides = g2.node_sides(); I = np.zeros((N2, N))
+        for sd in (+1, -1):
+            sel = (sides == sd) | ((sides == 0) & (sd == +1))
+            I[sel] = c.grid.interp(g2.nodes[sel], side=sd)                  # zero beyond the old window
+        maps2 = {a: np.einsum("fn,urn->urf", I, m) for a, m in maps.items()}
+        full = np.zeros(nU * nR * N); full[idx] = vec
+        d2 = np.concatenate([(I @ full[u * nR * N:(u + 1) * nR * N].reshape(nR, N).T).T.reshape(-1) for u in range(nU)])
+        Zp = c2.closed_loop(maps2, excluded=agent.name, impulse_controls=agent.controls)
+        Zpass, R = Zp[:, :c2.nW], Zp[:, c2.nW:]
+        R = S2._impulse_responses(agent, maps2, R)
+        ytil, yinst = S2._passive_rows(agent, Zpass)
+        Gk2 = S2._row_operator(agent, ytil, yinst); Resp2 = S2._response_operators(agent, R)
+        GAO2 = S2._loss_form(agent)
+        value = 0.0
+        for k in range(c2.nW):
+            zd = np.zeros(GAO2.shape[0])
+            for u in range(nU):
+                zd += Resp2[u] @ (Gk2[k] @ d2[u * nR * N2:(u + 1) * nR * N2])
+            value += float(zd @ (GAO2 @ zd))
+        return value
+
     def _identified(self, agent: Agent) -> np.ndarray:
         """Mask over the stacked map nodes (row-major over rows) of the ages at which the map on each
         row reads something within the window: all ages for an undelayed row, ages below L - delay

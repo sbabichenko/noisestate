@@ -152,6 +152,11 @@ class BaseResult:
                 row(f"second_order:{a}", so["min"], -self.solver_class.SECOND_ORDER_TOL if self.solver_class is not None else None, so["ok"],
                     f"NOT A MINIMUM (the best response of {a!r} is a saddle: its loss is not convex in its own strategy, "
                     f"smallest curvature {so['min']:.1e} of the largest)", "the loss is not convex in the agent's own strategy")
+                if so.get("edge"):
+                    row(f"second_order_edge:{a}", so["min"], -self.solver_class.SECOND_ORDER_TOL if self.solver_class is not None else None, None,
+                        f"window edge: the curvature of {a!r} is negative ({so['min']:.1e}) on this window but positive "
+                        f"({so['embedded']:.1e}) on a window longer by two lags: a truncation of the lagged loss terms at the edge, not a saddle",
+                        "a wider window moves it, a quadratic term in the control's current value removes it")
         if self.refinement:
             f = self.refinement
             row("refinement", {"cost_change": f["cost_change"], "kernel_change": f["kernel_change"], "nodes": f["nodes"]},

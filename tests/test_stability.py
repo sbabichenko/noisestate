@@ -13,10 +13,10 @@ def test_resolution_flag_and_stability_on_the_two_firm_market():
     ra = ns.solve(ns.Model.from_dict(d), tol=1e-8).check(); rm = ns.solve(ns.Model.from_dict(d), tol=1e-8, variable="maps").check()
     assert abs(ra.costs["firm0"] - rm.costs["firm0"]) < 1e-3
     st = rm.stability(); assert st["fixed_point_residual"] < 1e-6 and st["radius"] > 0 and "stability" in rm.to_dict()
-    # the two-firm market's second-order curvature is -6.7e-4 at 6 nodes and -2.1e-3 at 14 (README, known open
-    # items): the flag is raised and its value reported, and the rows of diagnose() carry it
-    assert rm.second_order["firm0"]["ok"] is False and "NOT A MINIMUM" in rm.summary()
-    assert any(d["name"] == "second_order:firm0" and d["ok"] is False for d in rm.diagnose())
+    # the two-firm market's negative curvature is the window's truncation of the lagged loss terms (README): the
+    # same direction is positive on a window longer by two lags, so the check passes and reports the edge
+    so = rm.second_order["firm0"]; assert so["ok"] and so["edge"] and so["min"] < -1e-4 and so["embedded"] > 0 and "NOT A MINIMUM" not in rm.summary()
+    assert "window edge" in rm.summary() and any(d["name"] == "second_order_edge:firm0" for d in rm.diagnose())
 
 
 def test_stability_of_the_chapter_3_game_and_finite_engine():

@@ -26,6 +26,13 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Second-order check on the stationary engine: a negative direction is re-evaluated, zero-extended, on
+  a window longer by two lags under the same maps (one operator build); positive there means the
+  windowed objective's truncation at the edge, reported as `embedded` with a `window edge` note.
+  The Chapter 5 firm's negative curvature was that truncation (the direction sits on the last panel,
+  is window-invariant in the mass norm, turns positive when embedded in a wider window, and the
+  untruncated Hessian is positive definite); the example and the two-firm variant pass with an edge
+  note, the non-convex models stay flagged.
 - Finite engine: a lagged atom in a loss (`D@tau`) is read node to node through the map shift
   instead of the interpolating read, which copied one node onto a triangle piece's degenerate corner
   row (mass norm 5 to 9 instead of 1) and made the loss form indefinite on directions of almost no

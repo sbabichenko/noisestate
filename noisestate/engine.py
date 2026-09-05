@@ -277,7 +277,7 @@ class EngineBase:
         """Raw maps (nU, nR, N) reproducing the action kernels on the agent's closed-loop rows."""
         raise NotImplementedError
 
-    def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk) -> None:
+    def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk, maps=None) -> None:
         """The second-order check and the FOC decomposition (instantaneous/physical/wedge).  Tied agents
         share the second-order check of their representative (the same problem up to relabelling)."""
         c = self.c; nW = c.nW; Zfull = out["Zfull"]
@@ -285,7 +285,7 @@ class EngineBase:
         if rep != agent.name and rep in self._second_order_cache:
             out["second_order"] = self._second_order_cache[rep]
         else:
-            out["second_order"] = self._second_order(agent, Resp, Gk, np.tile(self._identified(agent), len(agent.controls)))
+            out["second_order"] = self._second_order(agent, Resp, Gk, np.tile(self._identified(agent), len(agent.controls)), maps)
             self._second_order_cache[agent.name] = out["second_order"]
         if agent.name not in self._rphys:                                   # physical impulse responses: map-independent
             self._rphys[agent.name] = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
@@ -302,7 +302,7 @@ class EngineBase:
         (all of them, unless the engine masks delayed rows)."""
         return np.ones(len(agent.signals) * self.c.N, dtype=bool)
 
-    def _second_order(self, agent: Agent, Resp, Gk, keep) -> Optional[dict]:
+    def _second_order(self, agent: Agent, Resp, Gk, keep, maps=None) -> Optional[dict]:
         """Second-order condition of the best response: the agent's objective is a quadratic form in its
         strategy, and a first-order condition is a minimum only if that form is positive on the
         feasible strategies (those its rows can express).  The form is computed exactly from the
@@ -371,9 +371,10 @@ class EngineBase:
                     if vi != ui:
                         Mall[vi * nR * N:(vi + 1) * nR * N, ui * nR * N:(ui + 1) * nR * N] = Muv.T   # H_vu = H_uv'
             Mfull = Mall if n == Mall.shape[0] else Mall[np.ix_(idx, idx)]
-            w = np.linalg.eigvalsh((Mfull + Mfull.T) / 2)
-            lo, hi = float(w[0]), float(w[-1])
+            w, V = np.linalg.eigh((Mfull + Mfull.T) / 2)
+            lo, hi = float(w[0]), float(w[-1]); vmin = V[:, 0]
         else:
+            vmin = None
             op = LinearOperator((n, n), matvec=matvec, dtype=float)
             try:
                 hi = float(eigsh(op, k=1, which="LA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
@@ -381,7 +382,17 @@ class EngineBase:
             except Exception as exc:                          # Lanczos did not settle: say so rather than stay silent
                 return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
         scale = max(abs(lo), abs(hi), 1e-300)
-        return {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale), "converged": True}
+        out = {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale), "converged": True}
+        if not out["ok"] and vmin is not None and maps is not None and hasattr(self, "_embedded_curvature"):
+            # the windowed objective omits the flows past the edge that read the strategy within the last lag:
+            # a negative direction is a truncation artefact if the same direction, zero-extended onto a window
+            # longer by two lags, has positive curvature under the same maps
+            emb = self._embedded_curvature(agent, maps, idx, vmin)
+            if emb is not None:
+                out["embedded"] = float(emb / scale)
+                out["edge"] = bool(emb >= 0.0)
+                out["ok"] = out["edge"]
+        return out
 
     def _loss_form(self, agent: Agent) -> np.ndarray:
         """The loss form on the primary kernels, AO' kron(Q, mass) AO for the stacked atom operators AO,
@@ -505,7 +516,7 @@ class EngineBase:
             Zfull += Resp[ui] @ cact[ui]
         out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
         if want_decomp:
-            self._decompose(agent, out, Fu, Resp, Gk)
+            self._decompose(agent, out, Fu, Resp, Gk, maps)
         return self._project(agent, Zfull, cact), out
 
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
