@@ -26,6 +26,10 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Anderson memory 15 with damping 0.6 on the stationary engine (was 6 and 0.3): the Chapter 5 example
+  takes 37 evaluations instead of 58 (15.9 s), Kyle-Back 47 instead of 81, the delayed Chapter 3
+  game 25 instead of 33, with the same maps to 2e-9; the Kyle-Back sweep still reaches a trading
+  cost of 0.01.
 - Finite engine: delayed rows discretised exactly.  Two defects found by an agent against the
   closed-form one-agent delayed problem: quadrature reads at a node on the top edge of a time panel
   took the next panel's bottom row (the top row of every panel was fitted without its convolution

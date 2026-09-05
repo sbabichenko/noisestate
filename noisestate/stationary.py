@@ -452,7 +452,7 @@ class Compiled(CompiledBase):
 # ------------------------------------------------------------------- solver
 class StationarySolver(EngineBase):
     RESULT = StationaryResult
-    TOL, DAMPING, MAX_NEWTON = 1e-10, 0.3, 60       # 0.3: Kyle-Back converges, 0.5 does not
+    TOL, DAMPING, MAX_NEWTON = 1e-10, 0.6, 60       # with Anderson memory 15 (0.3 was needed at memory 6 for Kyle-Back)
     SECOND_ORDER_QUADRATIC = False   # the flow loss is a quadratic form in the stationary strategy only at rho = 0
 
     def __init__(self, model: Model, verbose: bool = False, naive_observers: Optional[Dict[str, List[str]]] = None):
