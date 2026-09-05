@@ -216,6 +216,12 @@ check as a row `{name, value, threshold, ok, flag, advice}` (ok is None where a 
 verdict); `summary()` prints the rows that fail and `to_dict()["diagnostics"]` carries them all.
 The checks:
 
+* `solve(..., start="coarse")` solves first at half the nodes and starts the fine iteration from
+  that equilibrium interpolated onto the grid: fine-grid evaluations fall by a factor of 1.5 to 8
+  across the examples (the delayed Chapter 3 game: 25 to 3), the equilibrium is the same to the
+  tolerance, and the coarse solve itself costs a few fine evaluations.  The default start is zero
+  so recorded evaluation counts stay reproducible.  `refine()` always starts the finer solve from the
+  result it is refining.
 * `noisestate solve model.yaml --refine` (or `solve(..., refine=True)`, `res.refine()`) re-solves
   on a grid with 1.5 times the nodes (twice the cells for the cell engine) and reports the change
   of every cost, relative to the largest cost, and of the kernels; `res.refinement["resolved"]`

@@ -614,6 +614,15 @@ class StationarySolver(EngineBase):
         return self.maps_from_kernels(self.world_from_actions(actions))
 
     # ------------------------------------------------------ fixed point
+    def interpolate_maps(self, coarse) -> Dict[str, np.ndarray]:
+        """The coarse result's raw maps read at this grid's nodes, each node from its own panel's side."""
+        g, gc = self.c.grid, coarse.compiled.grid
+        sides = g.node_sides(); I = np.zeros((g.N, gc.N))
+        for sd in (+1, -1):
+            sel = (sides == sd) | ((sides == 0) & (sd == +1))
+            I[sel] = gc.interp(g.nodes[sel], side=sd)
+        return {a.name: np.einsum("fn,urn->urf", I, coarse.maps[a.name]) for a in self.model.agents}
+
     def _finish(self, res) -> None:
         """Costs, the first-order-condition decomposition, the second-order check and the representation
         error of every agent's best response at the equilibrium."""

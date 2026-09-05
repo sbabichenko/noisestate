@@ -26,6 +26,11 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Coarse-to-fine warm starts: `solve(start="coarse")` solves at half the nodes and interpolates
+  the raw maps onto the grid (each node read from its own panel's side); fine-grid evaluations fall
+  from 37 to 25 (Ch5), 47 to 20 (Kyle-Back), 21 to 9 (Ch3), 13 to 6 (delayed Ch1 finite), 25 to 3
+  (delayed Ch3), with the same equilibria to 1e-10 (stationary) and the tolerance (finite).
+  `refine()` now starts the finer solve from the result being refined.
 - Age grid operators built from their block-Toeplitz core.  On uniform panels of width w the
   convolution tensor satisfies T[a, i, j] = K[p - q - r, alpha, beta, gamma] with p, q, r the panels
   and alpha, beta, gamma the local nodes, the offset p - q - r in {0, 1}; the correlation tensor the

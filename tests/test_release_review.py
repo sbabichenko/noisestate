@@ -306,3 +306,13 @@ def test_delayed_rows_with_mixed_panels_and_non_dyadic_units():
     d = _ch3(window=12.0, nodes=8); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.3; d["horizon"].update(unit=0.3, unit_range=2.4)
     r = ns.solve(d).check()
     assert r.representation_error["player2"] < 1e-9 and np.abs(r.kernel("D2")[r.ages < 0.3 - 1e-12]).max() == 0.0
+
+
+def test_coarse_start_reaches_the_same_equilibrium_with_fewer_fine_evaluations():
+    for path in ("ch3_two_player.yaml", "ch1_two_player_finite.yaml"):
+        m = ns.load(os.path.join(EX, path))
+        cold = ns.make_solver(m).solve().check(); warm = ns.make_solver(m).solve(start="coarse").check()
+        assert warm.iterations < cold.iterations and "coarse start" in warm.message
+        assert max(np.abs(cold.maps[k] - warm.maps[k]).max() for k in cold.maps) < 1e-7
+    r = ns.solve(os.path.join(EX, "ch3_two_player.yaml")); r.refine()
+    assert r.refinement["resolved"]                                            # refine warm-starts from this result

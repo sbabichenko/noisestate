@@ -549,6 +549,12 @@ class SpectralFiniteSolver(EngineBase):
         G = np.einsum("ink,nm,jmk->ij", zeta, c.cost_mass(), zeta)
         return float(0.5 * np.sum(Q * G))
 
+    def interpolate_maps(self, coarse) -> Dict[str, np.ndarray]:
+        """The coarse result's raw maps read at this triangle's nodes from each node's side of its piece."""
+        g, gc = self.c.g, coarse.compiled.g
+        I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a)
+        return {a.name: np.einsum("fn,urn->urf", I, coarse.maps[a.name]) for a in self.model.agents}
+
     def _finish(self, res) -> None:
         self._second_order_cache.clear()
         order = [a for a in self.model.agents if self.c.rep[a.name] == a.name] + [a for a in self.model.agents if self.c.rep[a.name] != a.name]

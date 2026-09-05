@@ -522,18 +522,39 @@ class EngineBase:
         return worst
 
     # ------------------------------------------------------ fixed points
+    def interpolate_maps(self, coarse) -> Dict[str, np.ndarray]:
+        """Raw maps of a result on a coarser grid of the same model, read at this grid's nodes (hook)."""
+        raise NotImplementedError
+
+    def coarse_start(self, factor: float = 0.5, **solve_kw) -> Dict[str, np.ndarray]:
+        """Raw maps to start from: the equilibrium at `factor` times the nodes, interpolated to this
+        grid.  A coarse solve costs a few fine evaluations and usually saves many."""
+        hz = self.model.horizon
+        n0 = max(4, int(round(hz.nodes * factor)))
+        if n0 >= hz.nodes:
+            return None
+        coarse = type(self)(self.model.with_horizon(nodes=n0), **self.solver_kw)
+        res = coarse.solve(**{k: v for k, v in solve_kw.items() if k not in ("init", "start")})
+        self._coarse_evals, self._coarse_nodes = res.iterations, n0
+        return self.interpolate_maps(res)
+
     def solve(self, init: Optional[Dict[str, np.ndarray]] = None, tol: Optional[float] = None, damping: Optional[float] = None,
-              max_newton: Optional[int] = None, variable: str = "actions"):
+              max_newton: Optional[int] = None, variable: str = "actions", start: str = "zero"):
         """Find the equilibrium: Anderson mixing on the fixed point of the best-response map (damping is
         the mixing weight), then a Newton-Krylov polish if it stalls.  variable="actions" iterates on
         the agents' action kernels, with the raw maps recovered by projection (better conditioned where
         strategies are weakly identified); "maps" iterates on the raw maps, which is also what happens
         with ties (tied agents' action kernels differ by a channel permutation) and on the cell engine.
-        init: action kernels or raw maps per agent, either is accepted."""
+        init: action kernels or raw maps per agent, either is accepted.  start="coarse" (with no init)
+        solves first at half the nodes and starts from that equilibrium interpolated to this grid."""
         tol = self.TOL if tol is None else tol
         damping = self.DAMPING if damping is None else damping
         max_newton = self.MAX_NEWTON if max_newton is None else max_newton
         t0 = time.time(); evals = [0]
+        coarse_evals = 0
+        if init is None and start == "coarse":
+            init = self.coarse_start(tol=tol, damping=damping, max_newton=max_newton, variable=variable)
+            coarse_evals = getattr(self, "_coarse_evals", 0)
         if variable == "actions" and (self.model.ties or not self.ACTIONS):
             variable = "maps"
         kind = self.init_kind(init) if init is not None else None
@@ -559,10 +580,12 @@ class EngineBase:
                                                             max_newton=max_newton, M=self.ANDERSON_M)
         maps = self.maps_from_actions(unpack(z)) if variable == "actions" else unpack(z)
         Z = self.c.closed_loop(maps)
+        if coarse_evals:
+            message = f"coarse start: {coarse_evals} evaluations at {self._coarse_nodes} nodes; " + message
         res = self.RESULT(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
                           iterations=evals[0], seconds=time.time() - t0, message=message, solver_class=type(self),
                           solver_kw=self.solver_kw,
-                          solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable})
+                          solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start": start})
         self._finish(res)
         return res
 

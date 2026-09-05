@@ -103,8 +103,13 @@ class BaseResult:
         n0 = int(hz.get("nodes", 16))
         n1 = 2 * n0 if self.kind == "finite_cells" else max(n0 + 2, int(math.ceil(n0 * factor)))   # cells: keep lags aligned
         hz["nodes"] = n1
-        kw = {k: v for k, v in self.solve_kw.items() if k != "init"}; kw.update(solve_kw)
-        fine = self._make_solver(Model.from_dict(d)).solve(**kw)
+        kw = {k: v for k, v in self.solve_kw.items() if k not in ("init", "start")}; kw.update(solve_kw)
+        solver = self._make_solver(Model.from_dict(d))
+        try:                                                  # start the fine solve from this equilibrium, interpolated
+            kw.setdefault("init", solver.interpolate_maps(self))
+        except NotImplementedError:
+            pass
+        fine = solver.solve(**kw)
         scale = max(1e-300, max(abs(v) for v in self.costs.values()))          # one scale: a zero-profit agent is not "unresolved"
         cost_change = max(abs(fine.costs[k] - self.costs[k]) / scale for k in self.costs)
         kernel_change = self._kernel_change(fine)
