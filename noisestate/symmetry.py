@@ -110,6 +110,7 @@ def find_cyclic_symmetry(model: Model, why: Optional[list] = None) -> Optional[C
     for s in model.states:
         t = states_by.get(ren.get(s.name, s.name))
         if t is None or _canon(model, model.expand(s.drift), ren) != _canon(model, model.expand(t.drift), {}) \
+                or abs(model.constant(s.drift) - model.constant(t.drift)) > 1e-9 \
                 or sorted((ren.get(c, c), round(w, 9)) for c, w in s.noise.items()) != sorted((c, round(w, 9)) for c, w in t.noise.items()):
             if why is not None: why.append(f'state {s.name} does not map onto {ren.get(s.name)}')
             return None

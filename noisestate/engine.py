@@ -658,12 +658,19 @@ class EngineBase:
         return res
 
     def _finish(self, res) -> None:
-        """Fill the engine's own outputs on a fresh result: the costs, then, unless the result's options say
-        diagnostics=False, the engine's checks at the equilibrium."""
+        """Fill the engine's own outputs on a fresh result: the costs (their variance part), the means and the
+        mean part of the costs, then, unless the result's options say diagnostics=False, the engine's checks at
+        the equilibrium."""
         for a in self.model.agents:
             res.costs[a.name] = self.expected_cost(a, res.Z)
+        self._mean_part(res)
         if res.solve_kw.get("diagnostics", True) is not False:
             self._diagnostics(res)
+
+    def _mean_part(self, res) -> None:
+        """The means (targets, constant drifts) and the mean part of every cost, added to res.costs: part of the
+        answer, computed whether or not the diagnostics are (hook; the stationary engine solves them, the finite
+        engines do not yet and leave res.means and res.cost_parts empty)."""
 
     def _diagnostics(self, res) -> None:
         """The checks the engine computes at the equilibrium: the first-order-condition decomposition, the

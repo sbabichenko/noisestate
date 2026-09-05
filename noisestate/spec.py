@@ -12,7 +12,13 @@ P now.  ``name`` may be a state, a control, or a definition.
 
 Losses.  ``loss`` is a list of terms ``[coef, a, b]`` (quadratic) or
 ``[coef, a]`` (linear); the flow loss is their sum and the agent minimises
-E int e^{-rho t} loss_t dt (rho = 0 is average cost).
+E int e^{-rho t} loss_t dt (rho = 0 is average cost).  A target theta on X is
+the terms of (X - theta)^2 less its constant: ``[1, X, X], [-2*theta, X]``.
+
+Means.  Linear loss terms and a constant in a state's drift (the key ``const``:
+``drift: {X: -a, D: 1.0, const: 0.3}``) move the means of the states and
+controls, deterministic and common knowledge; the kernels do not depend on
+them.  The stationary engine solves the means (res.means, res.cost_parts).
 """
 from __future__ import annotations
 
@@ -26,6 +32,7 @@ from typing import Dict, List, Optional, Tuple, Union
 Number = Union[int, float, str]
 Atom = Tuple[str, float]          # (primary name, lag); lag > 0 past, < 0 future
 Expr = Dict[Atom, float]          # linear combination of primary atoms
+CONST = "const"                   # the key of a constant in a state's drift (a quantity may not carry this name)
 
 
 _ATOM_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:@\s*([-+]?[0-9.eE+-]+|[A-Za-z_][A-Za-z0-9_]*))?\s*$")
@@ -196,14 +203,18 @@ class Model:
 
     # ---------------------------------------------------------- expansion
     def expand(self, expr: Dict[str, float]) -> Expr:
-        """Expand an expression over atom strings into primary atoms (states, controls)."""
+        """Expand an expression over atom strings into primary atoms (states, controls): the linear part;
+        a constant (the key `const`, allowed in a state's drift, see constant()) is left out."""
         defs = {d.name: d.expr for d in self.definitions}
         out: Expr = {}
 
         def add(name: str, lag: float, coef: float, depth: int):
             if depth > 50:
                 raise ValueError(f"definition cycle involving {name!r}")
-            if name in defs:
+            if name == CONST:
+                if lag != 0:
+                    raise ValueError(f"a constant has no lag: write {CONST}, not {CONST}@{lag:g}")
+            elif name in defs:
                 for sub, c2 in defs[name].items():
                     n2, l2 = parse_atom(sub, self.params)
                     add(n2, lag + l2, coef * c2, depth + 1)
@@ -217,6 +228,15 @@ class Model:
             n, l = parse_atom(atom, self.params)
             add(n, l, coef, 0)
         return {k: v for k, v in out.items() if v != 0.0}
+
+    def constant(self, expr: Dict[str, float]) -> float:
+        """The constant part of an expression: the coefficient under the key `const` (zero when absent)."""
+        return float(sum(c for atom, c in expr.items() if parse_atom(atom, self.params)[0] == CONST))
+
+    @property
+    def means_driven(self) -> bool:
+        """Whether anything moves the means: a linear loss term or a constant in a state's drift."""
+        return any(len(t) == 2 for a in self.agents for t in a.loss) or any(self.constant(s.drift) != 0 for s in self.states)
 
     def all_lags(self) -> List[float]:
         """Every distinct positive lag or observation delay in the model."""
@@ -263,10 +283,10 @@ class Model:
             if name in others:
                 return "other_control"
             if len(users.get(name, set())) <= 1:
-                # a private state is compared by its dynamics: drift (canonicalised) and noise loadings
+                # a private state is compared by its dynamics: drift (canonicalised, with its constant) and noise loadings
                 s = states[name]
                 drift = canon(self.expand(s.drift), depth + 1) if depth < 3 else "..."
-                return "private_state:" + repr((drift, tuple(sorted(round(v, 9) for v in s.noise.values()))))
+                return "private_state:" + repr((drift, round(self.constant(s.drift), 9), tuple(sorted(round(v, 9) for v in s.noise.values()))))
             return "state:" + name
 
         def canon(expr, depth=0):
@@ -303,13 +323,29 @@ class Model:
                 out.append(f"agent {a.name} is myopic: it ignores the effect of its action on future flows (a competitive pricing agent)")
             lin = [t for t in a.loss if len(t) == 2]
             if lin:
-                out.append(f"agent {a.name}: the linear loss term(s) {lin} move only the means, which this solver does not "
-                           "compute; they have no effect on the kernels or on the reported costs")
+                out.append(f"agent {a.name}: the linear loss term(s) {lin} move only the means (the kernels do not depend on them)"
+                           + self._means_note())
+        for s in self.states:
+            k = self.constant(s.drift)
+            if k != 0:
+                out.append(f"state {s.name}: the constant drift {k:g} moves only the means (the kernels do not depend on it)" + self._means_note())
+        if self.horizon.kind == "stationary" and self.means_driven:
+            walks = [s.name for s in self.states if not self.expand(s.drift) and self.constant(s.drift) == 0]
+            if walks:
+                out.append(f"state(s) {walks} are random walks with no inputs, which have no stationary mean: their means "
+                           "are taken as 0, so the means of the quantities they enter are relative to their levels")
         if self.horizon.kind == "stationary":
             out.append("costs are stationary flow losses per unit time" + (" (the discount rate enters the best responses, not the reported cost)" if self.horizon.discount else ""))
         else:
             out.append("costs are discounted integrals over [0, T]")
         return out
+
+    def _means_note(self) -> str:
+        if self.horizon.kind == "stationary":
+            return ("; the stationary engine solves the means of every state and control from each control's mean first-order "
+                    "condition and the mean dynamics, one linear system (res.means; res.cost_parts splits each cost into its "
+                    "variance and mean parts)")
+        return "; the finite engines do not solve the means yet, so they have no effect on the reported costs"
 
     # --------------------------------------------------------- validation
     def validate(self) -> None:
@@ -317,6 +353,8 @@ class Model:
         if len(set(names)) != len(names):
             dup = sorted({n for n in names if names.count(n) > 1})
             raise ValueError(f"duplicate quantity names {dup}")
+        if CONST in names:
+            raise ValueError(f"{CONST!r} is reserved for a constant in a state's drift; name the quantity otherwise")
         if len(set(self.channels)) != len(self.channels):
             raise ValueError("duplicate channel names")
         agent_names = [a.name for a in self.agents]
@@ -331,6 +369,9 @@ class Model:
                     raise ValueError(f"state {s.name}: its drift depends on the future value {n}@{l}; drifts must be causal")
         for d in self.definitions:
             self.expand({d.name: 1.0})
+            if self.constant(d.expr) != 0:
+                raise ValueError(f"definition {d.name}: a constant ({CONST}) is allowed in a state's drift only; a target is a "
+                                 "linear loss term, [-2*theta, X] beside [1, X, X]")
         for a in self.agents:
             if not isinstance(a.controls, list) or not all(isinstance(u, str) for u in a.controls):
                 raise ValueError(f"agent {a.name}: controls must be a list of names, got {a.controls!r}")
@@ -352,9 +393,15 @@ class Model:
                 for (n, l) in self.expand(r.drift):
                     if l < 0:
                         raise ValueError(f"row {a.name}.{r.name} observes a future quantity {n}@{l}")
+                if self.constant(r.drift) != 0:
+                    raise ValueError(f"row {a.name}.{r.name}: a constant in a signal row carries no information (the agent "
+                                     "knows it); leave it out")
             for term in a.loss:
                 if len(term) not in (2, 3):
                     raise ValueError(f"agent {a.name}: loss term {term} must be [coef, a] or [coef, a, b]")
+                if any(parse_atom(str(atom), self.params)[0] == CONST for atom in term[1:]):
+                    raise ValueError(f"agent {a.name}: loss term {term} reads the constant; a linear term is [coef, X] and a "
+                                     "constant in the loss moves nothing")
                 ex = [self.expand({atom: 1.0}) for atom in term[1:]]
                 led = [i for i, e in enumerate(ex) if any(l < 0 for (n, l) in e)]
                 if led:

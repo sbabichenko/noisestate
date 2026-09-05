@@ -25,7 +25,7 @@ import numpy as np
 from scipy.sparse.linalg import LinearOperator, lgmres
 
 from .engine import EngineBase, singular_system_message
-from .compile import CompiledBase, reject_leads
+from .compile import CompiledBase, reject_constants, reject_leads
 from .results import CellResult
 from .spec import Agent, Atom, Model
 
@@ -34,6 +34,7 @@ class FiniteCompiled(CompiledBase):
     def __init__(self, model: Model):
         super().__init__(model)
         reject_leads(model, 'cell engine')
+        reject_constants(model, 'cell engine')
         hz = model.horizon
         self.T = float(hz.window)
         self.N = int(hz.nodes)

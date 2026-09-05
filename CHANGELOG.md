@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+- Means on the stationary engine.  Linear loss terms (a target theta on X is `[1, X, X], [-2*theta, X]`)
+  and a constant in a state's drift (`drift: {X: -a, D: 1.0, const: 0.3}`; the key `const` is new,
+  allowed in a state's drift only, without a lag, and reserved as a name) move the means of the states
+  and controls, which were not solved.  They are now, as constants: each control's mean first-order
+  condition is the kernels' condition applied to a constant path (the instantaneous derivative of
+  `1/2 z'Qz + q'z`, the discounted own lagged reads, and the continuation through the DC gains
+  `int_0^L e^{-rho a} R(a) da` of the passive-world impulse responses, the other agents answering
+  through their equilibrium kernels), with no information constraint, and the mean dynamics close
+  the system: one direct linear solve at the end of every solve, `diagnostics=False` included, no
+  iteration.  `res.means` has every state, control and definition and each signal row's mean drift
+  rate (`agent.row`); `res.cost_parts[agent]` is `{"variance", "mean"}` and `res.costs` their sum
+  (the constant theta^2 of a target is not in the model); the summary, `to_dict()` and the CLI JSON
+  carry them.  Exactly zero, with no solve, when nothing drives them, so the shipped examples'
+  kernels and costs are unchanged except the Chapter 5 market, whose `-2 kappa` terms on deliveries
+  and sales give it nonzero means and a mean part in its costs (the two-firm variant: prices -0.2746,
+  orders 1.1400, a mean part of -0.5117 on a variance part of 4.6290).  A random walk with no inputs
+  (Kyle-Back's V, the market's q) has no stationary mean and is pinned at 0, which `model.notes` says;
+  a random walk with a constant drift and no feedback, and a singular mean system, are refused with a
+  `ValueError`.  The finite engines do not solve the means yet: a constant drift is rejected there
+  (`NotImplementedError`, like leads) and a linear term noted as not solved.  Checked against closed
+  forms (`tests/test_means.py`): one agent with a target reproduces the windowed closed form to 3e-15
+  and the exact `ubar = theta a / (1 + r a (a + rho))` to the window's truncation e^{-(a+rho)L}; a
+  constant drift is the shifted target (the same ubar, xbar shifted by kappa/a, the mean cost larger
+  by theta^2); two agents with opposite targets sit at the open-loop Nash of the deterministic game
+  to 4e-8 when their signals carry nothing (precision 1e-6) and fall monotonically toward the
+  closed-loop Nash of the coupled algebraic Riccati equations as the precision grows (0.6667 to
+  0.5622 at precision 1000, against 0.5570), the separation failure between them.  The window's
+  truncation of the continuation integrals is what `window_tail` already reports; its flag says so
+  when the means are nonzero.  New: `AgeGrid.discounted_mass(rho)`, `Structure.const`,
+  `Model.constant`, `Model.means_driven`, `compile.reject_constants`, `StationarySolver.mean_system`,
+  `solve_means`, `mean_cost`; `EngineBase._finish` calls a `_mean_part` hook.
+
 ## 0.3.0 (2026-09-05) — readiness fixes
 
 - Bounding and watching a solve.  `solve(max_evaluations=N)` caps the best-response evaluations

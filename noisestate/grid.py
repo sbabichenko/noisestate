@@ -108,6 +108,7 @@ class AgeGrid:
         self._corr_flat = {}                 # rho -> corr_tensor as [(a, j), i]
         self._corr_parts = {}                # rho -> (core, tail slab, panel factors) on uniform panels
         self._shift_cache = {}               # tau -> shift matrix
+        self._dmass = {}                     # rho -> discounted quadrature weights
 
     # ------------------------------------------------------------ basics
     def panel_index(self, a: np.ndarray, side: int = +1) -> np.ndarray:
@@ -190,6 +191,20 @@ class AgeGrid:
             I = self.interp(xs, side=+1)
             M += (I * ws[:, None]).T @ I
         return M
+
+    def discounted_mass(self, rho: float) -> np.ndarray:
+        """Weights w with int_0^L e^{-rho a} f(a) da = w @ f for a nodal kernel f: the Gauss rule of the
+        correlation tensors on every panel (exact for an interpolant at rho = 0, where it is `mass`)."""
+        key = float(rho)
+        if key not in self._dmass:
+            xg, wg = legendre.leggauss(self.n + 2)
+            w = np.zeros(self.N)
+            for p in range(self.P):
+                lo, hi = self.breakpoints[p], self.breakpoints[p + 1]
+                xs = 0.5 * (hi - lo) * xg + 0.5 * (hi + lo); ws = 0.5 * (hi - lo) * wg
+                w += (ws * np.exp(-key * xs)) @ self.interp(xs, side=+1)
+            self._dmass[key] = w
+        return self._dmass[key]
 
     # ---------------------------------------------------------- propagator
     def propagator(self, A: np.ndarray):

@@ -22,7 +22,7 @@ import warnings
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from scipy.linalg import lu_factor, lu_solve
+from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
 
 from .grid import AgeGrid
 from .grid_cache import age_grid
@@ -684,7 +684,8 @@ class StationarySolver(EngineBase):
         self._loss_forms.clear()                  # the second-order check is done: its (n_prim N)^2 form is not kept
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
-        """Stationary flow loss per unit time of the agent in the world Z (exact Gram quadrature)."""
+        """Stationary flow loss per unit time of the agent in the world Z (exact Gram quadrature): the
+        variance part, from the shocks; the mean part is mean_cost."""
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])          # (m, N, nW)
@@ -693,3 +694,103 @@ class StationarySolver(EngineBase):
         return float(0.5 * np.sum(Q * G))
 
     expected_loss = expected_cost                       # the older name
+
+    # ------------------------------------------------------------ means
+    MEAN_RCOND = 1e-12          # a mean system whose reciprocal condition estimate is below this is singular
+
+    def mean_system(self, maps: Dict[str, np.ndarray]):
+        """The linear system M zbar = b of the stationary means over the primaries (states then controls)
+        under the strategies `maps`, and the indices of the pinned states.  A state's row is its mean
+        dynamics, A xbar + (control and lagged inputs at their constants) + const = 0 (a lag of a constant
+        is the constant); a random walk with no inputs, whose row is identically zero, is pinned at 0,
+        since the stationary model does not carry its level.  A control's row is its owner's mean
+        first-order condition: the kernels' first-order condition applied to a constant path, with no
+        information constraint (a deterministic path is common knowledge) and the targets and constants
+        as the driver instead of the shocks.  With g = Q zbar + q on the loss atoms it is
+        sum_j m_j g_j = 0: m_j = 1 on the control's current value, e^{-rho tau} on its own read at lag
+        tau, and for every other atom the discounted DC gain int_0^L e^{-rho a} R_j(a) da of the atom's
+        passive-world impulse response (the other agents reacting through their kernels, the agent's own
+        control passive; a lead reads the whole response of its primary, weighted by e^{rho tau}).  A
+        myopic agent has the instantaneous term only.  Linear in (q, const): one direct solve, no
+        iteration."""
+        c = self.c; nX, nP = c.nX, len(c.prim); rho = c.rho
+        M = np.zeros((nP, nP)); b = np.zeros(nP)
+        M[:nX, :nX] = c.A
+        for i, (nm, lag), coef in c.state_inputs:
+            M[i, c.index[nm]] += coef
+        b[:nX] = -c.const
+        pinned = []
+        for i, s in enumerate(self.model.states):
+            if not M[i].any():
+                if b[i] != 0:
+                    raise ValueError(f"state {s.name}: a constant drift with no feedback in its dynamics has no stationary mean")
+                M[i, i] = 1.0; pinned.append(i)                 # a random walk with no inputs: its level is taken as 0
+        dc = c.grid.discounted_mass(rho)
+        for a in self.model.agents:
+            atoms, Q, q = c.loss[a.name]
+            P = np.zeros((len(atoms), nP))                        # atom means from the primaries' means
+            for j, (nm, lag) in enumerate(atoms):
+                P[j, c.index[nm]] = 1.0
+            R = None
+            for ui, u in enumerate(a.controls):
+                m = np.zeros(len(atoms))
+                if (u, 0.0) in atoms:
+                    m[atoms.index((u, 0.0))] += 1.0
+                if not a.myopic:
+                    if R is None:
+                        R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)[:, c.nW:]
+                        R = self._impulse_responses(a, maps, R)
+                    for j, (nm, lag) in enumerate(atoms):
+                        if nm in a.controls:
+                            if nm == u and lag > 0:               # delayed read of the control itself
+                                m[j] += np.exp(-rho * lag)
+                            continue                              # own reactions: envelope
+                        if lag >= 0:
+                            m[j] += dc @ (c.atom_op((nm, lag)) @ R[:, ui])
+                        else:
+                            m[j] += np.exp(-rho * lag) * (dc @ R[c.block(nm), ui])
+                M[c.index[u]] = m @ Q @ P; b[c.index[u]] = -(m @ q)
+        return M, b, pinned
+
+    def solve_means(self, maps: Dict[str, np.ndarray]) -> np.ndarray:
+        """The stationary means of the primaries (states then controls) under `maps`: exactly zero, with
+        no solve, when nothing drives them (every q zero, no constant drift); else the direct solve of
+        mean_system, refusing a singular system (the pinned states exactly zero)."""
+        c = self.c
+        if not (c.const.any() or any(q.any() for atoms, Q, q in c.loss.values())):
+            return np.zeros(len(c.prim))
+        M, b, pinned = self.mean_system(maps)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", LinAlgWarning)
+            lu, piv = lu_factor(M, check_finite=False)
+        gecon, = get_lapack_funcs(("gecon",), (lu,))
+        rcond = float(gecon(lu, np.linalg.norm(M, 1))[0])
+        if not rcond > self.MEAN_RCOND:
+            raise ValueError(f"the mean system is singular (reciprocal condition estimate {rcond:.1e}): a state's mean is "
+                             "undetermined (a random walk driven by controls whose first-order conditions do not read it), or a "
+                             "control's mean first-order condition is empty; the kernels do not depend on the means, so the model "
+                             "solves without its targets and constant drifts")
+        zbar = lu_solve((lu, piv), b, check_finite=False)
+        zbar[pinned] = 0.0
+        return zbar
+
+    def mean_cost(self, agent: Agent, zbar: np.ndarray) -> float:
+        """The mean part of the agent's flow loss per unit time, 1/2 zbar'Q zbar + q'zbar over its loss atoms at
+        the primaries' means `zbar` (the constant of a target, theta^2, is not in the model)."""
+        atoms, Q, q = self.c.loss[agent.name]
+        za = np.array([zbar[self.c.index[nm]] for (nm, lag) in atoms])
+        return float(0.5 * za @ Q @ za + q @ za)
+
+    def _mean_part(self, res) -> None:
+        """res.means for every state, control and definition and the mean drift rate of every signal row
+        ("agent.row"); res.cost_parts and the mean part added to res.costs."""
+        c = self.c; m = self.model
+        zbar = self.solve_means(res.maps)
+        value = lambda expr: float(sum(coef * zbar[c.index[nm]] for (nm, lag), coef in expr.items()))
+        res.means = {name: float(zbar[c.index[name]]) for name in c.prim}
+        res.means.update({d.name: value(m.expand({d.name: 1.0})) for d in m.definitions})
+        res.means.update({f"{a.name}.{r.name}": value(m.expand(r.drift)) for a in m.agents for r in a.signals})
+        for a in m.agents:
+            mean = self.mean_cost(a, zbar)
+            res.cost_parts[a.name] = {"variance": res.costs[a.name], "mean": mean}
+            res.costs[a.name] += mean

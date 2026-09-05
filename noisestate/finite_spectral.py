@@ -20,7 +20,7 @@ import warnings
 import numpy as np
 
 from .engine import EngineBase
-from .compile import CompiledBase, close_under_delays, reject_leads
+from .compile import CompiledBase, close_under_delays, reject_constants, reject_leads
 from .results import TriangleResult
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
@@ -42,6 +42,7 @@ class SpectralCompiled(CompiledBase):
     def __init__(self, model: Model):
         super().__init__(model)
         reject_leads(model, 'spectral finite engine')
+        reject_constants(model, 'spectral finite engine')
         hz = model.horizon
         self.T = float(hz.window)
         lags = model.all_lags()

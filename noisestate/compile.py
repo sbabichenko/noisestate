@@ -28,6 +28,7 @@ class Structure:
     A: np.ndarray                                    # (nX, nX) contemporaneous state feedback
     state_inputs: List[Tuple[int, Atom, float]]      # (state index, atom, coef) for every other drift term
     sigma: np.ndarray                                # (nX, nW) noise loadings
+    const: np.ndarray                                # (nX,) constant drifts (they move the means only)
     rows: Dict[str, List[Tuple[str, Dict[Atom, float], np.ndarray, float]]]   # agent -> [(name, drift, E, delay)]
     loss: Dict[str, Tuple[List[Atom], np.ndarray, np.ndarray]]               # agent -> (atoms, Q, q): 1/2 z'Qz + q'z
     rep: Dict[str, str]                              # agent -> representative of its tie group
@@ -41,7 +42,7 @@ class Structure:
 class CompiledBase:
     """What every engine's compiled model starts from: the validated model and its Structure, whose
     fields are adopted as attributes (c.rows, c.loss, c.rep, ...)."""
-    FIELDS = ("channels", "nW", "prim", "index", "nX", "nU", "A", "state_inputs", "sigma", "rows", "loss", "rep", "reps")
+    FIELDS = ("channels", "nW", "prim", "index", "nX", "nU", "A", "state_inputs", "sigma", "const", "rows", "loss", "rep", "reps")
 
     def __init__(self, model: Model):
         model.validate()
@@ -69,6 +70,7 @@ def compile_structure(model: Model) -> Structure:
     for i, s in enumerate(model.states):
         for ch, c in s.noise.items():
             sigma[i, channels.index(ch)] = c
+    const = np.array([model.constant(s.drift) for s in model.states], dtype=float)
     rows = {}
     for a in model.agents:
         rr = []
@@ -109,7 +111,7 @@ def compile_structure(model: Model) -> Structure:
             rep[n] = group[0]
     reps = [a.name for a in model.agents if rep[a.name] == a.name]
     return Structure(model=model, channels=channels, prim=prim, index=index, nX=nX, nU=nU, A=A,
-                     state_inputs=state_inputs, sigma=sigma, rows=rows, loss=loss, rep=rep, reps=reps)
+                     state_inputs=state_inputs, sigma=sigma, const=const, rows=rows, loss=loss, rep=rep, reps=reps)
 
 
 def reject_leads(model: Model, engine: str) -> None:
@@ -119,6 +121,14 @@ def reject_leads(model: Model, engine: str) -> None:
             for atom in term[1:]:
                 if any(l < 0 for (n, l) in model.expand({atom: 1.0})):
                     raise NotImplementedError(f"{engine}: lead atoms ({atom}) in losses are supported by the stationary engine only")
+
+
+def reject_constants(model: Model, engine: str) -> None:
+    """The finite-horizon engines do not solve the means yet, so a constant drift would be dropped silently."""
+    for s in model.states:
+        if model.constant(s.drift) != 0:
+            raise NotImplementedError(f"{engine}: the constant drift of {s.name} moves the means, which the stationary engine "
+                                      "alone solves; drop it, or solve the stationary model")
 
 
 def close_under_delays(bp, delays, eps: float = 1e-9):

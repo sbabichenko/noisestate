@@ -3,7 +3,11 @@
     res.converged, res.residual, res.message     outcome of the outer solve
     res.check()                                  raise ConvergenceError unless converged
     res.costs[agent]                             stationary flow loss per unit time, or the discounted
-                                                 integral over [0, T] (res.cost_kind says which)
+                                                 integral over [0, T] (res.cost_kind says which): the variance
+                                                 part (the shocks) plus the mean part (targets, constant drifts)
+    res.cost_parts[agent]                        {"variance", "mean"}, the two parts (stationary engine)
+    res.means[name]                              stationary mean of every state, control and definition, and
+                                                 the mean drift rate of every signal row as "agent.row"
     res.kernel(name, channel=None)               closed-loop kernel of a state or control
     res.maps[agent]                              raw strategies on the agent's signal rows, indexed by the age of the
                                                  increment as the agent sees it (a delayed row's raw increment is older
@@ -54,6 +58,8 @@ class BaseResult:
     solve_kw: dict = field(default_factory=dict)
     second_order: Dict[str, dict] = field(default_factory=dict)   # agent -> {"min", "max", "ok"}: is the best response a minimum
     foc: Dict[str, dict] = field(default_factory=dict)            # agent -> control -> {"foc", "physical", "wedge"} kernels
+    means: Dict[str, float] = field(default_factory=dict)         # quantity -> its mean (empty where the engine does not solve them)
+    cost_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> {"variance", "mean"} parts of its cost
     kind: str = "base"
 
     RESOLUTION_TOL = 1e-6
@@ -162,7 +168,8 @@ class BaseResult:
         tail = getattr(self, "window_tail", None)
         if tail is not None:
             row("window", float(tail), self.WINDOW_TAIL_TOL, bool(tail <= self.WINDOW_TAIL_TOL),
-                f"WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window)",
+                f"WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window"
+                + ("; the means' continuation integrals are truncated there as well)" if any(v != 0.0 for v in self.means.values()) else ")"),
                 "raise horizon.window")
         for a, so in self.second_order.items():
             if so.get("converged") is False:
@@ -277,8 +284,8 @@ class BaseResult:
         """JSON-serialisable view.  Provenance: the package version, the parameter values, the model spec
         (`model`, which Model.from_dict rebuilds), the horizon and the engine and solve options.  Then the
         grid, the kernels per quantity and channel, the raw maps with each agent's controls and signal rows
-        (delay and map axes, see MAP_CONVENTION), costs, and the first-order-condition decomposition where
-        the engine provides it."""
+        (delay and map axes, see MAP_CONVENTION), costs with their variance and mean parts, the means, and the
+        first-order-condition decomposition where the engine provides it."""
         from . import __version__
         c = self.compiled; m = self.model
         out = {"version": __version__, "name": m.name, "engine": self.kind, "converged": bool(self.converged),
@@ -291,7 +298,9 @@ class BaseResult:
                                    "signals": {r.name: {"delay": float(r.delay), **self.map_axes(r.delay)} for r in a.signals}}
                           for a in m.agents},
                "map_convention": self.MAP_CONVENTION, "kernels": {}, "maps": {}, "foc": {},
-               "costs": {k: float(v) for k, v in self.costs.items()}}
+               "costs": {k: float(v) for k, v in self.costs.items()},
+               "cost_parts": {a: {k: float(v) for k, v in p.items()} for a, p in self.cost_parts.items()},
+               "means": {k: float(v) for k, v in self.means.items()}}
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
         out["diagnostics"] = [{k: (None if v is None else v) for k, v in d.items()} for d in self.diagnose()]
         out["resolution_ok"] = None if self.resolution_ok is None else bool(self.resolution_ok)
@@ -394,10 +403,14 @@ class StationaryResult(BaseResult):
         lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.iterations} evaluations, "
                  f"{self.seconds:.1f}s; grid {c.grid.P} panels x {c.grid.n} nodes on [0, {c.grid.L}], rho={c.rho}"]
         for a in self.model.agents:
-            lines.append(f"  {a.name}: flow loss = {self.costs.get(a.name, float('nan')):+.6f}")
+            parts = self.cost_parts.get(a.name)
+            lines.append(f"  {a.name}: flow loss = {self.costs.get(a.name, float('nan')):+.6f}"
+                         + (f" (variance {parts['variance']:+.6f}, mean {parts['mean']:+.6f})" if parts and parts["mean"] != 0.0 else ""))
             for u in a.controls:
                 k = self.kernel(u)
                 lines.append(f"    {u}(0+) on channels: " + ", ".join(f"{ch}={k[0, j]:+.4f}" for j, ch in enumerate(self.channels)))
+        if any(v != 0.0 for v in self.means.values()):
+            lines.append("  means: " + ", ".join(f"{n}={self.means[n]:+.6f}" for n in c.prim))
         return "\n".join(lines)
 
 
