@@ -352,8 +352,11 @@ class Compiled(CompiledBase):
             rhs[fcols] += MUX_rep[len(corb) * N:] @ GB
         # mode blocks
         r = len(corb); nf = fcols.size
+        # modes k and m - k are complex conjugates (the operator and the right-hand sides are real), so only
+        # k <= m/2 is factorised and solved; the conjugate mode's contribution is the conjugate's
+        kmax = m // 2
         blocks = []
-        for k in range(m):
+        for k in range(kmax + 1):
             Ak = np.zeros((r * N + (nf if k == 0 else 0),) * 2, dtype=complex)
             for i in range(r):
                 for j in range(r):
@@ -367,9 +370,9 @@ class Compiled(CompiledBase):
             blocks.append(lu_factor(np.eye(Ak.shape[0]) - Ak))
 
         def solve_sym(rhs_u):
-            """(I - R) Z_U = rhs_u for the symmetric operator, by modes."""
-            out = np.zeros_like(rhs_u, dtype=complex)
-            for k in range(m):
+            """(I - R) Z_U = rhs_u for the symmetric operator, by modes k <= m/2 and their conjugates."""
+            out = np.zeros_like(rhs_u)
+            for k in range(kmax + 1):
                 size = r * N + (nf if k == 0 else 0)
                 bk = np.zeros((size, rhs_u.shape[1]), dtype=complex)
                 for j in range(r):
@@ -378,12 +381,13 @@ class Compiled(CompiledBase):
                 if k == 0 and nf:
                     bk[r * N:] = rhs_u[fcols]
                 zk = lu_solve(blocks[k], bk)
+                weight = 1.0 if (k == 0 or 2 * k == m) else 2.0                  # the pair (k, m - k) or a self-conjugate mode
                 for j in range(r):
                     for sh in range(m):
-                        out[csl[j][sh]] += (omega ** (sh * k)) * zk[j * N:(j + 1) * N] / np.sqrt(m)
+                        out[csl[j][sh]] += weight * ((omega ** (sh * k)) * zk[j * N:(j + 1) * N]).real / np.sqrt(m)
                 if k == 0 and nf:
-                    out[fcols] += zk[r * N:]
-            return out.real
+                    out[fcols] += zk[r * N:].real
+            return out
         if ex_agent is None:
             ZU = solve_sym(rhs)
         else:

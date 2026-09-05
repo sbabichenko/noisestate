@@ -26,6 +26,9 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Symmetric closed loop: only the modes k <= m/2 are factorised and solved; a conjugate pair's
+  contribution is twice the real part of one member's.  Agrees with the general solve to 7e-16 (the
+  real part is taken directly, so nothing drifts); the Chapter 5 example solves in 6.0 s.
 - Memory at no speed cost: the raw correlation tensor is not stored (only its flat layout, which
   `corr_tensor` views); loss forms are released after the finishing step; the finite engine's
   conv_left, conv_right and response paths share one quadrature path with the interpolants swapped;
