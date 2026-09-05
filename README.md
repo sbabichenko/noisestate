@@ -184,8 +184,9 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
   window.  A kernel read at a lag (a delayed row, `P@tau`) jumps at the lag, and the panels'
   duplicated breakpoint nodes carry the two one-sided limits: the lower copy reads the left limit
   (zero at the lag), the upper copy the right limit, and a lead is the exact transpose of the lag.
-  With that, the breakpoints closed under subtraction of every row delay (so the map's panels are
-  the action's panels shifted by the delay), and the map removed where the row reads nothing, the
+  With that, the breakpoints closed under adding and subtracting every row delay (so the map's
+  panels and the action's panels are unions of each other shifted by the delay; beyond `unit_range`
+  a delayed model's panels become uniform), and the map removed where the row reads nothing, the
   delayed problem is discretised exactly: on a one-agent problem with a delayed observation whose
   solution is known in closed form (certainty equivalence and a delay-differential system,
   `tests/test_exact_delay.py`) the cost agrees to 7e-11 and the kernels to 6e-6 at 16 nodes per

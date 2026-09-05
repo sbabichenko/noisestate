@@ -26,6 +26,13 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Two cases a skeptic broke after the exact-delay fix are repaired: the breakpoints are closed under
+  both b - d and b + d (a finer map panel read by a coarser action panel left unseen modes and a
+  singular system), and a shifted node that lands within round-off of a breakpoint is snapped to it
+  before its side is chosen (delay 0.3 on a 0.3 grid).  Tests for both.
+- The FOC system is assembled with one product per control over all responding controls, the
+  second-order form is built densely up to 2500 unknowns (2.7 s at 1600 where Lanczos took 7.5 s),
+  and tied agents share one second-order check; the Chapter 5 example solves in 20 s.
 - Stationary closed loop: the states are eliminated through a cached factorisation of the
   propagator part (map-independent) and the control rows are assembled block-wise over the
   primaries a row reads; the solve is over the controls only.  Identical to the dense solve to

@@ -292,3 +292,17 @@ def test_second_order_and_stability_report_their_method():
     r = ns.solve(_ch3(), stability=True)
     assert all(v["converged"] for v in r.second_order.values()) and r.stability_report["method"] == "arnoldi"
     assert r.to_dict()["stability"]["method"] == "arnoldi"
+
+
+def test_delayed_rows_with_mixed_panels_and_non_dyadic_units():
+    """Two cases a skeptic broke: a delayed row (0.5) with unit 0.25 panels ending at unit_range 2 and
+    coarser panels beyond (the map's panels must be a union of the action's shifted panels in both
+    directions), and a delay of 0.3 on a 0.3 unit grid, where the shifted nodes land 1e-16 off the
+    breakpoints and must still read the right side."""
+    d = _ch3(window=6.0, nodes=8); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.5; d["horizon"].update(unit=0.25)
+    d["agents"]["player1"]["loss"].append([0.05, "D1", "X@0.25"])
+    r = ns.solve(d).check()
+    assert r.representation_error["player2"] < 1e-9 and np.abs(r.kernel("D2")[r.ages < 0.5 - 1e-12]).max() == 0.0
+    d = _ch3(window=12.0, nodes=8); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.3; d["horizon"].update(unit=0.3, unit_range=2.4)
+    r = ns.solve(d).check()
+    assert r.representation_error["player2"] < 1e-9 and np.abs(r.kernel("D2")[r.ages < 0.3 - 1e-12]).max() == 0.0

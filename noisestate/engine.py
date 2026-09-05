@@ -40,7 +40,7 @@ class EngineBase:
     ACTIONS = True                  # whether the engine can iterate on action kernels
     SECOND_ORDER_TOL = 1e-4         # curvature (relative to the largest) below which a negative value is window truncation
     SECOND_ORDER_QUADRATIC = True   # whether the objective is a quadratic form in the strategy at every discount
-    SECOND_ORDER_DENSE = 1000       # strategy dimension up to which the form is built densely (always settles); Lanczos above
+    SECOND_ORDER_DENSE = 2500       # strategy dimension up to which the form is built densely (always settles, 2.7 s at 1600); Lanczos above
 
     def __init__(self, model: Model, verbose: bool = False, **options):
         self.model = model
@@ -48,6 +48,7 @@ class EngineBase:
         self.solver_kw = {"verbose": verbose, **options}   # so a result can rebuild the same engine
         self._qa: Dict[str, np.ndarray] = {}                # agent -> (Q zeta) as an operator on the primary kernels
         self._rphys: Dict[str, np.ndarray] = {}             # agent -> physical impulse responses (all reactions off)
+        self._second_order_cache: Dict[str, dict] = {}       # representative -> its second-order check, shared with tied agents
 
     # ------------------------------------------------------------ ties
     def _fill_ties(self, d: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
@@ -241,9 +242,15 @@ class EngineBase:
         raise NotImplementedError
 
     def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk) -> None:
-        """The second-order check and the FOC decomposition (instantaneous/physical/wedge)."""
+        """The second-order check and the FOC decomposition (instantaneous/physical/wedge).  Tied agents
+        share the second-order check of their representative (the same problem up to relabelling)."""
         c = self.c; nW = c.nW; Zfull = out["Zfull"]
-        out["second_order"] = self._second_order(agent, Resp, Gk, np.tile(self._identified(agent), len(agent.controls)))
+        rep = c.rep[agent.name]
+        if rep != agent.name and rep in self._second_order_cache:
+            out["second_order"] = self._second_order_cache[rep]
+        else:
+            out["second_order"] = self._second_order(agent, Resp, Gk, np.tile(self._identified(agent), len(agent.controls)))
+            self._second_order_cache[agent.name] = out["second_order"]
         if agent.name not in self._rphys:                                   # physical impulse responses: map-independent
             self._rphys[agent.name] = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
         Fphys = self._foc_operators(agent, self._rphys[agent.name])
@@ -343,12 +350,12 @@ class EngineBase:
         # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp_v Gk gamma_v)) = 0 for all controls
         nG = nU * nR * N
         Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
+        Gk_flat = Gk.transpose(1, 0, 2).reshape(N, nW * nR * N)             # (N, [k, gamma]) for one product per control pair
         for ui in range(nU):
             rowsl = slice(ui * nR * N, (ui + 1) * nR * N)
-            for vi in range(nU):
-                FR = Fu[ui] @ Resp[vi]                                       # channel-independent factor
-                FRG = (FR @ Gk).reshape(nW * N, nR * N)                      # FR applied per channel, stacked
-                Amat[rowsl, vi * nR * N:(vi + 1) * nR * N] += H @ FRG        # one product over all channels
+            FRG = np.concatenate([((Fu[ui] @ Resp[vi]) @ Gk_flat).reshape(N, nW, nR * N).transpose(1, 0, 2).reshape(nW * N, nR * N)
+                                  for vi in range(nU)], axis=1)              # FR applied per channel, all responding controls
+            Amat[rowsl] += H @ FRG                                           # one product over all channels and controls
             bvec[rowsl] += H @ (Fu[ui] @ Zpass).T.reshape(-1)
         gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
         cact = np.stack([np.stack([Gk[k] @ gamma[ui].reshape(-1) for k in range(nW)], axis=1) for ui in range(nU)])

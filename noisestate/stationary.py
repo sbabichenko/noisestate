@@ -64,16 +64,19 @@ class Compiled(CompiledBase):
 
     @staticmethod
     def close_under_delays(bp, delays, eps: float = 1e-9):
-        """The breakpoints with b - d added for every breakpoint b and row delay d, repeated until closed."""
-        bp = sorted(float(b) for b in bp)
+        """The breakpoints with b - d and b + d added for every breakpoint b and row delay d, repeated
+        until closed within [0, L].  Both directions: the map on a delayed row at ages [b, b'] is read
+        by the action at ages [b + d, b' + d], and each must be a union of panels of the other, or
+        the finer side has modes the coarser side cannot see (a singular system)."""
+        bp = sorted(float(b) for b in bp); L = bp[-1]
         changed = True
         while changed:
             changed = False
             for d in delays:
                 for b in list(bp):
-                    c = b - d
-                    if c > eps and not any(abs(c - x) < eps for x in bp):
-                        bp.append(c); changed = True
+                    for c in (b - d, b + d):
+                        if eps < c < L - eps and not any(abs(c - x) < eps for x in bp):
+                            bp.append(c); changed = True
             bp = sorted(bp)
         return bp
 
@@ -425,7 +428,9 @@ class StationarySolver(EngineBase):
     def _finish(self, res) -> None:
         """Costs, the first-order-condition decomposition, the second-order check and the representation
         error of every agent's best response at the equilibrium."""
-        for a in self.model.agents:
+        self._second_order_cache.clear()                               # the equilibrium's own check, not a stale one
+        order = [a for a in self.model.agents if self.c.rep[a.name] == a.name] + [a for a in self.model.agents if self.c.rep[a.name] != a.name]
+        for a in order:
             g, out = self.best_response(a, res.maps, want_decomp=True)
             res.foc[a.name] = out["decomp"]
             res.costs[a.name] = self.expected_cost(a, res.Z)

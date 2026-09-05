@@ -153,6 +153,8 @@ class AgeGrid:
         eps = 1e-14 * max(1.0, self.L)
         sides = self.node_sides()
         pts = self.nodes - tau
+        for b in self.breakpoints:                       # a shifted node that lands within round-off of a breakpoint
+            pts[np.abs(pts - b) <= 1e-12 * max(1.0, self.L)] = b     # is on it (non-dyadic units: 0.9 - 0.3)
         inner = +1 if tau > 0 else -1
         M = np.zeros((self.N, self.N))
         for s in (+1, -1):

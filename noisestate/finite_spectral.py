@@ -404,7 +404,9 @@ class SpectralFiniteSolver(EngineBase):
         return float(0.5 * np.sum(Q * G))
 
     def _finish(self, res) -> None:
-        for a in self.model.agents:
+        self._second_order_cache.clear()
+        order = [a for a in self.model.agents if self.c.rep[a.name] == a.name] + [a for a in self.model.agents if self.c.rep[a.name] != a.name]
+        for a in order:
             res.costs[a.name] = self.expected_cost(a, res.Z)
             g, out = self.best_response(a, res.maps, want_decomp=True)
             res.foc[a.name] = out["decomp"]
