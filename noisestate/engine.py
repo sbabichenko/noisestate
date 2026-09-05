@@ -151,13 +151,30 @@ class EngineBase:
         return self._seen_rows(agent, Zpass, set(agent.controls))
 
     # ------------------------------------------------- best-response pieces
+    def _row_support(self, agent: Agent, rows):
+        """Which (row, channel) regular kernels are not identically zero, (nR, nW); the operators of the
+        zero ones are zero and are skipped (a channel the agent's rows never carry, a row that reads
+        nothing regular).  Rows are grouped by observation delay so one batched kernel call serves all
+        rows of a delay."""
+        sup = np.stack([np.any(y != 0, axis=0) for y in rows]) if rows else np.zeros((0, self.c.nW), dtype=bool)
+        groups = {}
+        for r in range(len(rows)):
+            groups.setdefault(float(self.c.rows[agent.name][r][3]), []).append(r)
+        return sup, groups
+
     def _row_operator(self, agent: Agent, rows, inst):
         """Per channel, the operator (N x nR N) mapping stacked row maps gamma to the action kernel:
         c_k = sum_r (Conv[y_rk] + E_rk S_delta) gamma_r."""
         c = self.c; N, nW = c.N, c.nW; nR = len(rows)
         Gk = np.zeros((nW, N, nR * N))
+        sup, groups = self._row_support(agent, rows)
+        for d, rs in groups.items():
+            pairs = [(r, k) for r in rs for k in np.where(sup[r])[0]]
+            if pairs:
+                ops = c.conv_rows(np.stack([rows[r][:, k] for r, k in pairs], axis=1), d)     # one call per delay
+                for i, (r, k) in enumerate(pairs):
+                    Gk[k, :, r * N:(r + 1) * N] = ops[i]
         for r in range(nR):
-            Gk[:, :, r * N:(r + 1) * N] += c.conv_rows(rows[r], c.rows[agent.name][r][3])
             for (k, age, w) in inst[r]:
                 Gk[k, :, r * N:(r + 1) * N] += w * c.instant(age, c.rows[agent.name][r][3])
         return Gk
@@ -188,25 +205,34 @@ class EngineBase:
         Called with the physical impulse responses (all reactions off) for the wedge decomposition."""
         c = self.c; N = c.N; n_prim = len(c.prim) * N
         atoms, Q, q = c.loss[agent.name]
-        QA = self._qa_operator(agent)
+        AO = [c.atom_op(at) for at in atoms]
+        # the nonzero N x N blocks of every atom operator (one block, the shift into the atom's primary)
+        AO_blocks = [[(p, A[:, p * N:(p + 1) * N]) for p in range(len(c.prim)) if np.any(A[:, p * N:(p + 1) * N])] for A in AO]
         Fu = []
         for ui, u in enumerate(agent.controls):
-            op = np.zeros((N, n_prim))
+            # op = sum_j M_j (Q zeta)_j with M_j the operator on atom j: identity for the instantaneous
+            # term, continuation, delayed own read, lead term; contracted as sum_i (sum_j Q_ji M_j) AO_i
+            # so the products are N x N x N per atom block instead of N x N x n_prim N per atom
+            M = np.zeros((len(atoms), N, N))
             if (u, 0.0) in atoms:
-                j0 = atoms.index((u, 0.0))
-                op += QA[j0 * N:(j0 + 1) * N]
+                M[atoms.index((u, 0.0))] += np.eye(N)
             if not agent.myopic:
-                Rj = np.stack([c.atom_op(at) @ R[:, ui] for at in atoms], axis=1)   # impulse responses of every atom
+                Rj = np.stack([AO[j] @ R[:, ui] for j in range(len(atoms))], axis=1)   # impulse responses of every atom
                 CR = c.continuation(Rj)
                 for j, (name, lag) in enumerate(atoms):
-                    Qj = QA[j * N:(j + 1) * N]
                     if name in agent.controls:
                         if name == u and lag > 0:          # delayed read of the control itself
-                            op += np.exp(-c.rho * lag) * c.own_lag_read(lag) @ Qj
+                            M[j] += np.exp(-c.rho * lag) * c.own_lag_read(lag)
                         continue                            # own reactions: envelope
-                    op += CR[j] @ Qj
+                    M[j] += CR[j]
                     if lag < 0:
-                        op += self._lead_term(agent, R[:, ui], name, lag) @ Qj
+                        M[j] += self._lead_term(agent, R[:, ui], name, lag)
+            MQ = np.tensordot(Q.T, M, axes=1)              # MQ[i] = sum_j Q[j, i] M_j
+            op = np.zeros((N, n_prim))
+            for i in range(len(atoms)):
+                if np.any(MQ[i]):
+                    for p, blk in AO_blocks[i]:
+                        op[:, p * N:(p + 1) * N] += MQ[i] @ blk
             Fu.append(op)
         return Fu
 
@@ -312,13 +338,15 @@ class EngineBase:
         if n <= self.SECOND_ORDER_DENSE:
             # the form explicitly: T per channel as a matrix (n_prim N x n), M = sum_k T_k' G T_k
             Mfull = np.zeros((n, n))
+            nz = np.where(np.any(np.stack([np.any(Rv != 0, axis=1) for Rv in Resp]), axis=0))[0]   # primaries' nodes that respond
+            GAOnz = GAO[np.ix_(nz, nz)]
             for k in range(nW):
-                Tk = np.zeros((GAO.shape[0], n))
+                Tk = np.zeros((nz.size, n))
                 for ui in range(nU):
                     cols = np.where((idx >= ui * nR * N) & (idx < (ui + 1) * nR * N))[0]
                     if cols.size:
-                        Tk[:, cols] = Resp[ui] @ Gk[k][:, idx[cols] - ui * nR * N]
-                Mfull += Tk.T @ (GAO @ Tk)
+                        Tk[:, cols] = Resp[ui][nz] @ Gk[k][:, idx[cols] - ui * nR * N]
+                Mfull += Tk.T @ (GAOnz @ Tk)
             w = np.linalg.eigvalsh((Mfull + Mfull.T) / 2)
             lo, hi = float(w[0]), float(w[-1])
         else:
@@ -332,6 +360,74 @@ class EngineBase:
         return {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale), "converged": True}
 
     # ------------------------------------------------ maps from kernels
+
+    def _causal_chunks(self):
+        """Node ranges [(lo, hi)] in increasing age such that the regular projection operator of any row is
+        zero from ages in one chunk to nodes in an earlier one (a correlation reads only older ages); the
+        products over those blocks are skipped.  One chunk when the compiled model declares none."""
+        ch = getattr(self.c, "causal_chunks", None)
+        return ch() if ch is not None else [(0, self.c.N)]
+
+    def _foc_system(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu):
+        """The first-order-condition system Amat gamma = -bvec on the passive rows,
+        Amat[u, v] = sum_k H_k (Fu_u Resp_v) G_k, bvec[u] = sum_k H_k (Fu_u Zpass)_k, with G_k the row
+        operator and H_k the projection operator of channel k.  Both split into a regular part (the
+        convolution and correlation with the row kernels, zero for every (row, channel) whose kernel is
+        zero) and the instantaneous entries (scaled shifts on one row block); the regular parts are
+        assembled over the nonzero rows and channels only, with the projection's columns ordered
+        (node, channel) so the product Fu Resp G comes out in the right layout without a transpose, and
+        the instantaneous terms are added block by block.  Identical to the dense assembly to round-off."""
+        c = self.c; N = c.N; nR, nU = len(rows), len(Fu)
+        sup, groups = self._row_support(agent, rows)
+        delay = [c.rows[agent.name][r][3] for r in range(nR)]
+        Rn = np.where(sup.any(axis=1))[0]; Kn = np.where(sup.any(axis=0))[0]
+        nRn, nKn = len(Rn), len(Kn)
+        kpos = {int(k): i for i, k in enumerate(Kn)}
+        # regular parts: Hs[(ri, a), (j, ki)] and Gs[a, (ki, ri, j)]
+        Hs = np.zeros((nRn, N, N, nKn)); Gs = np.zeros((N, nKn, nRn, N))
+        for d, rs in groups.items():
+            pairs = [(ri, int(k)) for ri, r in enumerate(Rn) if r in rs for k in np.where(sup[r])[0]]
+            if not pairs:
+                continue
+            Y = np.stack([rows[Rn[ri]][:, k] for ri, k in pairs], axis=1)
+            Hp = c.projection_rows(Y, d).reshape(N, len(pairs), N)             # (a, pair, j)
+            Gp = c.conv_rows(Y, d)                                              # (pair, a, j)
+            for i, (ri, k) in enumerate(pairs):
+                Hs[ri, :, :, kpos[k]] = Hp[:, i, :]
+                Gs[:, kpos[k], ri, :] = Gp[i]
+        Hs = Hs.reshape(nRn * N, N * nKn); Gs = Gs.reshape(N, nKn * nRn * N)
+        chunks = self._causal_chunks() if nKn else []
+        Hc = [np.ascontiguousarray(Hs.reshape(nRn, N, N * nKn)[:, lo:hi, lo * nKn:]).reshape(nRn * (hi - lo), (N - lo) * nKn)
+              for lo, hi in chunks]                                             # rows of ages in the chunk, columns of nodes not younger
+        # instantaneous entries: (row, channel, weighted shift on the row operator, on the projection)
+        ent = [(r, k, w * c.instant(age, delay[r]), w * c.instant_adjoint(age, delay[r])) for r in range(nR) for (k, age, w) in inst[r]]
+        nG = nU * nR * N
+        Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
+        A6 = Amat.reshape(nU, nR, N, nU, nR, N); B3 = bvec.reshape(nU, nR, N)
+        for ui in range(nU):
+            phi = Fu[ui] @ Zpass                                                # (N, nW): the FOC of the passive world
+            if nKn:
+                B3[ui][Rn] += (Hs @ phi[:, Kn].reshape(-1)).reshape(nRn, N)
+            for (r, k, Sg, Sh) in ent:
+                B3[ui, r] += Sh @ phi[:, k]
+            for vi in range(nU):
+                FR = Fu[ui] @ Resp[vi]
+                FRG = (FR @ Gs).reshape(N, nKn, nRn * N) if nKn else None      # [(j, ki), (ri, j')]
+                for (lo, hi), H_ in zip(chunks, Hc):
+                    T = (H_ @ FRG[lo:].reshape((N - lo) * nKn, nRn * N)).reshape(nRn, hi - lo, nRn, N)
+                    for ri, r in enumerate(Rn):
+                        A6[ui, r, lo:hi, vi][:, Rn, :] += T[ri]
+                for (r, k, Sg, Sh) in ent:
+                    if k in kpos:                                               # the channel also has regular kernels
+                        ki = kpos[k]
+                        X = (Hs.reshape(nRn * N, N, nKn)[:, :, ki] @ (FR @ Sg)).reshape(nRn, N, N)     # H_reg FR G_inst
+                        for ri, rr in enumerate(Rn):
+                            A6[ui, rr, :, vi, r] += X[ri]
+                        A6[ui, r, :, vi][:, Rn, :] += (Sh @ FRG[:, ki, :]).reshape(N, nRn, N)        # H_inst FR G_reg
+                    for (r2, k2, Sg2, Sh2) in ent:
+                        if k2 == k:
+                            A6[ui, r, :, vi, r2] += Sh @ (FR @ Sg2)                                   # H_inst FR G_inst
+        return Amat, bvec
 
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
         """The agent's best response to `maps`: (raw map, {"gamma", "action", "Zfull", ...}).  The
@@ -347,19 +443,10 @@ class EngineBase:
         Gk = self._row_operator(agent, ytil, yinst)
         Resp = self._response_operators(agent, R)
         Fu = self._foc_operators(agent, R)
-        H = self._projection_operator(agent, ytil, yinst)
         # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp_v Gk gamma_v)) = 0 for all controls
-        nG = nU * nR * N
-        Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
-        Gk_flat = Gk.transpose(1, 0, 2).reshape(N, nW * nR * N)             # (N, [k, gamma]) for one product per control pair
-        for ui in range(nU):
-            rowsl = slice(ui * nR * N, (ui + 1) * nR * N)
-            FRG = np.concatenate([((Fu[ui] @ Resp[vi]) @ Gk_flat).reshape(N, nW, nR * N).transpose(1, 0, 2).reshape(nW * N, nR * N)
-                                  for vi in range(nU)], axis=1)              # FR applied per channel, all responding controls
-            Amat[rowsl] += H @ FRG                                           # one product over all channels and controls
-            bvec[rowsl] += H @ (Fu[ui] @ Zpass).T.reshape(-1)
+        Amat, bvec = self._foc_system(agent, ytil, yinst, Zpass, Resp, Fu)
         gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
-        cact = np.stack([np.stack([Gk[k] @ gamma[ui].reshape(-1) for k in range(nW)], axis=1) for ui in range(nU)])
+        cact = np.stack([(Gk @ gamma[ui].reshape(-1)).T for ui in range(nU)])
         Zfull = Zpass.copy()
         for ui in range(nU):
             Zfull += Resp[ui] @ cact[ui]

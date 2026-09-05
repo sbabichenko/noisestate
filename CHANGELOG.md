@@ -26,6 +26,17 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- First-order-condition assembly restructured (agent work, exact to round-off: Amat 1e-15, maps
+  3e-12, identical evaluation counts): the regular parts of the row and projection operators are
+  assembled on the nonzero (row, channel) support only and batched per delay; the projection's
+  columns are ordered (node, channel) so the products need no transposes; the strict block
+  triangularity of convolution and correlation in age is used to skip the zero blocks of the big
+  product; the FOC operators contract through Q first (2.6 GFlop to 0.1); the map projection's Gram
+  is one product and one multi-right-hand-side solve; the dense second-order form is restricted to
+  the responding primaries.  Block-Toeplitz/FFT products on the uniform panels were measured and
+  rejected (the structure is real to 2e-15, but the products would run far below dgemm speed and the
+  non-uniform tail needs dense corrections).  The Chapter 5 example solves in 8.5 s (was 15.9 s at
+  37 evaluations, 20 s at 58, and about 40 s at the start of the day).
 - Anderson memory 15 with damping 0.6 on the stationary engine (was 6 and 0.3): the Chapter 5 example
   takes 37 evaluations instead of 58 (15.9 s), Kyle-Back 47 instead of 81, the delayed Chapter 3
   game 25 instead of 33, with the same maps to 2e-9; the Kyle-Back sweep still reaches a trading

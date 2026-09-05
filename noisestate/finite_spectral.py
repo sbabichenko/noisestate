@@ -264,8 +264,8 @@ class SpectralCompiled(CompiledBase):
         return self.g.mass_matrix(rho=self.rho)
 
     def projection_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
-        N = self.N; H = np.zeros((N, self.nW * N))
-        for k in range(self.nW):
+        N = self.N; H = np.zeros((N, Y.shape[1] * N))
+        for k in range(Y.shape[1]):
             yk = Y[:, k]
             if np.abs(yk).max() > 0:
                 raw = self.read(-delay, -delay) @ yk if delay else yk

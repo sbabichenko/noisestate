@@ -308,7 +308,16 @@ class AgeGrid:
 
     def conv_op_left(self, g: np.ndarray) -> np.ndarray:
         """Matrix C with (C y)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel g."""
-        return np.einsum("aij,i->aj", self.conv_tensor, g)
+        return self.conv_ops_left(g[:, None])[0]
+
+    def conv_ops_left(self, G: np.ndarray) -> np.ndarray:
+        """Batched conv_op_left: G (N, m) -> (m, N, N), one pass over the tensor for all m kernels."""
+        N = self.N
+        return (self._conv_flat_left @ G).reshape(N, N, -1).transpose(2, 0, 1)
+
+    @cached_property
+    def _conv_flat_left(self) -> np.ndarray:
+        return np.ascontiguousarray(self.conv_tensor.transpose(0, 2, 1)).reshape(self.N * self.N, self.N)   # [(a, j), i]
 
     def corr_op(self, w: np.ndarray, rho: float = 0.0) -> np.ndarray:
         """Matrix C with (C z)(a) = int_0^{L-a} e^{-rho s} w(s) z(a+s) ds for fixed w."""

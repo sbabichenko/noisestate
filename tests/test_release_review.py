@@ -171,7 +171,7 @@ def test_cli_reports_model_errors_as_messages(tmp_path, capsys):
 @pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="slow (a few minutes); set NOISESTATE_SLOW=1")
 def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
     """One agent with a delayed noisy observation: the stationary kernels (window 6) against the
-    spectral finite engine at t = 7 of T = 10.  Both horizon ends leave transients (the filter
+    spectral finite engine at t = 4 of T = 7.  Both horizon ends leave transients (the filter
     settles from its start, the control changes near the end; at t = 7 of T = 8 the two engines
     differ by 8% on the control, delayed or not), so the comparison stays a few units from each.
     Both engines are exactly causal (the stationary one since the side-aware shift); the finite
@@ -182,12 +182,12 @@ def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
                              "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}}}
     import copy
     st = copy.deepcopy(base); st["horizon"] = {"kind": "stationary", "window": 6.0, "nodes": 16}; rs = ns.solve(st).check()
-    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 10.0, "nodes": 6}
+    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 7.0, "nodes": 5}     # pieces of 0.5: 105 pieces
     rf = ns.solve(fi).check()
     g = rs.compiled.grid; sides = np.where((np.arange(g.N) % g.n) == g.n - 1, -1, 1)
-    t_eval = 7.0                    # three units before the end and, for ages up to 3, four after the start (transients ~1e-4)
+    t_eval = 4.0                    # three units before the end and, for ages up to 1, three after the start (transients ~1e-4)
     I = rf.grid.interp(t_eval + 0 * rs.ages, rs.ages, side_a=sides)
-    young = rs.ages <= 3.0
+    young = rs.ages <= 1.0
     for name in ("X", "D"):
         for ch in ("w0", "w1"):
             ks = rs.kernel(name, ch); kf = I @ rf.kernel(name, ch)

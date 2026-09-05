@@ -141,7 +141,15 @@ class Compiled(CompiledBase):
         return self.shift(-lag)
 
     def projection_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
-        return self.grid.corr_ops(Y, 0.0).transpose(1, 0, 2).reshape(self.N, self.nW * self.N)
+        return self.grid.corr_ops(Y, 0.0).transpose(1, 0, 2).reshape(self.N, Y.shape[1] * self.N)
+
+    def causal_chunks(self, target: int = 4):
+        """Node ranges of about `target` groups of whole panels: a correlation operator (projection_rows)
+        is zero from a node to any node of an earlier panel, so the products from a chunk's ages need
+        only the nodes of its own and later chunks."""
+        P, n = self.grid.P, self.grid.n
+        edges = sorted({0, P} | {int(round(P * i / target)) for i in range(1, target)})
+        return [(a * n, b * n) for a, b in zip(edges[:-1], edges[1:])]
 
     def cost_mass(self) -> np.ndarray:
         """The Gram matrix under which expected_cost integrates products of kernels."""
@@ -205,10 +213,11 @@ class Compiled(CompiledBase):
             g = maps[a.name]
             for ui, u in enumerate(a.controls):
                 bl = slice(self.block(u).start - nxs, self.block(u).stop - nxs)
+                Cs = self.grid.conv_ops_left(g[ui].T)                          # the rows' maps at once
                 for r in range(len(a.signals)):
                     blocks, deltas = self.row_blocks(a.name, r, excl)
                     gur = g[ui, r]
-                    C = self.grid.conv_op_left(gur)
+                    C = Cs[r]
                     for nm, op in blocks.items():                       # only the primaries the row reads
                         MU[bl, self.block(nm)] += C @ op
                     for src, dl in deltas.items():
@@ -280,11 +289,12 @@ class Compiled(CompiledBase):
         for i, u in enumerate(controls):
             a = owner[u]; ui = a.controls.index(u); g = maps[a.name]
             rows_here = slice(i * N, (i + 1) * N); bl = self.block(u)
+            Cs = self.grid.conv_ops_left(g[ui].T) if regular else None       # the rows' maps at once
             for r in range(len(a.signals)):
                 blocks, deltas = self.row_blocks(a.name, r, excl)
                 gur = g[ui, r]
                 if regular:
-                    C = self.grid.conv_op_left(gur)
+                    C = Cs[r]
                     for nm, op in blocks.items():
                         MU[rows_here, self.block(nm)] += C @ op
                 for src, dl in deltas.items():
@@ -502,12 +512,12 @@ class StationarySolver(EngineBase):
         Bk = self._row_operator(agent, rows, inst)
         W = c.grid.mass
         keep = self._identified(agent)                                       # delayed rows: zero where they read nothing
-        Gram = sum((Bk[k] * W[:, None]).T @ Bk[k] for k in range(nW))[np.ix_(keep, keep)]
+        BW = (Bk * W[None, :, None]).reshape(nW * N, nR * N)                # the channels stacked: one product each
+        Gram = (BW.T @ Bk.reshape(nW * N, nR * N))[np.ix_(keep, keep)]
         Gram += 1e-14 * np.trace(Gram) / Gram.shape[0] * np.eye(Gram.shape[0])
+        rhs = BW.T @ actions.transpose(2, 1, 0).reshape(nW * N, nU)            # column ui: sum_k (Bk W)' actions[ui, :, k]
         g = np.zeros((nU, nR * N))
-        for ui in range(nU):
-            rhs = sum((Bk[k] * W[:, None]).T @ actions[ui, :, k] for k in range(nW))[keep]
-            g[ui, keep] = np.linalg.solve(Gram, rhs)
+        g[:, keep] = np.linalg.solve(Gram, rhs[keep]).T                        # one factorisation for every control
         return g.reshape(nU, nR, N)
 
     def _identified(self, agent: Agent) -> np.ndarray:
