@@ -26,6 +26,15 @@
   `.npz` output, the `ridge` constructor option (now a class constant) and the tuning arguments of
   `stability()` are gone.  The two iteration variables stay: raw maps stall on the delayed
   Chapter 1 finite model where action kernels converge.
+- Triangle grid: a read point within round-off of a breakpoint is snapped to it before its panel is
+  chosen by the requested side; before, a read time t - a with t and a on the same panel edge chose
+  its panel by the sign of an ulp (found by an agent sharing quadrature paths across pieces).
+- Measured and not adopted: sharing the finite engine's quadrature paths across translation-
+  equivalent pieces.  The convolution family is invariant along time at a fixed age panel, the
+  continuation along age at a fixed time, and only the projection along the diagonal, so the class
+  count is about 3P for P panels, not P; the saving is 15% of path memory at 4 panels and half at 8
+  to 14, with the per-member application slightly slower at 105 pieces.  Patch and analysis kept
+  outside the tree.
 - Coarse-to-fine warm starts: `solve(start="coarse")` solves at half the nodes and interpolates
   the raw maps onto the grid (each node read from its own panel's side); fine-grid evaluations fall
   from 37 to 25 (Ch5), 47 to 20 (Kyle-Back), 21 to 9 (Ch3), 13 to 6 (delayed Ch1 finite), 25 to 3

@@ -94,7 +94,13 @@ class TriangleGrid:
 
     # ------------------------------------------------------------ lookup
     def panel_of(self, x, side=+1):
-        x = np.asarray(x, dtype=float)
+        """Panel containing x; at a breakpoint the side decides (+1 above, -1 below).  A point within
+        round-off of a breakpoint is snapped to it first, so the choice is the side's and never the sign
+        of the round-off (a read time t - a with t and a on the same panel edge lands an ulp off)."""
+        x = np.array(x, dtype=float)
+        eps = 1e-12 * max(1.0, self.T)
+        for b in self.bp:
+            x[np.abs(x - b) <= eps] = b
         if side > 0:
             p = np.searchsorted(self.bp, x, side="right") - 1
         else:
