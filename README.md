@@ -332,9 +332,9 @@ each with its default and a one-line meaning: the outer fixed point (`anderson_m
 1e-10, `stationary_map_ridge` 1e-14, `map_ridge` 1e-13, and the cell engine's `cell_dense_max` 200,
 `cell_krylov_rtol` 1e-12, `cell_krylov_maxiter` 400, `cell_krylov_retry` 1000, and the spectral finite engine's
 `foc_dense_max` 8192, the unknowns nU nR N up to
-which the best response builds its operators and its first-order-condition system densely, beyond which the
-operators are applied from the line paths and the system is solved by GMRES to `foc_krylov_tol` 1e-12 within
-`foc_krylov_maxiter` 400, preconditioned by its time-row blocks), the second-order check
+which the first-order-condition system is assembled from the operators' rows and LU-factored, beyond which
+it is solved by GMRES on the applied operators to `foc_krylov_tol` 1e-12 within `foc_krylov_maxiter` 400,
+preconditioned by its time-row blocks), the second-order check
 (`second_order_tol` 1e-4, `second_order_dense` 4000, `second_order_lanczos_tol` 1e-6,
 `second_order_lanczos_maxiter` 300), the means (`mean_rcond` 1e-12, `lead_weight_warn` 100) and the
 result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `settled_tol` 1e-4 for a transition's maps and means

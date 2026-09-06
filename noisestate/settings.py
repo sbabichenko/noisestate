@@ -35,7 +35,7 @@ class Settings:
     map_ridge: float = 1e-13            # ridge of the finite engines' per-time-row (per-cell) map projection, relative to the row's own Gram
     cell_dense_max: int = 200           # cell engine: unknowns up to which the best-response system is assembled densely; LGMRES above
     cell_krylov_rtol: float = 1e-12     # cell engine: relative tolerance of the LGMRES best-response solve
-    foc_dense_max: int = 8192           # spectral finite engine: unknowns nU nR N (the largest agent's) up to which the best response is the dense one (the row, response, continuation and projection operators as N x N arrays, the (nU nR N)^2 first-order-condition system solved directly; the numbers of 0.4.0 to the bit); above it the operators are applications of the line paths and the system is solved by LGMRES (finite_free)
+    foc_dense_max: int = 8192           # spectral finite engine: unknowns nU nR N (the largest agent's) up to which the first-order-condition system is assembled (the operators applied to the identity) and LU-factored; above it it is solved by GMRES on the operators, preconditioned by time row (finite_free.FocSystem)
     foc_krylov_tol: float = 1e-12       # spectral finite engine, matrix-free path: relative tolerance of the LGMRES solve of the first-order conditions
     foc_krylov_maxiter: int = 400       # spectral finite engine, matrix-free path: LGMRES iterations at most (beyond them the system is reported singular)
     cell_krylov_maxiter: int = 400      # cell engine: LGMRES iterations of the first attempt

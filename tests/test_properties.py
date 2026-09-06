@@ -9,6 +9,7 @@ import os, numpy as np
 import noisestate as ns
 from noisestate.stationary import StationarySolver
 from noisestate.finite_spectral import SpectralFiniteSolver
+from noisestate.finite_free import RowOps, RespOps
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
 
 
@@ -40,12 +41,12 @@ def test_spectral_finite_best_response_is_optimal():
     a = S.model.agents[0]; c = S.c; nW = c.nW
     maps = res.maps; g, out = S.best_response(a, maps)
     Zp = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls); Zpass, R = Zp[:, :nW], Zp[:, nW:]
-    Resp = S._response_operators(a, R)[0]
-    ytil, yinst = S._passive_rows(a, Zpass); Gk = S._row_operator(a, ytil, yinst)
-    cost = lambda cc: S.expected_cost(a, Zpass + Resp @ cc)
+    resp = RespOps(S, a, R)
+    ytil, yinst = S._passive_rows(a, Zpass); rowops = RowOps(S, a, ytil, yinst)
+    cost = lambda cc: S.expected_cost(a, Zpass + resp.apply(0, cc).reshape(Zpass.shape))
     c0 = out["action"][0]; L0 = cost(c0); rng = np.random.default_rng(1)
     for _ in range(6):
-        gam = rng.standard_normal(Gk.shape[2]); dc = np.stack([Gk[k] @ gam for k in range(nW)], axis=1); dc *= 0.02 / np.abs(dc).max()
+        gam = rng.standard_normal(rowops.nR * rowops.Nm); dc = rowops.apply(gam); dc *= 0.02 / np.abs(dc).max()
         assert cost(c0 + dc) >= L0 - 1e-9 and cost(c0 - dc) >= L0 - 1e-9
 
 

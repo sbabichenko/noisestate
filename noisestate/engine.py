@@ -48,7 +48,10 @@ class EngineBase:
     a mask over map nodes is (nR N,) in (row, node) order.  The cell engine has its own layouts
     (Z (n_prim, N, ncol) per cell, maps (nU, nR, N, N)) and overrides best_response wholesale, so
     the base's best-response pieces (_seen_rows to _foc_system, _decompose, _second_order) never
-    see them; it uses the packing, the fixed point, _finish and the mean hook only.
+    see them; it uses the packing, the fixed point, _finish and the mean hook only.  The spectral
+    finite engine overrides best_response, _seen_rows, _representation_error and expected_cost with
+    the operator form of finite_free (the same pieces as applications of its line paths and sparse
+    reads), so of the kernel algebra below it supplies closed_loop, block and atom_op only.
 
     Kernel algebra of the compiled model self.c (see each engine's Compiled class):
 
@@ -84,11 +87,11 @@ class EngineBase:
         hook                 purpose                                                   overridden by
         __init__             build self.c, self.shapes; record the options in solver_kw  all three
         pack, unpack         maps of the tie representatives <-> one vector [flat]     cells
-        best_response        (raw map, {"gamma", "action", "Zfull", ...}) [FOC solve]  cells
+        best_response        (raw map, {"gamma", "action", "Zfull", ...}) [FOC solve]  spectral, cells
         _impulse_responses   R with some observers' reactions removed [R]              stationary
         _passive_world       Zpass adjusted [Zpass]                                    none
         _identified          mask of the map nodes that read something [all True]     stationary, spectral
-        _solve_foc           gamma from Amat gamma = -bvec [abstract]                  stationary, spectral
+        _solve_foc           gamma from Amat gamma = -bvec [abstract]                  stationary
         _project             raw maps reproducing action kernels [abstract]            stationary, spectral
         _lead_term           FOC term of a lead [NotImplementedError]                  stationary
         _embedded_curvature  optional: curvature of a direction on a longer window     stationary
@@ -365,8 +368,7 @@ class EngineBase:
         return Zpass
 
     def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
-        """Hook (stationary, spectral): gamma solving Amat gamma = -bvec with the engine's own
-        regularisation.  Receives the FOC system of _foc_system on every map node, (nG, nG) and
+        """Hook (stationary): gamma solving Amat gamma = -bvec with the engine's own regularisation.  Receives the FOC system of _foc_system on every map node, (nG, nG) and
         (nG,) with nG = nU nR N in (control, row, node) order, including the exactly zero rows and
         columns of the nodes _identified masks out; must return gamma (nG,) in the same order, zero
         at the masked nodes (best_response reshapes it to (nU, nR, N)).  The base assumes a
@@ -570,7 +572,9 @@ class EngineBase:
         if key not in self._loss_forms:
             c = self.c; N = c.N; n = len(c.prim) * N
             atoms, Q, q = c.loss[agent.name]
-            mass = self._init_mass() if init else c.cost_mass()
+            if init:
+                raise NotImplementedError("the form of an initial-shock column is the spectral finite engine's (finite_free)")
+            mass = c.cost_mass()
             AO = [c.atom_op(at) for at in atoms]
             blocks = [[(p, A[:, p * N:(p + 1) * N]) for p in range(len(c.prim)) if np.any(A[:, p * N:(p + 1) * N])] for A in AO]
             GAO = np.zeros((n, n))
@@ -585,11 +589,6 @@ class EngineBase:
                             GAO[p * N:(p + 1) * N, p2 * N:(p2 + 1) * N] += WA if _is_eye(Ai) else Ai.T @ WA
             self._loss_forms[key] = GAO
         return self._loss_forms[key]
-
-    def _init_mass(self) -> np.ndarray:
-        """Hook (spectral finite with a past): the (N, N) mass under which the cost integrates an initial
-        shock's column, a point column on the line s = 0.  Only that engine has such columns."""
-        raise NotImplementedError
 
     # ------------------------------------------------ maps from kernels
 

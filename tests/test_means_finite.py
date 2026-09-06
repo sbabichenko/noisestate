@@ -11,6 +11,7 @@ from scipy.integrate import solve_ivp
 import noisestate as ns
 from noisestate.cli import main
 from noisestate.finite_spectral import SpectralFiniteSolver
+from noisestate.finite_free import RespOps
 from ch1_mean_sweep import model as ch1_targets, CLOSED_LOOP
 from helpers import EX, REFS, slow
 
@@ -191,9 +192,9 @@ def test_delayed_rows_and_lags_keep_the_formulation():
     M, b = S.mean_system(res.maps); zbar = S.solve_means(res.maps)
     assert np.abs(M @ zbar - b).max() < 1e-13 * np.abs(b).max()
     a1 = m.agents[0]; R = c.closed_loop(res.maps, excluded=a1.name, impulse_controls=a1.controls)[:, c.nW:]
-    Resp = S._response_operators(a1, R)[0]
+    resp = RespOps(S, a1, R)
     for delta in (np.ones(c.Nt), np.sin(3 * c.tm), (c.tm - 0.5) ** 2):
-        dev = np.concatenate([(Resp[c.block(nm)] @ (c.mean_embed @ delta))[c.diag] for nm in c.prim])
+        dev = np.concatenate([Zp[c.diag] for Zp in resp.apply(0, c.mean_embed @ delta)])
         eps = 1e-3
         assert abs(S.mean_cost(a1, zbar + eps * dev) - S.mean_cost(a1, zbar - eps * dev)) / (2 * eps) < 1e-10
     tau, bp, nt = 0.25, c.g.bp, c.g.nt

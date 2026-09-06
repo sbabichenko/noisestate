@@ -408,36 +408,6 @@ class TriangleGrid:
                 out.append(round(nxt, 12))
         return out
 
-    def mass_matrix(self, rho: float = 0.0, t_lo: Optional[float] = None, t_hi: Optional[float] = None) -> np.ndarray:
-        """Exact Gram matrix M_ij = int_0^T e^{-rho t} int_0^t l_i l_j da dt of the nodal basis (over the
-        strip [0, T] x [0, L] with a window; tensor Gauss quadrature on every piece; Duffy Jacobian on the
-        triangles).  With t_lo / t_hi (breakpoints) the integral runs over the time panels between them
-        only (a transition's cost over [0, T] and over its buffer [T, T + L] separately)."""
-        key = round(float(rho), 12) if t_lo is None and t_hi is None else (round(float(rho), 12), t_lo, t_hi)
-        if key in self.mass_matrices:
-            return self.mass_matrices[key]
-        weight_t = (lambda t: np.exp(-rho * t)) if rho else None
-        M = np.zeros((self.N, self.N))
-        xg, wg = legendre.leggauss(max(self.nt, self.na) + 2)
-        eps = 1e-12 * max(1.0, self.T)
-        for pc in self.pieces:
-            if (t_lo is not None and pc.t1 <= t_lo + eps) or (t_hi is not None and pc.t0 >= t_hi - eps):
-                continue
-            tq = 0.5 * (pc.t1 - pc.t0) * xg + 0.5 * (pc.t1 + pc.t0); tw = 0.5 * (pc.t1 - pc.t0) * wg
-            for t, wt in zip(tq, tw):
-                if pc.triangle:
-                    lo, hi = (t - pc.origin, pc.a1) if pc.upper else (pc.a0, t - pc.origin)
-                else:
-                    lo, hi = pc.a0, pc.a1
-                if hi - lo <= 1e-14:
-                    continue
-                aq = 0.5 * (hi - lo) * xg + 0.5 * (hi + lo); aw = 0.5 * (hi - lo) * wg
-                I = self.interp(np.full_like(aq, t), aq)
-                w = wt * aw * (weight_t(t) if weight_t is not None else 1.0)
-                M += (I * w[:, None]).T @ I
-        self.mass_matrices[key] = M
-        return M
-
     def mass_sparse(self, rho: float = 0.0, t_lo: Optional[float] = None, t_hi: Optional[float] = None):
         """mass_matrix as a CSR matrix: the Gram is block diagonal by piece (the nodal basis functions of a piece
         vanish outside it), so its blocks are the pieces' own (nt na)^2 Gram matrices, built by the same
@@ -726,16 +696,3 @@ class LinePath:
         if extra is not None:
             f = f * extra
         return self.apply(f)
-
-    def with_known_many(self, kernels: np.ndarray, extra: Optional[np.ndarray] = None) -> np.ndarray:
-        """with_known for every column of kernels (N, m) at once: (m, n_out, N).  One sparse read of all the
-        kernels (the sparse product accumulates each column exactly as the single-kernel read does)."""
-        m = kernels.shape[1]
-        if self.rows is None:
-            return np.zeros((m, self.n_out, self.N))
-        F = self.read(kernels) if self.Jf is not None else self.J @ kernels     # (nq, m)
-        if extra is not None:
-            F = F * extra[:, None]
-        return np.stack([self.apply(F[:, i]) for i in range(m)])
-
-

@@ -1,27 +1,30 @@
-"""The matrix-free best response of the spectral finite engine (settings.foc_dense_max).
+"""The best response of the spectral finite engine: the row, response, first-order-condition and projection
+operators as applications of the line paths and the sparse reads, and the first-order-condition system on them.
 
-The best response of EngineBase, and its version with a past in SpectralFiniteSolver, builds the row
-operator G_k, the response operators Resp_u, the first-order-condition operators Fu_u and the projection
-operators H_k as dense arrays (about thirty N x N operators) and the (nU nR N)^2 system Amat, tens of
-gigabytes at ten thousand nodes.  Beyond settings.foc_dense_max unknowns nU nR N the solver comes here:
-
-  * every operator is an application built from the same line paths, PathOp: R diag(w J y) I on the path's
+  * every operator is an application built from the line paths, PathOp: R diag(w J y) I on the path's
     quadrature points with the known kernel y read once, applied to the columns of a world at a time, and
-    from the compiled model's sparse reads (read_sparse, map_shift_sparse, row_blocks_sparse, mass_sparse);
-  * the first-order conditions are solved by GMRES on the operator
-        gamma -> sum_k H_k Fu_u (sum_v Resp_v G_k gamma_v)
-    with the right-hand side assembled the same way (FocSystem), to settings.foc_krylov_tol relative to the
-    right-hand side, warm-started from the agent's last solution, preconditioned by the part of the
-    operator that is block diagonal by time row: the own cost read instantaneously through the row
+    from the compiled model's sparse reads (read_sparse, map_shift_sparse, row_blocks_sparse, mass_sparse):
+    RowOps (the map on the seen rows -> the action kernels, G_k), RespOps (an action kernel -> the world,
+    Resp_u), FocOps (a world -> the FOC kernels, Fu_u) and ProjOps (a FOC kernel -> its projection on the
+    seen rows, H_k); with a past the band's read of the past's increments, the old-shock and pre-zero
+    segments and the initial shocks' discrete weights and point conditions are segments of the same operators;
+  * the first-order conditions Amat gamma = -bvec with Amat = sum_k H_k Fu_u (sum_v Resp_v G_k gamma_v) are
+    assembled and solved by FocSystem on the kept unknowns (a delayed row's unread nodes out, a Duffy
+    triangle's degenerate corner rows tied to one unknown each with a past).  Up to settings.foc_dense_max
+    unknowns nU nR N the system is assembled by applying the operator to blocks of the identity and
+    LU-factored (_solve_regular's condition estimate refuses a singular one): at a few thousand unknowns a
+    factorisation beats Krylov.  Beyond, it is solved by GMRES on the matvec to settings.foc_krylov_tol
+    relative to the right-hand side, warm-started from the agent's last solution, preconditioned by the part
+    of the operator that is block diagonal by time row: the own cost read instantaneously through the row
     operator and projected back, kron(Q_l, sum_k H_k D_l G_k) summed over the control's own lags l (the
     lag's read where it exists, D_l), assembled one time panel at a time from the rows of G_k and H_k
-    (PanelRows) and LU-factored per time row;
-  * the projection of the action kernels on the seen rows (maps_from_world) and the representation error
-    read the row operator's rows one panel at a time, the second-order check's form is applied by the same
-    operators (a block of strategies at a time), the decomposition too, and the costs use the sparse mass.
+    (PanelRows) and LU-factored per time row (a singular block raises as the dense factorisation does);
+  * the projection of the action kernels on the seen rows (maps_from_world) reads the row operator's rows one
+    panel at a time (PanelRows), the representation error applies the row operator (reconstruction), the
+    second-order check's form is applied by the same operators (a block of strategies at a time), the
+    decomposition too, and the costs use the sparse mass.
 
-The same integrals and sums as the dense path: the results agree to BLAS rounding and the Krylov
-tolerance, not to the bit, which is why a system within foc_dense_max keeps the dense path.
+The two solves are the same integrals and sums: they agree to BLAS rounding and the Krylov tolerance.
 """
 from __future__ import annotations
 
@@ -204,6 +207,16 @@ class RowOps:
         return out
 
 
+    def dense(self) -> np.ndarray:
+        """Every G_k as a dense array, (ncol, N, nR Nm): the rows of every panel (the factored FOC system)."""
+        out = np.zeros((self.ncol, self.N, self.nR * self.Nm))
+        for r, (flow, disc) in enumerate(self.rows(0, self.N, [(0, self.N)] * self.nR)):
+            out[:, :, r * self.Nm:r * self.Nm + self.N] = flow
+            if disc is not None:
+                out[:, :, r * self.Nm + self.N:(r + 1) * self.Nm] = disc
+        return out
+
+
 class ProjOps:
     """The projection operator H of an agent as an application: the first-order-condition kernel phi (N, ncol)
     -> E[phi_t dY_r(t - b)] at every map node of every row, (nR, Nm) (EngineBase._projection_operator and
@@ -292,6 +305,20 @@ class ProjOps:
         return flow, disc
 
 
+    def dense(self) -> np.ndarray:
+        """H as a dense array (nR Nm, ncol N), columns (channel, node): every row's map nodes against every
+        action node (the factored FOC system)."""
+        N, Nm, ncol = self.N, self.Nm, self.ncol
+        out = np.zeros((self.nR * Nm, ncol * N))
+        for r in range(self.nR):
+            flow, disc = self.rows(r, 0, N, 0, N)
+            for k in range(ncol):
+                out[r * Nm:r * Nm + N, k * N:(k + 1) * N] = flow[k]
+                if disc is not None:
+                    out[r * Nm + N:(r + 1) * Nm, k * N:(k + 1) * N] = disc[k]
+        return out
+
+
 class RespOps:
     """The response operators of an agent's controls as applications: the action kernel of control u (N, ...)
     -> the world (nP, N, ...) it produces through the impulse responses R (nP N, nU), the own block the
@@ -322,6 +349,17 @@ class RespOps:
                 Z[p] += op.apply(IC, j).reshape(C.shape)
         Z[own] += C
         return Z
+
+    def dense(self, ui: int) -> np.ndarray:
+        """Resp_u as a dense array (nP N, N): the rows of the response path per responding primary, the own
+        block the identity (the factored FOC system)."""
+        own, ps, op = self.ops[ui]
+        Z = np.zeros((self.nP, self.N, self.N))
+        if op is not None:
+            for j, p in enumerate(ps):
+                Z[p] += op.rows(j, 0, self.N)
+        Z[own] += np.eye(self.N)
+        return Z.reshape(self.nP * self.N, self.N)
 
     def adjoint(self, ui: int, Z: np.ndarray) -> np.ndarray:
         """Resp_u^T Z: (N, ...) for Z (nP, N, ...)."""
@@ -372,9 +410,14 @@ class FocOps:
 
     def foc(self, ui: int, a: np.ndarray) -> np.ndarray:
         """The FOC kernel (N, ...) of control ui from the atoms' kernels a (n_atoms, N, ...)."""
-        b = np.tensordot(self.Q, a, axes=1)                    # b_j = sum_i Q[j, i] a_i
+        return self.on_qzeta(ui, np.tensordot(self.Q, a, axes=1))       # b_j = sum_i Q[j, i] a_i
+
+    def on_qzeta(self, ui: int, b: np.ndarray) -> np.ndarray:
+        """sum_j M_j b_j, (N, ...) for b (n_atoms, N, ...): the per-atom operators of control ui (the instantaneous
+        derivative, the discounted continuation, the own lagged reads) on the kernels of Q zeta (+ q, for the
+        means)."""
         j0, cont, lags = self.per_control[ui]
-        out = np.zeros(a.shape[1:])
+        out = np.zeros(b.shape[1:])
         if j0 is not None:
             out += b[j0]
         if cont is not None:
@@ -387,6 +430,28 @@ class FocOps:
 
     def apply(self, ui: int, Z: np.ndarray) -> np.ndarray:
         return self.foc(ui, self.atoms_of(Z))
+
+    def dense(self, ui: int) -> np.ndarray:
+        """Fu_u as a dense array (N, nP N): the per-atom operators M_j as dense rows (the identity, the rows of the
+        continuation path, the lag reads), contracted with Q and the atoms' reads, sum_i (sum_j Q[j, i] M_j) A_i
+        (the factored FOC system)."""
+        N = self.N
+        j0, cont, lags = self.per_control[ui]
+        M = np.zeros((len(self.atoms), N, N))
+        if j0 is not None:
+            M[j0] += np.eye(N)
+        if cont is not None:
+            js, op = cont
+            for i, j in enumerate(js):
+                M[j] += op.rows(i, 0, N)
+        for (j, w, S) in lags:
+            M[j] += w * S.toarray()
+        MQ = np.tensordot(self.Q.T, M, axes=1)                              # MQ[i] = sum_j Q[j, i] M_j
+        out = np.zeros((N, self.nP * N))
+        for i, (p, A) in enumerate(self.AO):
+            if np.any(MQ[i]):
+                out[:, p * N:(p + 1) * N] += (A.T @ MQ[i].T).T
+        return out
 
     def own_lags(self) -> Dict[float, float]:
         """The controls' own lags with their discount, {lag: e^{-rho lag}}, the instantaneous read included."""
@@ -483,16 +548,37 @@ class FocSystem:
         return Zd
 
     def apply(self, gamma: np.ndarray) -> np.ndarray:
-        """Amat gamma on the full unknowns (nU, nR, Nm)."""
-        a = self.foc.atoms_of(self.world_of(gamma.reshape(self.nU, self.nR, self.Nm)))
-        out = np.zeros((self.nU, self.nR, self.Nm))
+        """Amat gamma on the full unknowns (nG,), or on a block of them (nG, B)."""
+        single = gamma.ndim == 1
+        G = gamma.reshape(self.nU, self.nR, self.Nm, -1)
+        a = self.foc.atoms_of(self.world_of(G))
+        out = np.zeros((self.nU, self.nR, self.Nm, G.shape[3]))
         for ui in range(self.nU):
             out[ui] = self.projops.apply(self.foc.foc(ui, a))
-        return out.reshape(-1)
+        out = out.reshape(self.nG, -1)
+        return out[:, 0] if single else out
 
     def matvec(self, x: np.ndarray) -> np.ndarray:
         self.matvecs += 1
         return self.reduce(self.apply(self.expand(np.asarray(x, dtype=float).ravel())))
+
+    def matrix(self) -> np.ndarray:
+        """The system on the kept unknowns (n, n), assembled from the operators' dense rows: Amat[u, v] =
+        sum_k H_k (Fu_u Resp_v) G_k over the columns of the world, restricted to the kept unknowns with a
+        corner group's columns summed and its equations summed."""
+        from scipy.sparse import csr_matrix
+        N, ncol, nU, nR, Nm, nG = self.N, self.ncol, self.nU, self.nR, self.Nm, self.nG
+        Gk = self.rowops.dense(); H = self.projops.dense()
+        Resp = [self.resp.dense(vi) for vi in range(nU)]
+        Amat = np.zeros((nG, nG))
+        for ui in range(nU):
+            Fu = self.foc.dense(ui)
+            rows_u = slice(ui * nR * Nm, (ui + 1) * nR * Nm)
+            for vi in range(nU):
+                FR = Fu @ Resp[vi]
+                Amat[rows_u, vi * nR * Nm:(vi + 1) * nR * Nm] = sum(H[:, k * N:(k + 1) * N] @ (FR @ Gk[k]) for k in range(ncol))
+        Rm = csr_matrix((np.ones(self.kept.size), (self.inv, np.arange(self.kept.size))), shape=(self.n, self.kept.size))
+        return np.asarray(Rm @ Amat[np.ix_(self.kept, self.kept)] @ Rm.T)
 
     # ---- the preconditioner: the time-row-diagonal part of the operator
     def preconditioner(self):
@@ -584,13 +670,19 @@ class FocSystem:
         return np.asarray((self.c.read_sparse(-l, -l) @ self.c.map_shift_sparse(l)).sum(axis=1)).ravel()
 
     def solve(self, x0: Optional[np.ndarray] = None):
-        """gamma (nU, nR, Nm) solving the system to settings.foc_krylov_tol (relative to the right-hand side),
-        from the warm start x0 (a full gamma), and the GMRES iteration count.  A system that does not converge
-        within foc_krylov_maxiter iterations raises the ValueError of a singular system."""
+        """gamma (nU, nR, Nm) solving the system, and the GMRES iteration count (0 when factored).  Within
+        settings.foc_dense_max the system is assembled (matrix) and factored, a singular one refused by the
+        condition estimate of _solve_regular; beyond, GMRES to settings.foc_krylov_tol (relative to the
+        right-hand side) from the warm start x0 (a full gamma), a system that does not converge within
+        foc_krylov_maxiter iterations raising the ValueError of a singular system."""
+        n = self.n
+        if not self.solver.foc_free:
+            x = self.solver._solve_regular(self.agent, self.matrix(), -self.bvec)
+            self.iterations = 0; self.residual = 0.0
+            return self.expand(x).reshape(self.nU, self.nR, self.Nm), 0
         st = self.solver.settings
         tol, maxiter = st.foc_krylov_tol, st.foc_krylov_maxiter
         blocks = self.preconditioner()
-        n = self.n
 
         def prec(r):
             r = np.asarray(r, dtype=float).ravel(); x = r.copy()
@@ -620,7 +712,9 @@ class FocSystem:
 
 
 def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
-    """SpectralFiniteSolver.best_response on the matrix-free path (with or without a past)."""
+    """SpectralFiniteSolver.best_response (with or without a past): the passive world and the impulse responses
+    from the closed loop, the operators on the passive rows, the FOC system solved (factored or by GMRES), the
+    world of the response and the projection of the action kernels on the seen rows."""
     c = solver.c; N, ncol = c.N, c.ncol
     nU = len(agent.controls); nP = len(c.prim)
     Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
@@ -636,11 +730,12 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
     projops = ProjOps(solver, agent, ytil, yinst)
     resp = RespOps(solver, agent, R)
     foc = FocOps(solver, agent, Roff)
-    phi_past = solver._foc_affine_free(agent, foc)
+    phi_past = solver._foc_affine(agent, foc)
     system = FocSystem(solver, agent, rowops, projops, resp, foc, Zpass, phi_past)
     gamma, iters = system.solve(solver._last_gamma.get(agent.name))
-    solver._last_gamma[agent.name] = gamma
-    solver._krylov_log.append((agent.name, iters, system.residual))
+    if solver.foc_free:
+        solver._last_gamma[agent.name] = gamma
+        solver._krylov_log.append((agent.name, iters, system.residual))
     cact = np.stack([rowops.apply(gamma[ui]) for ui in range(nU)])          # (nU, N, ncol)
     Zfull = Zpass.reshape(nP, N, ncol).copy()
     for ui in range(nU):
@@ -659,8 +754,8 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
 
 
 def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None:
-    """EngineBase._decompose with the operators applied: the second-order check on the matrix-free form and
-    the FOC decomposition (instantaneous / physical / wedge)."""
+    """The second-order check on the operators' form and the FOC decomposition (foc / physical / wedge, the
+    physical part through the impulse responses with every reaction off)."""
     c = solver.c; ncol = c.ncol; N = c.N; nP = len(c.prim)
     Zfull = out["Zfull"].reshape(nP, N, ncol)
     rep = c.rep[agent.name]
@@ -681,11 +776,12 @@ def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None
 
 
 def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
-    """EngineBase._second_order on the matrix-free operators: the form M = T' G T on the kept strategy, T the
-    strategy -> world map (RowOps then RespOps), G the loss form (the atoms' kernels under Q and the sparse
-    mass; a past's initial columns under the point form of the line s = 0).  Within second_order_dense the
-    form is assembled by matvecs on blocks of unit strategies and diagonalised; beyond, its extreme
-    eigenvalues come from Lanczos on the matvec."""
+    """The second-order check (EngineBase._second_order's contract) on the operators: the form M = T' G T on
+    the kept strategy, T the strategy -> world map (RowOps then RespOps), G the loss form (the atoms' kernels
+    under Q and the sparse mass; a past's initial columns under the point form of the line s = 0, the time
+    weights on the diagonal, as expected_cost integrates them).  Within second_order_dense the form is
+    assembled from the operators' dense rows (_dense_form) and diagonalised; beyond, its extreme eigenvalues
+    come from Lanczos on the matvec of the applied operators."""
     c = solver.c
     if not (solver.SECOND_ORDER_QUADRATIC or c.rho == 0):
         return None
@@ -721,10 +817,7 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
         return out.reshape(nU * nR * Nm, -1)[idx]
     n = idx.size
     if n <= solver.SECOND_ORDER_DENSE:
-        Mfull = np.zeros((n, n)); step = 64
-        for i in range(0, n, step):
-            E = np.zeros((n, min(step, n - i))); E[i + np.arange(E.shape[1]), np.arange(E.shape[1])] = 1.0
-            Mfull[:, i:i + E.shape[1]] = matvec(E)
+        Mfull = _dense_form(solver, agent, system, idx)
         w = np.linalg.eigvalsh((Mfull + Mfull.T) / 2)
         lo, hi = float(w[0]), float(w[-1])
     else:
@@ -734,6 +827,62 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
         lo, hi = res["lo"], res["hi"]
     scale = max(abs(lo), abs(hi), 1e-300)
     return {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -solver.SECOND_ORDER_TOL * scale), "converged": True}
+
+
+def _dense_form(solver, agent: Agent, system: FocSystem, idx: np.ndarray) -> np.ndarray:
+    """The second-order form on the kept strategies idx, (n, n), from the operators' dense rows: M[u, v] =
+    sum_k G_k' (Resp_u' G_(k) Resp_v) G_k with G_(k) the column's loss form (the channels': the atoms' reads
+    under kron(Q, mass); an initial shock's: under the point mass of the line s = 0), the inner form H_uv
+    N x N through the responding primaries' nodes only, and the sum over the columns of one loss form one
+    product of the stacked row operators restricted per column to the rows whose block of G_k is not zero."""
+    from scipy.sparse import diags
+    c = solver.c; N, nW, ncol, nP = c.N, c.nW, c.ncol, len(c.prim)
+    nU, nR, Nm = system.nU, system.nR, system.Nm
+    atoms, Q, _ = c.loss[agent.name]
+    AO = system.foc.AO
+    Gk = system.rowops.dense()                                                                  # (ncol, N, nR Nm)
+    Resp = [system.resp.dense(ui) for ui in range(nU)]                                          # (nP N, N)
+
+    def loss_form(mass):                                                                        # AO' kron(Q, mass) AO, dense (nP N, nP N)
+        G = np.zeros((nP * N, nP * N))
+        for i, (p, Ai) in enumerate(AO):
+            for j, (p2, Aj) in enumerate(AO):
+                if Q[i, j] != 0.0:
+                    G[p * N:(p + 1) * N, p2 * N:(p2 + 1) * N] += Q[i, j] * (Ai.T @ (mass @ Aj)).toarray()
+        return G
+    forms = [(loss_form(c.cost_mass_sparse()), slice(0, nW))]
+    if ncol > nW:
+        w = np.zeros(N); w[c.diag] = c.time_mass(c.rho)[:c.Nd]
+        forms.append((loss_form(diags(w, format="csr")), slice(nW, ncol)))
+    nz = np.where(np.any(np.stack([np.any(Rv != 0, axis=1) for Rv in Resp]), axis=0))[0]         # primaries' nodes that respond
+    Rnz = [np.ascontiguousarray(Rv[nz]) for Rv in Resp]                                          # (nz, N)
+    groups = []                                                                                   # per loss form: G Resp_v and its column groups
+    for G, sl in forms:
+        GR = [G[np.ix_(nz, nz)] @ Rv for Rv in Rnz]
+        rowsof = {}                                                                               # rows with a nonzero block -> columns
+        for k in range(sl.start, sl.stop):
+            rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * Nm:(r + 1) * Nm]))
+            if rows_k:
+                rowsof.setdefault(rows_k, []).append(k)
+        parts = []
+        for rows_k, ks in rowsof.items():
+            cols = np.concatenate([np.arange(r * Nm, (r + 1) * Nm) for r in rows_k])
+            parts.append((cols, np.ascontiguousarray(Gk[ks][:, :, cols])))                       # (n_k, N, |cols|)
+        groups.append((GR, parts))
+    nG = nU * nR * Nm
+    Mall = np.zeros((nG, nG))
+    for ui in range(nU):
+        for vi in range(ui, nU):
+            Muv = np.zeros((nR * Nm, nR * Nm))
+            for GR, parts in groups:
+                Huv = Rnz[ui].T @ GR[vi]                                                          # (N, N)
+                for cols, Gg in parts:
+                    HG = Huv @ Gg                                                                 # every column of the group
+                    Muv[np.ix_(cols, cols)] += Gg.reshape(-1, cols.size).T @ HG.reshape(-1, cols.size)
+            Mall[ui * nR * Nm:(ui + 1) * nR * Nm, vi * nR * Nm:(vi + 1) * nR * Nm] = Muv
+            if vi != ui:
+                Mall[vi * nR * Nm:(vi + 1) * nR * Nm, ui * nR * Nm:(ui + 1) * nR * Nm] = Muv.T   # H_vu = H_uv'
+    return Mall if idx.size == nG else Mall[np.ix_(idx, idx)]
 
 
 def reconstruction(solver, agent: Agent, Zfull: np.ndarray, g: np.ndarray) -> np.ndarray:

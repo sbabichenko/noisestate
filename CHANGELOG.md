@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- One best response (the consolidation pass, step C3).  The spectral finite engine's row, response,
+  first-order-condition and projection operators are defined once, as `finite_free`'s applications of the
+  line paths and the sparse reads (`RowOps`, `RespOps`, `FocOps`, `ProjOps`; with a past the band's read of
+  the past's increments, the old-shock and pre-zero segments and the initial shocks' discrete weights and
+  point conditions are segments of the same operators).  `FocSystem` assembles and solves the first-order
+  conditions on the kept unknowns: within `settings.foc_dense_max` (unchanged, 8192) from the operators'
+  dense rows (`dense()` on each operator: the same sums as their applications, `LinePath._weighted_sum`),
+  LU-factored with the condition estimate of `_solve_regular`; beyond, by GMRES on the applied operators as
+  before.  The second-order check's dense form, the FOC decomposition, `maps_from_world` (the with-a-past
+  copy `_maps_from_world_past` folded in: the identified unknowns, the corner ties and the point conditions
+  are the past's segment of one loop; the systems of a size solved in one LAPACK call), the representation
+  error, `belief_error`, the costs (the sparse mass) and the mean systems (`FocOps.on_qzeta` in place of the
+  dense per-atom operators) all go through the operators.  Gone: the dense `_row_operator`,
+  `_projection_operator`, `_response_operators`, `_foc_affine`, `_solve_foc`, `_corner_ties`, `_init_mass`
+  and the dense `best_response` body of the spectral engine; `SpectralCompiled.conv_left`, `conv_right`,
+  `response_op`, `continuation_op`, `projection_op`, `conv_rows`, `instant`, `instant_adjoint`, `response`,
+  `continuation`, `own_lag_read`, `cost_mass`, `buffer_mass`, `diag_read`, `shock_time_read`,
+  `projection_rows`, `row_op`, `_many`; `TriangleGrid.mass_matrix` and `LinePath.with_known_many`.  The
+  engine base's dense pieces stay for the stationary engine.  Numbers move in the last bits only: every
+  shipped case's costs to 1e-12 with the same evaluation counts and Z within 4e-15 of its peak (the
+  baseline record is not re-written); the fast suite 183 in 107 s, the slow set 18 in 240 s (was 285 s), the
+  fast suite with GMRES forced 183 in 167 s; `finite_spectral.py` 2117 -> 1750 lines.
 - The baseline record compares Z itself.  `extras/compare_baseline.py write` stores every case's Z as float64
   in tests/refs/baseline_0.4.npz next to the JSON (the costs, evaluation counts, residuals and means stay
   there), and `check` compares Z by max |dZ| / max |Z| against 1e-12, the value reported per case, instead
