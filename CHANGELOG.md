@@ -62,6 +62,34 @@
   continuation beyond T (`settled`), a `transition` horizon kind in model files, plots and helpers,
   a past with a window on rows observed with a delay (`NotImplementedError`), and the second-order
   check ignores the initial-shock columns.  The shipped examples are unchanged to every digit.
+- Transition from a known past, stage 2a: the stationary continuation.  `SpectralFiniteSolver(model,
+  past=..., continuation=...)` and `solve(model, past=..., continuation=...)`: `continuation` is a
+  converged `StationaryResult` of the new model at the past's window, `"stationary"` (that result
+  solved on the fly at horizon.nodes) or `"end"` / None (the game ends at T, as before).  The domain
+  gains a buffer [T, T + L] on which every agent's map is frozen at the stationary map at the node's
+  age; the unknowns stay on [0, T], the closed loop runs over the whole domain (the buffer's rows have
+  known coefficients), the first-order condition of every date t <= T integrates its continuation to
+  T + L through the envelope responses (the agent's own reaction off everywhere; they vanish beyond
+  t + L, so nothing beyond T + L exists), while the agent's world is the buffer's closed loop (its
+  passive world has its strategy off on [0, T] and frozen after, the response operators carry the
+  frozen reaction).  The buffer's pieces have their origin at T (`TriangleGrid(..., buffer=T)`: below
+  the diagonal a = t - T the shocks born after T, above it those born before, along which the passive
+  world kinks; `grid.upper` is the band only, `grid.above` every piece above its diagonal).  Exact by
+  construction: Chapter 3 as its own past and continuation (T = 6, 16 nodes) returns the stationary
+  maps in one best response on every node (5.2e-10 and 1.2e-8, 6.5e-10 on the last window), stays
+  there from them (3 evaluations; every kernel K_stat(t - s) to 1.9e-9 on X and D1, 1.5e-8 on D2, the
+  last window at 6e-10) and reaches them from zero.  `res.settled`: the largest relative distance of
+  any map on [T - L, T] from the frozen stationary map; the `settled` row of `diagnose()` (threshold
+  `settings.settled_tol` 1e-6) flags "TRANSITION NOT SETTLED by T - L: raise horizon.window"; the
+  `past window` and `continuation window` rows echo their window tails.  `res.costs` stays the
+  integral over [0, T]; `res.cost_parts[agent]["continuation"]` is the buffer's, reported apart.  The
+  regime-change test now continues through the new stationary equilibrium: its 12-node costs are
+  2.55448876 and 2.55908247 (2.56081481 and 2.56540852 when the game ended at T), moving 4.2e-5 and
+  4.9e-5 at 20 nodes; `settled` is 4.8e-4 at T = 6 (5.3e-4 at 20 nodes), 2.7e-6 at T = 9, 0.58 at
+  T = L = 3.  A frozen buffer whose own reactions enter the first-order condition instead (the exact
+  condition of the problem truncated at T + L) misses the identity by 1e-4 on [T - L, T], the
+  buffer's own conditions being cut there.  Not yet: the mean paths with a continuation
+  (`NotImplementedError`, as with a past shorter than T), a past on delayed rows.
 - Transition from a known past, review repairs.  A row's noise loading in the old regime on a channel
   the new row does not load was dropped: the instantaneous entries of a seen row now exist on the
   union of the two regimes' loadings (the old E on the band, the new one below the diagonal; tested

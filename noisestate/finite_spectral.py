@@ -59,7 +59,12 @@ def _common_unit_hint(lags, kmax: int = 100) -> str:
 
 
 class SpectralCompiled(CompiledBase):
-    def __init__(self, model: Model, past=None):
+    def __init__(self, model: Model, past=None, continuation=None):
+        """past: a Past (the game starts at time zero from that regime); continuation: a converged
+        StationaryResult of this model at the past's window, on which every agent's map is frozen on the
+        buffer [T, T + L] after the horizon (the unknowns stay on [0, T]; the closed loop and the
+        first-order conditions run to T + L, by when every shock born before T is forgotten), or None:
+        the game ends at T."""
         super().__init__(model)
         reject_leads(model, 'spectral finite engine')
         hz = model.horizon
@@ -69,6 +74,17 @@ class SpectralCompiled(CompiledBase):
         if past is not None:
             past.validate(model, (hz.unit or min(lags)) if lags else None)
         L = past.window if past is not None and past.window > 0 else None
+        self.cont = continuation                      # the StationaryResult the buffer is frozen at (None: the game ends at T)
+        self.continuation_info: Optional[dict] = None
+        if continuation is not None:
+            if L is None:
+                raise ValueError("a stationary continuation needs a past with a window (the old regime's kernels): with initial "
+                                 "shocks only the game ends at T")
+            self._check_continuation(model, continuation, L)
+            if self.T < L - 1e-12:
+                raise ValueError(f"the horizon T = {self.T:g} is shorter than the past's window L = {L:g}: with a stationary "
+                                 "continuation the shocks born before zero must be forgotten by T; raise horizon.window to at least L")
+        self.Tg = self.T + L if continuation is not None else self.T        # the grid's end: the buffer [T, T + L] follows T
         bp = list(hz.breakpoints) if hz.breakpoints else TriangleGrid.breakpoints(self.T, lags, hz.unit)
         missing = [l for l in lags if not any(abs(l - b) < 1e-12 for b in bp)]
         if missing:                      # every lag must be on the panels before the closure: closing under a lag off
@@ -105,11 +121,23 @@ class SpectralCompiled(CompiledBase):
             bp = sorted(set(bp) | {b for b in past.breakpoints if b < L - 1e-12} | {float(L)})
             if not lags and not hz.breakpoints:                     # no lags: time panels of width L (the shocks' lifetime), then T
                 bp = sorted(set(bp) | {float(b) for b in np.arange(0.0, self.T - 1e-12, L)})
+            if continuation is not None:                            # the buffer's time panels: the age panels shifted to T
+                bp = sorted(set(bp) | {round(self.T + b, 12) for b in bp if b <= L + 1e-12})
             bp = close_under_delays(bp, lags) if lags else bp
-            self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes, self.T, float(L))
+            if continuation is not None:
+                self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes, self.Tg, float(L), self.T)
+            else:
+                self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes, self.Tg, float(L))
         g = self.g
         self.N = g.N
         self.rho = float(hz.discount)
+        # the buffer: the nodes of the pieces after T, where every map is frozen at the continuation's stationary
+        # map at the node's age; P_T counts the time panels up to T (the unknowns' panels)
+        eps = 1e-12 * max(1.0, self.Tg)
+        self.P_T = int(np.sum(g.bp < self.T - eps))
+        self.buffer = np.concatenate([np.full(pc.n, bool(pc.t0 >= self.T - eps)) for pc in g.pieces]) if continuation is not None \
+            else np.zeros(self.N, dtype=bool)
+        self.frozen: Optional[Dict[str, np.ndarray]] = self._frozen_maps() if continuation is not None else None
         # the columns of the world: the channels, then one column per initial shock of the past
         self.n_init = past.n_initial if past is not None else 0
         self.ncol = self.nW + self.n_init
@@ -174,6 +202,50 @@ class SpectralCompiled(CompiledBase):
         self._row_pasts: Dict[tuple, np.ndarray] = {}     # (agent, row) -> the seen row's pre-zero part at the nodes
         self._disc: Dict[tuple, np.ndarray] = {}          # ("embed"/"select", delay) -> discrete-weight operators
 
+    # ------------------------------------------------------------ continuation
+    @staticmethod
+    def _check_continuation(model: Model, res, L: float) -> None:
+        """The continuation is a converged StationaryResult of this model (channels, states, controls and
+        signal rows by name) at the past's window."""
+        from .results import StationaryResult
+        if not isinstance(res, StationaryResult):
+            raise TypeError(f"continuation must be a StationaryResult (or 'stationary' / 'end'), not {type(res).__name__}")
+        if not res.converged:
+            raise ValueError(f"the continuation {res.model.name!r} did not converge (residual {res.residual:.2e}, {res.message})")
+        m = res.model
+        if list(m.channels) != list(model.channels):
+            raise ValueError(f"the continuation's channels {list(m.channels)} differ from the model's {list(model.channels)}")
+        for what, a, b in (("states", m.state_names, model.state_names), ("controls", m.control_names, model.control_names)):
+            if list(a) != list(b):
+                raise ValueError(f"the continuation's {what} {list(a)} differ from the model's {list(b)}")
+        rows = lambda mm: [(a.name, r.name, float(r.delay)) for a in mm.agents for r in a.signals]
+        if rows(m) != rows(model):
+            raise ValueError(f"the continuation's signal rows {rows(m)} differ from the model's {rows(model)} (agent, row, delay)")
+        Lc = float(res.compiled.grid.L)
+        if abs(Lc - L) > 1e-9 * max(1.0, L):
+            raise ValueError(f"the continuation's window {Lc:g} differs from the past's {L:g}: the buffer after T is one window, on "
+                             "which the stationary maps are read at the node's age; solve the continuation with window "
+                             f"{L:g}")
+
+    def _frozen_maps(self) -> Dict[str, np.ndarray]:
+        """agent -> (nU, nR, N): the continuation's stationary map at every node's age (used on the buffer; on
+        [T - L, T] it is what `settled` compares the solved maps with)."""
+        res = self.cont; gs = res.compiled.grid; g = self.g
+        I = gs.interp(g.a)
+        m = res.model
+        self.continuation_info = {"kind": "stationary", "name": m.name, "params": {k: float(v) for k, v in m.params.items()},
+                                  "window": float(gs.L), "nodes": int(gs.n), "breakpoints": [float(b) for b in gs.breakpoints],
+                                  "converged": bool(res.converged), "residual": float(res.residual),
+                                  "window_tail": float(res.window_tail), "costs": {k: float(v) for k, v in res.costs.items()},
+                                  "means": {k: float(v) for k, v in res.means.items() if v}}
+        return {a.name: np.einsum("fn,urn->urf", I, res.maps[a.name]) for a in self.model.agents}
+
+    def with_frozen(self, agent: str, ui: int, r: int, gker: np.ndarray) -> np.ndarray:
+        """The map kernel (N,) with the buffer's nodes at the frozen stationary map (the input elsewhere)."""
+        if self.frozen is None:
+            return gker
+        return np.where(self.buffer, self.frozen[agent][ui, r], gker)
+
     # ------------------------------------------------------------ reads
     def _expm_batch(self, ds: np.ndarray) -> np.ndarray:
         """e^{A d} for every d in ds: (len, nX, nX).  Uses the eigen-decomposition when it is well
@@ -216,7 +288,7 @@ class SpectralCompiled(CompiledBase):
         """Nodes of the band whose read `lag` earlier falls before time zero: t - lag < 0, or t - lag = 0 read
         from below (the last node of the panel ending at the lag, whose limit is the pre-zero value)."""
         g = self.g
-        eps = 1e-12 * max(1.0, self.T)
+        eps = 1e-12 * max(1.0, self.Tg)
         return g.upper & ((g.t - lag < -eps) | ((np.abs(g.t - lag) <= eps) & (g.side_t < 0)))
 
     def past_read(self, name: str, lag: float) -> np.ndarray:
@@ -255,7 +327,7 @@ class SpectralCompiled(CompiledBase):
         shifted by a lag is again a panel."""
         g = self.g
         k = int(np.sum((g.bp > 1e-12) & (g.bp <= delay + 1e-12)))
-        if abs(g.bp[k] - delay) > 1e-9 * max(1.0, self.T):
+        if abs(g.bp[k] - delay) > 1e-9 * max(1.0, self.Tg):
             raise ValueError(f"lag {delay} is not a breakpoint of the time panels {[float(b) for b in g.bp]}; the panels "
                              "are built from the model's lags and delays (horizon.unit, horizon.breakpoints) and closed "
                              "under them, so a lag read here must be one of the model's")
@@ -272,8 +344,17 @@ class SpectralCompiled(CompiledBase):
             for pc in g.pieces:
                 if pc.p - k < 0 or pc.q - k < 0:
                     continue
-                tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq)[(pc.p - k, pc.q - k)]
-                tol = 1e-9 * max(1.0, self.T)
+                if pc.origin and pc.p - k < g.P_T:
+                    # a buffer piece shifted back into [0, T]: a rectangle lands on the rectangle (p - k, q - k) node to
+                    # node; a triangle (cut by the buffer's diagonal) lands inside that rectangle and is interpolated
+                    if pc.triangle:
+                        idx = pc.offset + np.arange(pc.n)
+                        S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx], side_d=g.side_d[idx])
+                        continue
+                    tgt = g._piece_by_pq[(pc.p - k, pc.q - k)]
+                else:
+                    tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq)[(pc.p - k, pc.q - k)]
+                tol = 1e-9 * max(1.0, self.Tg)
                 if abs(tgt.t0 + delay - pc.t0) > tol or abs(tgt.t1 + delay - pc.t1) > tol:
                     raise ValueError(f"the time panels {[float(b) for b in g.bp]} are not closed under the lag {delay}: the panel "
                                      f"[{pc.t0:g}, {pc.t1:g}] shifted back by the lag is not a panel; drop horizon.breakpoints, "
@@ -337,7 +418,7 @@ class SpectralCompiled(CompiledBase):
         for (n, l), c in drift.items():
             if n in excluded:
                 deltas.setdefault(n, []).append((delay + l, c))
-            else:
+            if n not in excluded or self.cont is not None:      # an excluded control still acts on the buffer (its frozen map)
                 op = c * (S @ self.read(l, l))
                 blocks[n] = blocks[n] + op if n in blocks else op
         for k, ch in enumerate(self.channels):
@@ -406,9 +487,9 @@ class SpectralCompiled(CompiledBase):
         return lp.with_known(rker)
 
     def continuation_op(self, rker: np.ndarray) -> np.ndarray:
-        """(C z)(t, s) = int_t^T e^{-rho (tau - t)} R(tau, tau - t) z(tau, s) dtau."""
+        """(C z)(t, s) = int_t^T e^{-rho (tau - t)} R(tau, tau - t) z(tau, s) dtau (to T + L with a continuation)."""
         g = self.g
-        lp = self._path(("continuation",), r_lo=g.t, r_hi=np.full(self.N, self.T), point_fn=lambda k, r: (r, r - g.s[k]),
+        lp = self._path(("continuation",), r_lo=g.t, r_hi=np.full(self.N, self.Tg), point_fn=lambda k, r: (r, r - g.s[k]),
                         known_fn=lambda k, r: (r, r - g.t[k]))
         disc = np.exp(-self.rho * (lp.r - g.t[lp.rows])) if lp.rows is not None else None
         return lp.with_known(rker, disc)
@@ -555,9 +636,10 @@ class SpectralCompiled(CompiledBase):
         return self._many(lp, K).reshape(len(self.prim) * N, N)
 
     def continuation(self, Rj: np.ndarray) -> np.ndarray:
-        """(m, N, N) discounted continuation operators of the m atom responses Rj (N, m), int_t^T e^{-rho (tau - t)} ..."""
+        """(m, N, N) discounted continuation operators of the m atom responses Rj (N, m), int_t^T e^{-rho (tau - t)} ...
+        (to T + L with a continuation: the buffer's frozen maps are in the responses)."""
         g = self.g
-        lp = self._path(("continuation",), r_lo=g.t, r_hi=np.full(self.N, self.T), point_fn=lambda k, r: (r, r - g.s[k]),
+        lp = self._path(("continuation",), r_lo=g.t, r_hi=np.full(self.N, self.Tg), point_fn=lambda k, r: (r, r - g.s[k]),
                         known_fn=lambda k, r: (r, r - g.t[k]))
         disc = np.exp(-self.rho * (lp.r - g.t[lp.rows])) if lp.rows is not None else None
         return self._many(lp, Rj, disc)
@@ -567,19 +649,27 @@ class SpectralCompiled(CompiledBase):
         return self.read(-lag, -lag)
 
     def cost_mass(self) -> np.ndarray:
-        """The discounted Gram matrix under which expected_cost integrates products of kernels."""
-        return self.g.mass_matrix(rho=self.rho)
+        """The discounted Gram matrix under which expected_cost integrates products of kernels: over [0, T] (the
+        buffer of a continuation is buffer_mass)."""
+        if self.cont is None:
+            return self.g.mass_matrix(rho=self.rho)
+        return self.g.mass_matrix(rho=self.rho, t_hi=self.T)
+
+    def buffer_mass(self) -> np.ndarray:
+        """The discounted Gram matrix over the buffer [T, T + L] of a continuation."""
+        return self.g.mass_matrix(rho=self.rho, t_lo=self.T)
 
     # ------------------------------------------------------------ means
     def time_mass(self, rho: float) -> np.ndarray:
         """Weights w (Nt,) with int_0^T e^{-rho t} f(t) dt = w @ f for a path f on the time nodes: Gauss quadrature
-        of the interpolant on every panel (exact for a polynomial of the panel's degree at rho = 0)."""
+        of the interpolant on every panel (exact for a polynomial of the panel's degree at rho = 0); zero on
+        the buffer's panels."""
         key = round(float(rho), 12)
         if key not in self._time_mass:
             g = self.g; nt = g.nt
             xg, wg = legendre.leggauss(nt + 2)
             w = np.zeros(self.Nt)
-            for p in range(g.P):
+            for p in range(self.P_T):
                 t0, t1 = g.bp[p], g.bp[p + 1]
                 tq = 0.5 * (t1 - t0) * xg + 0.5 * (t1 + t0); tw = 0.5 * (t1 - t0) * wg
                 w[p * nt:(p + 1) * nt] = (tw * np.exp(-key * tq)) @ bary_rows(tq, self.tm[p * nt:(p + 1) * nt], self._bwt)
@@ -618,7 +708,7 @@ class SpectralCompiled(CompiledBase):
     # ------------------------------------------------------- closed loop
     row = row_op                                          # the engines' common name
 
-    def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None, impulse_controls=()):
+    def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None, impulse_controls=(), own_frozen: bool = True):
         """maps[agent]: (n_ctrl, n_rows, N) nodal raw maps g(t, b).  Columns: Brownian channels,
         then one impulse column per control in impulse_controls (unit mass at the shock time).
         Returns Z (n_prim N, ncol).
@@ -626,9 +716,12 @@ class SpectralCompiled(CompiledBase):
         increments observed before zero) then the discrete weights on the initial shocks' point
         observations; the columns are the channels, the initial shocks, then the impulses.  The
         band's forcing is the past: the state at zero, the lagged atoms read before zero, the row's
-        pre-zero increments under the map (past_conv_path) with the old noise loadings."""
+        pre-zero increments under the map (past_conv_path) with the old noise loadings.
+        With a continuation every map is the frozen stationary one on the buffer; the excluded agent's
+        too (its strategy off on [0, T] only: the buffer's is part of its environment) unless
+        own_frozen=False switches it off on the buffer as well (the envelope response of its FOC)."""
         if self.past is not None:
-            return self._closed_loop_past(maps, excluded, impulse_controls)
+            return self._closed_loop_past(maps, excluded, impulse_controls, own_frozen)
         N = self.N; nW = self.nW
         imp = list(impulse_controls)
         n = len(self.prim) * N; ncol = nW + len(imp)
@@ -672,7 +765,7 @@ class SpectralCompiled(CompiledBase):
             return np.full(self.N, float(w))
         return np.where(g.upper, self.E_old[agent][r][k], float(w))
 
-    def _closed_loop_past(self, maps, excluded, impulse_controls):
+    def _closed_loop_past(self, maps, excluded, impulse_controls, own_frozen=True):
         N = self.N; nW = self.nW; ncol = self.ncol; g = self.g
         imp = list(impulse_controls)
         n = len(self.prim) * N; nc = ncol + len(imp)
@@ -686,14 +779,15 @@ class SpectralCompiled(CompiledBase):
         band = g.L is not None
         lower = ~g.upper
         for a in self.model.agents:
-            if a.name == excluded:
+            off = a.name == excluded                        # the agent's own strategy off on [0, T]; on the buffer it is frozen
+            if off and (self.cont is None or not own_frozen):
                 continue
             gm = maps[a.name]
             for ui, u in enumerate(a.controls):
                 bl = self.block(u)
                 for r, (rname, drift, E, delay) in enumerate(self.rows[a.name]):
                     blocks, deltas = self.row_blocks(a.name, r, excl)
-                    gker = gm[ui, r][:N]
+                    gker = self.with_frozen(a.name, ui, r, np.zeros(N) if off else gm[ui, r][:N])
                     C = self.conv_left(gker, delay)
                     for nm, op in blocks.items():
                         M[bl, self.block(nm)] += C @ op
@@ -709,7 +803,7 @@ class SpectralCompiled(CompiledBase):
                             col = ncol + imp.index(src)
                             for (age, w) in dl:
                                 B[bl, col] += w * lower * (self.instant(age, delay) @ gker)
-                    if self.n_init:
+                    if self.n_init and not off:
                         gd = gm[ui, r][N:]
                         for i in range(self.n_init):
                             e = self.init_rows[a.name][r, i]
@@ -789,8 +883,8 @@ class SpectralCompiled(CompiledBase):
                 if np.any(pr):
                     for i in range(self.nX):
                         B0[self.block(self.prim[i]), :nW] += c * (self.Vol[i, si] @ pr)
-            if nm in excl:
-                continue
+            if nm in excl and self.cont is None:
+                continue                                    # with a continuation the excluded control acts on the buffer
             inp[si] += c * self.atom_op((nm, lag))
         blocks: Dict[Tuple[int, int], np.ndarray] = {}
         for i in range(self.nX):
@@ -847,20 +941,46 @@ class SpectralFiniteSolver(EngineBase):
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
     MAP_RIDGE = tunable("map_ridge")      # ridge of the per-time-row map projection, relative to the row's own Gram (settings)
 
-    def __init__(self, model: Model, verbose: bool = False, settings=None, past=None):
+    def __init__(self, model: Model, verbose: bool = False, settings=None, past=None, continuation=None):
         """The triangle grid's compiled model and the map shapes (nU, nR, N).  settings: the tuning constants
         (noisestate.Settings, or a dict of its fields; the defaults when None).  past: the known past of a
         transition (a Past, a StationaryResult, a stationary Model/dict/path solved on the fly, or a list
-        of initial shocks; see past.py): the game then starts at time zero from that regime and still ends
-        at T; recorded in solver_kw, so refine() and stability() rebuild it.  With initial shocks the maps
-        are (nU, nR, N + Nt): after each row's map nodes, the discrete weights on the row's point
-        observation of the shocks, on the time nodes."""
+        of initial shocks; see past.py): the game then starts at time zero from that regime.  continuation:
+        how it goes on after T: None or "end" (the game ends at T), a converged StationaryResult of this
+        model at the past's window, or "stationary" (that result solved here, at horizon.nodes): every
+        agent's map is then frozen at the stationary map on a buffer [T, T + L] after the horizon, the
+        closed loop and the first-order conditions run to T + L, and res.settled measures how far the maps
+        on [T - L, T] are from the stationary ones.  Both are recorded in solver_kw, so refine() and
+        stability() rebuild them.  With initial shocks the maps are (nU, nR, N + Nt): after each row's map
+        nodes, the discrete weights on the row's point observation of the shocks, on the time nodes."""
         past = Past.of(past) if past is not None else None
-        super().__init__(model, verbose, settings=settings, **({"past": past} if past is not None else {}))
-        self.c = SpectralCompiled(model, past=past)
+        continuation = self._continuation_of(model, past, continuation)
+        opts = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
+        super().__init__(model, verbose, settings=settings, **opts)
+        self.c = SpectralCompiled(model, past=past, continuation=continuation)
         self.Nm = self.c.N + (self.c.Nt if self.c.n_init else 0)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.Nm) for a in model.agents}
         self._rep_parts: Dict[str, Dict[str, float]] = {}      # agent -> where the representation error sits (with a past)
+
+    @staticmethod
+    def _continuation_of(model: Model, past, continuation):
+        """None / "end" -> None; "stationary" -> this model's stationary equilibrium at the past's window, solved
+        here (horizon.nodes per panel, the finite horizon's breakpoints and initial values dropped); a
+        StationaryResult -> itself (checked by the compile)."""
+        if continuation is None or continuation == "end":
+            return None
+        if isinstance(continuation, str):
+            if continuation != "stationary":
+                raise ValueError(f"continuation must be 'stationary', 'end' or a StationaryResult, not {continuation!r}")
+            if past is None or not past.window > 0:
+                raise ValueError("continuation='stationary' needs a past with a window (its window is the continuation's)")
+            from . import solve
+            d = model.to_dict()
+            for s in d["states"].values():
+                s.pop("initial", None)
+            hz = d.setdefault("horizon", {}); hz.update(kind="stationary", window=float(past.window)); hz.pop("breakpoints", None)
+            return solve(Model.from_dict(d)).check()
+        return continuation
 
     @property
     def action_shapes(self) -> Dict[str, Tuple[int, int, int]]:
@@ -869,7 +989,12 @@ class SpectralFiniteSolver(EngineBase):
 
     def _finish(self, res) -> None:
         res.past = self.c.past
+        res.continuation = self.c.cont
         super()._finish(res)
+        if self.c.cont is not None:
+            for a in self.model.agents:
+                res.cost_parts[a.name]["continuation"] = self.continuation_cost(a, res.Z)
+            res.settled = self.settled(res.maps)
 
     # ------------------------------------------------ best-response pieces
     def _identified(self, agent: Agent) -> np.ndarray:
@@ -898,11 +1023,21 @@ class SpectralFiniteSolver(EngineBase):
                 empty = not np.any(c.past_row_kernel(agent.name, r)) and not np.any(c.E_old[agent.name][r])
                 if empty:
                     flow = flow & ~g.upper
-            keep[r * Nm:r * Nm + N] = flow
+            keep[r * Nm:r * Nm + N] = flow & ~c.buffer                     # the buffer's map is frozen, not solved
             if c.n_init and np.any(c.init_rows[agent.name][r]):
                 tpanel = np.repeat(np.arange(g.P), g.nt)
-                keep[r * Nm + N:(r + 1) * Nm] = tpanel + k < g.P
+                keep[r * Nm + N:(r + 1) * Nm] = tpanel + k < c.P_T
         return keep
+
+    def _response_operators(self, agent: Agent, R: np.ndarray):
+        """The base's, plus with a continuation the agent's own frozen reaction on the buffer: the own block of a
+        control's response is the identity (the action itself) and the frozen map's response to it."""
+        out = super()._response_operators(agent, R)
+        c = self.c
+        if c.cont is not None:
+            for ui, u in enumerate(agent.controls):
+                out[ui][c.block(u)] += c.response_op(R[c.block(u), ui])
+        return out
 
     def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
         """The system on the kept unknowns, solved directly; a singular one raises (see _solve_regular).
@@ -1013,6 +1148,8 @@ class SpectralFiniteSolver(EngineBase):
                 for node in pc.offset + (0 if not pc.upper else (pc.nt - 1) * pc.na) + np.arange(pc.na):
                     corner_of[int(node)] = (pc.p, pc.upper)
         for (p, it), idx in sorted(c.trow_by_pit.items()):
+            if p >= c.P_T:
+                continue                                                        # the buffer's rows are frozen
             tv = g.t[idx[0]]
             w = g.row_weights(tv, side=(-1 if tv >= g.bp[p + 1] - 1e-12 else +1))[idx]
             parts = []
@@ -1062,6 +1199,8 @@ class SpectralFiniteSolver(EngineBase):
             G = G + self.MAP_RIDGE * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
             for ui in range(nU):
                 gmap[ui].reshape(-1)[cols] = Rm @ np.linalg.solve(G, rhs[ui])
+        if c.frozen is not None:
+            gmap[:, :, :N][:, :, c.buffer] = c.frozen[agent.name][:, :, c.buffer]
         return gmap
 
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
@@ -1133,6 +1272,28 @@ class SpectralFiniteSolver(EngineBase):
         G = np.einsum("ink,nm,jmk->ij", zeta, c.cost_mass(), zeta)
         return float(0.5 * np.sum(Q * G))
 
+    def continuation_cost(self, agent: Agent, Z: np.ndarray) -> float:
+        """The variance part of the agent's discounted cost over the buffer [T, T + L] under the frozen stationary
+        maps (the shocks of the channels; the band and the initial shocks are gone by T >= L): reported in
+        res.cost_parts[agent]["continuation"], not added to res.costs."""
+        c = self.c
+        atoms, Q, q = c.loss[agent.name]
+        zeta = np.stack([c.atom_op(at) @ Z[:, :c.nW] for at in atoms])
+        G = np.einsum("ink,nm,jmk->ij", zeta, c.buffer_mass(), zeta)
+        return float(0.5 * np.sum(Q * G))
+
+    def settled(self, maps: Dict[str, np.ndarray]) -> float:
+        """How far the maps on [T - L, T] are from the continuation's stationary maps: the largest difference on
+        those nodes over agents, controls and rows, relative to the stationary map's peak."""
+        c = self.c; g = c.g
+        sel = ~g.upper & ~c.buffer & (g.t >= c.T - g.L - 1e-9)
+        worst = 0.0
+        for a in self.model.agents:
+            fr = c.frozen[a.name]; gm = maps[a.name][:, :, :c.N]
+            dev = np.abs(gm - fr).max(axis=(0, 1))
+            worst = max(worst, float(dev[sel].max(initial=0.0) / max(1e-300, np.abs(fr).max())))
+        return worst
+
     def interpolate_maps(self, coarse) -> Dict[str, np.ndarray]:
         """The coarse result's raw maps read at this triangle's nodes from each node's side of its piece."""
         c = self.c; g, gc = c.g, coarse.compiled.g
@@ -1156,6 +1317,15 @@ class SpectralFiniteSolver(EngineBase):
     # read of the past's increments and the discrete weights, the projection the old-shock segments and
     # the point conditions, and the FOC system is assembled densely (H_k (Fu Resp) G_k summed over the
     # columns of the world) with the FOC kernel's affine pre-zero part.
+    # With a continuation the world after T is the closed loop under the frozen stationary maps, the
+    # agent's own included: its passive world has its strategy off on [0, T] and frozen on the buffer,
+    # and the response operators carry the frozen reaction (own block: the action plus that reaction),
+    # so Zfull = Zpass + Resp c is the world the buffer's maps produce.  The first-order condition is
+    # the infinite problem's: its continuation runs through the envelope responses (the agent's own
+    # reaction off everywhere, R_off), which vanish beyond t + L <= T + L, so that a settled transition
+    # solves the infinite problem exactly (the buffer's actions are optimal for it, not for a problem
+    # truncated at T + L: with the buffer's reaction in the FOC instead, the same-model identity fails
+    # by 1e-4 on [T - L, T], the buffer's own first-order conditions being cut at T + L).
     def _seen_rows(self, agent: Agent, Z: np.ndarray, excluded: set):
         rows, inst = super()._seen_rows(agent, Z, excluded)
         c = self.c
@@ -1250,11 +1420,15 @@ class SpectralFiniteSolver(EngineBase):
         Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
         Zpass, R = Zp[:, :ncol], Zp[:, ncol:]
         R = self._impulse_responses(agent, maps, R)
+        Roff = R
+        if c.cont is not None:                       # the envelope responses: the agent's own reaction off on the buffer too
+            Roff = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls, own_frozen=False)[:, ncol:]
+            Roff = self._impulse_responses(agent, maps, Roff)
         Zpass = self._passive_world(agent, maps, Zpass, R)
         ytil, yinst = self._passive_rows(agent, Zpass)
         Gk = self._row_operator(agent, ytil, yinst)
         Resp = self._response_operators(agent, R)
-        Fu, Ms = self._foc_operators(agent, R, atoms=True)
+        Fu, Ms = self._foc_operators(agent, Roff, atoms=True)
         phi_past = self._foc_affine(agent, Ms)
         H = self._projection_operator(agent, ytil, yinst)
         nG = nU * nR * Nm
@@ -1273,6 +1447,8 @@ class SpectralFiniteSolver(EngineBase):
         Zfull = Zpass.copy()
         for ui in range(nU):
             Zfull += Resp[ui] @ cact[ui]
+        if c.cont is not None:                       # the action on the buffer (the frozen map's) is in the world, not in gamma
+            cact = np.stack([Zfull[c.block(u)] for u in agent.controls])
         out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
         if want_decomp:
             self._decompose(agent, out, Fu, Resp, Gk, maps)
@@ -1292,8 +1468,11 @@ class SpectralFiniteSolver(EngineBase):
         # map's pieces degenerate), the last window [T - L, T] (the end), or the interior, so that a resolution
         # problem can be told from the two geometric floors
         tip = gr.upper & (gr.t >= gr.bp[gr.PL - 1] - 1e-9) if gr.L is not None else np.zeros(c.N, dtype=bool)
-        last = ~gr.upper & (gr.t >= c.T - gr.L - 1e-9) if gr.L is not None else np.zeros(c.N, dtype=bool)
+        last = ~gr.upper & ~c.buffer & (gr.t >= c.T - gr.L - 1e-9) if gr.L is not None else np.zeros(c.N, dtype=bool)
         parts = {"interior": 0.0, "band tip": 0.0, "last window": 0.0}
+        regions = [("interior", ~tip & ~last & ~c.buffer), ("band tip", tip), ("last window", last)]
+        if c.cont is not None:
+            parts["buffer"] = 0.0; regions.append(("buffer", c.buffer))
         for ui in range(len(agent.controls)):
             recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(Bk.shape[0])], axis=1)
             err = np.abs(recon - actions[ui])
@@ -1301,7 +1480,7 @@ class SpectralFiniteSolver(EngineBase):
             err[c.diag, c.nW:] = np.abs(recon - actions[ui])[c.diag, c.nW:]     # an initial shock's column: on the line s = 0 only
             rel = err.max(axis=1) / max(1e-300, np.abs(actions[ui][:, :c.nW]).max(), np.abs(actions[ui][c.diag, c.nW:]).max(initial=0.0))
             worst = max(worst, float(rel.max()))
-            for key, sel in (("interior", ~tip & ~last), ("band tip", tip), ("last window", last)):
+            for key, sel in regions:
                 parts[key] = max(parts[key], float(rel[sel].max(initial=0.0)))
         self._rep_parts[agent.name] = parts
         return worst
@@ -1326,8 +1505,9 @@ class SpectralFiniteSolver(EngineBase):
         c = self.c; N, Nt, nP, nX = c.N, c.Nt, len(c.prim), c.nX
         if c.Nd < Nt:
             raise NotImplementedError("the mean paths need the line s = 0 on every time panel: with a past whose window is "
-                                      "shorter than the horizon it is cut off at age L (stage 2 closes the tail); give the past "
-                                      "a window of at least T, or drop the targets, constant drifts and initial values")
+                                      "shorter than the horizon (or a stationary continuation, whose buffer follows T) it is "
+                                      "cut off at age L; give the past a window of at least T without a continuation, or drop "
+                                      "the targets, constant drifts and initial values")
         E, diag = c.mean_embed, c.diag
         blk = lambda i: slice(i * Nt, (i + 1) * Nt)
         M = np.zeros((nP * Nt, nP * Nt)); b = np.zeros(nP * Nt); ones = np.ones(N)

@@ -29,6 +29,14 @@ after the panel's lower pieces so every panel's nodes stay contiguous.  The two
 triangles of a square keep separate nodes on the diagonal, where kernels may jump
 (s = 0+ against s = 0-): reads there take the lower side unless side_d says
 otherwise.  Without a window nothing of this exists and the grid is today's.
+
+With a buffer (a transition continued past its horizon T_b by one window, on which
+the maps are frozen) the time panels from T_b on are the age panels shifted by T_b,
+and their pieces are the strip's on [0, L] with the origin at T_b: below the second
+diagonal a = t - T_b the shocks born after T_b, above it those born before, which
+the excluded agent's passive world (its own strategy off before T_b, frozen after)
+kinks along.  Piece.origin is 0 or T_b; `upper` marks the band (s < 0) only, `above`
+every piece above its own diagonal.
 """
 from __future__ import annotations
 
@@ -44,10 +52,11 @@ from .grid import bary_rows as _bary_rows, bary_weights, cheb_lobatto, clenshaw_
 
 class Piece:
     def __init__(self, p: int, q: int, t0: float, t1: float, a0: float, a1: float, nt: int, na: int, offset: int,
-                 upper: bool = False):
+                 upper: bool = False, origin: float = 0.0, triangle: Optional[bool] = None):
         self.p, self.q = p, q
         self.t0, self.t1, self.a0, self.a1 = t0, t1, a0, a1
-        self.triangle = (p == q)
+        self.origin = origin                 # the diagonal's origin: 0, or the buffer's start T_b (a = t - origin)
+        self.triangle = (p == q) if triangle is None else triangle
         self.upper = upper                   # above the diagonal (old shocks); the upper triangle is a = t + theta (t1 - t)
         self.nt, self.na = nt, na
         self.offset = offset
@@ -55,10 +64,10 @@ class Piece:
         self.xn = cheb_lobatto(na, 0.0, 1.0) if self.triangle else cheb_lobatto(na, a0, a1)   # theta or a
         self.wt, self.wx = bary_weights(nt), bary_weights(na)
         T, X = np.meshgrid(self.tn, self.xn, indexing="ij")          # (nt, na)
-        if self.triangle and upper:
-            A = T + X * (t1 - T)
-        elif self.triangle:
-            A = t0 + X * (T - t0)
+        if self.triangle and upper:                                  # a in [t - origin, a1]; a1 = t1 at the origin 0
+            A = (T - origin) + X * (a1 - (T - origin))
+        elif self.triangle:                                          # a in [a0, t - origin]; a0 = t0 at the origin 0
+            A = a0 + X * (T - origin - a0)
         else:
             A = X
         self.t = T.reshape(-1); self.a = A.reshape(-1)
@@ -67,28 +76,32 @@ class Piece:
     def local_coords(self, t, a):
         """(t, x) with x = theta (triangle) or a (rectangle)."""
         if self.triangle and self.upper:
+            tr = t - self.origin
             with np.errstate(divide="ignore", invalid="ignore"):
-                x = np.where(self.t1 - t > 1e-14, (a - t) / (self.t1 - t), 0.0)
+                x = np.where(self.a1 - tr > 1e-14, (a - tr) / (self.a1 - tr), 0.0)
             return t, np.clip(x, 0.0, 1.0)
         if self.triangle:
+            tr = t - self.origin
             with np.errstate(divide="ignore", invalid="ignore"):
-                x = np.where(t - self.t0 > 1e-14, (a - self.t0) / (t - self.t0), 0.0)
+                x = np.where(tr - self.a0 > 1e-14, (a - self.a0) / (tr - self.a0), 0.0)
             return t, np.clip(x, 0.0, 1.0)
         return t, a
 
     def contains(self, t, a, tol=1e-12):
         if self.triangle and self.upper:
-            return (t >= self.t0 - tol) & (t <= self.t1 + tol) & (a >= t - tol) & (a <= self.t1 + tol)
+            return (t >= self.t0 - tol) & (t <= self.t1 + tol) & (a >= t - self.origin - tol) & (a <= self.a1 + tol)
         if self.triangle:
-            return (t >= self.t0 - tol) & (t <= self.t1 + tol) & (a >= self.t0 - tol) & (a <= t + tol)
+            return (t >= self.t0 - tol) & (t <= self.t1 + tol) & (a >= self.a0 - tol) & (a <= t - self.origin + tol)
         return (t >= self.t0 - tol) & (t <= self.t1 + tol) & (a >= self.a0 - tol) & (a <= self.a1 + tol)
 
 
 class TriangleGrid:
-    def __init__(self, breakpoints, nt: int = 16, na: int = 16, T: Optional[float] = None, window: Optional[float] = None):
+    def __init__(self, breakpoints, nt: int = 16, na: int = 16, T: Optional[float] = None, window: Optional[float] = None,
+                 buffer: Optional[float] = None):
         """breakpoints: the shared sequence in t and in a, from 0 to max(T, L).  T (default the last
         breakpoint) ends the time axis, window L (None: no old shocks, no truncation) the age axis; both
-        must be breakpoints."""
+        must be breakpoints.  buffer (with a window): the time T_b from which the panels are the age
+        panels shifted (T = T_b + L) and the pieces have their origin at T_b (see the module docstring)."""
         bp = np.asarray(sorted(set(float(b) for b in breakpoints)))
         if bp[0] != 0.0 or len(bp) < 2:
             raise ValueError("breakpoints must start at 0 and end at T")
@@ -105,10 +118,30 @@ class TriangleGrid:
             if self.L <= 0 or abs(bp[at(self.L)] - self.L) > 1e-12 * max(1.0, bp[-1]):
                 raise ValueError(f"the window L = {self.L} is not a positive breakpoint of {[float(b) for b in bp]}")
             self.PL = at(self.L)
+        self.Tb = None if buffer is None else float(buffer)
+        self.P_T = self.P                                # time panels before the buffer
+        if self.Tb is not None:
+            if self.L is None:
+                raise ValueError("a buffer needs a window")
+            self.P_T = at(self.Tb)
+            eps = 1e-9 * max(1.0, bp[-1])
+            if abs(bp[self.P_T] - self.Tb) > eps or self.P_T + self.PL != self.P \
+                    or any(abs(bp[self.P_T + q] - (self.Tb + bp[q])) > eps for q in range(self.PL + 1)):
+                raise ValueError(f"the buffer's time panels must be the age panels shifted by {self.Tb:g}: breakpoints "
+                                 f"{[float(b) for b in bp]}, window {self.L:g}")
         self.nt, self.na = nt, na
         self.pieces: List[Piece] = []
         off = 0
         for p in range(self.P):
+            if self.Tb is not None and p >= self.P_T:            # the buffer: the strip's pieces with the origin at T_b
+                pr = p - self.P_T
+                for q in range(min(pr, self.PL - 1) + 1):
+                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, origin=self.Tb, triangle=(q == pr))
+                    self.pieces.append(pc); off += pc.n
+                for q in range(pr, self.PL):
+                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=True, origin=self.Tb, triangle=(q == pr))
+                    self.pieces.append(pc); off += pc.n
+                continue
             for q in range(min(p, self.PL - 1) + 1):
                 pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off)
                 self.pieces.append(pc); off += pc.n
@@ -121,8 +154,10 @@ class TriangleGrid:
         self.a = np.concatenate([pc.a for pc in self.pieces])
         self.s = self.t - self.a
         self.a0 = np.concatenate([np.full(pc.n, pc.a0) for pc in self.pieces])      # age-panel start of each node's piece
-        self.upper = np.concatenate([np.full(pc.n, pc.upper) for pc in self.pieces])   # nodes above the diagonal (s < 0)
-        self.side_d = np.where(self.upper, 1, -1)                                     # side of the diagonal a node reads
+        self.above = np.concatenate([np.full(pc.n, pc.upper) for pc in self.pieces])   # nodes above their piece's diagonal
+        self.origin = np.concatenate([np.full(pc.n, pc.origin) for pc in self.pieces])
+        self.upper = self.above & (self.origin == 0.0)                                # the band: nodes with s < 0
+        self.side_d = np.where(self.above, 1, -1)                                     # side of the diagonal a node reads
         self.side_a = np.concatenate([np.where(np.abs(pc.a - pc.a1) < 1e-13, -1, 1) if not pc.triangle or pc.upper
                                       else np.ones(pc.n, dtype=int) for pc in self.pieces])
         self.side_t = np.concatenate([np.where(np.abs(pc.t - pc.t1) < 1e-13, -1, 1) for pc in self.pieces])
@@ -163,11 +198,15 @@ class TriangleGrid:
         sd = np.broadcast_to(np.asarray(side_d), t.shape)
         inside = (a >= -1e-12) & (a <= self.L + 1e-12) & (t <= self.T + 1e-12) & (t >= -1e-12)
         tc = np.clip(t, 0.0, self.T); ac = np.clip(a, 0.0, self.L)
-        up = (ac > tc + 1e-12) | ((np.abs(ac - tc) <= 1e-12) & (sd > 0))
-        ac = np.where(up, ac, np.minimum(ac, tc))
         p = np.where(st > 0, self.panel_of(tc, +1), self.panel_of(tc, -1))
+        if self.Tb is None:
+            pr, tr = p, tc
+        else:                                                # the buffer's panels count from T_b, its diagonal is a = t - T_b
+            pr = np.where(p >= self.P_T, p - self.P_T, p); tr = np.where(p >= self.P_T, tc - self.Tb, tc)
+        up = (ac > tr + 1e-12) | ((np.abs(ac - tr) <= 1e-12) & (sd > 0))
+        ac = np.where(up, ac, np.minimum(ac, tr))
         q = np.where(sa > 0, self.panel_of(ac, +1), self.panel_of(ac, -1))
-        q = np.where(up, np.maximum(q, p), np.minimum(q, p))
+        q = np.where(up, np.maximum(q, pr), np.minimum(q, pr))
         return inside, p, q, up, tc, ac
 
     def interp(self, t, a, side_t=+1, side_a=+1, side_d=-1) -> np.ndarray:
@@ -238,7 +277,7 @@ class TriangleGrid:
             if pc.p != p:
                 continue
             if pc.triangle:
-                lo, hi = (t, pc.t1) if pc.upper else (pc.t0, t)
+                lo, hi = (t - pc.origin, pc.a1) if pc.upper else (pc.a0, t - pc.origin)
                 if hi - lo < 1e-14:
                     continue
                 an = lo + pc.xn * (hi - lo)
@@ -281,21 +320,25 @@ class TriangleGrid:
             bp.pop(-2)
         return bp
 
-    def mass_matrix(self, rho: float = 0.0) -> np.ndarray:
+    def mass_matrix(self, rho: float = 0.0, t_lo: Optional[float] = None, t_hi: Optional[float] = None) -> np.ndarray:
         """Exact Gram matrix M_ij = int_0^T e^{-rho t} int_0^t l_i l_j da dt of the nodal basis (over the
         strip [0, T] x [0, L] with a window; tensor Gauss quadrature on every piece; Duffy Jacobian on the
-        triangles)."""
-        key = round(float(rho), 12)
+        triangles).  With t_lo / t_hi (breakpoints) the integral runs over the time panels between them
+        only (a transition's cost over [0, T] and over its buffer [T, T + L] separately)."""
+        key = round(float(rho), 12) if t_lo is None and t_hi is None else (round(float(rho), 12), t_lo, t_hi)
         if key in self.mass_matrices:
             return self.mass_matrices[key]
         weight_t = (lambda t: np.exp(-rho * t)) if rho else None
         M = np.zeros((self.N, self.N))
         xg, wg = legendre.leggauss(max(self.nt, self.na) + 2)
+        eps = 1e-12 * max(1.0, self.T)
         for pc in self.pieces:
+            if (t_lo is not None and pc.t1 <= t_lo + eps) or (t_hi is not None and pc.t0 >= t_hi - eps):
+                continue
             tq = 0.5 * (pc.t1 - pc.t0) * xg + 0.5 * (pc.t1 + pc.t0); tw = 0.5 * (pc.t1 - pc.t0) * wg
             for t, wt in zip(tq, tw):
                 if pc.triangle:
-                    lo, hi = (t, pc.t1) if pc.upper else (pc.t0, t)
+                    lo, hi = (t - pc.origin, pc.a1) if pc.upper else (pc.a0, t - pc.origin)
                 else:
                     lo, hi = pc.a0, pc.a1
                 if hi - lo <= 1e-14:
@@ -394,11 +437,12 @@ class TriangleGrid:
                     if lo + 1e-12 < r < hi - 1e-12:
                         cuts.add(round(r, 13))
         if self.L is not None:
-            v0, v1 = a0[0] - t0[0], a1[0] - t1[0]
-            if abs(v1 - v0) > 1e-14:
-                r = lo + (0.0 - v0) / (v1 - v0) * (hi - lo)
-                if lo + 1e-12 < r < hi - 1e-12:
-                    cuts.add(round(r, 13))
+            for org in ((0.0,) if self.Tb is None else (0.0, self.Tb)):     # the diagonal(s) a = t - origin
+                v0, v1 = a0[0] - (t0[0] - org), a1[0] - (t1[0] - org)
+                if abs(v1 - v0) > 1e-14:
+                    r = lo + (0.0 - v0) / (v1 - v0) * (hi - lo)
+                    if lo + 1e-12 < r < hi - 1e-12:
+                        cuts.add(round(r, 13))
         return cuts
 
     @staticmethod

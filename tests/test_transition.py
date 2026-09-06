@@ -4,10 +4,12 @@ In order: (1) a zero past is the finite engine bit for bit; (2) the Chapter 3 st
 its own past is reproduced on the strip away from the end (the full fixed point under NOISESTATE_SLOW=1;
 one best response from the stationary maps in the fast suite); (3) a prior on the state of the discounted
 one-agent model against the closed form (the Kalman filter from P(0) = P0, or from 0 when the prior is
-observed at once); (4) an unobserved prior's column is the scaled state-noise column; (5) a precision
-change on Chapter 3 starts from the old kernels, with its costs pinned; (6) an old row's noise loading on a
-channel the new row drops is kept on the band; (7) the mean paths start from the past's means, `initial: 0`
-overriding; (8) the validation errors.
+observed at once); (4) an unobserved prior's column is the scaled state-noise column; (5) with the
+stationary continuation (the maps frozen at the stationary ones on a buffer [T, T + L]) the same-model
+identity is exact on the whole region; (6) a precision change on Chapter 3 starts from the old kernels and
+is continued by its new stationary equilibrium, with its costs and `settled` pinned; (7) an old row's noise
+loading on a channel the new row drops is kept on the band; (8) the mean paths start from the past's means,
+`initial: 0` overriding; (9) the validation errors.
 """
 import json
 import os
@@ -158,24 +160,75 @@ def test_unobserved_prior_column_is_the_scaled_state_noise_column():
         assert np.abs(res.kernel(name, "xi") - np.sqrt(P0) * res.kernel(name, "w0")).max() < 1e-13
 
 
+def test_same_model_continuation_is_exact_on_the_whole_region():
+    """Chapter 3 as its own past and its own continuation (T = 6, L = 3, 16 nodes): with the maps frozen at the
+    stationary ones on the buffer [6, 9] and the first-order condition's continuation running to T + L
+    through the envelope responses, the identity has no end effect.  One best response from the stationary
+    maps returns them on every node (5.2e-10 player1, 1.2e-8 player2, the latter the 16-node floor of the
+    band, 1.2e-10 and 6.5e-10 on the last window); the fixed point started from them stays (3 evaluations),
+    every kernel equal to K_stat(t - s) on every node, the last window and the buffer included (X 1.9e-9,
+    D1 1.4e-9, D2 1.5e-8 on the band and the buffer, 6e-10 on the last window), and res.settled is 6.6e-10;
+    from zero (12 nodes, 29 evaluations) the same fixed point to the 12-node floor (1.3e-5).  The costs are
+    over [0, T]; the buffer's are reported apart."""
+    m = ns.load(EX + "ch3_two_player.yaml"); L, T = 3.0, 6.0
+    stat = ns.solve(m.with_horizon(nodes=16)).check()
+    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=16), past=stat, continuation=stat)
+    c = solver.c; g = c.g; gs = stat.compiled.grid
+    assert g.T == T + L and c.T == T and c.Tg == T + L and c.P_T == 2 and int(c.buffer.sum()) == 512 and c.N == 1280
+    assert [float(b) for b in g.bp] == [0.0, 3.0, 6.0, 9.0] and g.upper[g.s < -1e-12].all() and not g.upper[g.s > 1e-12].any()
+    maps = strip_maps(stat, solver)
+    last = ~g.upper & ~c.buffer & (g.t >= T - L - 1e-9)
+    for a in m.agents:
+        gm, out = solver.best_response(a, maps)
+        dev = np.abs(gm - maps[a.name]).max(axis=(0, 1)) / np.abs(maps[a.name]).max()
+        assert dev.max() < 5e-8 and dev[last].max() < 5e-9, (a.name, dev.max(), dev[last].max())
+    res = solver.solve(init=maps, tol=1e-10).check()
+    assert res.iterations <= 4 and res.settled < 1e-8 and res.continuation is stat
+    for name in c.prim:
+        dev = np.abs(res.kernel(name) - gs.interp(g.a) @ stat.kernel(name)).max(axis=1) / np.abs(stat.kernel(name)).max()
+        assert dev.max() < 5e-8 and dev[last].max() < 5e-9 and dev[c.buffer].max() < 5e-8, (name, dev.max())
+    parts = res.cost_parts["player1"]
+    assert set(parts) == {"variance", "mean", "continuation"} and abs(parts["continuation"] - 3 * stat.costs["player1"]) < 1e-6
+    assert res.costs["player1"] == parts["variance"] and 0 < res.costs["player1"] < 2 * parts["continuation"]
+    rows = {r["name"]: r for r in res.diagnose()}
+    assert rows["settled"]["ok"] and rows["settled"]["threshold"] == 1e-6 and "continuation window" in rows and "past window" in rows
+    assert res.to_dict()["continuation"]["window_tail"] == res.past.provenance["window_tail"] and res.grid_info()["buffer"] == [6.0, 9.0]
+    stat12 = ns.solve(m.with_horizon(nodes=12)).check()
+    r0 = ns.solve(m.with_horizon(kind="finite", window=T, nodes=12), past=stat12, continuation=stat12, tol=1e-10).check()
+    g0 = r0.grid; gs0 = stat12.compiled.grid
+    for name in c.prim:
+        assert np.abs(r0.kernel(name) - gs0.interp(g0.a) @ stat12.kernel(name)).max() / np.abs(stat12.kernel(name)).max() < 5e-5, name
+    assert r0.settled < 5e-6
+
+
 def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
-    """Chapter 3 with the past at p1 = 3 and the new model at p1 = 10 (T = 6, 12 nodes): the state kernels
-    at 0+ are the old kernels at age -s to round-off, past=Model equals past=StationaryResult bit for bit,
-    and the solve converges.  The costs are pinned at their 12-node values (2.56081481, 2.56540852; they move
-    by 2.4e-5 and 3.1e-5 at 20 nodes, so 1e-6 catches a change of the formulation and not of the grid).
-    The resolution guard says where its error sits: player2's 8.6e-4 is on the band's tip (5.4e-4 at 16 nodes: the
-    collapsing corner's floor, not resolution), its interior 3.8e-5 (2.3e-5 at 16); player1's 4.4e-5 is in the
-    interior, the transient at 0+ (2.2e-6 at 16 nodes: resolution)."""
+    """Chapter 3 with the past at p1 = 3 and the new model at p1 = 10, continued by the new model's stationary
+    equilibrium (T = 6, 12 nodes): the state kernels at 0+ are the old kernels at age -s to round-off,
+    past=Model equals past=StationaryResult bit for bit, continuation="stationary" is the new model solved at
+    horizon.nodes, and the solve converges.  The costs over [0, T] are pinned at their 12-node values
+    (2.55448876, 2.55908247; 2.56081481 and 2.56540852 when the game ended at T; they move by 4.2e-5 and
+    4.9e-5 at 20 nodes, so 1e-6 catches a change of the formulation and not of the grid), the buffer's cost
+    is three times the stationary flow (1.26523081), and `settled` is 4.8e-4 (5.3e-4 at 20 nodes: the
+    transition has not settled by T - L = 3; 2.7e-6 at T = 9), so the guard fires; at T = L = 3 it is 0.58.
+    The resolution guard says where its error sits: player2's 8.6e-4 is on the band's tip (3.5e-4 at 20
+    nodes: the collapsing corner's floor, not resolution), player1's 4.3e-5 in the interior, the transient
+    at 0+ (2.1e-7 at 20 nodes: resolution)."""
     m = ns.load(EX + "ch3_two_player.yaml")
     old = ns.solve(m.with_params(p1=3.0)).check()
     new = m.with_params(p1=10.0).with_horizon(kind="finite", window=6.0, nodes=12)
-    res = ns.solve(new, past=old).check()
-    assert abs(res.costs["player1"] - 2.56081481) < 1e-6 and abs(res.costs["player2"] - 2.56540852) < 1e-6, res.costs
+    res = ns.solve(new, past=old, continuation="stationary").check()
+    assert abs(res.costs["player1"] - 2.55448876) < 1e-6 and abs(res.costs["player2"] - 2.55908247) < 1e-6, res.costs
+    assert abs(res.cost_parts["player1"]["continuation"] - 1.26523081) < 1e-6
+    assert 4e-4 < res.settled < 6e-4 and not next(r for r in res.diagnose() if r["name"] == "settled")["ok"], res.settled
+    assert "TRANSITION NOT SETTLED" in res.summary()
+    cont = res.continuation
+    assert cont.model.horizon.kind == "stationary" and cont.compiled.grid.L == 3.0 and cont.compiled.grid.n == 12
+    assert res.solver_kw["continuation"] is cont and res.to_dict()["continuation"]["kind"] == "stationary"
     for a in ("player1", "player2"):
         parts = res.representation_parts[a]
-        assert set(parts) == {"interior", "band tip", "last window"} and max(parts.values()) == res.representation_error[a]
+        assert set(parts) == {"interior", "band tip", "last window", "buffer"} and max(parts.values()) == res.representation_error[a]
     p2 = res.representation_parts["player2"]
-    assert p2["band tip"] > 10 * max(p2["interior"], p2["last window"]) and p2["band tip"] > 5e-4, p2
+    assert p2["band tip"] > 10 * max(p2["interior"], p2["last window"], p2["buffer"]) and p2["band tip"] > 5e-4, p2
     assert res.representation_parts["player1"]["interior"] < 1e-4
     flag = next(r for r in res.diagnose() if r["name"] == "resolution")["flag"]
     assert "band tip" in flag and "last window" in flag and "interior" in flag
@@ -184,11 +237,13 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     assert at0.any()
     for name in ("X",):
         assert np.abs(res.kernel(name)[at0] - old.compiled.grid.interp(g.a[at0]) @ old.kernel(name)).max() < 1e-13
-    res2 = ns.solve(new, past=m.with_params(p1=3.0))
+    res2 = ns.solve(new, past=m.with_params(p1=3.0), continuation=cont)
     assert np.array_equal(res.Z, res2.Z) and res.costs == res2.costs
     assert all(np.array_equal(res.maps[k], res2.maps[k]) for k in res.maps)
     assert res.evaluate("X", "w0", np.array([1.0, 1.0]), np.array([-1.0, 0.5])).shape == (2,)
     assert res.second_order["player1"]["ok"] and res.solver_kw["past"] is res.past
+    short = ns.solve(new.with_horizon(window=3.0), past=old, continuation=cont).check()
+    assert short.settled > 0.5 and "TRANSITION NOT SETTLED" in short.summary()
 
 
 def test_old_noise_loading_on_a_channel_the_new_row_drops_is_kept_on_the_band():
@@ -261,3 +316,16 @@ def test_past_validation():
     dpast = ns.solve(delayed.with_horizon(kind="stationary", window=1.0, nodes=6)).check()
     with pytest.raises(NotImplementedError, match="delay"):
         ns.SpectralFiniteSolver(delayed, past=dpast)
+    fin = m.with_horizon(kind="finite", window=3.0, nodes=6)
+    with pytest.raises(TypeError, match="StationaryResult"):
+        ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(fin))
+    with pytest.raises(ValueError, match="window"):
+        ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(m.with_horizon(window=2.0, nodes=6)).check())
+    with pytest.raises(ValueError, match="shorter than the past's window"):
+        ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=2.0, nodes=6), past=stat, continuation=stat)
+    with pytest.raises(ValueError, match="needs a past with a window"):
+        ns.SpectralFiniteSolver(fin, past=[{"name": "v", "loads": {"X": 1.0}}], continuation=stat)
+    with pytest.raises(ValueError, match="'stationary', 'end' or a StationaryResult"):
+        ns.SpectralFiniteSolver(fin, past=stat, continuation="tail")
+    with pytest.raises(ValueError, match="channels"):
+        ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(ns.Model.from_dict(other).with_horizon(nodes=6)).check())

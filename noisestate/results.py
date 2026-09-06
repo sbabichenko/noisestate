@@ -453,7 +453,9 @@ class StationaryResult(BaseResult):
 class TriangleResult(BaseResult):
     kind: str = "finite"
     past: object = None                     # the Past a transition started from (None: the game starts at rest)
-    settled: Optional[float] = None         # stage 2: how far the last window is from the new stationary equilibrium
+    continuation: object = None             # the StationaryResult the maps are frozen at after T (None: the game ends at T)
+    settled: Optional[float] = None         # with a continuation: how far the maps on [T - L, T] are from its stationary maps
+    SETTLED_TOL = tunable("settled_tol")
     MAP_CONVENTION = ("the map on a row observed with delay d is stored at the shifted time t - d: maps[agent][u][row][n] "
                       "is the weight the control at time agents[agent].signals[row].map_time[n] = grid.t[n] + delay puts "
                       "on the increment of the row as the agent sees it at age grid.age[n]; that increment entered the raw "
@@ -517,18 +519,49 @@ class TriangleResult(BaseResult):
         return self.grid.interp(t, t) @ (self.compiled.mean_embed @ np.asarray(self.means[name], dtype=float))
 
     def grid_info(self) -> dict:
-        g = self.grid
+        g = self.grid; c = self.compiled
         out = {"kind": "finite", "breakpoints": [float(b) for b in g.bp], "nodes_per_side": g.nt,
                "t": g.t.tolist(), "age": g.a.tolist(), "s": g.s.tolist()}
         if g.L is not None:
-            out["window"] = float(g.L); out["horizon"] = float(g.T)
+            out["window"] = float(g.L); out["horizon"] = float(c.T)
+            if self.continuation is not None:
+                out["buffer"] = [float(c.T), float(g.T)]
         return out
+
+    def diagnose(self) -> List[dict]:
+        """The common rows, then a transition's: the past's own window tail, and with a continuation the `settled`
+        check (the maps on [T - L, T] against the stationary maps the buffer is frozen at, threshold
+        settings.settled_tol) and the continuation's window tail."""
+        rows = super().diagnose()
+
+        def row(name, value, threshold, ok, flag, advice=""):
+            rows.append({"name": name, "value": value, "threshold": threshold, "ok": ok, "flag": flag, "advice": advice})
+        tol = self.WINDOW_TAIL_TOL
+        if self.past is not None and self.past.provenance.get("window_tail") is not None:
+            tail = float(self.past.provenance["window_tail"])
+            row("past window", tail, tol, bool(tail <= tol),
+                f"PAST WINDOW TOO SHORT (a kernel of the past still moves by {tail:.1%} of its peak over the last tenth of its "
+                f"window {self.past.window:g}: solve the past with a longer window)", "solve the past with a longer window")
+        if self.settled is not None:
+            info = self.compiled.continuation_info or {}
+            row("settled", float(self.settled), self.SETTLED_TOL, bool(self.settled <= self.SETTLED_TOL),
+                f"TRANSITION NOT SETTLED by T - L: raise horizon.window (a map on [T - L, T] is {self.settled:.1e} of its peak "
+                "from the stationary map the buffer is frozen at)", "raise horizon.window")
+            if info.get("window_tail") is not None:
+                tail = float(info["window_tail"])
+                row("continuation window", tail, tol, bool(tail <= tol),
+                    f"CONTINUATION WINDOW TOO SHORT (a kernel of the continuation still moves by {tail:.1%} of its peak over the "
+                    f"last tenth of its window {info.get('window', 0):g}: solve it with a longer window)",
+                    "solve the continuation with a longer window")
+        return rows
 
     def to_dict(self) -> dict:
         out = super().to_dict()
         if self.past is not None:
             out["past"] = self.past.to_dict()
             out["settled"] = self.settled
+            if self.continuation is not None:
+                out["continuation"] = dict(self.compiled.continuation_info)
             for name in self.compiled.prim:
                 for ch in self.shocks[len(self.channels):]:
                     out["kernels"][name][ch] = self.kernel(name, ch).tolist()
@@ -538,11 +571,13 @@ class TriangleResult(BaseResult):
         c = self.compiled
         lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.iterations} evaluations, "
                  f"{self.seconds:.1f}s; triangle grid {c.g.P} panels, {len(c.g.pieces)} pieces x {c.g.nt}x{c.g.na} nodes "
-                 f"= {c.N} nodes on [0, {c.T}], rho={c.rho}"]
+                 f"= {c.N} nodes on [0, {c.T}]" + (f" and the buffer [{c.T}, {c.g.T}] (maps frozen at the stationary ones)"
+                                                  if self.continuation is not None else "") + f", rho={c.rho}"]
         for a in self.model.agents:
             parts = self.cost_parts.get(a.name)
             lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.8f}"
-                         + (f" (variance {parts['variance']:+.8f}, mean {parts['mean']:+.8f})" if parts and parts["mean"] != 0.0 else ""))
+                         + (f" (variance {parts['variance']:+.8f}, mean {parts['mean']:+.8f})" if parts and parts["mean"] != 0.0 else "")
+                         + (f" + continuation {parts['continuation']:+.8f} on the buffer" if parts and "continuation" in parts else ""))
         if self.means_driven:
             at = np.array([0.0, 0.5 * c.T, c.T])
             lines.append("  means at t = 0, T/2, T: " + ", ".join(f"{n}=" + "/".join(f"{self._mz(v):+.4f}" for v in self.mean(n, at)) for n in c.prim))

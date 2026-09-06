@@ -113,7 +113,7 @@ class Past:
         means = {k: float(v) for k, v in res.means.items()}
         prov = {"kind": "stationary", "name": m.name, "params": {k: float(v) for k, v in m.params.items()},
                 "window": float(c.grid.L), "nodes": int(c.grid.n), "breakpoints": [float(b) for b in c.grid.breakpoints],
-                "converged": bool(res.converged), "residual": float(res.residual),
+                "converged": bool(res.converged), "residual": float(res.residual), "window_tail": float(res.window_tail),
                 "costs": {k: float(v) for k, v in res.costs.items()}}
         shocks = [sh if isinstance(sh, InitialShock) else InitialShock(**sh) for sh in (initial or [])]
         return cls(c.channels, c.grid.L, c.grid, kernels, rows, means, shocks, prov, source=res)

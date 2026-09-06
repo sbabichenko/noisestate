@@ -217,7 +217,7 @@ each with its default and a one-line meaning: the outer fixed point (`anderson_m
 `cell_krylov_rtol` 1e-12, `cell_krylov_maxiter` 400, `cell_krylov_retry` 1000), the second-order check
 (`second_order_tol` 1e-4, `second_order_dense` 4000, `second_order_lanczos_tol` 1e-6,
 `second_order_lanczos_maxiter` 300), the means (`mean_rcond` 1e-12, `lead_weight_warn` 100) and the
-result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `mean_zero` 1e-12, `refine_cost_tol`
+result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `settled_tol` 1e-6, `mean_zero` 1e-12, `refine_cost_tol`
 1e-6, `refine_kernel_tol` 1e-5, `stability_k` 2, `stability_eps` 1e-6, `stability_tol` 1e-3,
 `stability_max_evaluations` 200, `stability_fallback` 30).  Pass `settings=Settings(second_order_tol=1e-3)`
 (or a dict of the fields to change) to `solve()`, `sweep(solver_kw=...)` or an engine's constructor;
@@ -490,14 +490,23 @@ not given, which moves the mean path only; with a past, a state without one star
 the past's constant mean, and `initial: 0` overrides it) and integrate flow losses only.  The spectral
 engine can start from a known past instead (`SpectralFiniteSolver(model, past=...)`,
 `solve(model, past=...)`): a converged stationary result or model of the regime before
-zero (the old shocks stay alive on a band of nodes with s < 0 until age L; the game
-still ends at T, and the maps within L of T, hence the kernels within about 3L of T,
-carry the end; `res.representation_parts` says whether the resolution guard's error sits
-in the interior, on the band's collapsing tip or on the last window), or a list of initial shocks `{"name", "loads": {state: coef}, "rows":
+zero (the old shocks stay alive on a band of nodes with s < 0 until age L;
+`res.representation_parts` says whether the resolution guard's error sits in the
+interior, on the band's collapsing tip, on the last window or on the buffer), or a list of initial shocks `{"name", "loads": {state: coef}, "rows":
 {"agent.row": coef}}` (a value drawn once at t = 0- from a given covariance, seen at
-once by the rows named, so a prior on a state is one column of the world).  A past with
-a window needs rows without observation delays, and mean paths need the past's window to
-cover T.  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
+once by the rows named, so a prior on a state is one column of the world).  After T the
+game either ends (`continuation="end"`, the default: the maps within L of T, hence the
+kernels within about 3L of T, carry the end) or continues through the new model's
+stationary equilibrium (`continuation=` a converged stationary result of the model at
+the past's window, or `"stationary"` to solve it): every map is then frozen at the
+stationary one on a buffer [T, T + L], the first-order conditions integrate to T + L,
+a settled transition solves the infinite problem exactly (the same-model identity holds
+on every node), `res.settled` measures how far the maps on [T - L, T] are from the
+stationary ones (the `settled` row, threshold `settled_tol` 1e-6), and
+`res.cost_parts[agent]["continuation"]` reports the buffer's cost apart from
+`res.costs`, which stays the integral over [0, T].  A past with a window needs rows
+without observation delays, and mean paths need the past's window to cover T and no
+continuation.  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
 outside the grammar; a state with an empty `drift` and `noise` validates and is carried
 as its initial value.  The Chapter 4 example is the stationary variant, where V is a
 random walk on the window and the agents keep receiving V shocks.
