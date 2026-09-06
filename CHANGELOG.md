@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- `TriangleGrid.path` cuts and quadratures every output node at once (the consolidation pass, step C3): the
+  read point's breakpoint crossings in t and in a, the triangles' diagonals, the known's age grid and the
+  extra cuts are computed as arrays over the nodes (`_crossings`, `_crossings_1d`, `_cut_values`), the edges
+  sorted and deduplicated per node with one lexsort, the Gauss points and weights of every interval in one
+  step, and `point_fn`, `known_fn` and `extra_cuts` are called once with the array of nodes instead of once
+  per node (the callbacks are written for it; the docstring says so).  The result is identical: every path
+  family of ch1_delayed at 8 nodes, Chapter 3 as its own transition and the Kyle-Back prior agrees with the
+  per-node loop in rows, points, weights, I, J and R to the array (tests/test_triangle.py holds the per-node
+  oracle), and the seven families of the Chapter 1 transition at 5 nodes (N = 14700) too: their construction
+  104 s -> 14 s (the largest, 3.9 M points, 58 s -> 8.7 s); at 7 nodes (N = 28812) the first best response,
+  paths included, takes 149 s (49 s of it the paths' construction, 29 s of that `interp_sparse`).  The profile
+  of one best response on the GMRES path (cProfile, the BLAS/LAPACK entry points timed by an LD_PRELOAD shim,
+  the scipy.sparse kernels from the profile): the Chapter 1 transition at 5 nodes 34 s = 20 s Python and
+  numpy elementwise + 13 s scipy.sparse + 1 s BLAS; at 7 nodes 149 = 69 + 74 + 6; the two-firm market at
+  tau 0.5, L = T = 6, 5 nodes (N = 11100, 9 primaries) 163 = 67 + 80 + 16 (11 s of the BLAS the closed loop's
+  panel solves).  The Python-level own time is numpy work on the quadrature points (`interp_factors`' per-piece
+  masks, `panel_of`, `PathOp.apply`'s products), not interpretation: a compiled point location would save
+  about 10 s at 5 nodes and 35 s at 7 nodes of the first best response and nothing of the later ones, whose
+  time is the sparse products of the operators (csr_matvecs, 60 to 70 % of a best response).
 - One best response (the consolidation pass, step C3).  The spectral finite engine's row, response,
   first-order-condition and projection operators are defined once, as `finite_free`'s applications of the
   line paths and the sparse reads (`RowOps`, `RespOps`, `FocOps`, `ProjOps`; with a past the band's read of

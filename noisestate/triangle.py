@@ -448,6 +448,9 @@ class TriangleGrid:
         """Quadrature structure of a family of line integrals (one per output node):
             F_k = int_{r_lo[k]}^{r_hi[k]} w(k, r) f(point_fn(k, r)) dr,
         cut at every r where the read point crosses a breakpoint (and at extra_cuts).
+        point_fn(k, r) -> (t, a) and known_fn(k, r) -> (t, a) (or -> ages with known_grid) are called with k
+        an array of output nodes and r a value per node (the read point is linear in r on every node), and
+        extra_cuts(k) with k an array returns a list of cut values, one array per cut.
         side_t may be one side per output node: a read at a breakpoint time (the node's own time, or its
         shift by a delay) then takes that node's side; side_d likewise for reads on the diagonal.
         The result caches the unknown's interpolation rows at the quadrature points and,
@@ -461,32 +464,36 @@ class TriangleGrid:
         n_out = len(out_t)
         m = m or (max(self.nt, self.na) + 2)
         xg, wg = legendre.leggauss(m)
-        rows, rq_all, wts = [], [], []
-        for k in range(n_out):
-            lo, hi = float(r_lo[k]), float(r_hi[k])
-            if hi - lo <= 1e-13:
-                continue
-            cuts = self._crossings(point_fn, k, lo, hi)
-            if known_fn is not None and known_grid is None:
-                cuts |= self._crossings(known_fn, k, lo, hi)
-            elif known_fn is not None:
-                cuts |= self._crossings_1d(known_fn, k, lo, hi, known_grid.breakpoints)
-            if extra_cuts is not None:
-                for r in extra_cuts(k):
-                    if lo + 1e-12 < r < hi - 1e-12:
-                        cuts.add(round(float(r), 13))
-            edges = sorted([lo, hi] + list(cuts))
-            for e0, e1 in zip(edges[:-1], edges[1:]):
-                rq = 0.5 * (e1 - e0) * xg + 0.5 * (e0 + e1)
-                rows.append(np.full(len(rq), k)); rq_all.append(rq); wts.append(0.5 * (e1 - e0) * wg)
         lp = LinePath(n_out, self.N)
-        if not rows:
+        lo_all = np.asarray(r_lo, dtype=float); hi_all = np.asarray(r_hi, dtype=float)
+        K = np.where(hi_all - lo_all > 1e-13)[0]
+        if K.size == 0:
             return lp
-        lp.rows = np.concatenate(rows); lp.r = np.concatenate(rq_all); lp.w = np.concatenate(wts)
-        pt = np.empty_like(lp.r); pa = np.empty_like(lp.r)
-        for k in np.unique(lp.rows):
-            sel = lp.rows == k
-            tt, aa = point_fn(int(k), lp.r[sel]); pt[sel] = tt; pa[sel] = aa
+        lo, hi = lo_all[K], hi_all[K]
+        # the cuts: (node, value) pairs from every family, rounded as _crossings did (to 13 decimals, a numpy
+        # value by numpy's rounding, a Python float by Python's)
+        cut_k, cut_r = self._crossings(point_fn, K, lo, hi)
+        if known_fn is not None and known_grid is None:
+            cut_k, cut_r = self._crossings(known_fn, K, lo, hi, cut_k, cut_r)
+        elif known_fn is not None:
+            cut_k, cut_r = self._crossings_1d(known_fn, K, lo, hi, known_grid.breakpoints, cut_k, cut_r)
+        if extra_cuts is not None:
+            for r in extra_cuts(K):
+                r = np.broadcast_to(np.asarray(r, dtype=float), K.shape)
+                keep = (lo + 1e-12 < r) & (r < hi - 1e-12)
+                cut_k.append(K[keep]); cut_r.append(np.array([round(float(x), 13) for x in r[keep]], dtype=float))
+        # the edges of every node: lo, hi and its cuts, sorted, the same value once
+        ek = np.concatenate([K, K] + cut_k); er = np.concatenate([lo, hi] + cut_r)
+        order = np.lexsort((er, ek)); ek, er = ek[order], er[order]
+        first = np.ones(ek.size, dtype=bool); first[1:] = (ek[1:] != ek[:-1]) | (er[1:] != er[:-1])
+        ek, er = ek[first], er[first]
+        pair = ek[1:] == ek[:-1]                                                # consecutive edges of one node: an interval
+        e0, e1, kk = er[:-1][pair], er[1:][pair], ek[:-1][pair]
+        half = 0.5 * (e1 - e0)
+        rq = half[:, None] * xg[None, :] + (0.5 * (e0 + e1))[:, None]
+        lp.rows = np.repeat(kk, m); lp.r = rq.ravel(); lp.w = (half[:, None] * wg[None, :]).ravel()
+        pt, pa = point_fn(lp.rows, lp.r)
+        pt = np.broadcast_to(np.asarray(pt, dtype=float), lp.r.shape); pa = np.broadcast_to(np.asarray(pa, dtype=float), lp.r.shape)
         # a read at a breakpoint time (the output node's own time, or its shift by a delay) takes the
         # node's side of it (side_t per node), so a node on the top edge of its piece reads the time
         # row of its own limit, not the next panel's; every other read is interior to the cuts
@@ -497,16 +504,11 @@ class TriangleGrid:
         sd_I = side_d[lp.rows] if side_d.ndim == 1 else side_d
         lp.I = self.interp_sparse(pt, pa, side_t=st_I, side_a=side_a, side_d=sd_I)
         if known_fn is not None and known_grid is not None:
-            ages = np.empty_like(lp.r)
-            for k in np.unique(lp.rows):
-                sel = lp.rows == k
-                ages[sel] = known_fn(int(k), lp.r[sel])
+            ages = np.broadcast_to(np.asarray(known_fn(lp.rows, lp.r), dtype=float), lp.r.shape)
             lp.J = known_grid.interp(ages)                              # dense (nq, N_past): the known past kernel
         elif known_fn is not None:
-            kt = np.empty_like(lp.r); ka = np.empty_like(lp.r)
-            for k in np.unique(lp.rows):
-                sel = lp.rows == k
-                tt, aa = known_fn(int(k), lp.r[sel]); kt[sel] = tt; ka[sel] = aa
+            kt, ka = known_fn(lp.rows, lp.r)
+            kt = np.broadcast_to(np.asarray(kt, dtype=float), lp.r.shape); ka = np.broadcast_to(np.asarray(ka, dtype=float), lp.r.shape)
             st_J = np.where(at_bp(kt), side_t[lp.rows], +1) if side_t.ndim == 1 else +1
             # the known kernel is read through its factors; a known read on the diagonal (an impulse response
             # at (r, r) from a node at t = 0) is the new-shock side: the node's side_d is the unknown's
@@ -516,37 +518,54 @@ class TriangleGrid:
         lp.R = csr_matrix((np.ones(len(lp.rows)), (lp.rows, np.arange(len(lp.rows)))), shape=(n_out, len(lp.rows)))
         return lp
 
-    def _crossings(self, fn: Callable, k: int, lo: float, hi: float) -> set:
-        """Parameter values r in (lo, hi) at which the read point fn(k, r) (linear in r) crosses a breakpoint
-        (or, with a window, the diagonal a = t)."""
-        t0, a0 = fn(k, np.array([lo])); t1, a1 = fn(k, np.array([hi]))
-        cuts = set()
-        for b in self.bp:
-            for (v0, v1) in ((t0[0], t1[0]), (a0[0], a1[0])):
-                if abs(v1 - v0) > 1e-14:
-                    r = lo + (b - v0) / (v1 - v0) * (hi - lo)
-                    if lo + 1e-12 < r < hi - 1e-12:
-                        cuts.add(round(r, 13))
-        if self.L is not None:
-            for org in self.origins:                                       # the diagonals a = t - origin of the triangles
-                v0, v1 = a0[0] - (t0[0] - org), a1[0] - (t1[0] - org)
-                if abs(v1 - v0) > 1e-14:
-                    r = lo + (0.0 - v0) / (v1 - v0) * (hi - lo)
-                    if lo + 1e-12 < r < hi - 1e-12:
-                        cuts.add(round(r, 13))
-        return cuts
-
     @staticmethod
-    def _crossings_1d(fn: Callable, k: int, lo: float, hi: float, breakpoints) -> set:
-        """Parameter values r in (lo, hi) at which the age fn(k, r) (linear in r) crosses a breakpoint of a 1-D grid."""
-        x0 = float(fn(k, np.array([lo]))[0]); x1 = float(fn(k, np.array([hi]))[0])
-        cuts = set()
-        if abs(x1 - x0) > 1e-14:
-            for b in breakpoints:
-                r = lo + (b - x0) / (x1 - x0) * (hi - lo)
-                if lo + 1e-12 < r < hi - 1e-12:
-                    cuts.add(round(r, 13))
-        return cuts
+    def _cut_values(K, lo, hi, r, cut_k, cut_r, pyfloat: bool):
+        """Append the candidate cuts r (nk, ncand) of the nodes K within (lo + 1e-12, hi - 1e-12) to (cut_k, cut_r),
+        rounded to 13 decimals as a numpy value (np.round, what round() on a numpy float does) or, for a
+        breakpoint list of Python floats, as a Python float (round(); the two roundings can differ in the
+        last bit)."""
+        keep = (lo[:, None] + 1e-12 < r) & (r < hi[:, None] - 1e-12)
+        ks, js = np.nonzero(keep)
+        vals = r[ks, js]
+        cut_k.append(K[ks])
+        cut_r.append(np.array([round(float(x), 13) for x in vals], dtype=float) if pyfloat else np.round(vals, 13))
+        return cut_k, cut_r
+
+    def _crossings(self, fn: Callable, K, lo, hi, cut_k=None, cut_r=None):
+        """Parameter values r in (lo, hi) at which the read point fn(K, r) (linear in r) crosses a breakpoint
+        (or, with a window, the diagonal a = t - origin of a triangle), for the nodes K at once: appended to
+        (cut_k, cut_r) as (node, value) arrays."""
+        cut_k = [] if cut_k is None else cut_k; cut_r = [] if cut_r is None else cut_r
+        t0, a0 = fn(K, lo); t1, a1 = fn(K, hi)
+        t0, a0, t1, a1 = (np.broadcast_to(np.asarray(v, dtype=float), K.shape) for v in (t0, a0, t1, a1))
+        span = hi - lo
+        bp = np.asarray(self.bp, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            for (v0, v1) in ((t0, t1), (a0, a1)):
+                dv = v1 - v0
+                r = lo[:, None] + (bp[None, :] - v0[:, None]) / dv[:, None] * span[:, None]
+                r = np.where((np.abs(dv) > 1e-14)[:, None], r, np.nan)
+                cut_k, cut_r = self._cut_values(K, lo, hi, r, cut_k, cut_r, pyfloat=False)
+            if self.L is not None and self.origins:
+                org = np.asarray(self.origins, dtype=float)
+                v0 = a0[:, None] - (t0[:, None] - org[None, :]); v1 = a1[:, None] - (t1[:, None] - org[None, :])
+                dv = v1 - v0
+                r = lo[:, None] + (0.0 - v0) / dv * span[:, None]
+                r = np.where(np.abs(dv) > 1e-14, r, np.nan)
+                cut_k, cut_r = self._cut_values(K, lo, hi, r, cut_k, cut_r, pyfloat=False)
+        return cut_k, cut_r
+
+    def _crossings_1d(self, fn: Callable, K, lo, hi, breakpoints, cut_k, cut_r):
+        """Parameter values r in (lo, hi) at which the age fn(K, r) (linear in r) crosses a breakpoint of a 1-D
+        grid, for the nodes K at once, appended to (cut_k, cut_r)."""
+        x0 = np.broadcast_to(np.asarray(fn(K, lo), dtype=float), K.shape); x1 = np.broadcast_to(np.asarray(fn(K, hi), dtype=float), K.shape)
+        dx = x1 - x0
+        bpk = list(breakpoints)
+        pyfloat = all(isinstance(b, float) and not isinstance(b, np.floating) for b in bpk)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            r = lo[:, None] + (np.asarray(bpk, dtype=float)[None, :] - x0[:, None]) / dx[:, None] * (hi - lo)[:, None]
+            r = np.where((np.abs(dx) > 1e-14)[:, None], r, np.nan)
+        return self._cut_values(K, lo, hi, r, cut_k, cut_r, pyfloat=pyfloat)
 
     def line_op(self, out_t, out_a, r_lo, r_hi, point_fn: Callable, weight_fn: Optional[Callable] = None,
                 extra_cuts: Optional[Callable] = None, m: Optional[int] = None, side_t=+1, side_a=+1) -> np.ndarray:
