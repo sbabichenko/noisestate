@@ -39,7 +39,7 @@ from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
 from .engine import EngineBase
 from .compile import CompiledBase, close_under_delays, reject_leads
 from .grid import bary_rows, bary_weights, cheb_lobatto
-from .results import TriangleResult
+from .results import TriangleResult, TransitionResult
 from .settings import tunable
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
@@ -988,8 +988,7 @@ class SpectralFiniteSolver(EngineBase):
         hz = model.horizon
         if hz.kind == "transition":                    # the file's blocks, each overridden by its keyword
             if past is None:
-                past = Past.of(hz.past["model"], hz.past.get("initial")) if hz.past.get("model") is not None \
-                    else Past.from_shocks(hz.past["initial"])
+                past = Past.from_block(hz.past)
             if continuation is None:
                 continuation = hz.continuation or "stationary"
         past = Past.of(past) if past is not None else None
@@ -997,6 +996,8 @@ class SpectralFiniteSolver(EngineBase):
         opts = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
         super().__init__(model, verbose, settings=settings, **opts)
         self.c = SpectralCompiled(model, past=past, continuation=continuation)
+        if past is not None:
+            self.RESULT = TransitionResult
         self.Nm = self.c.N + (self.c.Nt if self.c.n_init else 0)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.Nm) for a in model.agents}
         self._rep_parts: Dict[str, Dict[str, float]] = {}      # agent -> where the representation error sits (with a past)
@@ -1056,6 +1057,78 @@ class SpectralFiniteSolver(EngineBase):
             for a in self.model.agents:
                 res.cost_parts[a.name]["continuation"] = self.continuation_cost(a, res.Z)
             res.settled = self.settled(res.maps)
+        if self.c.past is not None:
+            res.times = self.c.tm.copy()
+            for a in self.model.agents:
+                res.loss_path[a.name] = self.loss_path(a, res.Z, res.means)
+                if self.c.cont is not None:
+                    res.excess_costs[a.name] = float(self.c.time_mass(self.c.rho) @ (res.loss_path[a.name] - self.c.cont.costs[a.name]))
+
+    # ------------------------------------------------ the transition's paths
+    def _zeta(self, agent: Agent, Z: np.ndarray) -> np.ndarray:
+        """(m, N, ncol) the loss atoms' kernels in the world Z, the band's pre-zero part of a lagged atom included."""
+        c = self.c; atoms = c.loss[agent.name][0]
+        zeta = np.stack([c.atom_op(at) @ Z for at in atoms])
+        if c.past is not None and c.g.L is not None:
+            zeta[:, :, :c.nW] += c.zeta_past(agent.name)
+        return zeta
+
+    def _row_variance(self, err: np.ndarray, quad: np.ndarray) -> np.ndarray:
+        """(Nt,) per time node the integral over shock age of quad(err(t, a)) summed over the channels, err (m, N, ncol):
+        Gauss quadrature of the interpolated kernels on every piece crossed (row_quadrature), plus the initial shocks'
+        columns on the line s = 0 (their own weight is the point).  quad(z) takes (m, nq, k) and returns (nq,)."""
+        c = self.c; g = c.g
+        out = np.zeros(c.Nt)
+        for i, (t, side) in enumerate(zip(c.tm, c.tm_side)):
+            I, w = g.row_quadrature(t, side)
+            if len(w):
+                out[i] = w @ quad(np.einsum("qn,mnk->mqk", I, err[:, :, :c.nW]))
+            if c.n_init and i < c.Nd:
+                out[i] += quad(err[:, None, c.diag[i], c.nW:])[0]
+        return out
+
+    def loss_path(self, agent: Agent, Z: np.ndarray, means=None) -> np.ndarray:
+        """(Nt,) E[loss(t)] of the agent at every time node (res.times: [0, T] and the buffer): the variance part
+        1/2 sum_ij Q_ij int zeta_i zeta_j da over every shock alive at t by row quadrature, plus the mean part
+        1/2 zbar'Q zbar + q'zbar when the means are driven.  Its discounted integral over [0, T] (time_mass) is
+        res.costs to quadrature accuracy."""
+        c = self.c; atoms, Q, q = c.loss[agent.name]
+        zeta = self._zeta(agent, Z)
+        out = self._row_variance(zeta, lambda z: 0.5 * np.einsum("iqk,ij,jqk->q", z, Q, z))
+        if means and any(np.any(means[n]) for n in c.prim):
+            zbar = np.concatenate([np.asarray(means[n], dtype=float) for n in c.prim])
+            zb = self._mean_atoms(zbar, atoms)
+            out += 0.5 * np.einsum("it,ij,jt->t", zb, Q, zb) + q @ zb
+        return out
+
+    def belief_error(self, agent: Agent, name: str, Z: np.ndarray) -> np.ndarray:
+        """(Nt,) the variance of the agent's estimation error of the quantity `name` at every time node: the
+        quantity's kernel minus its projection on the agent's seen rows (the closed-loop rows of Z, its own
+        controls on, the increments observed before zero and the initial shocks' point observations included:
+        one weighted least-squares Gram per time row, maps_from_world), integrated over the shocks."""
+        c = self.c
+        K = Z[c.block(name)] if name in c.index else c.expr_op(self.model.expand({name: 1.0})) @ Z
+        rows, inst = self._seen_rows(agent, Z, set())
+        Bk = self._row_operator(agent, rows, inst)
+        gm = self._maps_from_world_past(agent, Bk, K[None]) if c.past is not None else self.maps_from_world(agent, Z, K[None])
+        recon = np.stack([Bk[k] @ gm[0].reshape(-1) for k in range(Bk.shape[0])], axis=1)
+        return self._row_variance((K - recon)[None], lambda z: np.einsum("iqk,iqk->q", z, z))
+
+    def warm_maps_from(self, prev) -> Dict[str, np.ndarray]:
+        """Raw maps to start from, given a result of this engine on another grid of the same model (a sweep over the
+        horizon T): the previous maps read at this grid's nodes where they exist, the continuation's frozen
+        stationary maps beyond the previous domain (what a settled transition has there), zero without one."""
+        c = self.c; g, gc = c.g, prev.compiled.g
+        I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_d)
+        outside = ~np.asarray(I != 0).any(axis=1)
+        out = {}
+        for a in self.model.agents:
+            gm = np.zeros(self.shapes[a.name])
+            gm[:, :, :c.N] = np.einsum("fn,urn->urf", I, prev.maps[a.name][:, :, :gc.N])
+            if c.cont is not None:
+                gm[:, :, :c.N][:, :, outside] = c.frozen[a.name][:, :, outside]
+            out[a.name] = gm
+        return out
 
     # ------------------------------------------------ best-response pieces
     def _identified(self, agent: Agent) -> np.ndarray:

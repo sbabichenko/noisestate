@@ -18,6 +18,7 @@ import numpy as np
 import yaml
 
 from .spec import Model, ModelBuilder
+from .past import Past
 from .results import TriangleResult
 from .stationary import StationarySolver
 from .finite import FiniteSolver
@@ -61,7 +62,9 @@ def warm_start(prev) -> Optional[dict]:
 
 def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iterable[float], solver_kw: Optional[dict] = None,
           solve_kw: Optional[dict] = None, verbose: bool = False) -> List[dict]:
-    """Solve the model at each value of `param` (a key of `params`), warm-starting each point from
+    """Solve the model at each value of `param` (a key of `params`, or "horizon.window": the window L of a
+    stationary model, the horizon T of a finite one or of a transition, which then warm-starts each point from
+    the previous maps read on the new grid, the stationary maps beyond it), warm-starting each point from
     the linear extrapolation of the last two equilibria in the parameter (a secant predictor;
     markedly more robust at hard points such as a small trading cost).  solver_kw goes to each point's
     engine, solve_kw to each point's solve() (tol, variable, max_evaluations, deadline, progress,
@@ -69,19 +72,30 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
     Returns [{"param", "value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the
     given order; "change" is the relative change of the strategy from the previous point on the same grid
     (the raw maps; the action kernels on the finite spectral engine)
-    and "jump" flags a change more than five times the sweep's median (a possible branch jump)."""
+    and "jump" flags a change more than five times the sweep's median (a possible branch jump).  A transition
+    model's past is solved once and shared by every point (solver_kw={"past": ...} gives it); its
+    continuation, the new model's stationary equilibrium, is solved at each point."""
     base = _load_dict(model)
-    if param not in (base.get("params") or {}):
-        raise ValueError(f"{param!r} is not a parameter of the model (params: {sorted((base.get('params') or {}))})")
+    if param != "horizon.window" and param not in (base.get("params") or {}):
+        raise ValueError(f"{param!r} is not a parameter of the model (params: {sorted((base.get('params') or {}))}; "
+                         "'horizon.window' sweeps the window or horizon)")
+    solver_kw = dict(solver_kw or {})
+    if (base.get("horizon") or {}).get("kind") == "transition" and "past" not in solver_kw:
+        solver_kw["past"] = Past.from_block(Model.from_dict(base).horizon.past)      # the past solved once for every point
     rows: List[dict] = []
     prev = prev2 = None
     for v in values:
         d = copy.deepcopy(base)
-        d.setdefault("params", {})[param] = float(v)
+        if param == "horizon.window":
+            d.setdefault("horizon", {})["window"] = float(v)
+        else:
+            d.setdefault("params", {})[param] = float(v)
         m = Model.from_dict(d)
-        S = make_solver(m, **(solver_kw or {}))
+        S = make_solver(m, **solver_kw)
         t0 = time.time()
         init = None
+        if prev is not None and not S.same_grid(prev.compiled) and hasattr(S, "warm_maps_from"):
+            init = S.warm_maps_from(prev)                    # another grid of the same model (a sweep over T)
         if prev is not None and S.same_grid(prev.compiled):
             w1 = warm_start(prev)
             if prev2 is not None and S.same_grid(prev2.compiled):

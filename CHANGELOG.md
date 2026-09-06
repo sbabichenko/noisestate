@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- Transition from a known past, stage 3b: `TransitionResult(TriangleResult)`, kind "transition", the result
+  of every solve with a past.  `res.times` and `res.loss_path[agent]`: E[loss(t)] at every time node of
+  [0, T] and the buffer, the variance part by row quadrature (`TriangleGrid.row_quadrature`: Gauss points
+  on every piece crossed at t, exact for products of interpolants) over every shock alive plus the mean part
+  when driven; its discounted integral over [0, T] is `res.costs` (to 3e-14 on a constant path, 1.6e-6 at
+  12 nodes on the regime change's transient).  `res.excess_costs[agent]` = int_0^T e^{-rho t} (E loss(t) -
+  the new stationary flow) dt, the cost of the transition (finite at rho = 0; empty when the game ends at T);
+  `res.old_flows`, `res.new_flows`.  `res.belief_error(agent, name)`: the variance of the agent's estimation
+  error of a state, control or definition at every time node, the kernel minus its projection on the agent's
+  seen rows (one Gram per date, the pre-zero increments and the initial shocks' point observations included),
+  integrated over the shocks.  `plot()`: the kernels against the shock time from -L with the band shaded, a row
+  of E[loss(t)] with the old and new flows as lines, a row of belief-error variances, the means when driven.
+  `to_dict()` adds `times`, `loss_path`, `excess_costs`, `old_flows`, `new_flows`; `engine` and `grid.kind`
+  are "transition".  `sweep` takes "horizon.window" as the parameter (the horizon T of a transition, warm-
+  starting each point from the previous maps read on the new grid and the stationary maps beyond it:
+  `SpectralFiniteSolver.warm_maps_from`) and, on a transition model, solves the past once for every point.
+  Tests (`tests/test_transition_result.py`): Chapter 3 as its own past and continuation (16 nodes) has a
+  loss path equal to the stationary flow on every node to 7e-11 and excess costs of 5e-11; the precision
+  change (T = 9, 12 nodes) starts from the old state variance (E X^2 to 1e-8; the controls jump, so E[loss(0+)]
+  0.43506 is not the old flow 0.42895), ends at the new flow to 1e-7 on the last node and the buffer's end
+  (settled 2.7e-6), excess costs 0.024027 and 0.028619; the one-agent prior start's belief error is the Kalman
+  variance from P0 (monotone falling) or from 0 to 3.4e-6; the sweep over T = 6, 9 takes 8 evaluations at 9
+  against 21 from the stationary maps alone, the same equilibrium to 2e-8.
+
 - Transition from a known past, stage 3a: the model-file and API surface.  `horizon: {kind: transition,
   window: T, nodes: n, discount: rho, past: {model: old.yaml | an inline stationary model, initial:
   [...]}, continuation: stationary | end, stationary: {window: L, nodes: m}}` compiles to the spectral

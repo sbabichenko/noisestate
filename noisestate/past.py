@@ -81,6 +81,14 @@ class Past:
                         f"not {type(obj).__name__}")
 
     @classmethod
+    def from_block(cls, block: dict) -> "Past":
+        """The past of a transition model's horizon.past block: {"model": a path or an inline stationary model
+        dict (solved on the fly), "initial": [shocks]} (either, or both)."""
+        if block.get("model") is not None:
+            return cls.of(block["model"], block.get("initial"))
+        return cls.from_shocks(block["initial"])
+
+    @classmethod
     def from_model(cls, model, initial=None, **solve_kw) -> "Past":
         """Solve the stationary model (a Model, ModelBuilder, dict or path) and take its result."""
         from . import solve, load

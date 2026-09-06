@@ -750,7 +750,7 @@ class EngineBase:
             coarse_evals = getattr(self, "_coarse_evals", 0)
         elif init is None and start == "stationary":
             init = self.stationary_start()
-        elif start not in ("zero", "coarse"):
+        elif start not in ("zero", "coarse", "stationary"):
             raise ValueError(f"start must be 'zero', 'coarse' or 'stationary', not {start!r}")
         if variable == "actions" and (self.model.ties or not self.ACTIONS):
             variable = "maps"

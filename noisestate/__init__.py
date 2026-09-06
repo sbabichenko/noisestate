@@ -4,7 +4,7 @@ import inspect
 from .spec import Model, ModelBuilder
 from .accel import ConvergenceError
 from .settings import Settings
-from .results import BaseResult, StationaryResult, TriangleResult, CellResult
+from .results import BaseResult, StationaryResult, TriangleResult, TransitionResult, CellResult
 from .stationary import StationarySolver
 from .finite import FiniteSolver
 from .finite_spectral import SpectralFiniteSolver
@@ -12,7 +12,7 @@ from .sweep import sweep, make_solver, ENGINES
 from .grid_cache import clear as clear_grid_cache
 from .transition import transition
 
-__all__ = ["Model", "ModelBuilder", "ConvergenceError", "Settings", "BaseResult", "StationaryResult", "TriangleResult",
+__all__ = ["Model", "ModelBuilder", "ConvergenceError", "Settings", "BaseResult", "StationaryResult", "TriangleResult", "TransitionResult",
            "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "load", "solve", "sweep",
            "transition", "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache"]
 

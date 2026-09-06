@@ -189,6 +189,7 @@ class TriangleGrid:
         self.read_cache = {}                 # (dt, da) -> read matrix (filled by the spectral engine)
         self.paths = {}                      # key -> LinePath (filled by the spectral engine)
         self._row_weights = {}               # (t, side) -> row_weights(t, side)
+        self._row_quad = {}                  # (t, side) -> row_quadrature(t, side)
 
     # ------------------------------------------------------------ lookup
     def panel_of(self, x, side=+1):
@@ -315,9 +316,19 @@ class TriangleGrid:
             self._row_weights[key] = self._row_weights_at(float(t), side)
         return self._row_weights[key]
 
-    def _row_weights_at(self, t: float, side=+1) -> np.ndarray:
+    def row_quadrature(self, t: float, side=+1):
+        """(I, w): the interpolation I (nq, N) of a kernel at the Gauss points (t, a_q) of every piece crossed at
+        time t (na + 2 per piece) and the weights w (nq,) with int f(t, a) da = w @ (I @ f), exact for the product
+        of two interpolants (row_weights integrates the interpolant of nodal values).  Cached per (t, side)."""
+        key = (float(t), int(side))
+        if key not in self._row_quad:
+            self._row_quad[key] = self._row_weights_at(float(t), side, points=True)
+        return self._row_quad[key]
+
+    def _row_weights_at(self, t: float, side=+1, points: bool = False):
         w = np.zeros(self.N)
         p = int(self.panel_of(t, side))
+        Is, ws = [], []
         for pc in self.pieces:
             if pc.p != p:
                 continue
@@ -325,16 +336,27 @@ class TriangleGrid:
                 lo, hi = (t - pc.origin, pc.a1) if pc.upper else (pc.a0, t - pc.origin)
                 if hi - lo < 1e-14:
                     continue
-                an = lo + pc.xn * (hi - lo)
-                wa = clenshaw_curtis(pc.na, lo, hi)
+            else:
+                lo, hi = pc.a0, pc.a1
+            if points:                                        # Gauss points: exact for products of two interpolants
+                xg, wg = legendre.leggauss(pc.na + 2)
+                an = 0.5 * (hi - lo) * xg + 0.5 * (hi + lo); wa = 0.5 * (hi - lo) * wg
+            elif pc.triangle:
+                an = lo + pc.xn * (hi - lo); wa = clenshaw_curtis(pc.na, lo, hi)
             else:
                 an = pc.xn; wa = clenshaw_curtis(pc.na, pc.a0, pc.a1)
             # values at (t, an): interpolate in t on this piece's nodes only
-            tt, xx = pc.local_coords(np.full(pc.na, t), an)
-            Rt = _bary_rows(tt, pc.tn, pc.wt)                  # (na, nt)
-            Rx = _bary_rows(xx, pc.xn, pc.wx)                  # (na, na)
-            W = (Rt[:, :, None] * Rx[:, None, :]).reshape(pc.na, -1)   # (na, n)
-            w[pc.offset:pc.offset + pc.n] += wa @ W
+            tt, xx = pc.local_coords(np.full(len(an), t), an)
+            Rt = _bary_rows(tt, pc.tn, pc.wt)                  # (nq, nt)
+            Rx = _bary_rows(xx, pc.xn, pc.wx)                  # (nq, na)
+            W = (Rt[:, :, None] * Rx[:, None, :]).reshape(len(an), -1)   # (nq, n)
+            if points:
+                I = np.zeros((len(an), self.N)); I[:, pc.offset:pc.offset + pc.n] = W
+                Is.append(I); ws.append(wa)
+            else:
+                w[pc.offset:pc.offset + pc.n] += wa @ W
+        if points:
+            return (np.concatenate(Is), np.concatenate(ws)) if Is else (np.zeros((0, self.N)), np.zeros(0))
         return w
 
     @cached_property

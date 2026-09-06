@@ -597,6 +597,60 @@ class TriangleResult(BaseResult):
 
 
 @dataclass
+class TransitionResult(TriangleResult):
+    """A transition from a known past: the kernels on the strip (s < 0 on the band), the loss paths E[loss(t)] on
+    res.times ([0, T] and the buffer), the excess costs over the new stationary flow, the belief errors on
+    demand, and the settled guard."""
+    kind: str = "transition"
+    times: Optional[np.ndarray] = None                              # the time nodes of the paths
+    loss_path: Dict[str, np.ndarray] = field(default_factory=dict)   # agent -> E[loss(t)] on times
+    excess_costs: Dict[str, float] = field(default_factory=dict)     # agent -> int_0^T e^{-rho t} (E loss(t) - the new stationary flow) dt
+
+    @property
+    def old_flows(self) -> Dict[str, float]:
+        """The old regime's stationary flow losses per agent (the past's provenance; empty for a past of shocks)."""
+        return {k: float(v) for k, v in (self.past.provenance.get("costs") or {}).items()} if self.past is not None else {}
+
+    @property
+    def new_flows(self) -> Dict[str, float]:
+        """The new regime's stationary flow losses per agent (the continuation's; empty when the game ends at T)."""
+        return {k: float(v) for k, v in self.continuation.costs.items()} if self.continuation is not None else {}
+
+    def belief_error(self, agent: str, name: str) -> np.ndarray:
+        """The variance of `agent`'s estimation error of the quantity `name` (a state, control or definition)
+        at every time node res.times: the quantity's kernel minus its projection on the agent's seen rows (one
+        weighted least-squares Gram per date), integrated over the shocks alive."""
+        a = next((x for x in self.model.agents if x.name == agent), None)
+        if a is None:
+            raise KeyError(f"no agent {agent!r}; the agents are {[x.name for x in self.model.agents]}")
+        return self._make_solver(self.model).belief_error(a, name, self.Z)
+
+    def grid_info(self) -> dict:
+        out = super().grid_info(); out["kind"] = "transition"
+        return out
+
+    def to_dict(self) -> dict:
+        out = super().to_dict()
+        out["times"] = None if self.times is None else self.times.tolist()
+        out["loss_path"] = {k: v.tolist() for k, v in self.loss_path.items()}
+        out["excess_costs"] = {k: float(v) for k, v in self.excess_costs.items()}
+        out["old_flows"] = self.old_flows; out["new_flows"] = self.new_flows
+        return out
+
+    def plot(self, path: str) -> None:
+        """The kernels against the shock time s from -L at five dates (the band s < 0 shaded), a row with
+        E[loss(t)] per agent and the old and new stationary flows as horizontal lines, a row with each agent's
+        belief-error variance of every state, and the mean paths when driven (needs matplotlib)."""
+        _plot_transition(self, path)
+
+    def summary(self) -> str:
+        lines = [super().summary()]
+        if self.excess_costs:
+            lines.append("  excess cost over the new stationary flow on [0, T]: " + ", ".join(f"{k}={v:+.6f}" for k, v in self.excess_costs.items()))
+        return "\n".join(lines)
+
+
+@dataclass
 class CellResult(BaseResult):
     kind: str = "finite_cells"
     MAP_CONVENTION = ("maps[agent][u][row][i][v] is the weight the control in cell i (time grid.t[i]) puts on the increment "
@@ -664,6 +718,55 @@ def _pyplot():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     return plt
+
+
+def _plot_transition(res, path: str) -> None:
+    plt = _pyplot()
+    names = res.model.state_names + res.model.control_names; chans = res.channels
+    agents = [a.name for a in res.model.agents]; states = res.model.state_names
+    c = res.compiled; g = res.grid; T = c.T; L = g.L or 0.0
+    means = res.means_driven and res.means_t is not None
+    ncol = max(len(chans), len(agents), 1)
+    fig, axes = plt.subplots(len(names) + 2 + means, ncol, figsize=(3.6 * ncol, 2.5 * (len(names) + 2 + means)), squeeze=False)
+    for i, name in enumerate(names):
+        for k, ch in enumerate(chans):
+            ax = axes[i, k]
+            for t in np.linspace(0.2, 1.0, 5) * T:
+                s = np.linspace(max(-L, t - L) if L else 0.0, t, 300)
+                ax.plot(s, res.evaluate(name, ch, np.full_like(s, t), s), lw=1, label=f"t={t:.2f}")
+            if L:
+                ax.axvspan(-L, 0.0, color="0.85", alpha=0.6, lw=0)
+            ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name} on {ch}", fontsize=9); ax.set_xlabel("shock time s")
+            if i == 0 and k == 0:
+                ax.legend(fontsize=6, frameon=False)
+        for ax in axes[i, len(chans):]:
+            ax.axis("off")
+    old, new = res.old_flows, res.new_flows
+    for k, a in enumerate(agents):
+        ax = axes[len(names), k]
+        if a in res.loss_path:
+            ax.plot(res.times, res.loss_path[a], lw=1, label="E[loss(t)]")
+        if a in old:
+            ax.axhline(old[a], color="C1", lw=0.8, ls="--", label="old flow")
+        if a in new:
+            ax.axhline(new[a], color="C2", lw=0.8, ls=":", label="new flow")
+        ax.axvline(T, color="k", lw=0.4); ax.set_title(f"{a}: expected loss", fontsize=9); ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
+        ax = axes[len(names) + 1, k]
+        for name in states:
+            ax.plot(res.times, res.belief_error(a, name), lw=1, label=name)
+        ax.axvline(T, color="k", lw=0.4); ax.set_title(f"{a}: belief error variance", fontsize=9); ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
+    for r in (len(names), len(names) + 1):
+        for ax in axes[r, len(agents):]:
+            ax.axis("off")
+    if means:
+        ax = axes[-1, 0]
+        for name in names:
+            ax.plot(res.means_t, res.means[name], lw=1, label=name)
+        ax.axhline(0, color="k", lw=0.4); ax.set_title("mean paths", fontsize=9); ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
+        for ax in axes[-1, 1:]:
+            ax.axis("off")
+    fig.suptitle(f"{res.model.name}  (residual {res.residual:.1e}" + (f", settled {res.settled:.1e}" if res.settled is not None else "") + ")", fontsize=11)
+    fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
 
 
 def _plot_by_shock_time(res, curves, path: str) -> None:
