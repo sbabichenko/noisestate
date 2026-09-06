@@ -639,7 +639,7 @@ class TriangleResult(Result):
         # read the fine kernel at the coarse nodes from the same side of each piece boundary as the coarse
         # node (kernels jump across the delay line; a one-sided read from the other side is not an error)
         g = self.grid; worst = 0.0
-        I = fine.grid.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_d)
+        I = fine.grid.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_ds)
         for name in self.compiled.prim:
             for ch in self.channels:
                 K0 = self.kernel(name, ch); K1 = I @ fine.kernel(name, ch)
@@ -790,9 +790,7 @@ class TransitionResult(TriangleResult):
         out["window"] = float(self.compiled.T)
         if self.march is not None:
             out["march"] = [{"T": r["T"], "gap": {k: float(v) for k, v in r["gap"].items()}, "evaluations": int(r["evaluations"]),
-                             "seconds": float(r["seconds"]), "monitor": r["monitor"],
-                             **({"gap_last": {k: float(v) for k, v in r["gap_last"].items()}} if "gap_last" in r else {})}
-                            for r in self.march]
+                             "seconds": float(r["seconds"]), "monitor": r["monitor"]} for r in self.march]
             out["march_stop"] = self.march_stop; out["march_settle"] = self.march_settle
         return out
 

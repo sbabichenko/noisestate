@@ -199,7 +199,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         horizon T): the previous maps read at this grid's nodes where they exist, the continuation's frozen
         stationary maps beyond the previous domain (what a settled transition has there), zero without one."""
         c = self.c; g, gc = c.g, prev.compiled.g
-        I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_d)
+        I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_ds)
         outside = ~np.asarray(I != 0).any(axis=1)
         out = {}
         for a in self.model.agents:
@@ -455,7 +455,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         """The coarse result's raw maps read at this triangle's nodes from each node's side of its piece."""
         c = self.c; g, gc = c.g, coarse.compiled.g
         if c.past is not None:
-            I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_d)
+            I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_ds)
             out = {}
             for a in self.model.agents:
                 gm = np.zeros(self.shapes[a.name])

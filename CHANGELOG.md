@@ -2,19 +2,34 @@
 
 ## Unreleased
 
+- **A transition horizon shorter than the past's window.**  The compile's refusal of T < L was an implementation
+  artefact: for any T > 0 (a positive multiple of the unit) the strip is the rectangle [0, T] x [0, L], the new shocks
+  below the diagonal, the old ones above it, the buffer [T, T + L] closing it as before.  `TriangleGrid` marks the
+  buffer's pieces above the line s = 0 as the band (old shocks alive past T; a square straddling s = 0 is cut along its
+  diagonal, a rectangle straddling it is refused), the compile closes the cuts below L under the shift by T (the
+  buffer's panels are the age panels shifted), and every node-based read carries its piece's s-range (`side_ds`): on a
+  diagonal that is not its own piece's a node reads the side its piece lies on (the corner (T, T) of the buffer's first
+  upper triangle lies on s = 0 and read the band).  The same-model identity holds below the window to the T = 6 floor on
+  every node, the buffer and its band included (Chapter 3 at 12 nodes, T = 1 and 1.5: one-shot 3.8e-6 / 1.3e-5, kernels
+  within 1.3e-5); the per-diagonal side also lowers the T = 3 one-shot floor from 4.2e-5 to 3.8e-6.  Baseline at 0.
+  `transition_gap` now runs on the smallest strip, one unit (`numerics.unit`, else the smallest lag, else L), and the
+  march starts there, by units up to the first window and by windows after (`step` overrides); on Chapter 3 with `unit:
+  1` the unit steps are dear (3024 nodes at T = 1 against 576 at T = 3) and cannot stop a regime change (the monitor's
+  window [0, T] holds the initial transient below L): the panel reuse of the next stage is what makes them pay.
 - **The horizon as an output: `transition(old, new, settle=tol)`, the march in T.**  Exactly one of `T` and `settle`
   (`T` keeps today's behaviour bit for bit); the file form takes `settle:` in place of `window:` under kind transition
   (exactly one), the CLI `transition --settle TOL [--step DT] [--max-window K]`.  The march starts at the T = 0 pass
   (`transition_gap`; under the tolerance the smallest-window solve is the transition), grows T by `step` (default one
   window; the engine's floor is T = L) with each solve warm-started from the previous maps (`warm_maps_from`, the
   continuation solved once), and after each solve runs the monitor, the best-response pass (`transition.gap_passes`)
-  on the window before the last ([T - 2L, T - L] once T >= 2L; the strip under T - L before; each row says which),
-  stopping under `settle` or at `max_window` windows (default 8: the settled flag stays and names the stop).
-  `res.extra["window"]`, `res.march` (rows `{T, gap, gap_last, evaluations, seconds, monitor}`), `res.march_stop`, in
-  the payload too.  Chapter 3, 3 -> 10 at 12 nodes, settle 1e-4: T = 3, 6, 9, 12 in 20, 8, 4, 4 evaluations, gaps 0.577,
-  0.577, 9.2e-4, 9.3e-7 (a factor of 625 then 990 per window), 36 evaluations and 16.8 s against 20 and 12.3 s for the
-  explicit solve at T = 12, the maps agreeing to 5e-8; the same-model past stops at T = 0.  No number of an explicit
-  solve moves (baseline at 0).
+  on the last window [T - L, T], the range of `settled`: the design note's caution that the gap at T is the handover and
+  never small was wrong (on Chapter 3 the explicit T = 9 solve settles at 2.7e-6 under a 1e-4 tolerance; a monitor on
+  the window before the last stopped one window late, at T = 12), so the march stops at the smallest T whose explicit
+  solve settles.  Stops under `settle` or at `max_window` windows (default 8: the settled flag stays and names the
+  stop).  `res.extra["window"]`, `res.march` (rows `{T, gap, evaluations, seconds, monitor}`), `res.march_stop`, in
+  the payload too.  Chapter 3, 3 -> 10 at 12 nodes, settle 1e-4: T = 3, 6, 9 in 20, 8, 4 evaluations, gaps 0.577,
+  9.2e-4, 9.3e-7 (a factor of 625 then 990 per window), 32 evaluations against 20 for the explicit solve at T = 9,
+  the maps agreeing to 5e-8; the same-model past stops at T = 0.  No number of an explicit solve moves (baseline at 0).
 
 - **The T = 0 pass of the settle march: `transition_gap(old, new)`.**  With nothing solved, every agent at the
   new model's stationary rules from date zero and the old regime's shocks attached, one best response per agent;

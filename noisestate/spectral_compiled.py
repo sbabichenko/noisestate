@@ -80,7 +80,8 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
     def _regimes(self, model: Model, past, continuation, lags) -> Optional[float]:
         """The past and the continuation as the game's regimes: T, self.past (validated against the model at the
         panel unit), row_delays and, with a past, the rows undelayed (their maps in raw age), self.cont (a
-        converged StationaryResult of this model at the past's window L, which needs T >= L) and Tg, the
+        converged StationaryResult of this model at the past's window L; a horizon shorter than L keeps old
+        shocks alive on the buffer, whose pieces then carry the band above the line s = 0) and Tg, the
         grid's end.  Invariant: Tg = T + L with a continuation, T without; a continuation always has a past
         with a window.  Returns L, the past's window (None without one)."""
         hz = model.horizon
@@ -102,9 +103,6 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
                 raise ValueError("a stationary continuation needs a past with a window (the old regime's kernels): with initial "
                                  "shocks only the game ends at T")
             self._check_continuation(model, continuation, L)
-            if self.T < L - 1e-12:
-                raise ValueError(f"the horizon T = {self.T:g} is shorter than the past's window L = {L:g}: with a stationary "
-                                 "continuation the shocks born before zero must be forgotten by T; raise horizon.window to at least L")
         self.Tg = self.T + L if continuation is not None else self.T        # the grid's end: the buffer [T, T + L] follows T
         return L
 
@@ -191,6 +189,22 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             if not lags and not hz.breakpoints:                     # no lags: time panels of width L (the shocks' lifetime), then T
                 bp = sorted(set(bp) | {float(b) for b in np.arange(0.0, self.T - 1e-12, L)})
             if continuation is not None:                            # the buffer's time panels: the age panels shifted to T
+                if self.T < L - 1e-12:
+                    # T below the window: the buffer [T, T + L] overlaps [0, L], so the cuts below L must be closed under
+                    # the shift by T (a cut b below L is a cut b + T and b - T within [0, L] as well) for the buffer's
+                    # panels to be the age panels shifted; with the lags closed after, repeated to a fixed point
+                    for _ in range(64):
+                        below = sorted(b for b in bp if b <= L + 1e-12)
+                        more = {round(b + k * self.T, 12) for b in below for k in (-1, 1) if -1e-12 <= b + k * self.T <= L + 1e-12}
+                        new = sorted(set(below) | more)
+                        new = close_under_delays(new, lags) if lags and not self.coarse else new
+                        new = [b for b in new if b <= L + 1e-12]
+                        if len(new) == len(below):
+                            break
+                        bp = new
+                    else:
+                        raise ValueError(f"the cuts below the window {L:g} do not close under the shift by T = {self.T:g} and the lags "
+                                         f"{lags}: set horizon.unit to a common divisor of T, L and the lags")
                 bp = sorted(set(bp) | {round(self.T + b, 12) for b in bp if b <= L + 1e-12})
             bp = close_under_delays(bp, lags) if lags and not self.coarse else bp
             if continuation is not None:
@@ -408,7 +422,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         if dt == 0.0 and da == 0.0:
             M = np.eye(self.N)
         else:
-            M = g.interp(g.t - dt, g.a - da, side_t=g.side_t, side_a=g.side_a, side_d=g.side_d)
+            M = g.interp(g.t - dt, g.a - da, side_t=g.side_t, side_a=g.side_a, side_d=g.side_ds)
             if da > 0:
                 M[g.a0 < da - 1e-12] = 0.0
             if dt > 0 and g.L is not None:
@@ -493,7 +507,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
                     # node; a triangle (cut by a diagonal of the buffer) lands inside that rectangle and is interpolated
                     if pc.triangle:
                         idx = pc.offset + np.arange(pc.n)
-                        S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx], side_d=g.side_d[idx])
+                        S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx], side_d=g.side_ds[idx])
                         continue
                     tgt = g._piece_by_pq.get((pc.p - k, pc.q - k))
                 else:
@@ -504,7 +518,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
                                          f"[{pc.t0:g}, {pc.t1:g}] shifted back by the lag is not a panel; drop horizon.breakpoints, "
                                          f"or set horizon.unit to a common divisor of the lags and of the window {self.T}")
                     idx = pc.offset + np.arange(pc.n)               # beyond unit_range: the read is interpolated
-                    S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx], side_d=g.side_d[idx])
+                    S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx], side_d=g.side_ds[idx])
                     continue
                 S[pc.offset + np.arange(pc.n), tgt.offset + np.arange(pc.n)] = 1.0
             self._map_shifts[key] = S
@@ -597,7 +611,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             if dt == 0.0 and da == 0.0:
                 M = identity(self.N, format="csr")
             else:
-                M = g.interp_sparse(g.t - dt, g.a - da, side_t=g.side_t, side_a=g.side_a, side_d=g.side_d)
+                M = g.interp_sparse(g.t - dt, g.a - da, side_t=g.side_t, side_a=g.side_a, side_d=g.side_ds)
                 zero = np.zeros(self.N, dtype=bool)
                 if da > 0:
                     zero |= g.a0 < da - 1e-12
@@ -623,7 +637,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
                     if pc.triangle:
                         idx = pc.offset + np.arange(pc.n)
                         I = g.interp_sparse(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx],
-                                            side_d=g.side_d[idx]).tocoo()
+                                            side_d=g.side_ds[idx]).tocoo()
                         rows.append(idx[I.row]); cols.append(I.col); vals.append(I.data)
                         continue
                     tgt = g._piece_by_pq.get((pc.p - k, pc.q - k))
@@ -634,7 +648,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
                         self.map_shift(delay)                   # raises with the message of the dense form
                     idx = pc.offset + np.arange(pc.n)               # beyond unit_range: the read is interpolated
                     I = g.interp_sparse(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx],
-                                        side_d=g.side_d[idx]).tocoo()
+                                        side_d=g.side_ds[idx]).tocoo()
                     rows.append(idx[I.row]); cols.append(I.col); vals.append(I.data)
                     continue
                 rows.append(pc.offset + np.arange(pc.n)); cols.append(tgt.offset + np.arange(pc.n)); vals.append(np.ones(pc.n))
@@ -702,7 +716,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             if base not in paths:
                 if swap:                    # build the base geometry: the unknown reads what this key's known reads
                     kw = dict(kw, point_fn=kw["known_fn"], known_fn=kw["point_fn"])
-                paths[base] = self.g.path(self.g.t, self.g.a, side_t=self.g.side_t, side_d=self.g.side_d, **kw)
+                paths[base] = self.g.path(self.g.t, self.g.a, side_t=self.g.side_t, side_d=self.g.side_ds, **kw)
             paths[key] = paths[base].swapped() if swap else paths[base]
         return paths[key]
 
@@ -720,7 +734,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             self.g.paths[key] = g.path(g.t, g.a, r_lo=np.where(up, g.t, 0.0), r_hi=np.where(up, g.a, 0.0),
                                        point_fn=lambda k, b: (np.full_like(b, g.t[k]), b), known_fn=lambda k, b: g.a[k] - b,
                                        extra_cuts=lambda k: [g.a[k] - c for c in self.past.breakpoints], side_t=g.side_t,
-                                       side_d=g.side_d, known_grid=self.past.grid)
+                                       side_d=g.side_ds, known_grid=self.past.grid)
         return self.g.paths[key]
 
     def past_proj_path(self):
@@ -733,7 +747,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             self.g.paths[key] = g.path(g.t, g.a, r_lo=np.where(up, g.t - L, 0.0), r_hi=np.where(up, g.s, 0.0),
                                        point_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r), known_fn=lambda k, r: g.s[k] - r,
                                        extra_cuts=lambda k: [g.s[k] - c for c in self.past.breakpoints], side_t=g.side_t,
-                                       side_d=g.side_d, known_grid=self.past.grid)
+                                       side_d=g.side_ds, known_grid=self.past.grid)
         return self.g.paths[key]
 
     def old_shock_proj_path(self):
@@ -745,7 +759,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             lo = np.where(~g.upper & (g.t < L - 1e-12), g.t - L, 0.0)
             self.g.paths[key] = g.path(g.t, g.a, r_lo=lo, r_hi=np.zeros(self.N),
                                        point_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r),
-                                       known_fn=lambda k, r: (np.full_like(r, g.s[k]), g.s[k] - r), side_t=g.side_t, side_d=g.side_d)
+                                       known_fn=lambda k, r: (np.full_like(r, g.s[k]), g.s[k] - r), side_t=g.side_t, side_d=g.side_ds)
         return self.g.paths[key]
 
     def past_row_kernel(self, agent: str, r: int) -> np.ndarray:

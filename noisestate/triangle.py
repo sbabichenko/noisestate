@@ -149,21 +149,30 @@ class TriangleGrid:
                 continue
             buf = self.Tb is not None and p >= self.P_T
             pr, org = (p - self.P_T, self.Tb) if buf else (p, 0.0)
+            # the band, the old shocks (s < 0): before the buffer every piece above the diagonal; on the buffer
+            # (a horizon T shorter than the window L keeps old shocks alive past T) the pieces above the line
+            # s = 0, which runs along the diagonals of the squares (p, p) and below the panels q > p
             for q in range(min(pr, self.PL - 1) + 1):                      # below the region's diagonal
                 pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, origin=org, triangle=(q == pr), band=False)
                 self.pieces.append(pc); off += pc.n
             for q in range(pr, self.PL):                                    # above it: the old shocks (band) or those born before T_b
                 if q == pr:
-                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=True, origin=org, triangle=True, band=not buf)
+                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=True, origin=org, triangle=True,
+                               band=not buf or q == p)
                     self.pieces.append(pc); off += pc.n
                 elif abs((bp[p + 1] - bp[p]) - (bp[q + 1] - bp[q])) < eps:   # a square: split along its diagonal
                     self._split[p, q] = True
                     for up in (False, True):
                         pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=up, origin=bp[p] - bp[q],
-                                   triangle=True, band=not buf)
+                                   triangle=True, band=not buf or q > p or (q == p and up))
                         self.pieces.append(pc); off += pc.n
                 else:
-                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=True, origin=org, triangle=False, band=not buf)
+                    if buf and bp[q] < bp[p + 1] - eps and bp[q + 1] > bp[p] + eps:
+                        raise ValueError(f"the buffer's piece on time panel [{bp[p]:g}, {bp[p + 1]:g}] and age panel [{bp[q]:g}, "
+                                         f"{bp[q + 1]:g}] straddles the line s = 0 (old shocks alive on the buffer, T = {self.Tb:g} "
+                                         f"< L = {self.L:g}) and is not square: cut the panels below the window at a common unit")
+                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=True, origin=org, triangle=False,
+                               band=not buf or bp[q] >= bp[p + 1] - eps)
                     self.pieces.append(pc); off += pc.n
         self.N = off
         self.t = np.concatenate([pc.t for pc in self.pieces])
@@ -176,6 +185,15 @@ class TriangleGrid:
         self.upper = np.concatenate([np.full(pc.n, pc.band) for pc in self.pieces])    # the band: nodes with s < 0
         self.origins = sorted({float(pc.origin) for pc in self.pieces if pc.triangle})   # the diagonals' origins, cut by paths
         self.side_d = np.where(self.above, 1, -1)                                     # side of the diagonal a node reads
+        # the s-range of each node's piece (a square: [t0 - a1, t1 - a0]; a triangle below its diagonal s = origin:
+        # [origin, t1 - a0], above it: [t0 - a1, origin]), and side_ds = (side_d, s_min, s_max): on a diagonal of
+        # origin o a node reads the upper side when its piece lies at s <= o and the lower side at s >= o, side_d
+        # deciding only when the piece straddles o.  With a horizon shorter than the window a node can sit on a
+        # diagonal that is not its piece's own (the corner (T, T) of the buffer's first upper triangle lies on
+        # s = 0), where the flag alone would read the wrong side (_locate).
+        smin = np.concatenate([np.full(pc.n, pc.origin if (pc.triangle and not pc.upper) else pc.t0 - pc.a1) for pc in self.pieces])
+        smax = np.concatenate([np.full(pc.n, pc.origin if (pc.triangle and pc.upper) else pc.t1 - pc.a0) for pc in self.pieces])
+        self.side_ds = np.column_stack([self.side_d.astype(float), smin, smax])
         # a node on its piece's top age edge reads from below.  Without a window a lower triangle's nodes read from
         # above (its top corner (t1, t1) is on the diagonal; kept for bit identity); with one every piece's top
         # corner is at an age breakpoint where kernels may jump (the lower sub-triangle of a split square), and
@@ -230,19 +248,32 @@ class TriangleGrid:
             p = np.where(st > 0, self.panel_of(tc, +1), self.panel_of(tc, -1))
             q = np.where(sa > 0, self.panel_of(ac, +1), self.panel_of(ac, -1))
             return inside, p, np.minimum(q, p), np.zeros(len(t), dtype=bool), tc, ac
-        sd = np.broadcast_to(np.asarray(side_d), t.shape)
+        side_d = np.asarray(side_d, dtype=float)
+        ranged = side_d.ndim == 2                             # (side_d, s_min, s_max) per point: the reader's piece s-range
+        sd = np.broadcast_to(side_d[:, 0] if ranged else side_d, t.shape)
         inside = (a >= -1e-12) & (a <= self.L + 1e-12) & (t <= self.T + 1e-12) & (t >= -1e-12)
+        ss = np.zeros(t.shape, dtype=int)
         if side_a is not None:
             ss = np.where((st > 0) & (sa < 0), 1, np.where((st < 0) & (sa > 0), -1, 0))   # the s-side the sides imply
             sd = np.where(ss == 0, sd, -ss)
             inside = inside & ~((np.abs(a - self.L) <= 1e-12 * max(1.0, self.T)) & (sa > 0))
+        eps_s = 1e-12 * max(1.0, self.T)
+
+        def side_on(origin):
+            """The side read on the diagonal s = origin: the sides' when unambiguous, else the reader's piece
+            s-range (above when the piece lies at s <= origin, below at s >= origin), else side_d."""
+            if not ranged:
+                return sd
+            by_range = np.where(side_d[:, 2] <= origin + eps_s, 1, np.where(side_d[:, 1] >= origin - eps_s, -1, sd))
+            return np.where(ss == 0, by_range, sd)
         tc = np.clip(t, 0.0, self.T); ac = np.clip(a, 0.0, self.L)
         p = np.where(st > 0, self.panel_of(tc, +1), self.panel_of(tc, -1))
         if self.Tb is None:
-            pr, tr = p, tc
+            pr, tr, org = p, tc, np.zeros(t.shape)
         else:                                                # the buffer's panels count from T_b, its diagonal is a = t - T_b
             pr = np.where(p >= self.P_T, p - self.P_T, p); tr = np.where(p >= self.P_T, tc - self.Tb, tc)
-        up = (ac > tr + 1e-12) | ((np.abs(ac - tr) <= 1e-12) & (sd > 0))
+            org = np.where(p >= self.P_T, self.Tb, 0.0)
+        up = (ac > tr + 1e-12) | ((np.abs(ac - tr) <= 1e-12) & (side_on(org) > 0))
         ac = np.where(up, ac, np.minimum(ac, tr))
         q = np.where(sa > 0, self.panel_of(ac, +1), self.panel_of(ac, -1))
         q = np.where(up, np.maximum(q, pr), np.minimum(q, pr))
@@ -251,7 +282,7 @@ class TriangleGrid:
         split = up & (q > pr) & self._split[p, qc]
         if split.any():
             d2 = (ac - self.bp[qc]) - (tc - self.bp[p])
-            up = np.where(split, (d2 > 1e-12) | ((np.abs(d2) <= 1e-12) & (sd > 0)), up)
+            up = np.where(split, (d2 > 1e-12) | ((np.abs(d2) <= 1e-12) & (side_on(self.bp[p] - self.bp[qc]) > 0)), up)
         return inside, p, q, up, tc, ac
 
     def interp(self, t, a, side_t=+1, side_a=None, side_d=-1) -> np.ndarray:
@@ -501,7 +532,7 @@ class TriangleGrid:
         at_bp = lambda tt: np.min(np.abs(tt[:, None] - self.bp[None, :]), axis=1) < 1e-12
         st_I = np.where(at_bp(pt), side_t[lp.rows], +1) if side_t.ndim == 1 else side_t
         side_d = np.asarray(side_d)
-        sd_I = side_d[lp.rows] if side_d.ndim == 1 else side_d
+        sd_I = side_d[lp.rows] if side_d.ndim >= 1 else side_d                 # per node (N,) or (N, 3) with the piece s-range
         lp.I = self.interp_sparse(pt, pa, side_t=st_I, side_a=side_a, side_d=sd_I)
         if known_fn is not None and known_grid is not None:
             ages = np.broadcast_to(np.asarray(known_fn(lp.rows, lp.r), dtype=float), lp.r.shape)

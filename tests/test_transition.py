@@ -22,7 +22,7 @@ import noisestate as ns
 from noisestate.past import Past
 from helpers import (IVP, A1, H1, R1, T1, P0, prior_model as model, slow, slow_param, example, stationary,
                      same_model_solver, same_model_setup, two_firm_market, strip_maps, stationary_on_strip,
-                     one_shot_from_the_stationary_maps)
+                     one_shot_from_the_stationary_maps, one_shot_deviation)
 
 a, h, r = A1, H1, R1            # the discounted one-agent model's constants (helpers.prior_model)
 
@@ -425,8 +425,8 @@ def test_past_validation():
         ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(fin))
     with pytest.raises(ValueError, match="window"):
         ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(m.with_horizon(window=2.0, nodes=6)).check())
-    with pytest.raises(ValueError, match="shorter than the past's window"):
-        ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=2.0, nodes=6), past=stat, continuation=stat)
+    short = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=2.0, nodes=6), past=stat, continuation=stat)   # T < L builds
+    assert [float(b) for b in short.c.g.bp] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0] and int((short.c.g.upper & short.c.buffer).sum()) == 36
     with pytest.raises(ValueError, match="needs a past with a window"):
         ns.SpectralFiniteSolver(fin, past=[{"name": "v", "loads": {"X": 1.0}}], continuation=stat)
     with pytest.raises(ValueError, match="'stationary', 'end' or a StationaryResult"):
@@ -456,3 +456,30 @@ def test_second_order_check_sees_the_initial_shock_columns():
     v = np.zeros_like(gam); v[0, 0, c.N:] = 1.0                                  # a direction on the point weights only
     J = lambda h: S.expected_cost(agent, c.closed_loop({"a": gam + h * v}))
     assert (J(1e-2) + J(-1e-2) - 2 * J(0.0)) / 1e-4 > 1.0
+
+
+@pytest.mark.parametrize("T", [1.0, 1.5])
+def test_same_model_identity_holds_below_the_window(T):
+    """A horizon shorter than the past's window: Chapter 3 (L = 3) as its own past and continuation at T = 1 (one
+    unit) and T = 1.5 (L/2), 8 nodes.  The strip is the rectangle [0, T] x [0, L]; the old shocks are still alive
+    on the buffer, whose pieces above the line s = 0 carry the band (the cuts below L closed under the shift by
+    T so the buffer's panels are the age panels shifted; a node on a diagonal that is not its own piece's reads
+    the side its piece lies on, side_ds).  One best response from the stationary maps returns them on every
+    node, and the solve returns the stationary kernels on every node, the buffer and its band included, to the
+    same floor as at T = 6 (8 nodes: one-shot 6e-4 / 2.8e-3, kernels 2.8e-3 at T = 6; pinned at 1.5x)."""
+    m = example("ch3_two_player")
+    stat = stationary(m, 8)
+    ref = same_model_solver(m, stat, 6.0, 8); rdev = one_shot_deviation(ref); rres = ref.solve(start="stationary")
+    solver = same_model_solver(m, stat, T, 8); c = solver.c; g = c.g
+    assert c.T == T and g.L == 3.0 and c.buffer.any() and (g.upper & c.buffer).any()          # old shocks alive on the buffer
+    assert [float(b) for b in g.bp] == ([0.0, 1.0, 2.0, 3.0, 4.0] if T == 1.0 else [0.0, 1.5, 3.0, 4.5])
+    dev = one_shot_deviation(solver)
+    for a in dev:
+        assert dev[a].max() < 1.5 * rdev[a].max(), (a, dev[a].max(), rdev[a].max())
+    res = solver.solve(start="stationary")
+    assert res.converged and res.evaluations <= 12 and res.settled < 1.5 * max(rdev[a].max() for a in rdev)
+    for name in ("X", "D1", "D2"):
+        S = stationary_on_strip(stat, g, name); Sr = stationary_on_strip(stat, ref.c.g, name)
+        d = np.abs(res.kernel(name) - S).max(axis=1) / np.abs(S).max()
+        dr = (np.abs(rres.kernel(name) - Sr).max() / np.abs(Sr).max())
+        assert d.max() < 1.5 * max(dr, 1e-4) and d[c.buffer].max() < 1.5 * max(dr, 1e-4) and d[g.upper & c.buffer].max() < 1.5 * max(dr, 1e-4), (name, d.max(), dr)

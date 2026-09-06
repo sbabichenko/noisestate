@@ -19,7 +19,7 @@ name; every coefficient, delay, loss and discount may change.
 ```yaml
 horizon:
   kind: transition
-  window: 6.0                          # the horizon T (at least the past's window L)
+  window: 6.0                          # the horizon T (any positive multiple of the unit; or settle: a tolerance the horizon is found for)
   past: {model: ch3_two_player.yaml}   # or an inline model, or initial: [{name, loads, rows}, ...]
   continuation: stationary             # the new model's stationary equilibrium closes the game (or: end)
 numerics: {nodes: 12, continuation_nodes: 12}   # per side of each piece; the continuation's solve (its window is the past's)
@@ -56,29 +56,43 @@ which says whether the resolution guard's error sits in the interior, on the ban
 tip, on the last window or on the buffer (the tip and the last window are geometry, not
 resolution).  The past's and the continuation's own window tails are echoed as rows.
 
-`ns.transition_gap(old, new, numerics=)` is the settle march's T = 0 pass (design/transition_settle_march.md): everyone at the new model's stationary rules from date zero with the old regime's shocks attached, one best response per agent, and per agent the relative distance of that rule from the stationary one (max over the identified nodes, relative to the rule's peak), on the smallest strip the engine builds, [0, L] (the compile refuses T < L).  Chapter 3's precision change 3 -> 10 gives 0.585 and 0.061 at 12 nodes, 3 -> 3.03 gives 0.0033 (linear in the mismatch); the same model as its own past sits at the one-shot floor, 4e-5 at 12 nodes, 1e-5 at 16, 2.4e-6 at 24, so a tolerance below that floor is never met.
+A horizon shorter than the past's window is allowed: for any T > 0 (a positive multiple of the unit) the strip is the
+rectangle [0, T] x [0, L], the new shocks below the diagonal (never truncated when T < L), the old ones above it (all
+still alive at T when T < L), and the buffer [T, T + L] closes it as before, with the old shocks alive on the buffer
+carried as the band on its pieces above the line s = 0 (the cuts below L are closed under the shift by T so that the
+buffer's panels are the age panels shifted, a square straddling s = 0 being cut along its diagonal; a node on a diagonal
+that is not its own piece's reads the side its piece lies on, `TriangleGrid.side_ds`).  The same-model identity holds
+there to the T = 6 floor on every node, the buffer and its band included: Chapter 3 at 12 nodes, T = 1 (one unit) and
+T = 1.5 (L/2), one best response from the stationary maps 3.8e-6 and 1.3e-5, the solved kernels within 1.3e-5 of the
+stationary ones (the same at T = 3 and T = 6); the zero-past finite solve is untouched (baseline at 0).
+
+`ns.transition_gap(old, new, numerics=)` is the settle march's T = 0 pass (design/transition_settle_march.md): everyone at the new model's stationary rules from date zero with the old regime's shocks attached, one best response per agent, and per agent the relative distance of that rule from the stationary one (max over the identified nodes, relative to the rule's peak), on the smallest strip the engine builds, one unit (`numerics.unit`, else the smallest lag, else the past's window: Chapter 3 has no lags, so [0, L] without a unit and [0, 1] with `unit: 1`).  Chapter 3's precision change 3 -> 10 gives 0.585 and 0.061 at 12 nodes (0.583 and 0.061 on the unit strip), 3 -> 3.03 gives 0.0033 (linear in the mismatch); the same model as its own past sits at the one-shot floor, 3.8e-6 and 1.3e-5 at 12 nodes on [0, 3] (8e-11 and 5.5e-10 on the unit-cut [0, 1]), so a tolerance below that floor is never met.
 
 `ns.transition(old, new, settle=1e-4)` (the file form: `settle:` in place of `window:` under kind transition, exactly one
 of the two; the CLI: `transition old.yaml new.yaml --settle 1e-4 [--step DT] [--max-window K]`) makes the horizon an
 output: the march in T of design/transition_settle_march.md.  It starts at the T = 0 pass above (under the tolerance the
-smallest-window solve at T = L, one or two evaluations from the stationary start, is the transition: the same-model past
-stops here), then grows T by `step` (default one window L; the engine's floor is T = L, so there are no unit steps below
-the first window) with each solve warm-started from the previous maps read on the new grid and the stationary rules on the
-new stretch (`warm_maps_from`, the sweep's warm start; the continuation solved once), and after each solve runs the
-monitor: the best-response pass on the converged maps over the window before the last, [T - 2L, T - L] once T >= 2L
-(the gap on the last window is the handover and is never zero; below 2L the strip under T - L, the whole strip at T = L;
-each row says which), stopping when every agent's gap is under `settle` or when T would pass `max_window` windows
-(default 8: the settled flag then stays and names the stop).  The result carries `res.extra["window"]` (the T found),
-`res.march` (rows `{T, gap, gap_last, evaluations, seconds, monitor}`, T = 0 first; `gap_last` is the same pass on
-[T - L, T], what `settled` measures), `res.march_stop` and `res.settled` as before.  Chapter 3's precision change 3 -> 10
-at 12 nodes, settle 1e-4: T = 0 gap 0.585; T = 3 in 20 evaluations (5.3 s), gap 0.577 on [0, 3]; T = 6 in 8 (3.7 s),
-0.577 on [0, 3] again; T = 9 in 4 (3.2 s), 9.2e-4 on [3, 6]; T = 12 in 4 (4.2 s), 9.3e-7 on [6, 9]: a factor of 625 then
-990 per window, the closed-loop rate, the last at the 12-node floor.  36 evaluations and 16.8 s in all against 20
-evaluations and 12.3 s for the one explicit solve at T = 12 from the stationary start (23 and 13.9 s from zero), the
-maps agreeing to 5e-8 at the default tol (3e-11 at tol 1e-11, where each solve takes 19 to 28 evaluations and the
-warm start no longer saves).  Because the monitor certifies the solve one window back, the march's T is one window past
-the smallest T whose explicit solve settles on its last window (T = 9: settled 2.7e-6; T = 6: 4.8e-4).  Not built yet
-(the next stage): steps by units with reuse of the panels, path factors and preconditioner blocks across steps.
+smallest-strip solve, one unit, a few evaluations from the stationary start, is the transition: the same-model past stops
+here), then grows T by `step` when given, else by one unit up to the first window L and by one window after it (each T
+snapped up to a multiple of the unit), with each solve warm-started from the previous maps read on the new grid and the
+stationary rules on the new stretch (`warm_maps_from`, the sweep's warm start; the continuation solved once), and after
+each solve runs the
+monitor: the best-response pass on the converged maps over the last window [T - L, T], the range of `settled` (the
+design note feared the handover at T would never be small; it is once the transient has passed: the explicit T = 9
+solve below settles at 2.7e-6), stopping when every agent's gap is under `settle` or when T would pass `max_window`
+windows (default 8: the settled flag then stays and names the stop).  The result carries `res.extra["window"]` (the T
+found), `res.march` (rows `{T, gap, evaluations, seconds, monitor}`, T = 0 first), `res.march_stop` and `res.settled`
+as before.  Chapter 3's precision change 3 -> 10 at 12 nodes, settle 1e-4: T = 0 gap 0.585; T = 3 in 20 evaluations
+(5.3 s), gap 0.577; T = 6 in 8 (3.7 s), 9.2e-4; T = 9 in 4 (3.2 s), 9.3e-7: a factor of 625 then 990 per window, the
+closed-loop rate, the last at the 12-node floor; T = 9 is the smallest T whose explicit solve settles under the
+tolerance (settled 2.7e-6; T = 6: 4.8e-4).  31 evaluations in all against 20 for the one explicit solve at T = 9 from
+the stationary start, the maps agreeing to 5e-8 at the default tol (3e-11 at tol 1e-11, where each solve takes 19 to 28
+evaluations and the warm start no longer saves).  Chapter 3 has no lags, so without `numerics.unit` the unit is L and
+the march steps by windows; with `unit: 1` it visits T = 1, 2, 3, 6, 9 (16, 13, 13, 7, 4 evaluations; gaps 0.575,
+0.576, 0.577, 9.3e-4, 7.9e-6): below L the monitor's window [0, T] still holds the initial transient, so the unit steps
+can only stop a march whose T = 0 gap is already small, and on the unit-cut strip they are dear (3024 nodes at T = 1
+against 576 at T = 3: 155 s and 213 s for the first two steps at 12 nodes against 4 s per window step), which is what
+the next stage's panel reuse is for.  Not built yet (the next stage): reuse of the panels, path factors and
+preconditioner blocks across steps.
 
 `ns.transition(old, new, T, nodes=12, **solve_kw)` solves the old regime (or takes its result),
 the new model's stationary equilibrium and the transition, starting from the new stationary
