@@ -525,8 +525,9 @@ class TriangleResult(BaseResult):
 
     def mean(self, name: str, t) -> np.ndarray:
         """The mean path of `name` (any key of res.means) interpolated at the times t (from above at a breakpoint)."""
-        t = np.atleast_1d(np.asarray(t, dtype=float))
-        return self.grid.interp(t, t) @ (self.compiled.mean_embed @ np.asarray(self.means[name], dtype=float))
+        t = np.atleast_1d(np.asarray(t, dtype=float)); g = self.grid
+        a = t if g.L is None else np.zeros_like(t)              # the line s = 0, or (a strip, cut at age L) the age-0 line
+        return g.interp(t, a) @ (self.compiled.mean_embed @ np.asarray(self.means[name], dtype=float))
 
     def grid_info(self) -> dict:
         g = self.grid; c = self.compiled

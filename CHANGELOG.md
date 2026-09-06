@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Transition from a known past, stage 3c: the mean paths with a stationary continuation (a
+  `NotImplementedError` before, as with a past shorter than T).  On a strip cut at age L below the horizon the
+  line s = 0 does not reach T, so the mean system is built on the time line (`SpectralFiniteSolver.
+  _mean_system_line`; the old construction, `_mean_system_diag`, is kept where the line exists and the two
+  agree to 1e-15 at T = L): the state rows through a one-dimensional Volterra operator on the time nodes
+  (`SpectralCompiled.mean_volterra`, Gauss quadrature of each panel's interpolant), each control's mean
+  first-order condition as the per-atom operators of `_foc_operators` (the envelope responses, the agent's
+  own reaction off on the buffer too) applied to the embedded mean of Q zeta + q and read on the age-0
+  line (`mean_line0`: the birth of a shock at t, its continuation running to t + L through the buffer's
+  frozen maps), the mean of a lagged atom being the path at t - lag (`mean_read`; the strip's read of a
+  lagged kernel is zero below age lag, right for a shock and wrong for a path), the paths on the buffer's
+  time nodes frozen at the continuation's stationary means, and lagged reads before zero at the past's
+  constants.  With driven means `res.settled` is the larger of the maps' distance and the mean paths' at T-
+  from the continuation's means (relative to the largest mean: the means settle more slowly than the maps,
+  1.9e-4 against 6.3e-7 on the target change below).  `TriangleResult.mean()` reads a strip's path on the age-0 line (it read the cut line s = 0
+  and returned zero beyond L).  Tests (`tests/test_transition_means.py`): Chapter 3 with a target -2 X as
+  its own past and continuation (T = 6, 16 nodes) keeps the stationary means on every time node to 4.7e-10
+  (6.3e-7 at 12 nodes), the mean cost is T times the stationary mean flow to 1e-11 and the excess costs are
+  7e-11; the target moving from 1 to 2 has X's mean rising monotonically from the old 0.8662 to the new
+  1.7324 (reached at T to 1e-6) while D1 jumps at 0+ from 1.7989 to 4.1115 and falls to 3.5979; the game
+  ending at T with a past shorter than T solves as well.
+
 - Transition from a known past, stage 3b: `TransitionResult(TriangleResult)`, kind "transition", the result
   of every solve with a past.  `res.times` and `res.loss_path[agent]`: E[loss(t)] at every time node of
   [0, T] and the buffer, the variance part by row quadrature (`TriangleGrid.row_quadrature`: Gauss points

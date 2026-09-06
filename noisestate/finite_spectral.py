@@ -707,6 +707,34 @@ class SpectralCompiled(CompiledBase):
             self._time_mass[key] = w
         return self._time_mass[key]
 
+    @cached_property
+    def mean_line0(self) -> np.ndarray:
+        """(Nt, N) reading a kernel at (t, age 0) on every time node, from the node's side of its panel: the value
+        at the birth of a shock at time t, where the mean first-order condition of a strip lives (its
+        continuation runs from there to t + L through the responses to an impulse at t)."""
+        return self.g.interp(self.tm, np.zeros(self.Nt), side_t=self.tm_side)
+
+    @cached_property
+    def mean_volterra(self) -> np.ndarray:
+        """(nX, nX, Nt, Nt): (V_ij f)(t) = int_0^t (e^{A(t - r)})_ij f(r) dr for a path f on the time nodes, by Gauss
+        quadrature on every panel (nt + 2 points, the partial panel cut at t) of the panel's interpolant: the
+        mean dynamics of a strip, on which the line s = 0 is cut at age L."""
+        g = self.g; nt = g.nt; Nt, nX = self.Nt, self.nX
+        V = np.zeros((nX, nX, Nt, Nt))
+        if not nX:
+            return V
+        xg, wg = legendre.leggauss(nt + 2)
+        for k, t in enumerate(self.tm):
+            for p in range(g.P):
+                t0, t1 = g.bp[p], min(g.bp[p + 1], t)
+                if t1 - t0 < 1e-14:
+                    break
+                rq = 0.5 * (t1 - t0) * xg + 0.5 * (t1 + t0); wq = 0.5 * (t1 - t0) * wg
+                Bq = bary_rows(rq, self.tm[p * nt:(p + 1) * nt], self._bwt)      # (nq, nt)
+                EA = self.expA(t - rq)                                            # (nq, nX, nX)
+                V[:, :, k, p * nt:(p + 1) * nt] += np.einsum("q,qij,qn->ijn", wq, EA, Bq)
+        return V
+
     def mean_read(self, lag: float) -> np.ndarray:
         """(Nt x Nt) reading a path on the time nodes at t - lag, zero before 0, from each node's side of its panel:
         the kernels' read of a lagged atom on the line s = 0 (exact on the panels for the model's lags, which are
@@ -1056,7 +1084,7 @@ class SpectralFiniteSolver(EngineBase):
         if self.c.cont is not None:
             for a in self.model.agents:
                 res.cost_parts[a.name]["continuation"] = self.continuation_cost(a, res.Z)
-            res.settled = self.settled(res.maps)
+            res.settled = max(self.settled(res.maps), self.settled_means(res.means))
         if self.c.past is not None:
             res.times = self.c.tm.copy()
             for a in self.model.agents:
@@ -1433,6 +1461,16 @@ class SpectralFiniteSolver(EngineBase):
             worst = max(worst, float(dev[sel].max(initial=0.0) / max(1e-300, np.abs(fr).max())))
         return worst
 
+    def settled_means(self, means) -> float:
+        """How far the mean paths at T (the last node before the buffer) are from the continuation's stationary means,
+        relative to the largest of those; zero when nothing drives the means (the paths are exactly zero)."""
+        c = self.c
+        if c.cont is None or not means or not any(np.any(means[n]) for n in c.prim):
+            return 0.0
+        iT = c.P_T * c.g.nt - 1
+        scale = max(1e-300, max(abs(float(c.cont.means.get(n, 0.0))) for n in c.prim), max(float(np.abs(means[n]).max()) for n in c.prim))
+        return max(abs(float(means[n][iT]) - float(c.cont.means.get(n, 0.0))) for n in c.prim) / scale
+
     def interpolate_maps(self, coarse) -> Dict[str, np.ndarray]:
         """The coarse result's raw maps read at this triangle's nodes from each node's side of its piece."""
         c = self.c; g, gc = c.g, coarse.compiled.g
@@ -1640,13 +1678,21 @@ class SpectralFiniteSolver(EngineBase):
         dt' through the passive-world impulse responses, the other agents answering through their
         equilibrium kernels, the agent's own control passive) applied to the mean paths with no information
         constraint (a deterministic path is common knowledge) and the targets q as the driver in place of
-        the shocks.  Linear in (q, x0, const): one direct solve, no iteration."""
+        the shocks.  Linear in (q, x0, const): one direct solve, no iteration.
+        On a strip cut at age L below the horizon (a past's window shorter than T, or a stationary continuation,
+        whose buffer follows T) the line s = 0 does not reach T, and the system is built on the time line instead
+        (_mean_system_line): the dynamics by a one-dimensional Volterra operator, each control's condition on
+        the line age = 0 (the birth of a shock at t, its continuation running to t + L through the buffer's
+        frozen maps), the paths on the buffer frozen at the continuation's stationary means."""
+        c = self.c
+        if c.Nd < c.Nt:
+            return self._mean_system_line(maps)
+        return self._mean_system_diag(maps)
+
+    def _mean_system_diag(self, maps: Dict[str, np.ndarray]):
+        """mean_system on the line s = 0 (every time panel below the window): the kernels' operators restricted to
+        the nodes `diag` applied to the embedded paths."""
         c = self.c; N, Nt, nP, nX = c.N, c.Nt, len(c.prim), c.nX
-        if c.Nd < Nt:
-            raise NotImplementedError("the mean paths need the line s = 0 on every time panel: with a past whose window is "
-                                      "shorter than the horizon (or a stationary continuation, whose buffer follows T) it is "
-                                      "cut off at age L; give the past a window of at least T without a continuation, or drop "
-                                      "the targets, constant drifts and initial values")
         E, diag = c.mean_embed, c.diag
         blk = lambda i: slice(i * Nt, (i + 1) * Nt)
         M = np.zeros((nP * Nt, nP * Nt)); b = np.zeros(nP * Nt); ones = np.ones(N)
@@ -1683,6 +1729,61 @@ class SpectralFiniteSolver(EngineBase):
                         b[row] -= (MQ[i][diag] @ (E @ pre))
         return M, b
 
+    def _mean_system_line(self, maps: Dict[str, np.ndarray]):
+        """mean_system on the time line (a strip cut at age L < T).  The state rows are xbar(t) = e^{At} x0 +
+        int_0^t e^{A(t-r)} (inputs at their mean paths + const) dr through mean_volterra, a lagged input read
+        before zero at the past's constant.  A control's rows are its mean first-order condition at every time
+        node: the per-atom operators Ms of _foc_operators (the instantaneous derivative, the discounted own
+        lagged reads, the continuation through the passive-world impulse responses to T + L) applied to the
+        embedded mean of Q zeta + q and read on the line age = 0 (mean_line0), the mean of a lagged atom being
+        the path at t - lag (mean_read; the strip's own read of a lagged kernel is zero below age lag, which is
+        right for a shock and wrong for a path).  With a continuation the paths on the buffer's time nodes are
+        its stationary means (frozen, like the maps: the closure assumes the transition has settled by T)."""
+        c = self.c; Nt, nP, nX = c.Nt, len(c.prim), c.nX
+        E, S0 = c.mean_embed, c.mean_line0
+        blk = lambda i: slice(i * Nt, (i + 1) * Nt)
+        M = np.zeros((nP * Nt, nP * Nt)); b = np.zeros(nP * Nt); ones = np.ones(Nt)
+        x0 = self._mean_start()
+        reads = {}
+        def read(lag):
+            if lag not in reads:
+                reads[lag] = c.mean_read(lag)
+            return reads[lag]
+        if nX:
+            V = c.mean_volterra; EA = c.expA(c.tm)
+            for i in range(nX):
+                M[blk(i), blk(i)] = np.eye(Nt)
+                b[blk(i)] = EA[:, i, :] @ x0 + sum((c.const[j] * (V[i, j] @ ones) for j in range(nX) if c.const[j]), 0.0)
+                for si, (nm, lag), coef in c.state_inputs:
+                    M[blk(i), blk(c.index[nm])] -= coef * (V[i, si] @ read(lag))
+                    pre = self._mean_before(nm, lag)
+                    if pre is not None:
+                        b[blk(i)] += coef * (V[i, si] @ pre)
+        for a in self.model.agents:
+            atoms, Q, q = c.loss[a.name]
+            # the envelope responses (best_response): the agent's own reaction off on the buffer as well
+            R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls, own_frozen=False)[:, c.ncol:]
+            R = self._impulse_responses(a, maps, R)
+            Fu, Ms = self._foc_operators(a, R, atoms=True)
+            for ui, u in enumerate(a.controls):
+                row = blk(c.index[u])
+                for j in range(len(atoms)):
+                    Oj = S0 @ Ms[ui][j] @ E                                     # the condition's read of (Q zeta + q)_j's mean
+                    if q[j]:
+                        b[row] -= q[j] * (Oj @ ones)
+                    for i, (nm, lag) in enumerate(atoms):
+                        if Q[j, i]:
+                            M[row, blk(c.index[nm])] += Q[j, i] * (Oj @ read(lag))
+                            pre = self._mean_before(nm, lag)
+                            if pre is not None:
+                                b[row] -= Q[j, i] * (Oj @ pre)
+        if c.cont is not None:                                                  # the buffer: the new stationary means
+            frozen = np.arange(Nt) >= c.P_T * c.g.nt
+            for p, name in enumerate(c.prim):
+                idx = np.flatnonzero(frozen) + p * Nt
+                M[idx, :] = 0.0; M[idx, idx] = 1.0; b[idx] = float(c.cont.means.get(name, 0.0))
+        return M, b
+
     def _mean_start(self) -> np.ndarray:
         """The mean state at time zero: the model's per-state `initial` where given (a given 0 overrides the past),
         else the past's constant mean of the state (zero without a past)."""
@@ -1711,6 +1812,8 @@ class SpectralFiniteSolver(EngineBase):
         driven = c.x0.any() or c.const.any() or any(q.any() for atoms, Q, q in c.loss.values())
         if c.past is not None and any(c.past.mean(n) for n in c.prim):
             driven = True
+        if c.cont is not None and any(c.cont.means.get(n, 0.0) for n in c.prim):
+            driven = True
         if not driven:
             return np.zeros(len(c.prim) * c.Nt)
         M, b = self.mean_system(maps)
@@ -1729,12 +1832,15 @@ class SpectralFiniteSolver(EngineBase):
         """The loss atoms' mean paths (m, Nt) from the primaries' paths: the kernels' atom operators on the embedded
         paths, read on the line s = 0 (a lagged atom is the path at t - lag, zero before 0)."""
         c = self.c; Nt = c.Nt
-        Zm = np.concatenate([c.mean_embed @ zbar[p * Nt:(p + 1) * Nt] for p in range(len(c.prim))])
-        out = np.stack([(c.atom_op(at) @ Zm)[c.diag] for at in atoms])
+        if c.Nd < Nt:                                     # the time line (see _mean_system_line): the path at t - lag
+            out = np.stack([c.mean_read(lag) @ zbar[c.index[nm] * Nt:(c.index[nm] + 1) * Nt] for (nm, lag) in atoms])
+        else:
+            Zm = np.concatenate([c.mean_embed @ zbar[p * Nt:(p + 1) * Nt] for p in range(len(c.prim))])
+            out = np.stack([(c.atom_op(at) @ Zm)[c.diag] for at in atoms])
         for i, (nm, lag) in enumerate(atoms):
             pre = self._mean_before(nm, lag)
             if pre is not None:
-                out[i] += pre[:c.Nd]
+                out[i] += pre[:out.shape[1]]
         return out
 
     def mean_cost(self, agent: Agent, zbar: np.ndarray) -> float:
@@ -1742,7 +1848,7 @@ class SpectralFiniteSolver(EngineBase):
         loss atoms at the mean paths `zbar` (the constant of a target, theta^2, is not in the model): spectral
         quadrature on the time panels."""
         atoms, Q, q = self.c.loss[agent.name]
-        zeta = self._mean_atoms(zbar, atoms); w = self.c.time_mass(self.c.rho)[:self.c.Nd]
+        zeta = self._mean_atoms(zbar, atoms); w = self.c.time_mass(self.c.rho)[:zeta.shape[1]]
         return float(0.5 * np.einsum("it,ij,jt,t->", zeta, Q, zeta, w) + q @ (zeta @ w))
 
     def _mean_part(self, res) -> None:
