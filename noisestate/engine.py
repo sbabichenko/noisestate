@@ -456,7 +456,6 @@ class EngineBase:
         c = self.c
         if not (self.SECOND_ORDER_QUADRATIC or c.rho == 0):
             return None
-        from scipy.sparse.linalg import LinearOperator, eigsh
         N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
         GAO = self._loss_form(agent)                                             # symmetric loss form on the world
         ncol = Gk.shape[0]                                                      # the channels, then a past's initial shocks
@@ -530,13 +529,10 @@ class EngineBase:
             lo, hi = float(w[0]), float(w[-1]); vmin = V[:, 0]
         else:
             vmin = None
-            op = LinearOperator((n, n), matvec=matvec, dtype=float)
-            ltol, lmax = self.settings.second_order_lanczos_tol, self.settings.second_order_lanczos_maxiter
-            try:
-                hi = float(eigsh(op, k=1, which="LA", tol=ltol, maxiter=lmax, return_eigenvectors=False)[0])
-                lo = float(eigsh(op, k=1, which="SA", tol=ltol, maxiter=lmax, return_eigenvectors=False)[0])
-            except Exception as exc:                          # Lanczos did not settle: say so rather than stay silent
-                return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
+            res = self._lanczos_extremes(matvec, n)
+            if "message" in res:
+                return res
+            lo, hi = res["lo"], res["hi"]
         scale = max(abs(lo), abs(hi), 1e-300)
         out = {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale), "converged": True}
         if not out["ok"] and vmin is not None and maps is not None and hasattr(self, "_embedded_curvature"):
@@ -549,6 +545,20 @@ class EngineBase:
                 out["edge"] = bool(emb >= 0.0)
                 out["ok"] = out["edge"]
         return out
+
+    def _lanczos_extremes(self, matvec, n: int) -> dict:
+        """The extreme eigenvalues {"lo", "hi"} of the symmetric form given by matvec on n unknowns, by Lanczos
+        (settings.second_order_lanczos_tol and _maxiter); when it does not settle, the check's record saying
+        so ("converged" False and a "message") rather than silence."""
+        from scipy.sparse.linalg import LinearOperator, eigsh
+        op = LinearOperator((n, n), matvec=matvec, dtype=float)
+        ltol, lmax = self.settings.second_order_lanczos_tol, self.settings.second_order_lanczos_maxiter
+        try:
+            hi = float(eigsh(op, k=1, which="LA", tol=ltol, maxiter=lmax, return_eigenvectors=False)[0])
+            lo = float(eigsh(op, k=1, which="SA", tol=ltol, maxiter=lmax, return_eigenvectors=False)[0])
+        except Exception as exc:                          # Lanczos did not settle: say so rather than stay silent
+            return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
+        return {"lo": lo, "hi": hi}
 
     def _loss_form(self, agent: Agent, init: bool = False) -> np.ndarray:
         """The loss form on the primary kernels, AO' kron(Q, mass) AO for the stacked atom operators AO,

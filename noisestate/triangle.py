@@ -438,6 +438,39 @@ class TriangleGrid:
         self.mass_matrices[key] = M
         return M
 
+    def mass_sparse(self, rho: float = 0.0, t_lo: Optional[float] = None, t_hi: Optional[float] = None):
+        """mass_matrix as a CSR matrix: the Gram is block diagonal by piece (the nodal basis functions of a piece
+        vanish outside it), so its blocks are the pieces' own (nt na)^2 Gram matrices, built by the same
+        quadrature (the matrix-free best response's cost and loss form; the dense one is N x N)."""
+        from scipy.sparse import block_diag, csr_matrix
+        key = ("sparse", round(float(rho), 12), t_lo, t_hi)
+        if key in self.mass_matrices:
+            return self.mass_matrices[key]
+        weight_t = (lambda t: np.exp(-rho * t)) if rho else None
+        xg, wg = legendre.leggauss(max(self.nt, self.na) + 2)
+        eps = 1e-12 * max(1.0, self.T)
+        blocks = []
+        for pc in self.pieces:
+            B = np.zeros((pc.n, pc.n))
+            if not ((t_lo is not None and pc.t1 <= t_lo + eps) or (t_hi is not None and pc.t0 >= t_hi - eps)):
+                tq = 0.5 * (pc.t1 - pc.t0) * xg + 0.5 * (pc.t1 + pc.t0); tw = 0.5 * (pc.t1 - pc.t0) * wg
+                for t, wt in zip(tq, tw):
+                    if pc.triangle:
+                        lo, hi = (t - pc.origin, pc.a1) if pc.upper else (pc.a0, t - pc.origin)
+                    else:
+                        lo, hi = pc.a0, pc.a1
+                    if hi - lo <= 1e-14:
+                        continue
+                    aq = 0.5 * (hi - lo) * xg + 0.5 * (hi + lo); aw = 0.5 * (hi - lo) * wg
+                    tt, xx = pc.local_coords(np.full_like(aq, t), aq)
+                    I = (_bary_rows(tt, pc.tn, pc.wt)[:, :, None] * _bary_rows(xx, pc.xn, pc.wx)[:, None, :]).reshape(len(aq), -1)
+                    w = wt * aw * (weight_t(t) if weight_t is not None else 1.0)
+                    B += (I * w[:, None]).T @ I
+            blocks.append(csr_matrix(B))
+        M = block_diag(blocks, format="csr") if blocks else csr_matrix((self.N, self.N))
+        self.mass_matrices[key] = M
+        return M
+
     # ---------------------------------------------------------- line ops
     def path(self, out_t, out_a, r_lo, r_hi, point_fn: Callable, known_fn: Optional[Callable] = None,
              extra_cuts: Optional[Callable] = None, m: Optional[int] = None, side_t=+1, side_a=+1,

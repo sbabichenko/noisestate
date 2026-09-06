@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- The spectral finite engine's best response matrix-free.  Beyond `settings.foc_dense_max` unknowns nU nR N
+  (the largest agent's; default 8192, above every shipped example and test, whose numbers are unchanged to
+  the bit) `SpectralFiniteSolver.best_response` no longer builds the row, response, first-order-condition and
+  projection operators as N x N arrays nor the (nU nR N)^2 system: `noisestate/finite_free.py` applies each
+  of them from the line paths (`PathOp`: R diag(w J y) I on the path's quadrature points, the known kernel
+  read once; `RowOps`, `RespOps`, `FocOps`, `ProjOps`) and the compiled model's sparse reads (`atom_sparse`,
+  `instant_sparse`, the new `mass_sparse`, `diag_read_sparse`, `shock_time_read_sparse`), and solves the
+  first-order conditions by GMRES on gamma -> sum_k H_k Fu (sum_v Resp_v G_k gamma_v) (`FocSystem`) to
+  `settings.foc_krylov_tol` (1e-12, relative to the right-hand side) within `foc_krylov_maxiter` (400),
+  warm-started from the agent's last solution, preconditioned by the part of the operator that is block
+  diagonal by time row (the own cost read instantaneously through the row operator and projected back,
+  kron(Q_l, sum_k H_k D_l G_k) over the control's own lags l, assembled one panel at a time from the rows of
+  G_k and H_k and LU-factored per time row); a block whose reciprocal condition estimate is below
+  `foc_rcond` raises the singular-system error the dense path raises.  The projection on the seen rows
+  (`maps_from_world`, now through `sub(idx, cols)`), the representation error, the belief error, the costs
+  (sparse mass), `world_from_actions` (the per-panel closed loop with the actions given) and the
+  second-order check (the form applied by the same operators, a block of strategies at a time; Lanczos
+  beyond `second_order_dense`, `EngineBase._lanczos_extremes`) go the same way, so nothing N x N is built.
+  Measured against the dense path with the threshold at 0: ch1_delayed at 8 nodes (random maps, and the
+  fixed point on the action kernels: the same 13 evaluations, costs to 1e-15), Chapter 3 as its own
+  transition and the Kyle-Back prior agree to 1e-12 of the peak on gamma, actions, world, maps and the
+  checks; the whole suite passes with the path forced (`NOISESTATE_FOC_FREE=1`, 194 passed in 470 s
+  against 239 s dense).  GMRES takes 11 to 24 iterations from zero on the examples and 48 to 62 on
+  ch1_delayed as its own transition (window 3, T = 6), 1 warm-started at the same maps; at 4 nodes
+  (N = 9408) the best response goes from 106 s and 21 GB (dense, both operators and system) to 8 s and
+  3.0 GB, agreeing to 8e-12, at 5 nodes (N = 14700) it takes 17 s and 7.8 GB (the first one 121 s, the
+  paths being built), and at 7 nodes (N = 28812) the closed loop (124 s, 18.6 GB), the projection path
+  (140 s, 24 GB) and the continuation path fit but the first best response exceeds ten minutes of path
+  construction (`TriangleGrid.path` is a Python loop over the nodes), so that case and the two-firm
+  Chapter 5 market at 5 nodes are not yet measured to convergence.
+
 - `horizon.unit_range` on the triangle grid.  The finite engine cut the time and age panels at every multiple
   of the unit up to the window; within unit_range it still does, and beyond it the panels grow geometrically
   (`TriangleGrid.fill_geometric`, the stationary grid's rule: the kink at the k-th delay line weakens with k),

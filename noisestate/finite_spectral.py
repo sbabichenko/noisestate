@@ -36,6 +36,7 @@ import numpy as np
 from numpy.polynomial import legendre
 from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
 
+from . import finite_free
 from .engine import EngineBase
 from .compile import CompiledBase, close_under_delays, reject_leads
 from .grid import bary_rows, bary_weights, cheb_lobatto
@@ -868,6 +869,33 @@ class SpectralCompiled(CompiledBase):
         """The discounted Gram matrix over the buffer [T, T + L] of a continuation."""
         return self.g.mass_matrix(rho=self.rho, t_lo=self.T)
 
+    def cost_mass_sparse(self):
+        """cost_mass as a CSR matrix (block diagonal by piece; the matrix-free best response)."""
+        return self.g.mass_sparse(rho=self.rho, t_hi=None if self.cont is None else self.T)
+
+    def buffer_mass_sparse(self):
+        """buffer_mass as a CSR matrix."""
+        return self.g.mass_sparse(rho=self.rho, t_lo=self.T)
+
+    def diag_read_sparse(self, delay: float = 0.0):
+        """diag_read as a CSR matrix."""
+        key = ("diag_read_sparse", round(float(delay), 12))
+        if key not in self._sparse:
+            g = self.g
+            self._sparse[key] = g.interp_sparse(g.t + delay, g.t + delay, side_t=g.side_t)
+        return self._sparse[key]
+
+    def shock_time_read_sparse(self):
+        """shock_time_read as a CSR matrix."""
+        from scipy.sparse import csr_matrix, diags
+        key = ("shock_time_sparse",)
+        if key not in self._sparse:
+            g = self.g
+            M = csr_matrix(diags((~g.upper).astype(float)) @ g.interp_sparse(g.s, g.s, side_t=g.side_t))
+            M.eliminate_zeros()
+            self._sparse[key] = M
+        return self._sparse[key]
+
     # ------------------------------------------------------------ means
     def time_mass(self, rho: float) -> np.ndarray:
         """Weights w (Nt,) with int_0^T e^{-rho t} f(t) dt = w @ f for a path f on the time nodes: Gauss quadrature
@@ -1156,7 +1184,7 @@ class SpectralCompiled(CompiledBase):
         self._state_parts[key] = (blocks, B0)
         return blocks, B0
 
-    def _closed_loop_panels(self, maps, excluded, impulse_controls, own_frozen=True):
+    def _closed_loop_panels(self, maps, excluded, impulse_controls, own_frozen=True, actions=None):
         """closed_loop assembled one time panel at a time: the rows of panel p of the system (I - M) Z = B
         (the state rows from the Volterra path, the control rows from the map convolutions, each restricted to
         the panel's output nodes and applied to the sparse reads of the primaries) are built, its unknowns
@@ -1164,7 +1192,9 @@ class SpectralCompiled(CompiledBase):
         system never exists: the memory is n_prim^2 N N_panel for the largest panel.  The same integrals and
         sums as the dense assembly; not the same to the bit, since a BLAS product of a row block is rounded
         differently from the rows of the full product (this machine's OpenBLAS differs in the last bit on
-        one entry in a thousand), which is why a system within dense_max keeps the dense path."""
+        one entry in a thousand), which is why a system within dense_max keeps the dense path.
+        With actions (agent -> (nU, N, ncol)) every control's rows are its given action kernels and only the
+        states are solved (world_from_actions on the per-panel and matrix-free paths)."""
         N = self.N; nW = self.nW; ncol = self.ncol; g = self.g; nP = len(self.prim)
         imp = list(impulse_controls); nc = ncol + len(imp)
         excl = set(next(a for a in self.model.agents if a.name == excluded).controls) if excluded else set()
@@ -1176,6 +1206,10 @@ class SpectralCompiled(CompiledBase):
             inp = self.state_inputs_sparse(excl)
         rowspec = []                                    # (control index, agent, row, delay, map kernel, sparse blocks)
         for a in self.model.agents:
+            if actions is not None:
+                for ui, u in enumerate(a.controls):
+                    B[self.index[u]] = actions[a.name][ui]
+                continue
             off = a.name == excluded
             if off and (not past or self.cont is None or not own_frozen):
                 continue
@@ -1304,6 +1338,10 @@ class SpectralFiniteSolver(EngineBase):
         if past is not None:
             self.RESULT = TransitionResult
         self.Nm = self.c.N + (self.c.Nt if self.c.n_init else 0)
+        # beyond settings.foc_dense_max unknowns nU nR N (the largest agent's) the best response is matrix-free (finite_free)
+        self.foc_free = max(len(a.controls) * len(a.signals) for a in model.agents) * self.Nm > self.settings.foc_dense_max
+        self._last_gamma: Dict[str, np.ndarray] = {}         # agent -> its last FOC solution (the warm start of the Krylov solve)
+        self._krylov_log: List[Tuple[str, int, float]] = []  # (agent, GMRES iterations, relative residual) of every matrix-free solve
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.Nm) for a in model.agents}
         self._rep_parts: Dict[str, Dict[str, float]] = {}      # agent -> where the representation error sits (with a past)
 
@@ -1370,10 +1408,24 @@ class SpectralFiniteSolver(EngineBase):
                     res.excess_costs[a.name] = float(self.c.time_mass(self.c.rho) @ (res.loss_path[a.name] - self.c.cont.costs[a.name]))
 
     # ------------------------------------------------ the transition's paths
+    def _atoms(self, agent: Agent, Z: np.ndarray) -> np.ndarray:
+        """(m, N, ncol) the loss atoms' kernels in the world Z (n_prim N, ncol): the atom operators applied (their
+        sparse reads on the matrix-free path)."""
+        c = self.c; atoms = c.loss[agent.name][0]
+        if self.foc_free:
+            return np.stack([c.atom_sparse(at) @ Z[c.block(at[0])] for at in atoms])
+        return np.stack([c.atom_op(at) @ Z for at in atoms])
+
+    def _gram(self, agent: Agent, zeta: np.ndarray, mass) -> np.ndarray:
+        """(m, m) the Gram of the atoms' kernels (m, N, k) under the mass (dense, or sparse on the matrix-free path)."""
+        if self.foc_free:
+            return np.einsum("ink,jnk->ij", zeta, np.stack([mass @ z for z in zeta]))
+        return np.einsum("ink,nm,jmk->ij", zeta, mass, zeta)
+
     def _zeta(self, agent: Agent, Z: np.ndarray) -> np.ndarray:
         """(m, N, ncol) the loss atoms' kernels in the world Z, the band's pre-zero part of a lagged atom included."""
-        c = self.c; atoms = c.loss[agent.name][0]
-        zeta = np.stack([c.atom_op(at) @ Z for at in atoms])
+        c = self.c
+        zeta = self._atoms(agent, Z)
         if c.past is not None and c.g.L is not None:
             zeta[:, :, :c.nW] += c.zeta_past(agent.name)
         return zeta
@@ -1412,11 +1464,18 @@ class SpectralFiniteSolver(EngineBase):
         controls on, the increments observed before zero and the initial shocks' point observations included:
         one weighted least-squares Gram per time row, maps_from_world), integrated over the shocks."""
         c = self.c
-        K = Z[c.block(name)] if name in c.index else c.expr_op(self.model.expand({name: 1.0})) @ Z
-        rows, inst = self._seen_rows(agent, Z, set())
-        Bk = self._row_operator(agent, rows, inst)
-        gm = self._maps_from_world_past(agent, Bk, K[None]) if c.past is not None else self.maps_from_world(agent, Z, K[None])
-        recon = np.stack([Bk[k] @ gm[0].reshape(-1) for k in range(Bk.shape[0])], axis=1)
+        if name in c.index:
+            K = Z[c.block(name)]
+        else:
+            expr = self.model.expand({name: 1.0})
+            K = sum(coef * (c.read_sparse(lag, lag) @ Z[c.block(nm)]) for (nm, lag), coef in expr.items()) if self.foc_free else c.expr_op(expr) @ Z
+        gm = self.maps_from_world(agent, Z, K[None])
+        if self.foc_free:
+            recon = finite_free.reconstruction(self, agent, Z, gm)[0]
+        else:
+            rows, inst = self._seen_rows(agent, Z, set())
+            Bk = self._row_operator(agent, rows, inst)
+            recon = np.stack([Bk[k] @ gm[0].reshape(-1) for k in range(Bk.shape[0])], axis=1)
         return self._row_variance((K - recon)[None], lambda z: np.einsum("iqk,iqk->q", z, z))
 
     def warm_maps_from(self, prev) -> Dict[str, np.ndarray]:
@@ -1502,6 +1561,16 @@ class SpectralFiniteSolver(EngineBase):
         unknown is its own column.  Cached per agent shape."""
         key = ("ties", len(agent.controls), len(agent.signals))
         if key not in self.c._disc:
+            cols = self._corner_index(agent); nG = cols.size
+            Rm = np.zeros((nG, int(cols.max()) + 1 if nG else 0)); Rm[np.arange(nG), cols] = 1.0
+            self.c._disc[key] = Rm
+        return self.c._disc[key]
+
+    def _corner_index(self, agent: Agent) -> np.ndarray:
+        """(nG,) the column of _corner_ties of every FOC unknown: the unknowns of a degenerate corner row share
+        one, every other unknown has its own (the matrix-free path ties them through this index)."""
+        key = ("corner_index", len(agent.controls), len(agent.signals))
+        if key not in self.c._disc:
             c = self.c; g = c.g; Nm = self.Nm
             nU, nR = len(agent.controls), len(agent.signals)
             group = -np.ones(Nm, dtype=int)                                     # node -> corner group id (per row block)
@@ -1523,8 +1592,7 @@ class SpectralFiniteSolver(EngineBase):
                             cols[base + n] = seen[group[n]]
                         else:
                             seen[group[n]] = col; cols[base + n] = col; col += 1
-            Rm = np.zeros((nG, col)); Rm[np.arange(nG), cols] = 1.0
-            self.c._disc[key] = Rm
+            self.c._disc[key] = cols
         return self.c._disc[key]
 
     def _project(self, agent: Agent, Zfull: np.ndarray, cact: np.ndarray) -> np.ndarray:
@@ -1537,10 +1605,14 @@ class SpectralFiniteSolver(EngineBase):
         primary kernels Zfull: one weighted least-squares projection per time row."""
         c = self.c; g = c.g; N, nW = c.N, c.nW
         nR, nU = len(agent.signals), len(agent.controls)
-        rows, inst = self._seen_rows(agent, Zfull, set())
-        Bk = self._row_operator(agent, rows, inst)
+        if self.foc_free:
+            sub = finite_free.panel_rows(self, agent, Zfull).sub            # the row operator's rows, one panel at a time
+        else:
+            rows, inst = self._seen_rows(agent, Zfull, set())
+            Bk = self._row_operator(agent, rows, inst)
+            sub = lambda idx, cols: Bk[:, idx][:, :, cols]
         if c.past is not None:
-            return self._maps_from_world_past(agent, Bk, cact)
+            return self._maps_from_world_past(agent, sub, cact)
         gmap = np.zeros((nU, nR, N))
         shifts = [c.panel_shift(c.rows[agent.name][r][3]) if c.rows[agent.name][r][3] > 0 else 0 for r in range(nR)]
         systems: Dict[int, list] = {}                     # size -> [(cols, G, [rhs per control])]: solved in one call per size
@@ -1552,7 +1624,7 @@ class SpectralFiniteSolver(EngineBase):
             if not parts:
                 continue
             cols = np.concatenate(parts)
-            Bsub = Bk[:, idx][:, :, cols]
+            Bsub = sub(idx, cols)
             G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
             if np.trace(G) <= 0:
                 continue
@@ -1567,8 +1639,8 @@ class SpectralFiniteSolver(EngineBase):
                     gmap[ui].reshape(-1)[cols] = x
         return gmap
 
-    def _maps_from_world_past(self, agent: Agent, Bk: np.ndarray, cact: np.ndarray) -> np.ndarray:
-        """maps_from_world with a past: the Gram of a time row runs over the ages [0, L] of both shock families
+    def _maps_from_world_past(self, agent: Agent, sub, cact: np.ndarray) -> np.ndarray:
+        """maps_from_world with a past (sub(idx, cols) the row operator's block Bk[:, idx][:, :, cols]): the Gram of a time row runs over the ages [0, L] of both shock families
         (the band's action nodes read the map's band through the past's row kernel) plus, for each initial
         shock, its point at the row's node on the line s = 0; the unknowns of the time row are the map nodes
         at the shifted time and, for a row seeing an initial shock, its discrete weight there.
@@ -1618,7 +1690,7 @@ class SpectralFiniteSolver(EngineBase):
                 Rm[j, i] = 1.0
             for i, js in enumerate(groups.values()):
                 Rm[js, len(single) + i] = 1.0
-            Bsub = Bk[:, idx][:, :, cols] @ Rm
+            Bsub = sub(idx, cols) @ Rm
             G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
             rhs = [sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW)) for ui in range(nU)]
             corners = {}                                                            # the time row's degenerate corners, one per triangle
@@ -1648,9 +1720,12 @@ class SpectralFiniteSolver(EngineBase):
         return gmap
 
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
-        """Closed-loop primary kernels when every agent's action kernels are given."""
+        """Closed-loop primary kernels when every agent's action kernels are given (on the per-panel and matrix-free
+        paths the states are solved one time panel at a time, _closed_loop_panels with the actions)."""
         c = self.c; N, nW = c.N, c.nW
         n = len(c.prim) * N
+        if c.per_panel or self.foc_free:
+            return c._closed_loop_panels(None, None, (), actions=actions)
         if c.past is not None:
             Z = np.zeros((n, c.ncol))
             for a in self.model.agents:
@@ -1703,17 +1778,18 @@ class SpectralFiniteSolver(EngineBase):
         1/2 sum Q_ij <zeta_i, zeta_j> under the discounted mass matrix of the triangle."""
         c = self.c
         atoms, Q, q = c.loss[agent.name]
-        zeta = np.stack([c.atom_op(at) @ Z for at in atoms])                  # (m, N, nW)
+        zeta = self._atoms(agent, Z)                                          # (m, N, nW)
+        mass = c.cost_mass_sparse() if self.foc_free else c.cost_mass()
         if c.past is not None:
             # the pre-zero part of the lagged atoms on the band, then the initial shocks along the line s = 0
             zeta[:, :, :c.nW] += c.zeta_past(agent.name)
-            G = np.einsum("ink,nm,jmk->ij", zeta[:, :, :c.nW], c.cost_mass(), zeta[:, :, :c.nW])
+            G = self._gram(agent, zeta[:, :, :c.nW], mass)
             if c.n_init:
                 w = c.time_mass(c.rho)[:c.Nd]
                 zd = zeta[:, c.diag, c.nW:]                                   # (m, Nd, n_init)
                 G = G + np.einsum("itk,t,jtk->ij", zd, w, zd)
             return float(0.5 * np.sum(Q * G))
-        G = np.einsum("ink,nm,jmk->ij", zeta, c.cost_mass(), zeta)
+        G = self._gram(agent, zeta, mass)
         return float(0.5 * np.sum(Q * G))
 
     def _init_mass(self) -> np.ndarray:
@@ -1729,8 +1805,8 @@ class SpectralFiniteSolver(EngineBase):
         res.cost_parts[agent]["continuation"], not added to res.costs."""
         c = self.c
         atoms, Q, q = c.loss[agent.name]
-        zeta = np.stack([c.atom_op(at) @ Z[:, :c.nW] for at in atoms])
-        G = np.einsum("ink,nm,jmk->ij", zeta, c.buffer_mass(), zeta)
+        zeta = self._atoms(agent, Z[:, :c.nW])
+        G = self._gram(agent, zeta, c.buffer_mass_sparse() if self.foc_free else c.buffer_mass())
         return float(0.5 * np.sum(Q * G))
 
     def settled(self, maps: Dict[str, np.ndarray]) -> float:
@@ -1788,8 +1864,18 @@ class SpectralFiniteSolver(EngineBase):
     # truncated at T + L: with the buffer's reaction in the FOC instead, the same-model identity fails
     # by 1e-4 on [T - L, T], the buffer's own first-order conditions being cut at T + L).
     def _seen_rows(self, agent: Agent, Z: np.ndarray, excluded: set):
-        rows, inst = super()._seen_rows(agent, Z, excluded)
         c = self.c
+        if self.foc_free:                                # the sparse row blocks: no N x N array
+            rows, inst = [], []
+            for r in range(len(agent.signals)):
+                blocks, deltas = c.row_blocks_sparse(agent.name, r, excluded)
+                y = np.zeros((c.N, Z.shape[1]))
+                for nm, op in blocks.items():
+                    y += op @ Z[c.block(nm)]
+                rows.append(y)
+                inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
+        else:
+            rows, inst = super()._seen_rows(agent, Z, excluded)
         if c.past is not None and c.g.L is not None:
             for r in range(len(rows)):
                 rows[r][:, :c.nW] += c.row_past(agent.name, r)
@@ -1872,8 +1958,20 @@ class SpectralFiniteSolver(EngineBase):
             out.append(sum(MQ[i] @ zp[i] for i in range(len(atoms))))
         return out
 
+    def _foc_affine_free(self, agent: Agent, foc) -> Optional[list]:
+        """_foc_affine with the FOC operators applied (finite_free.FocOps)."""
+        c = self.c
+        if c.g.L is None:
+            return None
+        zp = c.zeta_past(agent.name)
+        if not np.any(zp):
+            return None
+        return [foc.foc(ui, zp) for ui in range(len(agent.controls))]
+
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
         c = self.c
+        if self.foc_free:
+            return finite_free.best_response(self, agent, maps, want_decomp)
         if c.past is None:
             return super().best_response(agent, maps, want_decomp)
         N, nW, ncol, Nm = c.N, c.nW, c.ncol, self.Nm
@@ -1920,10 +2018,14 @@ class SpectralFiniteSolver(EngineBase):
         return self._project(agent, Zfull, cact), out
 
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
-        if self.c.past is None:
+        if self.c.past is None and not self.foc_free:
             return super()._representation_error(agent, Zfull, actions, g)
-        rows, inst = self._seen_rows(agent, Zfull, set())
-        Bk = self._row_operator(agent, rows, inst)
+        if self.foc_free:
+            recon_all = finite_free.reconstruction(self, agent, Zfull, g)
+        else:
+            rows, inst = self._seen_rows(agent, Zfull, set())
+            Bk = self._row_operator(agent, rows, inst)
+            recon_all = np.stack([np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(Bk.shape[0])], axis=1) for ui in range(len(agent.controls))])
         c = self.c; gr = c.g; worst = 0.0
         # where the error sits: the band's tip (the upper triangle collapsing to the corner (L, L), where the
         # map's pieces degenerate), the last window [T - L, T] (the end), or the interior, so that a resolution
@@ -1935,7 +2037,7 @@ class SpectralFiniteSolver(EngineBase):
         if c.cont is not None:
             parts["buffer"] = 0.0; regions.append(("buffer", c.buffer))
         for ui in range(len(agent.controls)):
-            recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(Bk.shape[0])], axis=1)
+            recon = recon_all[ui]
             err = np.abs(recon - actions[ui])
             err[:, c.nW:] = 0.0
             err[c.diag, c.nW:] = np.abs(recon - actions[ui])[c.diag, c.nW:]     # an initial shock's column: on the line s = 0 only
