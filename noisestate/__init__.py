@@ -23,14 +23,14 @@ from . import engines
 from .engines import ENGINES
 from .sweep import sweep, make_solver
 from .grid_cache import clear as clear_grid_cache
-from .transition import transition
+from .transition import transition, transition_gap
 from .schema import schema
 from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition, SweepPoint, settings
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
 
 __all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "Result", "BaseResult", "StationarySolver",
-           "FiniteSolver", "SpectralFiniteSolver", "engines", "load", "solve", "sweep", "transition", "read_yaml", "read_json",
+           "FiniteSolver", "SpectralFiniteSolver", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_yaml", "read_json",
            "make_solver", "ENGINES", "clear_grid_cache", "schema",
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
            "settings", "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh"]

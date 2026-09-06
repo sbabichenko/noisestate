@@ -56,6 +56,8 @@ which says whether the resolution guard's error sits in the interior, on the ban
 tip, on the last window or on the buffer (the tip and the last window are geometry, not
 resolution).  The past's and the continuation's own window tails are echoed as rows.
 
+`ns.transition_gap(old, new, numerics=)` is the settle march's T = 0 pass (design/transition_settle_march.md): everyone at the new model's stationary rules from date zero with the old regime's shocks attached, one best response per agent, and per agent the relative distance of that rule from the stationary one (max over the identified nodes, relative to the rule's peak), on the smallest strip the engine builds, [0, L] (the compile refuses T < L).  Chapter 3's precision change 3 -> 10 gives 0.585 and 0.061 at 12 nodes, 3 -> 3.03 gives 0.0033 (linear in the mismatch); the same model as its own past sits at the one-shot floor, 4e-5 at 12 nodes, 1e-5 at 16, 2.4e-6 at 24, so a tolerance below that floor is never met.
+
 `ns.transition(old, new, T, nodes=12, **solve_kw)` solves the old regime (or takes its result),
 the new model's stationary equilibrium and the transition, starting from the new stationary
 maps (`start="stationary"`; `solve()` keeps `start="zero"`), and returns the result with

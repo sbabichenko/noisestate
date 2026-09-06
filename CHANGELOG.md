@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The T = 0 pass of the settle march: `transition_gap(old, new)`.**  With nothing solved, every agent at the
+  new model's stationary rules from date zero and the old regime's shocks attached, one best response per agent;
+  returned per agent is the relative distance of the best-response rule from the stationary rule (max over the
+  identified nodes, relative to the rule's peak).  The engine cannot build a strip shorter than the past's window,
+  so the pass runs on [0, L].  Chapter 3, 3 -> 10 at 12 nodes: 0.585 and 0.061; 3 -> 6: 0.287; 3 -> 3.03: 0.0033
+  (linear in the mismatch); the same model as its own past sits at the one-shot floor, 4e-5 at 12 nodes, 1e-5 at
+  16, 2.4e-6 at 24.  `transition.gap_pass(S, maps, lo, hi)` is the pass on a time range, the march's monitor.
+  `transition()` is unchanged (its model construction moved to `_transition_model`); no number moves.
+
 - **Models as equations.**  `noisestate.expr`: `Param` (arithmetic renders to the file's coefficient expressions,
   `p1**0.5` to `"sqrt(p1)"`), `shocks()`, `State` (`X.drift = D + sigma * w.w0`), `Control`, `define()`, `.lag()` /
   `.lead()`, `Signal(name, expr, delay)`, `Agent(name, controls, signals, loss, myopic, naive_observers)` with a

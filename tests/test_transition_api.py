@@ -157,3 +157,23 @@ def test_cli_round_trip(tmp_path, capsys):
         yaml.safe_dump({**d, "horizon": {**d["horizon"], "continuation": "tail"}}, fh)
     assert main(["solve", str(tmp_path / "bad.yaml")]) == 2
     assert "horizon.continuation" in capsys.readouterr().err          # the schema reports it first, with its path
+
+
+def test_transition_gap_is_the_one_shot_from_the_stationary_rules(regime):
+    """transition_gap(old, new): the T = 0 pass of the settle march, one best response per agent from the new
+    model's stationary rules with the old regime's shocks attached, on the smallest strip the engine builds
+    ([0, L]: the compile refuses T < L).  The same model as its own past sits at the grid's one-shot floor
+    (4.2e-5 and 3.8e-5 at 12 nodes; 1.1e-5 at 16, 2.4e-6 at 24, whatever the past's nodes: the floor is the
+    strip's, on the band's collapsing tip, not the solved identity's 2e-9 on the kernels); the Chapter 3
+    precision change 3 -> 10 gives 0.585 for player1 and 0.061 for player2; a tiny change 3 -> 3.03 gives
+    0.0033, 87 times below 3 -> 6 (0.287): the transient is linear in the mismatch."""
+    m = regime["m"]; old = regime["old"]
+    same = ns.transition_gap(old, m, numerics={"nodes": 12})
+    assert set(same) == {"player1", "player2"} and all(1e-6 < v < 6e-5 for v in same.values()), same
+    big = ns.transition_gap(old, m.with_params(p1=10.0), numerics={"nodes": 12})
+    assert 0.5 < big["player1"] < 0.7 and 0.05 < big["player2"] < 0.08, big
+    mid = ns.transition_gap(old, m.with_params(p1=6.0), numerics={"nodes": 12})
+    tiny = ns.transition_gap(old, m.with_params(p1=3.03), numerics={"nodes": 12})
+    assert 60 < mid["player1"] / tiny["player1"] < 120 and 60 < mid["player2"] / tiny["player2"] < 120, (mid, tiny)
+    with pytest.raises(ValueError, match="needs a past with a window"):
+        ns.transition_gap([{"name": "xi", "loads": {"X": 0.9}, "rows": {"a.y": 1.0}}], one_agent())
