@@ -5,18 +5,17 @@ import json
 import numpy as np, pytest
 from scipy.integrate import solve_ivp
 import noisestate as ns
-from test_transition import model as prior_model, P0, a, h, T1, IVP
-
-EX = ns.__file__.rsplit("/noisestate/", 1)[0] + "/examples/"
+from helpers import EX, IVP, A1 as a, H1 as h, T1, P0, prior_model, slow, example, stationary
 
 
+@slow("slow (9 s at 16 nodes; the loss path is pinned by the regime change below); set NOISESTATE_SLOW=1")
 def test_same_model_loss_path_is_the_stationary_flow():
     """Chapter 3 as its own past and continuation (T = 6, L = 3, 16 nodes) from the stationary maps (3 evaluations):
     E[loss(t)] equals the stationary flow on every time node, [0, T] and the buffer, to 7e-11 for both agents,
     the excess costs are 5e-11 and 4e-11, and the discounted integral of the path over [0, T] (time_mass) is
     res.costs to 3e-14 (the row quadrature integrates products of interpolants exactly)."""
-    m = ns.load(EX + "ch3_two_player.yaml")
-    stat = ns.solve(m.with_horizon(nodes=16)).check()
+    m = example("ch3_two_player")
+    stat = stationary(m, 16)
     res = ns.solve(m.with_horizon(kind="finite", window=6.0, nodes=16), past=stat, continuation=stat, start="stationary", tol=1e-10).check()
     assert isinstance(res, ns.TransitionResult) and res.kind == "transition" and res.iterations <= 4
     assert res.times.shape == (res.compiled.Nt,) and res.times[0] == 0.0 and res.times[-1] == 9.0 and res.stationary is stat
@@ -40,7 +39,7 @@ def test_regime_change_loss_path_runs_from_the_old_state_to_the_new_flow(tmp_pat
     (0.42174) to 1e-7 (settled 2.7e-6); the excess costs are 0.024027 and 0.028619 (0.023848 and 0.028343 at 8
     nodes), the path's discounted integral is res.costs to 1.6e-6 (the transient's product interpolated on the
     time nodes; exact for a constant path); the plot writes."""
-    m = ns.load(EX + "ch3_two_player.yaml")
+    m = example("ch3_two_player")
     old = ns.solve(m).check()
     res = ns.solve(m.with_params(p1=10.0).with_horizon(kind="finite", window=9.0, nodes=12), past=old, continuation="stationary",
                    start="stationary").check()
@@ -88,7 +87,7 @@ def test_sweeps_over_the_horizon_and_over_the_change_size():
     """sweep(transition file, "horizon.window", [6, 9]) warm-starts T = 9 from the T = 6 maps read on the new grid
     (the stationary maps beyond): 8 evaluations against 21 from the stationary maps alone, the same equilibrium
     to 2e-8, one past shared; sweep over p1 solves the past once and warm-starts each point on the same grid."""
-    m = ns.load(EX + "ch3_two_player.yaml")
+    m = example("ch3_two_player")
     d = m.with_params(p1=10.0).to_dict()
     d["horizon"] = {"kind": "transition", "window": 6.0, "nodes": 8, "past": {"model": EX + "ch3_two_player.yaml"}}
     rows = ns.sweep(d, "horizon.window", [6.0, 9.0], solve_kw={"start": "stationary"})

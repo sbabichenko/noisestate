@@ -12,7 +12,7 @@ import noisestate as ns
 from noisestate.cli import main
 from noisestate.finite_spectral import SpectralFiniteSolver
 from ch1_mean_sweep import model as ch1_targets, CLOSED_LOOP
-HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples"); REFS = os.path.join(HERE, "refs")
+from helpers import EX, REFS, slow
 
 # The dissertation's spectral solver (12 x 16 nodes, Tikhonov 1e-7; its Dbar1(0) converged to 0.03%): Dbar1(0), Dbar1(T/2)
 # and the mean part of the cost, which there includes the target's constant b^2 T = 1 (the package's Jbar leaves it out).
@@ -23,6 +23,7 @@ OWN = {0.1: (9.936695, 4.980972, 3.295552), 1.0: (9.475728, 4.850218, 3.032079),
        100.0: (5.980097, 3.935286, 1.533783), 1000.0: (5.106377, 3.600851, 1.242940)}
 
 
+@slow("slow (6 s, five solves; the p = 10 point is pinned below and in tests/test_baseline.py); set NOISESTATE_SLOW=1")
 def test_ch1_target_sweep_against_the_dissertation():
     """Player 1 tracks +1, player 2 tracks -1 on dX = (D1 + D2) dt + dW0 with private signals of precision p.  Against
     the dissertation's solver, Dbar1(0) and Dbar1(T/2) agree to 0.1% up to p = 100 (1.9e-5 at p = 0.1, 3.7e-4 and 5.3e-4

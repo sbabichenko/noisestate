@@ -3,12 +3,11 @@
 means, closed on the buffer with the new stationary means."""
 import numpy as np
 import noisestate as ns
-
-EX = ns.__file__.rsplit("/noisestate/", 1)[0] + "/examples/"
+from helpers import example, stationary, same_model_solver, slow
 
 
 def with_target(theta):
-    d = ns.load(EX + "ch3_two_player.yaml").to_dict()
+    d = example("ch3_two_player").to_dict()
     d["agents"]["player1"]["loss"].append([-2.0 * theta, "X"])
     return ns.Model.from_dict(d)
 
@@ -18,13 +17,14 @@ def test_time_line_mean_system_equals_the_diagonal_one_where_both_exist():
     operator, the conditions on the age-0 line, the lagged atoms' means read at t - lag) and the diagonal one
     (the kernels' operators on the line s = 0) give the same mean paths to 1e-15."""
     mt = with_target(1.0)
-    stat = ns.solve(mt.with_horizon(nodes=12)).check()
-    S = ns.SpectralFiniteSolver(mt.with_horizon(kind="finite", window=3.0, nodes=12), past=stat)
+    stat = stationary(mt, 12)
+    S = same_model_solver(mt, stat, 3.0, 12, continuation=False)
     res = S.solve(); assert S.c.Nd == S.c.Nt
     Md, bd = S._mean_system_diag(res.maps); Ml, bl = S._mean_system_line(res.maps)
     assert np.abs(np.linalg.solve(Md, bd) - np.linalg.solve(Ml, bl)).max() < 1e-13
 
 
+@slow("slow (7 s at 16 nodes; the 12-node means with a past are tests/test_transition.py's); set NOISESTATE_SLOW=1")
 def test_same_model_means_are_the_stationary_constants():
     """Chapter 3 with a target -2 X for player1, its stationary solution (16 nodes) as past and continuation,
     T = 6 (twice L; a NotImplementedError before): the mean paths are the stationary means on every time node
@@ -32,7 +32,7 @@ def test_same_model_means_are_the_stationary_constants():
     and exactly so on the buffer, the mean part of the cost is T times the stationary mean flow to 1e-11, the
     excess costs are 7e-11, and res.mean() reads the path beyond the window."""
     mt = with_target(1.0)
-    stat = ns.solve(mt.with_horizon(nodes=16)).check()
+    stat = stationary(mt, 16)
     res = ns.solve(mt.with_horizon(kind="finite", window=6.0, nodes=16), past=stat, continuation=stat, start="stationary").check()
     assert res.iterations <= 2 and res.means_t.shape == (res.compiled.Nt,)
     buf = res.means_t >= 6.0 + 1e-9
@@ -46,13 +46,14 @@ def test_same_model_means_are_the_stationary_constants():
     assert "means at t = 0, T/2, T" in res.summary()
 
 
+@slow("slow (6 s; the time-line mean system is pinned above and by tests/test_transition.py); set NOISESTATE_SLOW=1")
 def test_target_change_runs_from_the_old_means_to_the_new():
     """The target moves from 1 to 2 (12 nodes, T = 6): X's mean path starts at the old constant 0.8662 and rises
     monotonically to the new 1.7324, reached at T to 1e-6; D1 jumps at 0+ (4.1115 against the old 1.7989) and
     falls to the new 3.5979; the buffer carries the new constants, and the path's gap at T- (7.7e-4 on X: the
     means settle more slowly than the maps, which are at 6.3e-7) is in `settled`; the game ending at T instead
     (a past shorter than T, no continuation) solves too, with the controls vanishing at T."""
-    old = ns.solve(with_target(1.0).with_horizon(nodes=12)).check()
+    old = stationary(with_target(1.0), 12)
     res = ns.solve(with_target(2.0).with_horizon(kind="finite", window=6.0, nodes=12), past=old, continuation="stationary",
                    start="stationary").check()
     new = res.continuation.means

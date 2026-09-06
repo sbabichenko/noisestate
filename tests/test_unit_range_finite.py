@@ -11,23 +11,23 @@ N 9408 -> 3168 (588 -> 198 pieces).  A delayed row without a past keeps its map 
 the delay, read node to node on every piece, so unit_range below the window is refused there."""
 import numpy as np, pytest
 import noisestate as ns
-
-EX = ns.__file__.rsplit("/noisestate/", 1)[0] + "/examples/"
+from helpers import example, delayed_stationary, same_model_solver, one_shot_deviation, slow
 
 
 def undelayed(**hz):
-    d = ns.load(EX + "ch1_delayed_finite.yaml").to_dict()
+    d = example("ch1_delayed_finite").to_dict()
     d["agents"]["player2"]["signals"]["y2"].pop("delay")
     return ns.Model.from_dict(d).with_horizon(**hz)
 
 
 def test_unit_range_at_the_window_is_the_grid_bit_for_bit():
-    m = ns.load(EX + "ch1_delayed_finite.yaml").with_horizon(nodes=5)
+    m = example("ch1_delayed_finite").with_horizon(nodes=5)
     a = ns.solve(m); b = ns.solve(m.with_horizon(unit_range=1.0))
     assert not b.compiled.coarse and [float(x) for x in b.grid.bp] == [float(x) for x in a.grid.bp] and b.compiled.N == a.compiled.N
     assert all(np.array_equal(a.maps[k], b.maps[k]) for k in a.maps) and a.costs == b.costs
 
 
+@slow("slow (8 s; the bit-for-bit default and the guards stay fast); set NOISESTATE_SLOW=1")
 def test_unit_range_below_the_window_coarsens_the_grid_within_the_measured_cost():
     """Window 2, 5 nodes, the controls lagged by 0.25 and both rows undelayed: unit_range 0.5 keeps the cuts at
     0.25 and 0.5, at T - 0.25 and T - 0.5, and one panel between: 21 pieces for 36, N 525 for 900; the costs
@@ -49,26 +49,22 @@ def test_unit_range_on_a_transition_keeps_the_identity_within_the_measured_floor
     the stationary maps on the strip is T times the stationary flow to 2.2e-5 (the full grid's floor at 3 nodes
     2.0e-5; at 4 nodes 1.0e-6 against 1e-7, its Gram matrix too slow for the suite), and one best response
     returns the stationary maps to 9.2e-3 / 1.6e-2 (the full grid's floor at 3 nodes 7.6e-3 / 6.7e-3)."""
-    m = ns.load(EX + "ch1_delayed_finite.yaml").with_horizon(kind="stationary", window=3.0, nodes=3)
-    stat = ns.solve(m).check()
-    kw = dict(past=stat, continuation=stat, settings={"closed_loop_dense_max": 0})
-    full = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=6.0, nodes=3), **kw)
-    coarse = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=6.0, nodes=3, unit_range=1.5), **kw)
+    stat = delayed_stationary(3, window=3.0); m = stat.model
+    kw = dict(settings={"closed_loop_dense_max": 0})
+    full = same_model_solver(m, stat, 6.0, 3, **kw)
+    coarse = same_model_solver(m, stat, 6.0, 3, unit_range=1.5, **kw)
     c = coarse.c
     assert [float(b) for b in c.g.bp] == [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 3.5, 4.5, 6.0, 6.25, 6.5, 6.75, 7.0, 7.25, 7.5, 8.0, 9.0]
     assert len(c.g.pieces) == 198 and len(full.c.g.pieces) == 588 and c.N == 1782
-    Zc = c.closed_loop(c.frozen)
+    Zc = c.closed_loop(c.frozen); dev = one_shot_deviation(coarse)
     for a in m.agents:
         cf, cc = 6.0 * stat.costs[a.name], coarse.expected_cost(a, Zc)
         assert abs(cc - cf) < 5e-5 * abs(cf), (a.name, cc, cf)
-        gm, _ = coarse.best_response(a, c.frozen)
-        keep = coarse._identified(a).reshape(len(a.signals), -1)[:, :c.N]
-        dev = (np.abs(gm - c.frozen[a.name]) * keep / np.abs(c.frozen[a.name]).max()).max()
-        assert dev < 3e-2, (a.name, dev)
+        assert dev[a.name].max() < 3e-2, (a.name, dev[a.name].max())
 
 
 def test_unit_range_guards_and_kind_change():
-    m = ns.load(EX + "ch1_delayed_finite.yaml")
+    m = example("ch1_delayed_finite")
     with pytest.raises(ValueError, match="shifted by the delay"):
         ns.SpectralFiniteSolver(m.with_horizon(window=2.0, nodes=4, unit_range=0.5))
     with pytest.raises(ValueError, match="below the largest lag"):

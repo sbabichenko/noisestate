@@ -11,6 +11,7 @@ method of steps (DOP853, rtol 1e-12), with z(t) = int_0^delta e^{a s} D(t-s) ds 
 integral of the flow loss over the kernels, carried as extra states."""
 import numpy as np
 from scipy.integrate import solve_ivp
+from helpers import example_path, example_dict, slow
 
 a, h, r, delta = -0.3, 1.5, 0.5, 0.5
 S = (2 * a + np.sqrt(4 * a * a + 4 / r)) / (2 / r)
@@ -102,17 +103,18 @@ def test_finite_engine_on_the_delayed_problem_converges_spectrally():
 
 
 def test_delayed_ch1_example_both_players_representable():
-    import os, noisestate as ns
-    r = ns.solve(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "ch1_delayed_finite.yaml")).check()
+    import noisestate as ns
+    r = ns.solve(example_path("ch1_delayed_finite")).check()
     assert all(v < 1e-8 for v in r.representation_error.values()), r.representation_error
 
 
+@slow("slow (9 s; the undelayed multi-panel grid is tests/test_unit_range_finite.py's at 5 nodes); set NOISESTATE_SLOW=1")
 def test_lagged_undelayed_finite_model_is_resolved_at_six_nodes():
     """The delayed Chapter 1 example with its delay removed keeps its control lags: a multi-panel
     finite grid without delayed rows.  The top-edge read defect moved these too; pinned against a
     finer solve."""
-    import os, noisestate as ns
-    d = ns.read_yaml(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "ch1_delayed_finite.yaml"))
+    import noisestate as ns
+    d = example_dict("ch1_delayed_finite")
     for a in d["agents"].values():
         for row in a["signals"].values():
             row["delay"] = 0.0

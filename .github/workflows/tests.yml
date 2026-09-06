@@ -28,4 +28,4 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: pip install -e ".[dev]"
-      - run: NOISESTATE_SLOW=1 python -m pytest -q tests -k "slow or ch5 or interior"
+      - run: NOISESTATE_SLOW=1 python -m pytest -q tests -m slow     # the gated tests, tests/SLOW.md

@@ -20,16 +20,18 @@ import numpy as np, pytest
 from scipy.integrate import solve_ivp
 import noisestate as ns
 from noisestate.past import Past
+from helpers import (IVP, A1, H1, R1, T1, P0, prior_model as model, slow, slow_param, example, stationary,
+                     same_model_solver, same_model_setup, two_firm_market, strip_maps, stationary_on_strip,
+                     one_shot_from_the_stationary_maps)
 
-EX = ns.__file__.rsplit("/noisestate/", 1)[0] + "/examples/"
-IVP = dict(method="DOP853", rtol=1e-12, atol=1e-14)
+a, h, r = A1, H1, R1            # the discounted one-agent model's constants (helpers.prior_model)
 
 
-@pytest.mark.parametrize("example", ["ch1_two_player_finite", "ch1_delayed_finite"])
-def test_zero_past_is_the_finite_engine_bit_for_bit(example):
+@pytest.mark.parametrize("name", ["ch1_two_player_finite", slow_param("ch1_delayed_finite", reason="slow (6 s; the undelayed case is the fast one); set NOISESTATE_SLOW=1")])
+def test_zero_past_is_the_finite_engine_bit_for_bit(name):
     """past=None takes the finite engine's own code path: Z, maps, costs and the evaluation count are
     identical (np.array_equal), and the grid is the same cached object."""
-    m = ns.load(EX + example + ".yaml")
+    m = example(name)
     r0 = ns.solve(m); r1 = ns.solve(m, past=None)
     assert np.array_equal(r0.Z, r1.Z)
     assert all(np.array_equal(r0.maps[a], r1.maps[a]) for a in r0.maps)
@@ -38,7 +40,7 @@ def test_zero_past_is_the_finite_engine_bit_for_bit(example):
     assert r1.past is None and r1.settled is None and "past" not in r1.to_dict()
 
 
-@pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="slow (40 s); set NOISESTATE_SLOW=1")
+@slow("slow (40 s); set NOISESTATE_SLOW=1")
 def test_same_model_stationary_past_reproduces_the_stationary_kernels():
     """Chapter 3 (window L = 3) as its own past on a strip of T = 12, 16 nodes per side, from a coarse start
     (22 evaluations, 40 s): on every node with t < T - 3L the kernels equal K_stat(t - s) on both shock
@@ -49,8 +51,8 @@ def test_same_model_stationary_past_reproduces_the_stationary_kernels():
     (born after T - 2L) with them, and the agent's own re-optimised end leaks back through the
     forward-backward FOC system at the closed-loop rate: measured 4e-6 on [T - 3L, T - 2L), 1.4e-3 on
     [T - 2L, T - L), 1 at T (the control vanishes there)."""
-    m = ns.load(EX + "ch3_two_player.yaml"); L, T = 3.0, 12.0
-    stat = ns.solve(m.with_horizon(nodes=16)).check()
+    m = example("ch3_two_player"); L, T = 3.0, 12.0
+    stat = stationary(m, 16)
     res = ns.solve(m.with_horizon(kind="finite", window=T, nodes=16), past=stat, tol=1e-10, start="coarse").check()
     g = res.grid; gs = stat.compiled.grid
     assert g.L == L and g.T == T and int(g.upper.sum()) == 256 and res.compiled.N == 1280
@@ -67,21 +69,14 @@ def test_same_model_stationary_past_reproduces_the_stationary_kernels():
     assert res.to_dict()["past"]["kind"] == "stationary"
 
 
-def strip_maps(stat, solver):
-    """The stationary maps of `stat` carried onto the solver's strip (the map at age a, on both shock families)."""
-    g = solver.c.g; gs = stat.compiled.grid
-    return {a.name: np.einsum("fn,urn->urf", gs.interp(g.a), stat.maps[a.name]) for a in solver.model.agents}
-
-
 def test_same_model_best_response_returns_the_stationary_maps_away_from_the_end():
     """The content of the identity in one evaluation: Chapter 3 as its own past (T = 12, 16 nodes), each agent's
     best response to the stationary maps carried onto the strip returns the projected map itself on the first
     window to 5e-10 (player1) and 1.2e-8 (player2), the band included, and to 1.5e-7 on [3, 6); the end leaks
     back through the one-shot FOC system at the closed-loop rate (1.2e-4 and 2.7e-4 on [6, 9), the control
     vanishing at T)."""
-    m = ns.load(EX + "ch3_two_player.yaml"); L, T = 3.0, 12.0
-    stat = ns.solve(m.with_horizon(nodes=16)).check()
-    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=16), past=stat)
+    m = example("ch3_two_player"); L, T = 3.0, 12.0
+    stat, solver = same_model_setup(m, T, 16, continuation=False)
     g = solver.c.g; maps = strip_maps(stat, solver)
     for a in m.agents:
         gm, out = solver.best_response(a, maps)
@@ -91,11 +86,7 @@ def test_same_model_best_response_returns_the_stationary_maps_away_from_the_end(
         assert wins[1] < 1e-6 and wins[2] < 1e-3 and wins[3] > 0.5, (a.name, wins)
 
 
-# ------------------------------------------------ the discounted one-agent model with a prior
-a, h, r, T1 = -0.3, 1.5, 0.5, 3.0
-P0 = 0.8
-
-
+# ------------------------------------------------ the discounted one-agent model with a prior (helpers.prior_model)
 def exact(rho, informed):
     """The closed form of tests/test_finite_discount.py with X(0) ~ N(0, P0): the Kalman filter starts at
     P(0) = P0 (unobserved prior, xhat(0) = 0) or at P(0) = 0 (the prior is observed at once, xhat(0) = X(0)),
@@ -118,13 +109,6 @@ def exact(rho, informed):
         return out
 
     return float(f.y[1, -1]), kernel
-
-
-def model(rho, nodes=12):
-    return {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
-            "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": h}, "noise": {"w1": 1.0}}},
-                             "loss": [[1.0, "X", "X"], [r, "D", "D"]]}},
-            "horizon": {"kind": "finite", "window": T1, "nodes": nodes, "discount": rho}}
 
 
 TS = np.array([0.5, 1.0, 1.0, 2.0, 2.0, 2.8, 2.8]); SS = TS - np.array([0.1, 0.1, 0.5, 0.5, 1.5, 0.1, 2.0])
@@ -163,6 +147,7 @@ def test_unobserved_prior_column_is_the_scaled_state_noise_column():
         assert np.abs(res.kernel(name, "xi") - np.sqrt(P0) * res.kernel(name, "w0")).max() < 1e-13
 
 
+@slow("slow (12 s at 16 nodes; the 6-node copy is tests/test_finite_free.py's); set NOISESTATE_SLOW=1")
 def test_same_model_continuation_is_exact_on_the_whole_region():
     """Chapter 3 as its own past and its own continuation (T = 6, L = 3, 16 nodes): with the maps frozen at the
     stationary ones on the buffer [6, 9] and the first-order condition's continuation running to T + L
@@ -173,9 +158,8 @@ def test_same_model_continuation_is_exact_on_the_whole_region():
     D1 1.4e-9, D2 1.5e-8 on the band and the buffer, 6e-10 on the last window), and res.settled is 6.6e-10;
     under NOISESTATE_SLOW, from zero (12 nodes, 29 evaluations, 10 s) the same fixed point to the 12-node
     floor (1.3e-5), settled 6.3e-7.  The costs are over [0, T]; the buffer's are reported apart."""
-    m = ns.load(EX + "ch3_two_player.yaml"); L, T = 3.0, 6.0
-    stat = ns.solve(m.with_horizon(nodes=16)).check()
-    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=16), past=stat, continuation=stat)
+    m = example("ch3_two_player"); L, T = 3.0, 6.0
+    stat, solver = same_model_setup(m, T, 16)
     c = solver.c; g = c.g; gs = stat.compiled.grid
     assert g.T == T + L and c.T == T and c.Tg == T + L and c.P_T == 2 and int(c.buffer.sum()) == 512 and c.N == 1280
     assert [float(b) for b in g.bp] == [0.0, 3.0, 6.0, 9.0] and g.upper[g.s < -1e-12].all() and not g.upper[g.s > 1e-12].any()
@@ -198,7 +182,7 @@ def test_same_model_continuation_is_exact_on_the_whole_region():
     assert res.to_dict()["continuation"]["window_tail"] == res.past.provenance["window_tail"] and res.grid_info()["buffer"] == [6.0, 9.0]
     if not os.environ.get("NOISESTATE_SLOW"):
         return
-    stat12 = ns.solve(m.with_horizon(nodes=12)).check()
+    stat12 = stationary(m, 12)
     r0 = ns.solve(m.with_horizon(kind="finite", window=T, nodes=12), past=stat12, continuation=stat12, tol=1e-10).check()
     g0 = r0.grid; gs0 = stat12.compiled.grid
     for name in c.prim:
@@ -206,6 +190,7 @@ def test_same_model_continuation_is_exact_on_the_whole_region():
     assert r0.settled < 5e-6
 
 
+@slow("slow (19 s at 12 nodes; the 8-node copy is tests/test_transition_api.py's fixture); set NOISESTATE_SLOW=1")
 def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     """Chapter 3 with the past at p1 = 3 and the new model at p1 = 10, continued by the new model's stationary
     equilibrium (T = 6, 12 nodes): the state kernels at 0+ are the old kernels at age -s to round-off,
@@ -220,7 +205,7 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     The resolution guard says where its error sits: player2's 8.6e-4 is on the band's tip (3.5e-4 at 20
     nodes: the collapsing corner's floor, not resolution), player1's 4.3e-5 in the interior, the transient
     at 0+ (2.1e-7 at 20 nodes: resolution)."""
-    m = ns.load(EX + "ch3_two_player.yaml")
+    m = example("ch3_two_player")
     old = ns.solve(m.with_params(p1=3.0)).check()
     new = m.with_params(p1=10.0).with_horizon(kind="finite", window=6.0, nodes=12)
     res = ns.solve(new, past=old, continuation="stationary").check()
@@ -260,10 +245,10 @@ def test_old_noise_loading_on_a_channel_the_new_row_drops_is_kept_on_the_band():
     carry the old loading, so under the stationary maps the closed loop at 0+ returns the old kernels on every
     channel (w2 included: without the union of the two regimes' loadings the entry is dropped and D1's kernel on
     w2 is off by 0.3 g(a), a third of its size) to round-off, the past and the strip sharing their 16 nodes."""
-    m = ns.load(EX + "ch3_two_player.yaml")
+    m = example("ch3_two_player")
     d = m.to_dict(); d["agents"]["player1"]["signals"]["y1"]["noise"] = {"w1": 1.0, "w2": 0.3}
-    old = ns.solve(ns.Model.from_dict(d).with_horizon(nodes=16)).check()
-    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=3.0, nodes=16), past=old)
+    old = stationary(ns.Model.from_dict(d), 16)
+    solver = same_model_solver(m, old, 3.0, 16, continuation=False)
     c = solver.c; g = c.g; gs = old.compiled.grid
     blocks, deltas = c.row_blocks("player1", 0, set())
     assert deltas == {"w1": [(0.0, 1.0)], "w2": [(0.0, 0.0)]}
@@ -282,10 +267,10 @@ def test_mean_paths_start_from_the_past_means_and_initial_overrides():
     old constant 1.79893500 (the horizon's end is L away), both controls vanish at T, and the paths are
     pinned at their 12-node values (16 nodes moves them by up to 8e-6).  `initial: 0` on X overrides the
     past's mean: Xbar(0) = 0 and the whole path moves."""
-    m = ns.load(EX + "ch3_two_player.yaml")
+    m = example("ch3_two_player")
     d = m.to_dict(); d["agents"]["player1"]["loss"].append([-2.0, "X"])
     mt = ns.Model.from_dict(d)
-    statt = ns.solve(mt.with_horizon(nodes=16)).check()
+    statt = stationary(mt, 16)
     assert abs(statt.means["X"] - 0.86621649) < 1e-8 and abs(statt.means["D1"] - 1.79893500) < 1e-8
     res = ns.solve(mt.with_horizon(kind="finite", window=3.0, nodes=12), past=statt).check()
     at = np.array([0.0, 0.5, 1.0, 2.0, 3.0])
@@ -305,15 +290,7 @@ def test_mean_paths_start_from_the_past_means_and_initial_overrides():
     assert np.array_equal(r0.Z, res.Z)                             # the kernels do not depend on the means
 
 
-def stationary_on_strip(stat, g, name):
-    """The stationary kernel at the strip's nodes, a node on its piece's top age edge taking the left limit (the
-    kernels jump at a delayed row's delay and at the window edge)."""
-    gs = stat.compiled.grid; K = stat.kernel(name); top = np.abs(g.a - g.a1) < 1e-9
-    out = gs.interp(g.a, side=+1) @ K
-    out[top] = gs.interp(g.a[top], side=-1) @ K
-    return out
-
-
+@slow("slow (33 s; the 3-node copy is tests/test_unit_range_finite.py's transition); set NOISESTATE_SLOW=1")
 def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
     """examples/ch1_delayed_finite.yaml (the controls act after tau = 0.25, player2 sees its row with delay tau)
     with its own stationary equilibrium at window L = 1 as past and continuation, T = 1.25: with a past a delayed
@@ -324,10 +301,10 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
     1.2e-6) the fixed point started from them stays in 4 evaluations, every kernel K_stat(t - s) to that
     floor, and res.settled is 1.1e-6.  Under NOISESTATE_SLOW the fixed point from zero reaches the same maps
     (20 evaluations, 66 s)."""
-    m = ns.load(EX + "ch1_delayed_finite.yaml"); L, T, d = 1.0, 1.25, 0.25
-    slow = bool(os.environ.get("NOISESTATE_SLOW")); n1, pin = (8, 1e-8) if slow else (7, 2e-7)
-    stat8 = ns.solve(m.with_horizon(kind="stationary", window=L, nodes=n1)).check()
-    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=n1), past=stat8, continuation=stat8)
+    m = example("ch1_delayed_finite"); L, T, d = 1.0, 1.25, 0.25
+    full = bool(os.environ.get("NOISESTATE_SLOW")); n1, pin = (8, 1e-8) if full else (7, 2e-7)
+    stat8 = stationary(m, n1, L)
+    solver = same_model_solver(m, stat8, T, n1)
     c = solver.c; g = c.g
     assert len(g.pieces) == 56 and c.N == 56 * n1 * n1 and c.row_delays == {"player1": [0.0], "player2": [d]} and c.rows["player2"][0][3] == 0.0
     assert g.upper[g.s < -1e-12].all() and not g.upper[g.s > 1e-12].any() and not g.above[g.upper].all()   # split squares
@@ -339,8 +316,8 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
         keep = solver._identified(a).reshape(len(a.signals), -1)[:, :c.N]
         dev = (np.abs(gm - c.frozen[a.name])[0] * keep / np.abs(c.frozen[a.name]).max())[0]
         assert dev.max() < pin, (a.name, dev.max(), dev[g.upper].max())
-    stat = ns.solve(m.with_horizon(kind="stationary", window=L, nodes=6)).check()
-    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=6), past=stat, continuation=stat)
+    stat = stationary(m, 6, L)
+    solver = same_model_solver(m, stat, T, 6)
     c = solver.c; g = c.g
     res = solver.solve(init=c.frozen, tol=1e-10).check()
     assert res.iterations <= 6 and res.settled < 5e-6
@@ -351,7 +328,7 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
     ax = res.map_axes(d)
     assert ax["map_time"] == g.t.tolist() and ax["map_age"] == g.a.tolist() and "raw age" in res.MAP_CONVENTION
     assert json.loads(json.dumps(res.to_dict()))["agents"]["player2"]["signals"]["y2"]["delay"] == d
-    if slow:
+    if full:
         r0 = solver.solve(tol=1e-10).check()
         assert np.abs(r0.Z - res.Z).max() < 1e-8 and r0.settled < 5e-6
 
@@ -361,8 +338,8 @@ def test_solve_routes_past_and_continuation_and_the_result_rebuilds_them():
     in solver_kw: a solver rebuilt from the result (refine(), stability()) carries the same Past and the same
     StationaryResult; the payload's options.solver and its top level carry the continuation's provenance
     (kind, window, nodes, costs, window_tail), not its kernels, and it serialises."""
-    m = ns.load(EX + "ch3_two_player.yaml")
-    stat = ns.solve(m.with_horizon(nodes=8)).check()
+    m = example("ch3_two_player")
+    stat = stationary(m, 8)
     res = ns.solve(m.with_horizon(kind="finite", window=6.0, nodes=8), past=stat, continuation="stationary", tol=1e-8).check()
     assert res.solver_kw["past"] is res.past and res.solver_kw["continuation"] is res.continuation
     assert res.continuation is not stat and np.array_equal(res.continuation.Z, stat.Z)      # solved on the fly at horizon.nodes
@@ -378,7 +355,7 @@ def test_solve_routes_past_and_continuation_and_the_result_rebuilds_them():
 def chapter3_with_lag(kind, nodes, L=1.5, lag=0.5):
     """Chapter 3 with player1's own control read lag behind: in a loss cross term with the state (`loss`), or as the
     only coercive term (`onlylag`: the instantaneous quadratic 0.01, the lag's 0.5 r1, the Chapter 5 structure)."""
-    d = ns.load(EX + "ch3_two_player.yaml").to_dict()
+    d = example("ch3_two_player").to_dict()
     if kind == "loss":
         d["agents"]["player1"]["loss"].append([0.3, f"D1@{lag}", "X"])
     else:
@@ -387,19 +364,8 @@ def chapter3_with_lag(kind, nodes, L=1.5, lag=0.5):
     return ns.Model.from_dict(d)
 
 
-def one_shot_from_the_stationary_maps(m, stat, T, nodes, **kw):
-    """Each agent's best response to the frozen stationary maps on the strip [0, T] with `stat` as past and
-    continuation: the relative deviation from those maps on the identified nodes, by agent, and the solver."""
-    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=nodes, **kw), past=stat, continuation=stat)
-    c = solver.c; out = {}
-    for a in m.agents:
-        gm, _ = solver.best_response(a, c.frozen)
-        keep = solver._identified(a).reshape(len(a.signals), -1)[:, :c.N]
-        out[a.name] = (np.abs(gm - c.frozen[a.name]) * keep / np.abs(c.frozen[a.name]).max()).max(axis=(0, 1))
-    return out, solver
-
-
-@pytest.mark.parametrize("kind, nodes, floor", [("loss", 6, (1e-5, 5e-5)), ("onlylag", 8, (5e-5, 5e-6))])
+@pytest.mark.parametrize("kind, nodes, floor", [("loss", 6, (1e-5, 5e-5)),
+                                                slow_param("onlylag", 8, (5e-5, 5e-6), reason="slow (6 s; the 6-node loss case is the fast one); set NOISESTATE_SLOW=1")])
 def test_own_lagged_control_read_across_the_band_returns_the_stationary_maps(kind, nodes, floor):
     """Player1's own control lagged by 0.5 (unit 0.5, L = 1.5, T = 2), Chapter 3 as its own past and continuation:
     the first-order condition reads D1(t - lag, a - lag) through the band and the buffer, whose corner nodes sit
@@ -426,14 +392,7 @@ def test_two_firm_market_as_its_own_transition_returns_the_stationary_maps(T):
     and losses a lag behind, so every first-order condition reads controls across the band.  One best response
     from the stationary maps returns them to 2.3e-4 on every node at T = 2 and T = 3, the floor of the 5-node
     closed loop itself (1.4e-4 on P, 2.5e-4 on o against the stationary kernels); pinned at 5e-4."""
-    import sys
-    sys.path.insert(0, EX.rstrip("/"))
-    from make_ch5_cycle_market import build
-    d = build(N=2, tau=1.0, L=2.0, nodes=5, unit_range=2.0, rP=0.1).to_dict()
-    d["ties"] = []; d["params"].pop("kappa", None)
-    for a in d["agents"].values():
-        a["loss"] = [term for term in a["loss"] if len(term) == 3]
-    m = ns.Model.from_dict(d)
+    m = two_firm_market(tau=1.0, L=2.0, nodes=5, unit_range=2.0, rP=0.1)
     stat = ns.solve(m).check()
     dev, solver = one_shot_from_the_stationary_maps(m, stat, T, 5, unit=1.0)
     assert len(solver.c.g.pieces) == {2.0: 14, 3.0: 16}[T] and solver.c.N == {2.0: 350, 3.0: 400}[T]
@@ -444,7 +403,7 @@ def test_past_validation():
     """A finite result is a TypeError, an unconverged stationary one a ValueError, other channels a ValueError,
     an initial shock on an unknown state a ValueError, and a past with a window on a model whose rows are
     observed with a delay is not implemented in this stage."""
-    m = ns.load(EX + "ch3_two_player.yaml")
+    m = example("ch3_two_player")
     with pytest.raises(TypeError, match="stationary"):
         Past.of(ns.solve(m.with_horizon(kind="finite", window=1.0, nodes=6)))
     with pytest.raises(ValueError, match="did not converge"):
@@ -456,8 +415,8 @@ def test_past_validation():
         ns.SpectralFiniteSolver(ns.Model.from_dict(other).with_horizon(kind="finite", window=3.0, nodes=6), past=stat)
     with pytest.raises(ValueError, match="not a state"):
         ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=3.0, nodes=6), past=[{"name": "v", "loads": {"V": 1.0}}])
-    delayed = ns.load(EX + "ch1_delayed_finite.yaml")
-    dpast = ns.solve(delayed.with_horizon(kind="stationary", window=1.0, nodes=6)).check()
+    delayed = example("ch1_delayed_finite")
+    dpast = stationary(delayed, 6, 1.0)
     with pytest.raises(ValueError, match="differ from the model's .* \\(agent, row, delay\\)"):
         ns.SpectralFiniteSolver(delayed, past=dpast, continuation=ns.solve(ns.Model.from_dict({**delayed.to_dict(), "agents": {
             **delayed.to_dict()["agents"], "player2": {**delayed.to_dict()["agents"]["player2"], "signals": {"y2": {"drift": {"X": "sqrt(p2)"}, "noise": {"w2": 1.0}}}}}}).with_horizon(kind="stationary", window=1.0, nodes=6)).check())

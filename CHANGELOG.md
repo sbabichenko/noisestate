@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Tests and tooling only (the package is untouched).  `tests/helpers.py` holds the builders the transition
+  and means tests repeated: the example loaders (`example`, `example_dict`, `example_path`), a model solved
+  stationary at a number of nodes (`stationary`, `delayed_stationary` for the delayed Chapter 1 game), the
+  same-model past-and-continuation setup on a strip (`same_model_solver`, `same_model_setup`), the two-firm
+  Chapter 5 market with its ties and linear terms dropped (`two_firm_market`), the one-shot best-response
+  identity (`one_shot_deviation`, `one_shot_from_the_stationary_maps`), the stationary maps and kernels carried
+  onto a strip, the discounted one-agent prior model, and `solve_record` (costs, evaluations, residual, scalar
+  means, SHA-256 of Z at 12 digits and of its bytes).  The fast suite runs in 111 s (183 tests) against 256 s
+  (197): fourteen solves above five seconds whose pin is repeated at a smaller size or by another test are
+  gated behind NOISESTATE_SLOW=1 (`helpers.slow`, `helpers.slow_param`, which also mark them `slow`);
+  `tests/SLOW.md` lists every gated test with what it pins, and the weekly CI job selects them with `-m slow`
+  (its `-k` expression would have missed the moved tests).  No assertion or tolerance changed.
 - The spectral finite engine's best response matrix-free.  Beyond `settings.foc_dense_max` unknowns nU nR N
   (the largest agent's; default 8192, above every shipped example and test, whose numbers are unchanged to
   the bit) `SpectralFiniteSolver.best_response` no longer builds the row, response, first-order-condition and

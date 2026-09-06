@@ -2,6 +2,7 @@
 import os, json, numpy as np, pytest
 import noisestate as ns
 from noisestate.stationary import StationarySolver
+from helpers import slow
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
 
 
@@ -171,7 +172,7 @@ def test_cli_reports_model_errors_as_messages(tmp_path, capsys):
     assert main(["solve", str(good)]) == 0 and "discounted cost" in capsys.readouterr().out
 
 
-@pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="slow (a few minutes); set NOISESTATE_SLOW=1")
+@slow("slow (20 s); set NOISESTATE_SLOW=1")
 def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
     """One agent with a delayed noisy observation: the stationary kernels (window 6) against the
     spectral finite engine at t = 4 of T = 7.  Both horizon ends leave transients (the filter

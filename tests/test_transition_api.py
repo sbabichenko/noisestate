@@ -8,14 +8,13 @@ import numpy as np, pytest
 import yaml
 import noisestate as ns
 from noisestate.cli import main
-
-EX = ns.__file__.rsplit("/noisestate/", 1)[0] + "/examples/"
+from helpers import EX, example, prior_model as one_agent
 
 
 @pytest.fixture(scope="module")
 def regime():
     """Chapter 3, p1 = 3 (the shipped file) to p1 = 10, T = 6, 8 nodes: the keyword form from zero and its inputs."""
-    m = ns.load(EX + "ch3_two_player.yaml")
+    m = example("ch3_two_player")
     old = ns.solve(m).check()
     new = m.with_params(p1=10.0).with_horizon(kind="finite", window=6.0, nodes=8)
     return {"m": m, "old": old, "new": new, "zero": ns.solve(new, past=old, continuation="stationary")}
@@ -72,13 +71,6 @@ def test_transition_helper_starts_from_the_new_stationary_maps(regime):
         ns.solve(regime["new"], past=regime["old"], start="warm")
     # solve() keeps start="zero"
     assert z.solve_kw["start"] == "zero"
-
-
-def one_agent(rho=0.5, nodes=12):
-    return {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
-            "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.5}, "noise": {"w1": 1.0}}},
-                             "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}},
-            "horizon": {"kind": "finite", "window": 3.0, "nodes": nodes, "discount": rho}}
 
 
 def test_builder_and_initial_shocks_in_the_file_form():
@@ -138,7 +130,7 @@ def test_cli_round_trip(tmp_path, capsys):
     writes the payload with the past's provenance, and the relative past path is taken from the file's
     directory whatever the working directory."""
     shutil.copy(EX + "ch3_two_player.yaml", tmp_path / "old.yaml")
-    d = ns.load(EX + "ch3_two_player.yaml").with_params(p1=10.0).to_dict()
+    d = example("ch3_two_player").with_params(p1=10.0).to_dict()
     d["horizon"] = {"kind": "transition", "window": 6.0, "nodes": 8, "past": {"model": "old.yaml"}, "continuation": "stationary",
                     "stationary": {"nodes": 8}}
     with open(tmp_path / "change.yaml", "w") as fh:

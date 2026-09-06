@@ -3,16 +3,16 @@ fly) and the Kyle-Back market started from a prior (initial shocks, the game end
 convergence."""
 import numpy as np
 import noisestate as ns
+from helpers import example, example_path, slow
 
-EX = ns.__file__.rsplit("/noisestate/", 1)[0] + "/examples/"
 
-
+@slow("slow (9 s; its excess costs are tests/test_transition_result.py's at T = 9, its solve tests/test_baseline.py's); set NOISESTATE_SLOW=1")
 def test_ch3_precision_change_example():
     """examples/ch3_precision_change.yaml (p1 = 3 to 10, T = 6, 12 nodes, 9 s): converged, the excess costs
     0.024027 and 0.028619 (the T = 9 values of tests/test_transition_result.py to 5e-8: the transition's cost
     does not depend on where the closure sits once it has settled), settled 4.8e-4 with the guard firing
     (T = 6 is short for a 1e-2 closed-loop decay; T = 9 gives 2.7e-6)."""
-    res = ns.solve(EX + "ch3_precision_change.yaml")
+    res = ns.solve(example_path("ch3_precision_change"))
     assert res.converged and isinstance(res, ns.TransitionResult) and res.model.horizon.kind == "transition"
     assert res.past.provenance["name"] == "ch3_two_player" and res.continuation.compiled.grid.n == 12
     assert abs(res.excess_costs["player1"] - 0.024027) < 2e-6 and abs(res.excess_costs["player2"] - 0.028619) < 2e-6
@@ -34,7 +34,7 @@ def test_kyle_back_prior_example():
     test below; the README records the eps sweep toward it).  The trader's second-order check flags NOT A
     MINIMUM (-0.0102 relative to the form's largest curvature, the prior column's): the strip quadrature's
     error on the D P cross term at a small trading cost, with or without the prior (README, Limits)."""
-    m = ns.load(EX + "kyle_back_prior.yaml")
+    m = example("kyle_back_prior")
     assert m.horizon.past["initial"][0]["loads"] == {"V": 1.0} and m.with_params(eps=0.2).horizon.past["initial"][0]["loads"] == {"V": 1.0}
     assert m.with_params(Sigma0=4.0).horizon.past["initial"][0]["loads"] == {"V": 2.0}
     res = {n: ns.solve(m.with_horizon(nodes=n)) for n in (8, 12)}
@@ -54,7 +54,7 @@ def test_kyle_back_prior_martingale_identity():
     of V at T: at 12 nodes lambda = 0.614143 against sqrt((1 - Sigma_T)/2) = 0.614142 at eps 0.2 and 0.658872
     against 0.658865 at 0.1, pinned to 1e-4 (two solves, 2 s).  Back's eps = 0 limit is sqrt(Sigma0/T)/sigma_Z
     = 0.7071, which the README's eps sweep approaches from below."""
-    m = ns.load(EX + "kyle_back_prior.yaml").with_horizon(nodes=12)
+    m = example("kyle_back_prior").with_horizon(nodes=12)
     for eps, lam_ref in ((0.2, 0.614143), (0.1, 0.658872)):
         res = ns.solve(m.with_params(eps=eps))
         lam = lambda0(res); sig_T = res.belief_error("market_maker", "V")[-1]

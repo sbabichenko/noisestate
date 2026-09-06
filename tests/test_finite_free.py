@@ -1,14 +1,11 @@
 """The spectral finite engine's matrix-free best response (noisestate/finite_free.py, settings.foc_dense_max)
 against the dense one: the same best response and the same fixed point to the Krylov tolerance."""
-import os
-
 import numpy as np
 
 import noisestate as ns
 from noisestate.finite_spectral import SpectralFiniteSolver
+from helpers import example, example_dict, stationary, same_model_solver, slow
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-EX = os.path.join(HERE, "..", "examples") + os.sep
 FREE = {"foc_dense_max": 0}
 
 
@@ -39,6 +36,7 @@ def _same_fixed_point(rd, rf, cost_tol=1e-10):
         assert abs(rd.representation_error[a.name] - rf.representation_error[a.name]) < 1e-9
 
 
+@slow("slow (12 s; the 6-node case with a past below is the fast one); set NOISESTATE_SLOW=1")
 def test_matrix_free_best_response_matches_the_dense_one_without_a_past():
     """examples/ch1_delayed_finite.yaml at 8 nodes (N = 640, player2's row delayed): with foc_dense_max 0 every
     operator is applied from the line paths and the first-order conditions are solved by GMRES (11 to 18
@@ -47,7 +45,7 @@ def test_matrix_free_best_response_matches_the_dense_one_without_a_past():
     projected map, the second-order check, the decomposition, the cost and the representation error), and
     the fixed point on the action kernels reaches the same equilibrium in the same 13 evaluations, the costs
     to 1e-15.  The default threshold (8192) keeps this system, like every shipped one, on the dense path."""
-    d = ns.read_yaml(EX + "ch1_delayed_finite.yaml"); d["horizon"]["nodes"] = 8
+    d = example_dict("ch1_delayed_finite"); d["horizon"]["nodes"] = 8
     m = ns.Model.from_dict(d)
     dense = SpectralFiniteSolver(m); free = SpectralFiniteSolver(m, settings=FREE)
     assert not dense.foc_free and free.foc_free and free.settings.foc_dense_max == 0 and dense.settings.foc_dense_max == 8192
@@ -64,15 +62,14 @@ def test_matrix_free_best_response_matches_the_dense_one_with_a_past():
     responses, the corner ties of the Duffy triangles in the Krylov solve and its preconditioner) and the
     Kyle-Back prior (initial shocks: the discrete weights and the point conditions of the line s = 0): the
     same best responses to 1e-10 and the same fixed points, costs to 1e-12, in the same number of evaluations."""
-    m3 = ns.load(EX + "ch3_two_player.yaml")
-    stat = ns.solve(m3.with_horizon(nodes=6)).check()
-    hz = m3.with_horizon(kind="finite", window=6.0, nodes=6)
-    dense = SpectralFiniteSolver(hz, past=stat, continuation=stat)
-    free = SpectralFiniteSolver(hz, past=stat, continuation=stat, settings=FREE)
+    m3 = example("ch3_two_player")
+    stat = stationary(m3, 6)
+    dense = same_model_solver(m3, stat, 6.0, 6)
+    free = same_model_solver(m3, stat, 6.0, 6, settings=FREE)
     assert free.foc_free and free.c.buffer.any() and free.c.g.upper.any()
     _same_best_response(dense, free, dense.c.frozen)
     _same_fixed_point(dense.solve(start="stationary"), free.solve(start="stationary"))
-    kb = ns.load(EX + "kyle_back_prior.yaml").with_horizon(nodes=8)
+    kb = example("kyle_back_prior").with_horizon(nodes=8)
     rd = ns.solve(kb); rf = ns.solve(kb, settings=FREE)
     assert rd.compiled.n_init == 1 and rf.solver_kw["settings"] == FREE
     _same_fixed_point(rd, rf)
@@ -83,7 +80,7 @@ def test_matrix_free_path_reports_a_singular_system():
     singular: the matrix-free path raises the singular-system ValueError the dense path raises on its
     condition estimate, naming the block."""
     import pytest
-    d = ns.read_yaml(EX + "ch1_two_player_finite.yaml"); d["horizon"]["nodes"] = 4
+    d = example_dict("ch1_two_player_finite"); d["horizon"]["nodes"] = 4
     m = ns.Model.from_dict(d)
     with pytest.raises(ValueError, match="singular"):
         SpectralFiniteSolver(m, settings={"foc_dense_max": 0, "foc_rcond": 1.0}).solve()

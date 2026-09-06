@@ -1,6 +1,5 @@
-import os
 import noisestate as ns
-HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
+from helpers import example_path, example_dict
 
 def test_resolution_flag_and_stability_on_the_two_firm_market():
     """At 6 nodes per panel the two-firm cycle market is under-resolved and the result says so; the
@@ -20,8 +19,8 @@ def test_resolution_flag_and_stability_on_the_two_firm_market():
 
 
 def test_stability_of_the_chapter_3_game_and_finite_engine():
-    r = ns.solve(os.path.join(EX, "ch3_two_player.yaml")).check(); s = r.stability()
+    r = ns.solve(example_path("ch3_two_player")).check(); s = r.stability()
     assert s["stable"] and s["radius"] < 1.0 and s["fixed_point_residual"] < 1e-8
-    df = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); df["horizon"]["nodes"] = 6
+    df = example_dict("ch1_two_player_finite"); df["horizon"]["nodes"] = 6
     rf = ns.solve(ns.Model.from_dict(df)).check(); sf = rf.stability()
     assert sf["stable"] and sf["radius"] < 1.0
