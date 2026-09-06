@@ -171,8 +171,8 @@ def test_same_model_continuation_is_exact_on_the_whole_region():
     band, 1.2e-10 and 6.5e-10 on the last window); the fixed point started from them stays (3 evaluations),
     every kernel equal to K_stat(t - s) on every node, the last window and the buffer included (X 1.9e-9,
     D1 1.4e-9, D2 1.5e-8 on the band and the buffer, 6e-10 on the last window), and res.settled is 6.6e-10;
-    from zero (12 nodes, 29 evaluations) the same fixed point to the 12-node floor (1.3e-5).  The costs are
-    over [0, T]; the buffer's are reported apart."""
+    under NOISESTATE_SLOW, from zero (12 nodes, 29 evaluations, 10 s) the same fixed point to the 12-node
+    floor (1.3e-5), settled 6.3e-7.  The costs are over [0, T]; the buffer's are reported apart."""
     m = ns.load(EX + "ch3_two_player.yaml"); L, T = 3.0, 6.0
     stat = ns.solve(m.with_horizon(nodes=16)).check()
     solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=16), past=stat, continuation=stat)
@@ -194,8 +194,10 @@ def test_same_model_continuation_is_exact_on_the_whole_region():
     assert set(parts) == {"variance", "mean", "continuation"} and abs(parts["continuation"] - 3 * stat.costs["player1"]) < 1e-6
     assert res.costs["player1"] == parts["variance"] and 0 < res.costs["player1"] < 2 * parts["continuation"]
     rows = {r["name"]: r for r in res.diagnose()}
-    assert rows["settled"]["ok"] and rows["settled"]["threshold"] == 1e-6 and "continuation window" in rows and "past window" in rows
+    assert rows["settled"]["ok"] and rows["settled"]["threshold"] == 1e-4 and "continuation window" in rows and "past window" in rows
     assert res.to_dict()["continuation"]["window_tail"] == res.past.provenance["window_tail"] and res.grid_info()["buffer"] == [6.0, 9.0]
+    if not os.environ.get("NOISESTATE_SLOW"):
+        return
     stat12 = ns.solve(m.with_horizon(nodes=12)).check()
     r0 = ns.solve(m.with_horizon(kind="finite", window=T, nodes=12), past=stat12, continuation=stat12, tol=1e-10).check()
     g0 = r0.grid; gs0 = stat12.compiled.grid
@@ -212,7 +214,9 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     (2.55448876, 2.55908247; 2.56081481 and 2.56540852 when the game ended at T; they move by 4.2e-5 and
     4.9e-5 at 20 nodes, so 1e-6 catches a change of the formulation and not of the grid), the buffer's cost
     is three times the stationary flow (1.26523081), and `settled` is 4.8e-4 (5.3e-4 at 20 nodes: the
-    transition has not settled by T - L = 3; 2.7e-6 at T = 9), so the guard fires; at T = L = 3 it is 0.58.
+    transition has not settled by T - L = 3, the closed loop decaying by 1e-2 per unit of t), so the guard
+    (settled_tol 1e-4) fires; at T = 9 it is 2.7e-6 and the guard is quiet; at T = L = 3 it is 0.58.  The
+    past=Model identity is checked at 8 nodes (1.4 s a solve).
     The resolution guard says where its error sits: player2's 8.6e-4 is on the band's tip (3.5e-4 at 20
     nodes: the collapsing corner's floor, not resolution), player1's 4.3e-5 in the interior, the transient
     at 0+ (2.1e-7 at 20 nodes: resolution)."""
@@ -223,7 +227,7 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     assert abs(res.costs["player1"] - 2.55448876) < 1e-6 and abs(res.costs["player2"] - 2.55908247) < 1e-6, res.costs
     assert abs(res.cost_parts["player1"]["continuation"] - 1.26523081) < 1e-6
     assert 4e-4 < res.settled < 6e-4 and not next(r for r in res.diagnose() if r["name"] == "settled")["ok"], res.settled
-    assert "TRANSITION NOT SETTLED" in res.summary()
+    assert "TRANSITION NOT SETTLED" in res.summary() and "against settled_tol 0.0001" in res.summary()
     cont = res.continuation
     assert cont.model.horizon.kind == "stationary" and cont.compiled.grid.L == 3.0 and cont.compiled.grid.n == 12
     assert res.solver_kw["continuation"] is cont and res.to_dict()["continuation"]["kind"] == "stationary"
@@ -240,9 +244,11 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     assert at0.any()
     for name in ("X",):
         assert np.abs(res.kernel(name)[at0] - old.compiled.grid.interp(g.a[at0]) @ old.kernel(name)).max() < 1e-13
-    res2 = ns.solve(new, past=m.with_params(p1=3.0), continuation=cont)
-    assert np.array_equal(res.Z, res2.Z) and res.costs == res2.costs
-    assert all(np.array_equal(res.maps[k], res2.maps[k]) for k in res.maps)
+    new8 = new.with_horizon(nodes=8)
+    res8 = ns.solve(new8, past=old, continuation="stationary")
+    res2 = ns.solve(new8, past=m.with_params(p1=3.0), continuation=res8.continuation)
+    assert np.array_equal(res8.Z, res2.Z) and res8.costs == res2.costs and 6e-4 < res8.settled < 7e-4
+    assert all(np.array_equal(res8.maps[k], res2.maps[k]) for k in res8.maps)
     assert res.evaluate("X", "w0", np.array([1.0, 1.0]), np.array([-1.0, 0.5])).shape == (2,)
     assert res.second_order["player1"]["ok"] and res.solver_kw["past"] is res.past
     short = ns.solve(new.with_horizon(window=3.0), past=old, continuation=cont).check()
@@ -312,16 +318,18 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
     """examples/ch1_delayed_finite.yaml (the controls act after tau = 0.25, player2 sees its row with delay tau)
     with its own stationary equilibrium at window L = 1 as past and continuation, T = 1.25: with a past a delayed
     row's map is stored in raw age, masked below the delay, and the squares above each diagonal are split
-    (56 pieces), so the identity is exact: at 8 nodes one best response from the stationary maps returns them
-    on every node to 1.4e-9 (player1) and 1.8e-9 (player2, the delayed row), the band and the last window
-    included; at 6 nodes (the floor 1.2e-6) the fixed point started from them stays in 4 evaluations, every
-    kernel K_stat(t - s) to that floor, and res.settled is 1.1e-6.  Under NOISESTATE_SLOW the fixed point from
-    zero reaches the same maps (20 evaluations, 66 s)."""
+    (56 pieces), so the identity is exact: at 7 nodes one best response from the stationary maps returns them
+    on every node to 5.1e-8 (player1) and 4.9e-8 (player2, the delayed row), the band and the last window
+    included (10 s; at 8 nodes, under NOISESTATE_SLOW, 1.4e-9 and 1.8e-9 in 20 s); at 6 nodes (the floor
+    1.2e-6) the fixed point started from them stays in 4 evaluations, every kernel K_stat(t - s) to that
+    floor, and res.settled is 1.1e-6.  Under NOISESTATE_SLOW the fixed point from zero reaches the same maps
+    (20 evaluations, 66 s)."""
     m = ns.load(EX + "ch1_delayed_finite.yaml"); L, T, d = 1.0, 1.25, 0.25
-    stat8 = ns.solve(m.with_horizon(kind="stationary", window=L, nodes=8)).check()
-    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=8), past=stat8, continuation=stat8)
+    slow = bool(os.environ.get("NOISESTATE_SLOW")); n1, pin = (8, 1e-8) if slow else (7, 2e-7)
+    stat8 = ns.solve(m.with_horizon(kind="stationary", window=L, nodes=n1)).check()
+    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=n1), past=stat8, continuation=stat8)
     c = solver.c; g = c.g
-    assert len(g.pieces) == 56 and c.N == 3584 and c.row_delays == {"player1": [0.0], "player2": [d]} and c.rows["player2"][0][3] == 0.0
+    assert len(g.pieces) == 56 and c.N == 56 * n1 * n1 and c.row_delays == {"player1": [0.0], "player2": [d]} and c.rows["player2"][0][3] == 0.0
     assert g.upper[g.s < -1e-12].all() and not g.upper[g.s > 1e-12].any() and not g.above[g.upper].all()   # split squares
     keep2 = solver._identified(m.agents[1]).reshape(1, -1)[0, :c.N]
     assert not keep2[g.a1 <= d + 1e-9].any() and keep2[(g.a0 >= d - 1e-9) & ~c.buffer].all()   # whole pieces below the delay
@@ -330,7 +338,7 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
         gm, out = solver.best_response(a, c.frozen)
         keep = solver._identified(a).reshape(len(a.signals), -1)[:, :c.N]
         dev = (np.abs(gm - c.frozen[a.name])[0] * keep / np.abs(c.frozen[a.name]).max())[0]
-        assert dev.max() < 1e-8, (a.name, dev.max(), dev[g.upper].max())
+        assert dev.max() < pin, (a.name, dev.max(), dev[g.upper].max())
     stat = ns.solve(m.with_horizon(kind="stationary", window=L, nodes=6)).check()
     solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=6), past=stat, continuation=stat)
     c = solver.c; g = c.g
@@ -343,7 +351,7 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
     ax = res.map_axes(d)
     assert ax["map_time"] == g.t.tolist() and ax["map_age"] == g.a.tolist() and "raw age" in res.MAP_CONVENTION
     assert json.loads(json.dumps(res.to_dict()))["agents"]["player2"]["signals"]["y2"]["delay"] == d
-    if os.environ.get("NOISESTATE_SLOW"):
+    if slow:
         r0 = solver.solve(tol=1e-10).check()
         assert np.abs(r0.Z - res.Z).max() < 1e-8 and r0.settled < 5e-6
 

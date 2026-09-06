@@ -90,6 +90,13 @@
   zero.  The two-firm Chapter 5 market (make_ch5_cycle_market.build(N=2), ties dropped) at the
   sizes asked (L = 6, tau = 0.5, T = 6) has 11 000 nodes x 9 primaries, beyond the dense closed loop;
   at tau = 1, L = T = 2, 5 nodes it is validated below (stage 2d).
+- `settings.settled_tol` is 1e-4 (was 1e-6, the grid's floor: it tripped a perfectly settled transition
+  at 12 nodes or fewer, the same-model identity sitting at 6.3e-7, and fired at T = 9 on the regime
+  change, 2.7e-6); the threshold is the closed-loop decay over a unit of t (1e-2 on Chapter 3), and the
+  `settled` row's flag says so.  The suite: the delayed-row one-shot is pinned at 7 nodes (5.1e-8 and
+  4.9e-8, 10 s; the 8-node one, 1.4e-9 and 1.8e-9, under NOISESTATE_SLOW), the regime change's
+  past=Model identity is checked at 8 nodes, and the same-model continuation's from-zero solve at 12
+  nodes is under NOISESTATE_SLOW: 215 s to 178 s.
 - Transition from a known past, stage 2d: the read of an agent's own lagged control.  The first-order
   condition's own-lag term reads D(t - lag, a - lag) through `TriangleGrid._locate`, which at a corner
   node of a band or buffer piece picked the wrong side of a diagonal: a node (L - lag, L - lag) below a

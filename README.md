@@ -217,7 +217,7 @@ each with its default and a one-line meaning: the outer fixed point (`anderson_m
 `cell_krylov_rtol` 1e-12, `cell_krylov_maxiter` 400, `cell_krylov_retry` 1000), the second-order check
 (`second_order_tol` 1e-4, `second_order_dense` 4000, `second_order_lanczos_tol` 1e-6,
 `second_order_lanczos_maxiter` 300), the means (`mean_rcond` 1e-12, `lead_weight_warn` 100) and the
-result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `settled_tol` 1e-6, `mean_zero` 1e-12, `refine_cost_tol`
+result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `settled_tol` 1e-4, `mean_zero` 1e-12, `refine_cost_tol`
 1e-6, `refine_kernel_tol` 1e-5, `stability_k` 2, `stability_eps` 1e-6, `stability_tol` 1e-3,
 `stability_max_evaluations` 200, `stability_fallback` 30).  Pass `settings=Settings(second_order_tol=1e-3)`
 (or a dict of the fields to change) to `solve()`, `sweep(solver_kw=...)` or an engine's constructor;
@@ -504,7 +504,8 @@ a settled transition solves the infinite problem exactly (the same-model identit
 on every node: Chapter 3 to 2e-9 at 16 nodes, with a control lag and a delayed row to 2e-9 at
 8 nodes, the two-firm Chapter 5 market to 2.3e-4 at 5 nodes, each at its grid's closed-loop
 floor), `res.settled` measures how far the maps on [T - L, T] are from the
-stationary ones (the `settled` row, threshold `settled_tol` 1e-6), and
+stationary ones (the `settled` row, threshold `settled_tol` 1e-4: the closed loop's decay over a
+unit of t, 1e-2 on Chapter 3, not the grid's floor), and
 `res.cost_parts[agent]["continuation"]` reports the buffer's cost apart from
 `res.costs`, which stays the integral over [0, T].  With a past the map on a row observed
 with a delay is stored in raw age (zero below the delay; `map_convention` in the payload),

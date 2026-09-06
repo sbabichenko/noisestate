@@ -550,7 +550,8 @@ class TriangleResult(BaseResult):
             info = self.compiled.continuation_info or {}
             row("settled", float(self.settled), self.SETTLED_TOL, bool(self.settled <= self.SETTLED_TOL),
                 f"TRANSITION NOT SETTLED by T - L: raise horizon.window (a map on [T - L, T] is {self.settled:.1e} of its peak "
-                "from the stationary map the buffer is frozen at)", "raise horizon.window")
+                f"from the stationary map the buffer is frozen at, against settled_tol {self.SETTLED_TOL:g}: the closed-loop "
+                "decay over a unit of t, not the grid's floor)", "raise horizon.window")
             if info.get("window_tail") is not None:
                 tail = float(info["window_tail"])
                 row("continuation window", tail, tol, bool(tail <= tol),

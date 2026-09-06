@@ -48,7 +48,7 @@ class Settings:
     # ---- the result's checks
     resolution_tol: float = 1e-6        # representation error above which a result is under-resolved (raise horizon.nodes)
     window_tail_tol: float = 0.02       # a kernel still moving by more of its peak over the last tenth of the window: window too short
-    settled_tol: float = 1e-6           # a transition whose maps on [T - L, T] are further (relative to the map's peak) from the stationary continuation is not settled
+    settled_tol: float = 1e-4           # a transition is settled when its maps on [T - L, T] are within this (relative to the map's peak) of the stationary continuation: the closed-loop decay per unit of t (1e-2 on Chapter 3), not the grid's floor
     mean_zero: float = 1e-12            # below this a mean is round-off (printed as an unsigned zero, not counted as driven)
     refine_cost_tol: float = 1e-6       # refine(): relative cost change below which the grid is resolved
     refine_kernel_tol: float = 1e-5     # refine(): relative kernel change below which the grid is resolved
