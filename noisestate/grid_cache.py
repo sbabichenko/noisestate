@@ -84,8 +84,10 @@ def _age_grid(breakpoints: Tuple[float, ...], nodes: int) -> AgeGrid:
     return AgeGrid(list(breakpoints), nodes)
 
 
-def _triangle_grid(breakpoints: Tuple[float, ...], nt: int, na: int) -> TriangleGrid:
-    return TriangleGrid(list(breakpoints), nt, na)
+def _triangle_grid(breakpoints: Tuple[float, ...], nt: int, na: int, T: float = None, window: float = None) -> TriangleGrid:
+    """The key is (breakpoints, nt, na) for today's triangle and (breakpoints, nt, na, T, L) for the strip of a
+    transition, so a grid without a past is the same cached object it always was."""
+    return TriangleGrid(list(breakpoints), nt, na, T=T, window=window)
 
 
 age_grid = _GridCache(_age_grid)

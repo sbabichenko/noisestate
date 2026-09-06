@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Transition from a known past, stage 1a (grid and operators; no engine behaviour changes).
+  `noisestate/past.py`: `Past`, the loadings of the pre-zero shocks on the old regime, built from a
+  converged `StationaryResult` (kernels of every state, control and signal row as functions of shock
+  age on the past's window, the rows' noise loadings, the constant means), from a stationary model,
+  dict or path solved on the fly, or from a hand-built list of initial shocks (`{"name", "loads":
+  {state: coef}, "rows": {"agent.row": coef}}`, point loadings at time 0-, an empty window);
+  `Past.validate(model)` matches channels, states and rows by name and checks the past grid's
+  breakpoints and delays against the new panel unit (an unconverged past is a `ValueError`, a
+  finite result a `TypeError`).  `TriangleGrid(breakpoints, nt, na, T=, window=)`: with a window L
+  the domain is the strip [0, T] x [0, L], today's pieces below the diagonal (same nodes and order,
+  cut off at age L) and, above it, the shocks born before zero (a mirrored Duffy triangle per square
+  and rectangles), each time panel's pieces contiguous; `interp` takes `side_d` for the diagonal,
+  `path` a `known_grid` (a known kernel on an `AgeGrid`, cut at its breakpoints), `LinePath.bilinear`
+  contracts both factors.  Without a window the grid, its cache key and every operator are
+  bit-identical to before (checked against master).  `SpectralCompiled(model, past=)`: the band's
+  state at zero is the past's state kernel propagated by e^{At}, lagged atoms read before zero are the
+  past's kernels (`past_read`, `row_past`, `zeta_past`), a row's increments observed before zero enter
+  the closed loop through the past's row kernel on the past's own grid (`past_conv_path`), initial
+  shocks are extra columns of the world with discrete observation weights (`disc_embed`,
+  `disc_select`), impulse columns are zero on the band.  Under the stationary maps of
+  `examples/ch3_two_player.yaml` the closed loop on the strip (T = 6, L = 3) returns K_stat(t - s)
+  on both shock families to 5e-9.  The engine does not accept a past yet (stage 1b).
+
 - `noisestate.Settings`: the tuning constants (Anderson memory and iterations, the singular-system
   and mean-system condition thresholds, the projection ridges, the second-order tolerance and the
   dense/Lanczos switch, the result's resolution, window-tail, refinement and stability thresholds

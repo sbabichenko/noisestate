@@ -12,6 +12,18 @@ node; Anderson fixed point over the action kernels (or the raw maps), Newton-Kry
 The means (targets, constant drifts, initial states) are deterministic paths on
 the time nodes, solved at the end from every control's mean first-order condition
 and the mean dynamics as one linear system (see SpectralFiniteSolver.mean_system).
+
+With a known past (SpectralFiniteSolver(past=...), see past.py) the triangle becomes
+the strip [0, T] x [0, L] of triangle.py: the nodes above the diagonal carry the
+kernels on the shocks born before zero, whose state at time zero is the past's
+kernel at age -s and whose pre-zero inputs and observations are read from the
+past (a lagged atom before zero is the past's kernel of that quantity; a line
+integral crossing time zero gets a known segment on the past's own age grid); the
+map gains the same region, the weights on the increments observed before zero.
+Initial shocks (point loadings at time 0-) are extra columns of the world, one
+per shock, meaningful on the line s = 0, observed through discrete weights on the
+time nodes stored after each row's map nodes (maps (nU, nR, N + Nt)).  Without a
+past nothing of this runs and every array is the triangle's.
 """
 from __future__ import annotations
 
@@ -26,7 +38,7 @@ from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
 
 from .engine import EngineBase
 from .compile import CompiledBase, close_under_delays, reject_leads
-from .grid import bary_rows
+from .grid import bary_rows, cheb_lobatto
 from .results import TriangleResult
 from .settings import tunable
 from .spec import Agent, Atom, Model
@@ -46,12 +58,16 @@ def _common_unit_hint(lags, kmax: int = 100) -> str:
 
 
 class SpectralCompiled(CompiledBase):
-    def __init__(self, model: Model):
+    def __init__(self, model: Model, past=None):
         super().__init__(model)
         reject_leads(model, 'spectral finite engine')
         hz = model.horizon
         self.T = float(hz.window)
         lags = model.all_lags()
+        self.past = past
+        if past is not None:
+            past.validate(model, (hz.unit or min(lags)) if lags else None)
+        L = past.window if past is not None and past.window > 0 else None
         bp = list(hz.breakpoints) if hz.breakpoints else TriangleGrid.breakpoints(self.T, lags, hz.unit)
         missing = [l for l in lags if not any(abs(l - b) < 1e-12 for b in bp)]
         if missing:                      # every lag must be on the panels before the closure: closing under a lag off
@@ -76,15 +92,43 @@ class SpectralCompiled(CompiledBase):
                           f"{P1 * (P1 + 1) // 2} pieces, instead of {P0} panels, {P0 * (P0 + 1) // 2} pieces); a window that "
                           "is a multiple of every lag, with breakpoints closed under them, avoids the extra panels")
         bp = closed
-        self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes)   # shared
+        if L is None:
+            self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes)   # shared
+        else:
+            # the strip: one breakpoint sequence for time and age, the past grid's panels and L among them
+            # (the old kernels kink on the past's panels, which then lie on piece edges), closed under the lags
+            if any(r[3] > 0 for rr in self.rows.values() for r in rr):
+                raise NotImplementedError("a past with a window is supported for rows without observation delays: the map "
+                                          "of a delayed row on the increments observed before zero has no place in the "
+                                          "shifted-time storage; drift and loss lags are fine")
+            bp = sorted(set(bp) | {b for b in past.breakpoints if b < L - 1e-12} | {float(L)})
+            bp = close_under_delays(bp, lags) if lags else bp
+            self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes, self.T, float(L))
         g = self.g
         self.N = g.N
         self.rho = float(hz.discount)
+        # the columns of the world: the channels, then one column per initial shock of the past
+        self.n_init = past.n_initial if past is not None else 0
+        self.ncol = self.nW + self.n_init
+        self.init_names = list(past.initial_names) if past is not None else []
+        if self.n_init:
+            self.init_sigma = np.zeros((self.nX, self.n_init))
+            self.init_rows: Dict[str, np.ndarray] = {a.name: np.zeros((len(a.signals), self.n_init)) for a in model.agents}
+            for i, sh in enumerate(past.initial):
+                for st, v in sh.loads.items():
+                    self.init_sigma[model.state_names.index(st), i] = v
+                for key, e in sh.rows.items():
+                    an, rn = key.split(".", 1)
+                    ag = next(a for a in model.agents if a.name == an)
+                    self.init_rows[an][[r.name for r in ag.signals].index(rn), i] = e
+        # the old regime's direct noise loadings of every row (the increments observed before zero carry them)
+        self.E_old = {a.name: [past.row_noise(f"{a.name}.{r.name}") for r in a.signals] for a in model.agents} if L else None
         # state propagation operators (matrix exponentials of A)
         if self.nX:
             # state propagation e^{A(t-r)} along the Volterra path; entrywise weights from expm, which
-            # is exact for defective A too (an eigen-decomposition would not be)
-            lp = g.path(g.t, g.a, r_lo=g.s, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]))
+            # is exact for defective A too (an eigen-decomposition would not be).  An old shock's
+            # Volterra path runs from time zero (its earlier inputs are inside the past's state kernel).
+            lp = g.path(g.t, g.a, r_lo=g.s if L is None else np.maximum(g.s, 0.0), r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]))
             self.Vol = np.zeros((self.nX, self.nX, self.N, self.N))
             if lp.rows is not None:
                 d = g.t[lp.rows] - lp.r
@@ -103,13 +147,17 @@ class SpectralCompiled(CompiledBase):
         self.panel_of_node = np.concatenate([np.full(pc.n, pc.p) for pc in g.pieces])
         # the mean paths live on the time nodes, panel by panel (both one-sided values at a breakpoint): the
         # nodes of each panel's triangle piece on the line s = 0 (age = t), `diag`, where a kernel is the
-        # response to a shock at time 0; mean_embed carries a path as the kernel constant in shock age
-        tri = [g._piece_by_pq[(p, p)] for p in range(g.P)]
-        self.tm = np.concatenate([pc.tn for pc in tri])
+        # response to a shock at time 0; mean_embed carries a path as the kernel constant in shock age.
+        # On a strip cut at age L < T the line s = 0 exists on the panels below L only (diag covers those).
+        tri = [g._piece_by_pq[(p, p)] for p in range(min(g.P, g.PL))]
+        self.tm = np.concatenate([cheb_lobatto(g.nt, g.bp[p], g.bp[p + 1]) for p in range(g.P)])
         self.Nt = len(self.tm)
         self.diag = np.concatenate([pc.offset + np.arange(pc.nt) * pc.na + pc.na - 1 for pc in tri])
+        self.Nd = len(self.diag)                          # time nodes on which the line s = 0 exists
         self.mean_embed = np.zeros((self.N, self.Nt))
         for pc in g.pieces:
+            if pc.upper:
+                continue                                  # a path is carried on the new-shock region only
             for it in range(pc.nt):
                 self.mean_embed[pc.offset + it * pc.na + np.arange(pc.na), pc.p * g.nt + it] = 1.0
         self._time_mass: Dict[float, np.ndarray] = {}
@@ -117,6 +165,9 @@ class SpectralCompiled(CompiledBase):
         self._map_shifts: Dict[float, np.ndarray] = {}
         self._row_ops: Dict[tuple, tuple] = {}            # (agent, row, excluded) -> (nonzero blocks, deltas) of the seen row (map-independent)
         self._state_parts: Dict[tuple, tuple] = {}        # (excluded, impulses) -> state part of the closed loop
+        self._past_reads: Dict[tuple, np.ndarray] = {}    # (name, lag) -> the past's kernel at the nodes before zero
+        self._row_pasts: Dict[tuple, np.ndarray] = {}     # (agent, row) -> the seen row's pre-zero part at the nodes
+        self._disc: Dict[tuple, np.ndarray] = {}          # ("embed"/"select", delay) -> discrete-weight operators
 
     # ------------------------------------------------------------ reads
     def _expm_batch(self, ds: np.ndarray) -> np.ndarray:
@@ -148,11 +199,51 @@ class SpectralCompiled(CompiledBase):
         if dt == 0.0 and da == 0.0:
             M = np.eye(self.N)
         else:
-            M = g.interp(g.t - dt, g.a - da, side_t=g.side_t, side_a=g.side_a)
+            M = g.interp(g.t - dt, g.a - da, side_t=g.side_t, side_a=g.side_a, side_d=g.side_d)
             if da > 0:
                 M[g.a0 < da - 1e-12] = 0.0
+            if dt > 0 and g.L is not None:
+                M[self._before(dt)] = 0.0             # an old shock read before zero: the past's, not the strip's 0+ value
         cache[key] = M
         return M
+
+    def _before(self, lag: float) -> np.ndarray:
+        """Nodes of the band whose read `lag` earlier falls before time zero: t - lag < 0, or t - lag = 0 read
+        from below (the last node of the panel ending at the lag, whose limit is the pre-zero value)."""
+        g = self.g
+        eps = 1e-12 * max(1.0, self.T)
+        return g.upper & ((g.t - lag < -eps) | ((np.abs(g.t - lag) <= eps) & (g.side_t < 0)))
+
+    def past_read(self, name: str, lag: float) -> np.ndarray:
+        """(N, nW): the past's kernel of `name` at age a - lag on the band nodes whose read `lag` earlier is before
+        zero (zero elsewhere, and on pieces whose ages start below the lag, where the shock had not arrived)."""
+        key = (name, round(float(lag), 12))
+        if key not in self._past_reads:
+            g = self.g; out = np.zeros((self.N, self.nW))
+            if g.L is not None and lag > 0 and name in self.past.kernels:
+                sel = self._before(lag) & (g.a0 >= lag - 1e-12)
+                if sel.any():
+                    out[sel] = self.past.read(name, g.a[sel] - lag)
+            self._past_reads[key] = out
+        return self._past_reads[key]
+
+    def row_past(self, agent: str, r: int) -> np.ndarray:
+        """(N, nW): the pre-zero part of the seen row r of `agent` on the band (its lagged atoms read before zero,
+        every control included: the excluded agent's own pre-zero actions are history)."""
+        key = (agent, r)
+        if key not in self._row_pasts:
+            name, drift, E, delay = self.rows[agent][r]
+            out = np.zeros((self.N, self.nW))
+            for (n, l), c in drift.items():
+                if l + delay > 0:
+                    out += c * self.past_read(n, l + delay)
+            self._row_pasts[key] = out
+        return self._row_pasts[key]
+
+    def zeta_past(self, agent: str) -> np.ndarray:
+        """(m, N, nW): the pre-zero part of the agent's loss atoms on the band (lagged atoms read before zero)."""
+        atoms, Q, q = self.loss[agent]
+        return np.stack([self.past_read(nm, lag) for (nm, lag) in atoms])
 
     def panel_shift(self, delay: float) -> int:
         """Number of time panels in a lag: the breakpoints are closed under the lags, so every panel
@@ -176,7 +267,7 @@ class SpectralCompiled(CompiledBase):
             for pc in g.pieces:
                 if pc.p - k < 0 or pc.q - k < 0:
                     continue
-                tgt = g._piece_by_pq[(pc.p - k, pc.q - k)]
+                tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq)[(pc.p - k, pc.q - k)]
                 tol = 1e-9 * max(1.0, self.T)
                 if abs(tgt.t0 + delay - pc.t0) > tol or abs(tgt.t1 + delay - pc.t1) > tol:
                     raise ValueError(f"the time panels {[float(b) for b in g.bp]} are not closed under the lag {delay}: the panel "
@@ -325,6 +416,98 @@ class SpectralCompiled(CompiledBase):
                         known_fn=lambda k, r: (np.full_like(r, u[k]), u[k] - r))
         return lp.with_known(yker)
 
+    # ------------------------------------------------------ known-past paths
+    # Line integrals that cross time zero: the pre-zero segment reads the past's kernel on the past's own
+    # age grid (LinePath with known_grid), cut where the age crosses the past grid's breakpoints.
+    def past_conv_path(self):
+        """For an old-shock action node (t, a): int_t^a g(t, b) kappa(a - b) db, the control's weight on the
+        increments observed before zero (ages b in (t, a] before the control) against the past's raw row kernel
+        at the increment's age after the shock."""
+        key = ("past_conv", id(self.past.grid))
+        if key not in self.g.paths:
+            g = self.g; up = g.upper
+            self.g.paths[key] = g.path(g.t, g.a, r_lo=np.where(up, g.t, 0.0), r_hi=np.where(up, g.a, 0.0),
+                                       point_fn=lambda k, b: (np.full_like(b, g.t[k]), b), known_fn=lambda k, b: g.a[k] - b,
+                                       extra_cuts=lambda k: [g.a[k] - c for c in self.past.breakpoints], side_t=g.side_t,
+                                       side_d=g.side_d, known_grid=self.past.grid)
+        return self.g.paths[key]
+
+    def past_proj_path(self):
+        """For a map node (t, b) above the diagonal (the increment observed at u = t - b < 0):
+        int_{t - L}^{u} phi(t, t - s) kappa(u - s) ds, the projection of the FOC kernel on that increment's
+        regular part."""
+        key = ("past_proj", id(self.past.grid))
+        if key not in self.g.paths:
+            g = self.g; up = g.upper; L = g.L
+            self.g.paths[key] = g.path(g.t, g.a, r_lo=np.where(up, g.t - L, 0.0), r_hi=np.where(up, g.s, 0.0),
+                                       point_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r), known_fn=lambda k, r: g.s[k] - r,
+                                       extra_cuts=lambda k: [g.s[k] - c for c in self.past.breakpoints], side_t=g.side_t,
+                                       side_d=g.side_d, known_grid=self.past.grid)
+        return self.g.paths[key]
+
+    def old_shock_proj_path(self):
+        """For a map node (t, b) below the diagonal (the increment at u = t - b >= 0): int_{t - L}^{0} phi(t, t - s)
+        y(u, u - s) ds, the projection of the FOC kernel on the old shocks the increment carries (both on the strip)."""
+        key = ("old_proj",)
+        if key not in self.g.paths:
+            g = self.g; L = g.L
+            lo = np.where(~g.upper & (g.t < L - 1e-12), g.t - L, 0.0)
+            self.g.paths[key] = g.path(g.t, g.a, r_lo=lo, r_hi=np.zeros(self.N),
+                                       point_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r),
+                                       known_fn=lambda k, r: (np.full_like(r, g.s[k]), g.s[k] - r), side_t=g.side_t, side_d=g.side_d)
+        return self.g.paths[key]
+
+    def past_row_kernel(self, agent: str, r: int) -> np.ndarray:
+        """(N_past, nW): the past's raw row kernel of row r of `agent` on the past's age grid."""
+        name = self.rows[agent][r][0]
+        return self.past.rows[f"{agent}.{name}"][0]
+
+    def diag_read(self, delay: float = 0.0) -> np.ndarray:
+        """(N, N): a kernel at (t + delay, s = 0), the line of a shock at time zero, from every node's time."""
+        key = ("diag_read", round(float(delay), 12))
+        if key not in self._disc:
+            g = self.g
+            self._disc[key] = g.interp(g.t + delay, g.t + delay, side_t=g.side_t)
+        return self._disc[key]
+
+    def shock_time_read(self) -> np.ndarray:
+        """(N, N): a kernel at (s, s), its value at the node's own shock time on the line s = 0 (zero on the band)."""
+        key = ("shock_time",)
+        if key not in self._disc:
+            g = self.g
+            M = g.interp(g.s, g.s, side_t=g.side_t)
+            M[g.upper] = 0.0
+            self._disc[key] = M
+        return self._disc[key]
+
+    def disc_embed(self, delay: float = 0.0) -> np.ndarray:
+        """(N, Nt): the discrete weight w(t') stored at the shifted time t' = t - delay carried to the nodes at
+        time t of the new-shock region (constant in age, like a mean path)."""
+        key = ("embed", round(float(delay), 12))
+        if key not in self._disc:
+            g = self.g; k = self.panel_shift(delay) if delay > 0 else 0
+            E = np.zeros((self.N, self.Nt))
+            for pc in g.pieces:
+                if pc.upper or pc.p - k < 0:
+                    continue
+                for it in range(pc.nt):
+                    E[pc.offset + it * pc.na + np.arange(pc.na), (pc.p - k) * g.nt + it] = 1.0
+            self._disc[key] = E
+        return self._disc[key]
+
+    def disc_select(self, delay: float = 0.0) -> np.ndarray:
+        """(Nt, N): the kernel on the line s = 0 at time t' + delay, at the time node t' of a discrete weight."""
+        key = ("select", round(float(delay), 12))
+        if key not in self._disc:
+            g = self.g; k = self.panel_shift(delay) if delay > 0 else 0
+            S = np.zeros((self.Nt, self.N))
+            for j, node in enumerate(self.diag):                       # time node p * nt + it of the line s = 0
+                p, it = divmod(j, g.nt)
+                if p - k >= 0:
+                    S[(p - k) * g.nt + it, node] = 1.0
+            self._disc[key] = S
+        return self._disc[key]
+
     # ------------------------------------------------ kernel algebra (see EngineBase)
     def _many(self, lp, K: np.ndarray, extra=None) -> np.ndarray:
         """with_known over the nonzero columns of K (N, m) at once: (m, N, N), zero for a zero column."""
@@ -429,7 +612,14 @@ class SpectralCompiled(CompiledBase):
     def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None, impulse_controls=()):
         """maps[agent]: (n_ctrl, n_rows, N) nodal raw maps g(t, b).  Columns: Brownian channels,
         then one impulse column per control in impulse_controls (unit mass at the shock time).
-        Returns Z (n_prim N, ncol)."""
+        Returns Z (n_prim N, ncol).
+        With a past: maps (n_ctrl, n_rows, N + Nt), the map on the strip (the band's nodes weigh the
+        increments observed before zero) then the discrete weights on the initial shocks' point
+        observations; the columns are the channels, the initial shocks, then the impulses.  The
+        band's forcing is the past: the state at zero, the lagged atoms read before zero, the row's
+        pre-zero increments under the map (past_conv_path) with the old noise loadings."""
+        if self.past is not None:
+            return self._closed_loop_past(maps, excluded, impulse_controls)
         N = self.N; nW = self.nW
         imp = list(impulse_controls)
         n = len(self.prim) * N; ncol = nW + len(imp)
@@ -465,6 +655,59 @@ class SpectralCompiled(CompiledBase):
                             B[bl, col] += w * (self.instant(age, delay) @ gker)
         return self._solve_causal(M, B)
 
+    def noise_weight(self, agent: str, r: int, k: int, w: float) -> np.ndarray:
+        """(N,): the weight of the row's own noise increment on channel k at every action node: the model's
+        loading w on the new-shock region, the past's on the band (an increment observed before zero)."""
+        g = self.g
+        if g.L is None:
+            return np.full(self.N, float(w))
+        return np.where(g.upper, self.E_old[agent][r][k], float(w))
+
+    def _closed_loop_past(self, maps, excluded, impulse_controls):
+        N = self.N; nW = self.nW; ncol = self.ncol; g = self.g
+        imp = list(impulse_controls)
+        n = len(self.prim) * N; nc = ncol + len(imp)
+        M = np.zeros((n, n)); B = np.zeros((n, nc))
+        excl = set(next(a for a in self.model.agents if a.name == excluded).controls) if excluded else set()
+        if self.nX:
+            blocks, B0 = self._state_part(excluded, excl, imp)
+            for (i, p), blk in blocks.items():
+                M[self.block(self.prim[i]), p * N:(p + 1) * N] = blk
+            B[:] = B0
+        band = g.L is not None
+        lower = ~g.upper
+        for a in self.model.agents:
+            if a.name == excluded:
+                continue
+            gm = maps[a.name]
+            for ui, u in enumerate(a.controls):
+                bl = self.block(u)
+                for r, (rname, drift, E, delay) in enumerate(self.rows[a.name]):
+                    blocks, deltas = self.row_blocks(a.name, r, excl)
+                    gker = gm[ui, r][:N]
+                    C = self.conv_left(gker, delay)
+                    for nm, op in blocks.items():
+                        M[bl, self.block(nm)] += C @ op
+                    if band:
+                        B[bl, :nW] += C @ self.row_past(a.name, r)                                   # lagged atoms before zero
+                        B[bl, :nW] += self.past_conv_path().bilinear(gker, self.past_row_kernel(a.name, r))   # increments before zero
+                    for src, dl in deltas.items():
+                        if src in self.channels:
+                            col = self.channels.index(src)
+                            for (age, w) in dl:
+                                B[bl, col] += self.noise_weight(a.name, r, col, w) * (self.instant(age, delay) @ gker)
+                        elif src in imp:
+                            col = ncol + imp.index(src)
+                            for (age, w) in dl:
+                                B[bl, col] += w * lower * (self.instant(age, delay) @ gker)
+                    if self.n_init:
+                        gd = gm[ui, r][N:]
+                        for i in range(self.n_init):
+                            e = self.init_rows[a.name][r, i]
+                            if e:
+                                B[bl, nW + i] += e * (self.disc_embed(delay) @ gd)
+        return self._solve_causal(M, B)
+
     def _state_part(self, excluded, excl: set, imp: list):
         """The state rows of the closed-loop system without the maps: the nonzero N x N blocks of the
         Volterra propagation of the state inputs, {(state, primary): block}, and the shock and impulse
@@ -473,6 +716,8 @@ class SpectralCompiled(CompiledBase):
         if key in self._state_parts:
             return self._state_parts[key]
         g = self.g; N = self.N; nW = self.nW; n = len(self.prim) * N
+        if self.past is not None:
+            return self._state_part_past(key, excl, imp)
         B0 = np.zeros((n, nW + len(imp)))
         EA = self.expA(g.a)                                             # (N, nX, nX)
         for k in range(nW):
@@ -502,6 +747,60 @@ class SpectralCompiled(CompiledBase):
                 on = (g.a0 >= lag - 1e-12) if lag else np.ones(N, dtype=bool)
                 for i in range(self.nX):
                     B0[self.block(self.prim[i]), nW + col] += on * (EAd[:, i, :] @ v)
+        self._state_parts[key] = (blocks, B0)
+        return blocks, B0
+
+    def _state_part_past(self, key, excl: set, imp: list):
+        """_state_part with a past: on the band the state at zero is the past's state kernel at age a - t
+        propagated by e^{At}, and the lagged inputs read before zero (every control, the excluded one's
+        pre-zero actions being history) are a known forcing through the Volterra operator; the initial
+        shocks' columns start from their loads on the new-shock region; the impulse columns are zero on
+        the band (a deviation before zero is sunk)."""
+        g = self.g; N = self.N; nW = self.nW; n = len(self.prim) * N; ncol = self.ncol
+        B0 = np.zeros((n, ncol + len(imp)))
+        up = g.upper; lower = ~up
+        EA = self.expA(g.a)                                             # (N, nX, nX)
+        for k in range(nW):
+            v = self.sigma[:, k]
+            for i in range(self.nX):
+                B0[self.block(self.prim[i]), k] += lower * (EA[:, i, :] @ v)
+        if up.any():
+            EAt = self.expA(g.t[up])                                     # (n_up, nX, nX)
+            K0 = np.stack([self.past.read(self.prim[j], g.a[up] - g.t[up]) for j in range(self.nX)], axis=1)   # (n_up, nX, nW)
+            for i in range(self.nX):
+                B0[self.block(self.prim[i]), :nW][up] += np.einsum("nj,njk->nk", EAt[:, i, :], K0)
+        for col in range(self.n_init):
+            v = self.init_sigma[:, col]
+            for i in range(self.nX):
+                B0[self.block(self.prim[i]), nW + col] += lower * (EA[:, i, :] @ v)
+        inp = np.zeros((self.nX, N, n))
+        for si, (nm, lag), c in self.state_inputs:
+            if lag > 0 and g.L is not None:
+                pr = self.past_read(nm, lag)
+                if np.any(pr):
+                    for i in range(self.nX):
+                        B0[self.block(self.prim[i]), :nW] += c * (self.Vol[i, si] @ pr)
+            if nm in excl:
+                continue
+            inp[si] += c * self.atom_op((nm, lag))
+        blocks: Dict[Tuple[int, int], np.ndarray] = {}
+        for i in range(self.nX):
+            for j in range(self.nX):
+                for p in self._nonzero_blocks(inp[j]):
+                    blk = self.Vol[i, j] @ inp[j][:, p * N:(p + 1) * N]
+                    if (i, p) in blocks:
+                        blocks[(i, p)] += blk
+                    else:
+                        blocks[(i, p)] = blk
+        for col, u in enumerate(imp):
+            for si, (nm, lag), c in self.state_inputs:
+                if nm != u:
+                    continue
+                v = np.zeros(self.nX); v[si] = c
+                EAd = self.expA(np.maximum(g.a - lag, 0.0)) if lag else EA
+                on = ((g.a0 >= lag - 1e-12) if lag else np.ones(N, dtype=bool)) & lower
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), ncol + col] += on * (EAd[:, i, :] @ v)
         self._state_parts[key] = (blocks, B0)
         return blocks, B0
 
