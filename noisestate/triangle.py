@@ -372,20 +372,41 @@ class TriangleGrid:
 
     # ------------------------------------------------------ helpers
     @staticmethod
-    def breakpoints(T: float, lags, unit: Optional[float] = None) -> List[float]:
+    def breakpoints(T: float, lags, unit: Optional[float] = None, unit_range: Optional[float] = None) -> List[float]:
         """Uniform time/age panels of width `unit` (default: the smallest lag) up to T, then T.  When T is
         not a multiple of the unit the last panel is the remainder, however short: nothing is merged, since
         a trailing breakpoint can itself be a lag (a delay of 0.9 on a window of 1), and the compile closes
         the panels under the lags anyway, which adds T - k unit back.  Only a remainder within round-off of
-        the unit (T a multiple of it to 1e-9) is dropped."""
+        the unit (T a multiple of it to 1e-9) is dropped.  With unit_range below T the unit panels stop
+        there and geometrically growing ones (fill_geometric) reach T: the kink at the k-th delay line
+        weakens with k, as on the stationary grid."""
         lags = [float(d) for d in lags if d and d > 0]
         if not lags:
             return [0.0, T]
         unit = unit or min(lags)
+        if unit_range is not None and unit_range < T - 1e-12:
+            return TriangleGrid.fill_geometric(set(np.arange(0.0, unit_range + 1e-12, unit)) | {T}, unit)
         bp = list(np.arange(0.0, T - 1e-12, unit)) + [T]
         if T - bp[-2] < 1e-9 * max(1.0, T):
             bp.pop(-2)
         return bp
+
+    @staticmethod
+    def fill_geometric(points, unit: float, growth: float = 2.0) -> List[float]:
+        """The sorted points with every gap wider than the unit filled by panels growing geometrically from
+        the unit (the stationary grid's rule: a last panel shorter than a quarter of the next width is
+        merged into it), so the required breakpoints stay and the stretches between them are coarse."""
+        pts = sorted(set(round(float(b), 12) for b in points))
+        out = [pts[0]]
+        for b in pts[1:]:
+            w = unit
+            while out[-1] < b - 1e-12:
+                w *= growth
+                nxt = min(b, out[-1] + w)
+                if b - nxt < 0.25 * w:
+                    nxt = b
+                out.append(round(nxt, 12))
+        return out
 
     def mass_matrix(self, rho: float = 0.0, t_lo: Optional[float] = None, t_hi: Optional[float] = None) -> np.ndarray:
         """Exact Gram matrix M_ij = int_0^T e^{-rho t} int_0^t l_i l_j da dt of the nodal basis (over the

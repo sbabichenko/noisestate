@@ -92,7 +92,31 @@ class SpectralCompiled(CompiledBase):
                 raise ValueError(f"the horizon T = {self.T:g} is shorter than the past's window L = {L:g}: with a stationary "
                                  "continuation the shocks born before zero must be forgotten by T; raise horizon.window to at least L")
         self.Tg = self.T + L if continuation is not None else self.T        # the grid's end: the buffer [T, T + L] follows T
-        bp = list(hz.breakpoints) if hz.breakpoints else TriangleGrid.breakpoints(self.T, lags, hz.unit)
+        # unit_range below the window: the delay cuts stay at every multiple of the unit up to it, in time and
+        # in age (the kink at the k-th delay line weakens with k), and the panels grow geometrically beyond;
+        # the delay reads are then node-to-node within it and interpolated beyond (map_shift), and the panels
+        # are not closed under the lags.  Default (None, or the window): today's grid, cut at every multiple.
+        R = hz.unit_range
+        self.coarse = bool(lags) and not hz.breakpoints and R is not None and R < self.T - 1e-12
+        if self.coarse and max(lags) > R + 1e-12:
+            raise ValueError(f"horizon.unit_range ({R:g}) is below the largest lag/delay {max(lags):g}: the unit panels must reach "
+                             "every lag (a lagged read lands node to node only within unit_range)")
+        if self.coarse:
+            # the required cuts: the unit multiples up to unit_range and T (the strip adds L and the past's cuts within
+            # unit_range).  Without a past a delayed row's map is stored at the shifted time and read node to node
+            # by the action grid on every piece (an interpolated read from differently cut panels leaves map nodes
+            # unidentified: a singular first-order condition), which closes the panels under the delay everywhere
+            if past is None and any(d > 0 for rr in self.rows.values() for (_, _, _, d) in rr):
+                raise ValueError(f"horizon.unit_range ({R:g}) below the window: a row observed with a delay keeps its map on the "
+                                 "action grid shifted by the delay, so every time panel must shift onto a panel; without a "
+                                 "past (where the map is in raw age) set unit_range to the window, or solve as a transition")
+            unit = hz.unit or min(lags)
+            required = set(np.arange(0.0, R + 1e-12, unit)) | {self.T}
+            if continuation is None:       # the game ends at T: a control is idle within the last lag, the kernels kink at T - k unit
+                required |= {round(self.T - b, 12) for b in np.arange(unit, R + 1e-12, unit) if self.T - b > 1e-12}
+            bp = TriangleGrid.fill_geometric(required, unit)
+        else:
+            bp = list(hz.breakpoints) if hz.breakpoints else TriangleGrid.breakpoints(self.T, lags, hz.unit)
         missing = [l for l in lags if not any(abs(l - b) < 1e-12 for b in bp)]
         if missing:                      # every lag must be on the panels before the closure: closing under a lag off
             # the unit grid would shatter the panels down to the lags' common divisor, or never terminate
@@ -108,7 +132,7 @@ class SpectralCompiled(CompiledBase):
         # then node-to-node shifts (map_shift) and the lag lines run along piece edges.  A window that is not a
         # multiple of a lag gets the breakpoints T - k lag as well (the kernels kink there: a control acting after
         # the lag is idle within the last lag), about twice the panels and four times the pieces.
-        closed = close_under_delays(bp, lags) if lags else bp
+        closed = close_under_delays(bp, lags) if lags and not self.coarse else bp
         if len(closed) > len(bp):
             added = [round(float(b), 6) for b in closed if not any(abs(b - x) < 1e-9 for x in bp)]
             P0, P1 = len(bp) - 1, len(closed) - 1
@@ -121,12 +145,16 @@ class SpectralCompiled(CompiledBase):
         else:
             # the strip: one breakpoint sequence for time and age, the past grid's panels and L among them
             # (the old kernels kink on the past's panels, which then lie on piece edges), closed under the lags
-            bp = sorted(set(bp) | {b for b in past.breakpoints if b < L - 1e-12} | {float(L)})
+            old = [b for b in past.breakpoints if b < L - 1e-12 and (not self.coarse or b <= R + 1e-12)]
+            if self.coarse:                                         # the stretches between the required points grow geometrically
+                bp = TriangleGrid.fill_geometric(required | set(old) | {float(L)}, unit)
+            else:
+                bp = sorted(set(bp) | set(old) | {float(L)})
             if not lags and not hz.breakpoints:                     # no lags: time panels of width L (the shocks' lifetime), then T
                 bp = sorted(set(bp) | {float(b) for b in np.arange(0.0, self.T - 1e-12, L)})
             if continuation is not None:                            # the buffer's time panels: the age panels shifted to T
                 bp = sorted(set(bp) | {round(self.T + b, 12) for b in bp if b <= L + 1e-12})
-            bp = close_under_delays(bp, lags) if lags else bp
+            bp = close_under_delays(bp, lags) if lags and not self.coarse else bp
             if continuation is not None:
                 self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes, self.Tg, float(L), self.T)
             else:
@@ -411,17 +439,29 @@ class SpectralCompiled(CompiledBase):
                         idx = pc.offset + np.arange(pc.n)
                         S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx], side_d=g.side_d[idx])
                         continue
-                    tgt = g._piece_by_pq[(pc.p - k, pc.q - k)]
+                    tgt = g._piece_by_pq.get((pc.p - k, pc.q - k))
                 else:
-                    tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq)[(pc.p - k, pc.q - k)]
-                tol = 1e-9 * max(1.0, self.Tg)
-                if abs(tgt.t0 + delay - pc.t0) > tol or abs(tgt.t1 + delay - pc.t1) > tol:
-                    raise ValueError(f"the time panels {[float(b) for b in g.bp]} are not closed under the lag {delay}: the panel "
-                                     f"[{pc.t0:g}, {pc.t1:g}] shifted back by the lag is not a panel; drop horizon.breakpoints, "
-                                     f"or set horizon.unit to a common divisor of the lags and of the window {self.T}")
+                    tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq).get((pc.p - k, pc.q - k))
+                if not self._shift_aligned(pc, tgt, delay):
+                    if not self.coarse:
+                        raise ValueError(f"the time panels {[float(b) for b in g.bp]} are not closed under the lag {delay}: the panel "
+                                         f"[{pc.t0:g}, {pc.t1:g}] shifted back by the lag is not a panel; drop horizon.breakpoints, "
+                                         f"or set horizon.unit to a common divisor of the lags and of the window {self.T}")
+                    idx = pc.offset + np.arange(pc.n)               # beyond unit_range: the read is interpolated
+                    S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx], side_d=g.side_d[idx])
+                    continue
                 S[pc.offset + np.arange(pc.n), tgt.offset + np.arange(pc.n)] = 1.0
             self._map_shifts[key] = S
         return self._map_shifts[key]
+
+    def _shift_aligned(self, pc, tgt, delay: float) -> bool:
+        """Whether the piece pc shifted back by the delay is the piece tgt node to node (the same panel widths
+        in time and in age): true on every piece of a grid closed under the delay, within unit_range of a
+        coarse one."""
+        if tgt is None or tgt.nt != pc.nt or tgt.na != pc.na:
+            return False
+        tol = 1e-9 * max(1.0, self.Tg)
+        return all(abs(x + delay - y) <= tol for x, y in ((tgt.t0, pc.t0), (tgt.t1, pc.t1), (tgt.a0, pc.a0), (tgt.a1, pc.a1)))
 
     def block(self, name: str) -> slice:
         i = self.index[name]
@@ -538,12 +578,17 @@ class SpectralCompiled(CompiledBase):
                                             side_d=g.side_d[idx]).tocoo()
                         rows.append(idx[I.row]); cols.append(I.col); vals.append(I.data)
                         continue
-                    tgt = g._piece_by_pq[(pc.p - k, pc.q - k)]
+                    tgt = g._piece_by_pq.get((pc.p - k, pc.q - k))
                 else:
-                    tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq)[(pc.p - k, pc.q - k)]
-                tol = 1e-9 * max(1.0, self.Tg)
-                if abs(tgt.t0 + delay - pc.t0) > tol or abs(tgt.t1 + delay - pc.t1) > tol:
-                    self.map_shift(delay)                       # raises with the message of the dense form
+                    tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq).get((pc.p - k, pc.q - k))
+                if not self._shift_aligned(pc, tgt, delay):
+                    if not self.coarse:
+                        self.map_shift(delay)                   # raises with the message of the dense form
+                    idx = pc.offset + np.arange(pc.n)               # beyond unit_range: the read is interpolated
+                    I = g.interp_sparse(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx],
+                                        side_d=g.side_d[idx]).tocoo()
+                    rows.append(idx[I.row]); cols.append(I.col); vals.append(I.data)
+                    continue
                 rows.append(pc.offset + np.arange(pc.n)); cols.append(tgt.offset + np.arange(pc.n)); vals.append(np.ones(pc.n))
             if rows:
                 M = csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(self.N, self.N))
@@ -732,6 +777,9 @@ class SpectralCompiled(CompiledBase):
         key = ("embed", round(float(delay), 12))
         if key not in self._disc:
             g = self.g; k = self.panel_shift(delay) if delay > 0 else 0
+            if k and self.coarse:
+                raise ValueError("a delayed row's discrete weights on the initial shocks need the time panels closed under the delay; "
+                                 "horizon.unit_range below the window is not supported with initial shocks and a delayed row")
             E = np.zeros((self.N, self.Nt))
             for pc in g.pieces:
                 if pc.band or pc.p - k < 0:
@@ -746,6 +794,9 @@ class SpectralCompiled(CompiledBase):
         key = ("select", round(float(delay), 12))
         if key not in self._disc:
             g = self.g; k = self.panel_shift(delay) if delay > 0 else 0
+            if k and self.coarse:
+                raise ValueError("a delayed row's discrete weights on the initial shocks need the time panels closed under the delay; "
+                                 "horizon.unit_range below the window is not supported with initial shocks and a delayed row")
             S = np.zeros((self.Nt, self.N))
             for j, node in enumerate(self.diag):                       # time node p * nt + it of the line s = 0
                 p, it = divmod(j, g.nt)

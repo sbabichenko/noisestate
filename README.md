@@ -464,7 +464,11 @@ extrapolated, agrees with noisestate to 3-4 decimals; the C++ spectral port
   With that, the breakpoints closed under adding and subtracting every row delay (so the map's
   panels and the action's panels are unions of each other shifted by the delay; beyond `unit_range`
   a delayed model's panels become uniform; the finite triangle is closed under every lag as well,
-  so a lagged read is a node-to-node shift), and the map removed where the row reads nothing, the
+  so a lagged read is a node-to-node shift, unless `unit_range` is below the window: the cuts then stay
+  at every multiple of the unit within unit_range of 0, and of T when the game ends there, and the panels
+  grow geometrically between, a lagged read beyond being interpolated; a row observed with a delay keeps
+  its map on the action grid shifted by the delay, read node to node on every piece, so this is refused
+  without a past), and the map removed where the row reads nothing, the
   delayed problem is discretised exactly: on a one-agent problem with a delayed observation whose
   solution is known in closed form (certainty equivalence and a delay-differential system,
   `tests/test_exact_delay.py`) the cost agrees to 7e-11 and the kernels to 6e-6 at 16 nodes per

@@ -681,11 +681,17 @@ class Model:
         return Model.from_dict(d)
 
     def with_horizon(self, **fields) -> "Model":
-        """A new model with these horizon fields (nodes, window, discount, kind, breakpoints, unit, unit_range)."""
+        """A new model with these horizon fields (nodes, window, discount, kind, breakpoints, unit, unit_range).
+        A change of kind drops the panel sizing of the old kind (breakpoints, unit_range) unless given, as
+        transition() does: a stationary grid's unit_range is not a finite grid's."""
         d = self.to_dict(); d.setdefault("horizon", {})
         bad = sorted(set(fields) - self._KEYS["horizon"])
         if bad:
             raise ValueError(f"unknown horizon field(s) {bad}")
+        if fields.get("kind") is not None and fields["kind"] != self.horizon.kind:
+            for k in ("breakpoints", "unit_range"):
+                if k not in fields:
+                    d["horizon"].pop(k, None)
         d["horizon"].update(fields)
         return Model.from_dict(d)
 

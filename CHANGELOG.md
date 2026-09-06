@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- `horizon.unit_range` on the triangle grid.  The finite engine cut the time and age panels at every multiple
+  of the unit up to the window; within unit_range it still does, and beyond it the panels grow geometrically
+  (`TriangleGrid.fill_geometric`, the stationary grid's rule: the kink at the k-th delay line weakens with k),
+  the required cuts kept: T, T - k unit within unit_range when the game ends at T (a control is idle within the
+  last lag), the strip's L and the past's cuts within unit_range, the buffer's panels.  Beyond unit_range a
+  lagged read is interpolated (`map_shift`, `map_shift_sparse`) and the panels are not closed under the lags;
+  the default (None, or the window) is today's grid bit for bit.  Measured on ch1_delayed with player2's row
+  undelayed (window 3, 6 nodes): unit_range 1.0 keeps the costs to 1.2e-8 and the kernels to 6.9e-6 of their
+  peak with N 2808 -> 1980 and 104 s -> 44 s; 0.5 to 3.2e-6 and 1.8e-4 with N 1008 and 8.9 s.  On the
+  transition of ch1_delayed as its own past (window 3, T = 6, 4 nodes) unit_range 1.5 takes N from 9408 to
+  3168 (588 to 198 pieces) and the one-shot identity from 5.8e-4 / 4.0e-4 to 2.5e-3 / 6.0e-3 (the costs of the stationary maps on the strip within 1e-6 relative), 1.0 to N 2352
+  and 1.2e-2 / 2.2e-2 (the delayed row's map suffers first).  A row observed with a delay and no past keeps
+  its map on the action grid shifted by the delay and must be read node to node on every piece (an
+  interpolated read leaves map nodes unidentified: a singular first-order condition), so unit_range below the
+  window is refused there (solve as a transition, where the map is in raw age); initial shocks with a delayed
+  row are refused as well.  `Model.with_horizon` drops `breakpoints` and `unit_range` on a change of kind
+  unless given, as `transition()` does: a stationary grid's unit_range is not a finite grid's.
 - The spectral finite engine's closed loop assembled one time panel at a time.  Beyond
   `settings.closed_loop_dense_max` unknowns (n_prim N; default 16384) `SpectralCompiled.closed_loop` no longer
   builds the (n_prim N)^2 dense system: for each time panel the rows of the state part (the Volterra path
