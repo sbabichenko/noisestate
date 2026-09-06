@@ -28,6 +28,10 @@ pins (the seconds are at four BLAS threads):
 | test_transition_examples.py::test_ch3_precision_change_example | examples/ch3_precision_change.yaml's excess costs and settled (the T = 9 values stay fast in test_transition_result; the solve is a baseline case) | 9 |
 | test_transition_means.py::test_same_model_means_are_the_stationary_constants | the mean paths of a same-model transition are the constants at 16 nodes (12 nodes with a past stays fast in test_transition) | 7 |
 | test_transition_means.py::test_target_change_runs_from_the_old_means_to_the_new | the target change's mean paths, their gap at T- in settled, and the game ending at T | 6 |
+| test_transition.py::test_same_model_identity_holds_below_the_window[1.0] | the same-model identity at T = 1 (one unit, a four-panel unit-cut strip) on every node, buffer and band included (T = 1.5 stays fast) | 13 |
+| test_transition_api.py::test_settle_march_finds_the_window_and_equals_the_explicit_solve | the settle march on 3 -> 10 at 12 nodes: T = 3, 6, 9, the gap sequence and its factors, the window found, the maps against the explicit solve at T = 9 (the 6-node march with settle 5e-3 stays fast) | 40 |
+| test_transition_api.py::test_settle_march_equals_the_explicit_solve_at_a_tight_tol | the march's maps against the explicit solve's at tol 1e-11 (3e-11) | 55 |
+| test_transition_api.py::test_settle_march_by_unit_steps | step=1 with unit 1 visits T = 1, 2, 3 at 6 nodes; the default step is one window | 10 |
 | test_transition_result.py::test_same_model_loss_path_is_the_stationary_flow | the loss path of a same-model transition is the flow to 1e-9 at 16 nodes (the regime change's path stays fast) | 9 |
 | test_unit_range_finite.py::test_unit_range_below_the_window_coarsens_the_grid_within_the_measured_cost | unit_range 0.5 on window 2: the cuts, N 525 for 900, costs to 5e-5 (the default's bit identity and the transition stay fast) | 8 |
 

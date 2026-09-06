@@ -164,15 +164,15 @@ def test_transition_gap_is_the_one_shot_from_the_stationary_rules(regime):
     model's stationary rules with the old regime's shocks attached, on the smallest strip the engine builds:
     one unit (numerics.unit, else the smallest lag, else the past's window: Chapter 3 has no lags, so [0, L]
     without a unit, [0, 1] with unit 1).  The same model as its own past sits at the grid's one-shot floor
-    (3.8e-6 and 1.3e-5 at 12 nodes on [0, 3]; 8e-11 and 5.5e-10 on the unit-cut [0, 1] strip, whatever the
-    past's nodes); the Chapter 3 precision change 3 -> 10 gives 0.585 for player1 and 0.061 for player2 (0.583
+    (3.8e-6 and 1.3e-5 at 12 nodes on [0, 3]; 8e-11 and 5.5e-10 on the unit-cut [0, 1] strip at 12 nodes, 2.2e-6
+    and 9.5e-6 at 8, whatever the past's nodes); the Chapter 3 precision change 3 -> 10 gives 0.585 for player1 and 0.061 for player2 (0.583
     and 0.061 on the unit strip); a tiny change 3 -> 3.03 gives 0.0033, 87 times below 3 -> 6 (0.287): the
     transient is linear in the mismatch."""
     m = regime["m"]; old = regime["old"]
     same = ns.transition_gap(old, m, numerics={"nodes": 12})
     assert set(same) == {"player1", "player2"} and all(1e-7 < v < 3e-5 for v in same.values()), same
-    unit = ns.transition_gap(old, m, numerics={"nodes": 12, "unit": 1.0})
-    assert all(v < 1e-8 for v in unit.values()), unit
+    unit = ns.transition_gap(old, m, numerics={"nodes": 8, "unit": 1.0})
+    assert all(v < 3e-5 for v in unit.values()), unit
     big = ns.transition_gap(old, m.with_params(p1=10.0), numerics={"nodes": 12})
     assert 0.5 < big["player1"] < 0.7 and 0.05 < big["player2"] < 0.08, big
     mid = ns.transition_gap(old, m.with_params(p1=6.0), numerics={"nodes": 12})
@@ -186,10 +186,11 @@ def test_transition_gap_is_the_one_shot_from_the_stationary_rules(regime):
 
 @pytest.fixture(scope="module")
 def marched(regime):
-    """Chapter 3, 3 -> 10 at 12 nodes: transition(settle=1e-4), the march from the T = 0 pass (17 s)."""
+    """Chapter 3, 3 -> 10 at 12 nodes: transition(settle=1e-4), the march from the T = 0 pass (12 s)."""
     return ns.transition(regime["old"], regime["m"].with_params(p1=10.0), settle=1e-4, numerics={"nodes": 12})
 
 
+@slow()
 def test_settle_march_finds_the_window_and_equals_the_explicit_solve(regime, marched):
     """(b) transition(old, new, settle=1e-4) on Chapter 3's precision change 3 -> 10 at 12 nodes: the march
     starts at the T = 0 pass (gap 0.585 from the stationary rules on [0, L]), solves at T = 3 (20 evaluations
@@ -200,7 +201,8 @@ def test_settle_march_finds_the_window_and_equals_the_explicit_solve(regime, mar
     the tolerance (settled 2.7e-6; at T = 6, 4.8e-4 does not), and the monitor is of the order of `settled`
     (9.3e-7 against 2.7e-6: the best-response measure against the maps').  The final solution equals the
     explicit solve at T = 9 on the same grid and closure to 5e-8 on the maps at the default tol (3e-11 at tol
-    1e-11: the slow variant); the march's 32 evaluations against 20 for the one explicit solve."""
+    1e-11: the next test); the march's 31 evaluations against 20 for the one explicit solve.  Slow (40 s): the
+    6-node march in test_settle_march_same_model_and_max_window is the fast copy."""
     res = marched; m = regime["m"]; old = regime["old"]
     assert res.kind == "transition" and res.march_stop == "settled" and res.extra["window"] == 9.0 and res.march_settle == 1e-4
     rows = res.march
@@ -238,24 +240,28 @@ def test_settle_march_equals_the_explicit_solve_at_a_tight_tol(regime):
 
 def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     """(a) The same model as its own past: the T = 0 pass is under the tolerance (3.8e-6 at 12 nodes), so the
-    march stops there with the smallest-strip solve, T = L = 3 without a unit (T = 1 with unit 1: four at 8 nodes),
-    a few evaluations from the stationary start.  With unit 1 on 3 -> 10 at 8 nodes the march steps by units to
-    the first window (T = 1, 2, 3; the monitor's window [0, T] still holds the initial transient, so the gap stays
-    near 0.58 until T reaches L) and by windows after; max_window=1 stops it at T = 3.
-    (c) max_window=2 on 3 -> 10 at 8 nodes stops at T = 6 with the gap at 6e-4: the settled flag stays (6.4e-4
-    against settled_tol) and names the march's stop.  (d) The CLI: `transition old new --settle 1e-4` prints the
-    march; exactly one of --window and --settle.  The file form: horizon.settle in place of window (exactly one),
-    solved by solve() through the march, bit for bit the helper's."""
+    march stops there with the first strip's solve, T = L = 3 by default (T = 1 with step=1 and unit 1: four
+    evaluations at 8 nodes; the march's T = 0 row is measured on the first strip it builds, transition_gap's on the
+    smallest one), a few evaluations from the stationary start.  (b, the fast copy) 3 -> 10 at 6 nodes with settle
+    5e-3, above that grid's one-shot floor (the monitor floors at 3.7e-3 at 6 nodes and 1.8e-4 at 8, so a
+    tolerance below the floor runs to max_window): T = 3 then T = 6, where the gap is 4.0e-3, and the maps equal
+    the explicit T = 6 solve's to 1e-6.  (c) max_window=2 with settle 1e-4 at 8 nodes stops at T = 6 with the gap
+    at 1.5e-3: the settled flag stays (6.4e-4 against settled_tol) and names the march's stop.  (d) The CLI:
+    `transition old new --settle TOL` prints the march; exactly one of --window and --settle.  The file form:
+    horizon.settle in place of window (exactly one), solved by solve() through the march, bit for bit the
+    helper's."""
     m = regime["m"]; old = regime["old"]; new = m.with_params(p1=10.0)
     same = ns.transition(old, m, settle=1e-4, numerics={"nodes": 12})
     assert same.march_stop == "settled at T = 0" and same.extra["window"] == 3.0 and len(same.march) == 2
     assert max(same.march[0]["gap"].values()) < 1e-4 and same.march[1]["evaluations"] <= 8 and same.settled < 1e-4
-    same_u = ns.transition(old, m, settle=1e-4, numerics={"nodes": 8, "unit": 1.0})
+    same_u = ns.transition(old, m, settle=1e-4, step=1.0, numerics={"nodes": 8, "unit": 1.0})
     assert same_u.march_stop == "settled at T = 0" and same_u.extra["window"] == 1.0 and same_u.march[1]["evaluations"] <= 6
-    units = ns.transition(old, new, settle=1e-4, max_window=1, numerics={"nodes": 8, "unit": 1.0})
-    assert [r["T"] for r in units.march] == [0.0, 1.0, 2.0, 3.0] and units.march_stop == "max_window"
-    assert all(0.5 < max(r["gap"].values()) < 0.7 for r in units.march)
-    assert units.march[0]["monitor"] == "[0, 1] from the stationary rules"
+    small = ns.transition(old, new, settle=5e-3, numerics={"nodes": 6})
+    assert [r["T"] for r in small.march] == [0.0, 3.0, 6.0] and small.march_stop == "settled" and small.extra["window"] == 6.0
+    assert 0.5 < max(small.march[1]["gap"].values()) < 0.7 and 2e-3 < max(small.march[2]["gap"].values()) < 5e-3
+    assert small.march[1]["evaluations"] > small.march[2]["evaluations"] and all(r["monitor"] == "[T - L, T]" for r in small.march[1:])
+    ex6 = ns.transition(old, new, T=6.0, numerics={"nodes": 6}, continuation=small.continuation)
+    assert max(np.abs(ex6.maps[k] - small.maps[k]).max() / np.abs(small.maps[k]).max() for k in small.maps) < 1e-6
     cap = ns.transition(old, new, settle=1e-4, max_window=2, numerics={"nodes": 8})
     assert cap.march_stop == "max_window" and cap.extra["window"] == 6.0 and cap.settled > 1e-4
     row = next(r for r in cap.diagnose() if r["name"] == "settled")
@@ -272,12 +278,12 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
         ns.transition(old, new, settle=1e-4, continuation="end")
     # the file form
     d = new.to_dict()
-    d["horizon"] = {"kind": "transition", "settle": 1e-4, "past": {"model": EX + "ch3_two_player.yaml"}}; d["numerics"] = {"nodes": 8}
+    d["horizon"] = {"kind": "transition", "settle": 5e-3, "past": {"model": EX + "ch3_two_player.yaml"}}; d["numerics"] = {"nodes": 6}
     fm = ns.Model.from_dict(d)
-    assert fm.horizon.settle == 1e-4 and fm.to_dict()["horizon"] == {"kind": "transition", "discount": 0.0, "settle": 1e-4, "past": d["horizon"]["past"]}
+    assert fm.horizon.settle == 5e-3 and fm.to_dict()["horizon"] == {"kind": "transition", "discount": 0.0, "settle": 5e-3, "past": d["horizon"]["past"]}
     assert "settle" not in fm.with_horizon(window=6.0, settle=None).to_dict()["horizon"]
     fr = ns.solve(fm, max_evaluations=40)
-    hr = ns.transition(EX + "ch3_two_player.yaml", new, settle=1e-4, numerics={"nodes": 8}, max_evaluations=40)
+    hr = ns.transition(EX + "ch3_two_player.yaml", new, settle=5e-3, numerics={"nodes": 6}, max_evaluations=40)
     assert fr.extra["window"] == hr.extra["window"] and np.array_equal(fr.world, hr.world) and [r["evaluations"] for r in fr.march] == [r["evaluations"] for r in hr.march]
     with pytest.raises(ValueError, match="exactly one of window"):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "window": 6.0}})
@@ -293,7 +299,7 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     shutil.copy(EX + "ch3_two_player.yaml", tmp_path / "old.yaml")
     with open(tmp_path / "new.yaml", "w") as fh:
         yaml.safe_dump(new.to_dict(), fh)
-    assert main(["transition", str(tmp_path / "old.yaml"), str(tmp_path / "new.yaml"), "--settle", "1e-4", "--nodes", "8",
+    assert main(["transition", str(tmp_path / "old.yaml"), str(tmp_path / "new.yaml"), "--settle", "1e-4", "--nodes", "6",
                  "--max-window", "2", "-o", str(tmp_path / "out.json")]) == 0          # converged (the exit code is convergence; the flag is in the summary)
     out = capsys.readouterr().out
     assert "settle march: window 6 (max_window)" in out and "T = 0:" in out and "wrote" in out
@@ -304,3 +310,17 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
         main(["transition", str(tmp_path / "old.yaml"), str(tmp_path / "new.yaml")])
     with pytest.raises(SystemExit):
         main(["transition", str(tmp_path / "old.yaml"), str(tmp_path / "new.yaml"), "--window", "6", "--settle", "1e-4"])
+
+
+@slow()
+def test_settle_march_by_unit_steps(regime):
+    """step=1 with unit 1 on 3 -> 10 at 6 nodes: the march visits T = 1, 2, 3 (17, 13, 16 evaluations; the monitor's
+    window [0, T] holds the initial transient, so the gap stays near 0.6) and max_window=1 stops it at T = 3; the
+    default step is one window (T = 3 first).  Slow (10 s): the unit-cut strips are dear, which is why the default
+    is a window."""
+    old = regime["old"]; new = regime["m"].with_params(p1=10.0)
+    units = ns.transition(old, new, settle=1e-4, max_window=1, step=1.0, numerics={"nodes": 6, "unit": 1.0})
+    assert [r["T"] for r in units.march] == [0.0, 1.0, 2.0, 3.0] and units.march_stop == "max_window"
+    assert all(0.5 < max(r["gap"].values()) < 0.7 for r in units.march)
+    assert units.march[0]["monitor"] == "[0, 1] from the stationary rules"
+    assert [r["T"] for r in ns.transition(old, new, settle=1e-4, max_window=1, numerics={"nodes": 6, "unit": 1.0}).march] == [0.0, 3.0]

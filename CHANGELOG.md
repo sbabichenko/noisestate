@@ -12,10 +12,11 @@
   upper triangle lies on s = 0 and read the band).  The same-model identity holds below the window to the T = 6 floor on
   every node, the buffer and its band included (Chapter 3 at 12 nodes, T = 1 and 1.5: one-shot 3.8e-6 / 1.3e-5, kernels
   within 1.3e-5); the per-diagonal side also lowers the T = 3 one-shot floor from 4.2e-5 to 3.8e-6.  Baseline at 0.
-  `transition_gap` now runs on the smallest strip, one unit (`numerics.unit`, else the smallest lag, else L), and the
-  march starts there, by units up to the first window and by windows after (`step` overrides); on Chapter 3 with `unit:
-  1` the unit steps are dear (3024 nodes at T = 1 against 576 at T = 3) and cannot stop a regime change (the monitor's
-  window [0, T] holds the initial transient below L): the panel reuse of the next stage is what makes them pay.
+  `transition_gap` now runs on the smallest strip, one unit (`numerics.unit`, else the smallest lag, else L).  The
+  march's first solve stays at T = L with one window per step; unit steps are available by an explicit `step=` only,
+  since a first window cannot certify anything (its monitor window [0, T] holds the initial transient: on Chapter 3
+  with `unit: 1` the gaps at T = 1, 2, 3 are 0.575, 0.576, 0.577) and without panel reuse they do not pay (3024 nodes
+  at T = 1 against 576 at T = 3: 155 s against 4 s per step at 12 nodes).
 - **The horizon as an output: `transition(old, new, settle=tol)`, the march in T.**  Exactly one of `T` and `settle`
   (`T` keeps today's behaviour bit for bit); the file form takes `settle:` in place of `window:` under kind transition
   (exactly one), the CLI `transition --settle TOL [--step DT] [--max-window K]`.  The march starts at the T = 0 pass

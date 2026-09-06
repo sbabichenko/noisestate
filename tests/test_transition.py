@@ -458,7 +458,7 @@ def test_second_order_check_sees_the_initial_shock_columns():
     assert (J(1e-2) + J(-1e-2) - 2 * J(0.0)) / 1e-4 > 1.0
 
 
-@pytest.mark.parametrize("T", [1.0, 1.5])
+@pytest.mark.parametrize("T", [slow_param(1.0), 1.5])
 def test_same_model_identity_holds_below_the_window(T):
     """A horizon shorter than the past's window: Chapter 3 (L = 3) as its own past and continuation at T = 1 (one
     unit) and T = 1.5 (L/2), 8 nodes.  The strip is the rectangle [0, T] x [0, L]; the old shocks are still alive
@@ -466,7 +466,8 @@ def test_same_model_identity_holds_below_the_window(T):
     T so the buffer's panels are the age panels shifted; a node on a diagonal that is not its own piece's reads
     the side its piece lies on, side_ds).  One best response from the stationary maps returns them on every
     node, and the solve returns the stationary kernels on every node, the buffer and its band included, to the
-    same floor as at T = 6 (8 nodes: one-shot 6e-4 / 2.8e-3, kernels 2.8e-3 at T = 6; pinned at 1.5x)."""
+    same floor as at T = 6 (8 nodes: one-shot 6e-4 / 2.8e-3, kernels 2.8e-3 at T = 6; pinned at 1.5x).  T = 1.5 is
+    fast (4 s); T = 1, whose unit-cut strip has four panels, is gated (13 s)."""
     m = example("ch3_two_player")
     stat = stationary(m, 8)
     ref = same_model_solver(m, stat, 6.0, 8); rdev = one_shot_deviation(ref); rres = ref.solve(start="stationary")

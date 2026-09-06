@@ -172,18 +172,23 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
     """The march in T (docs/design/transition_settle_march.md): make_model(T) is the transition model on [0, T].  The
     first point is the T = 0 pass (transition_gap: the best response from the stationary rules on the smallest
     strip [0, u], u the unit of _unit_of, nothing solved); under `settle` the smallest-strip solve, a few
-    evaluations from the stationary start, is the transition.  Otherwise T grows by `step` when given, else
-    by one unit up to the first window L and by one window after it (each T snapped up to a multiple of the
-    unit), each solve warm-started from the previous maps read on the new grid with the stationary rules on
-    the new stretch (warm_maps_from, the sweep's warm start), the continuation solved once,
+    evaluations from the stationary start, is the transition.  Otherwise the first solve is at T = L and T
+    grows by one window per step (each T snapped up to a multiple of the unit), each solve warm-started from
+    the previous maps read on the new grid with the stationary rules on the new stretch (warm_maps_from, the
+    sweep's warm start), the continuation solved once.  Steps by units below the first window are available
+    by an explicit `step=` only: a first window cannot certify anything (its monitor window [0, T] holds the
+    initial transient, so on a regime change the gap stays at its T = 0 size until T reaches L) and without
+    reuse of the panels across steps they cannot pay (the unit-cut strip has 3024 nodes at T = 1 against 576
+    at T = 3 on Chapter 3 at 12 nodes: 155 s against 4 s per step),
     and after each solve the monitor: gap_pass on the converged maps over the last window [T - L, T], the
     range of the `settled` diagnostic (the design note feared the handover at T would never be small; it is
     once the transient has passed: on Chapter 3 the explicit T = 9 solve settles at 2.7e-6, so the march stops at
     the smallest T whose explicit solve settles under the tolerance).  Stops when every agent's gap is under
     `settle` or when T would pass max_window * L (default 8 windows): then res.settled keeps the last solve's
     diagnostic, its flag when above settled_tol, and res.march_stop says "max_window".  res.march is the list
-    of rows {"T", "gap", "evaluations", "seconds", "monitor"} (T = 0 first, evaluations 0), res.extra["window"]
-    the T found.
+    of rows {"T", "gap", "evaluations", "seconds", "monitor"} (T = 0 first, evaluations 0: the pass from the
+    stationary rules on the first strip built, [0, L] by default, [0, step] with a step; transition_gap's is on
+    the smallest strip), res.extra["window"] the T found.
     solve_kw goes to every solve (tol, max_evaluations, deadline, progress, diagnostics)."""
     if not settle > 0:
         raise ValueError("settle must be a positive tolerance (the relative distance of the best-response rules from the stationary ones)")
@@ -192,7 +197,7 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
                          "best-response rules against the new model's stationary rules")
     L = float(past.window)
     if step is not None and not step > 0:
-        raise ValueError("step must be positive (a multiple of the unit; default one unit up to the first window, then one window)")
+        raise ValueError("step must be positive (a multiple of the unit; default one window)")
     max_window = 8 if max_window is None else int(max_window)
     if max_window < 1:
         raise ValueError("max_window must be at least 1 (windows of the past's L)")
@@ -203,11 +208,9 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
         return float(np.ceil(x / u - 1e-9) * u)
 
     def after(T: float) -> float:
-        """The next horizon: T + step, else T + u below the first window, T + L from it, snapped to the unit."""
-        if step is not None:
-            return snap(T + float(step))
-        return snap(T + u) if T < L - eps else snap(T + L)
-    rows = []; prev = None; T = snap(u); stop = None
+        """The next horizon: T + step when given, else T + L, snapped up to a multiple of the unit."""
+        return snap(T + (float(step) if step is not None else L))
+    rows = []; prev = None; T = snap(u) if step is not None else snap(L); stop = None
     while True:
         S, num = engines.build(make_model(T), numerics, verbose=verbose, past=past, continuation=continuation)
         continuation = S.c.cont                                     # solved once, shared by every step
@@ -269,8 +272,8 @@ def transition(old, new, T: Optional[float] = None, numerics=None, continuation=
     until 0.6, each with a DeprecationWarning.  Returns the Result with res.past and res.stationary attached.
 
     Exactly one of `T` and `settle` is given.  With `settle`, the horizon is an output: the march in T of
-    march() (start at the T = 0 pass of transition_gap on the smallest strip, one unit; grow T by `step`, default
-    one unit up to the first window and one window after it, each solve
+    march() (start at the T = 0 pass of transition_gap on the smallest strip, one unit; the first solve at T = L
+    and one window per step, or `step` when given, each solve
     warm-started from the previous, stop when the best-response rules on the last window [T - L, T] are within
     `settle` of the stationary rules or at `max_window` windows, default 8); the result carries
     res.extra["window"] (the T found), res.march (the rows (T, gap, evaluations, seconds, monitor)),

@@ -72,8 +72,8 @@ stationary ones (the same at T = 3 and T = 6); the zero-past finite solve is unt
 of the two; the CLI: `transition old.yaml new.yaml --settle 1e-4 [--step DT] [--max-window K]`) makes the horizon an
 output: the march in T of design/transition_settle_march.md.  It starts at the T = 0 pass above (under the tolerance the
 smallest-strip solve, one unit, a few evaluations from the stationary start, is the transition: the same-model past stops
-here), then grows T by `step` when given, else by one unit up to the first window L and by one window after it (each T
-snapped up to a multiple of the unit), with each solve warm-started from the previous maps read on the new grid and the
+here), then solves at T = L and grows T by one window per step, or by `step` when given (each T snapped up to a multiple
+of the unit), with each solve warm-started from the previous maps read on the new grid and the
 stationary rules on the new stretch (`warm_maps_from`, the sweep's warm start; the continuation solved once), and after
 each solve runs the
 monitor: the best-response pass on the converged maps over the last window [T - L, T], the range of `settled` (the
@@ -86,12 +86,11 @@ as before.  Chapter 3's precision change 3 -> 10 at 12 nodes, settle 1e-4: T = 0
 closed-loop rate, the last at the 12-node floor; T = 9 is the smallest T whose explicit solve settles under the
 tolerance (settled 2.7e-6; T = 6: 4.8e-4).  31 evaluations in all against 20 for the one explicit solve at T = 9 from
 the stationary start, the maps agreeing to 5e-8 at the default tol (3e-11 at tol 1e-11, where each solve takes 19 to 28
-evaluations and the warm start no longer saves).  Chapter 3 has no lags, so without `numerics.unit` the unit is L and
-the march steps by windows; with `unit: 1` it visits T = 1, 2, 3, 6, 9 (16, 13, 13, 7, 4 evaluations; gaps 0.575,
-0.576, 0.577, 9.3e-4, 7.9e-6): below L the monitor's window [0, T] still holds the initial transient, so the unit steps
-can only stop a march whose T = 0 gap is already small, and on the unit-cut strip they are dear (3024 nodes at T = 1
-against 576 at T = 3: 155 s and 213 s for the first two steps at 12 nodes against 4 s per window step), which is what
-the next stage's panel reuse is for.  Not built yet (the next stage): reuse of the panels, path factors and
+evaluations and the warm start no longer saves).  Unit steps below the first window (`step=1` with `unit: 1`) visit
+T = 1, 2, 3 first (16, 13, 13 evaluations; gaps 0.575, 0.576, 0.577): the monitor's window [0, T] still holds the
+initial transient, so they can only stop a march whose T = 0 gap is already small, and on the unit-cut strip they are
+dear (3024 nodes at T = 1 against 576 at T = 3: 155 s and 213 s for the first two steps at 12 nodes against 4 s per
+window step), which is what the next stage's panel reuse is for; hence the default of one window.  Not built yet (the next stage): reuse of the panels, path factors and
 preconditioner blocks across steps.
 
 `ns.transition(old, new, T, nodes=12, **solve_kw)` solves the old regime (or takes its result),

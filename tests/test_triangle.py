@@ -70,6 +70,7 @@ def test_vectorised_path_matches_the_per_node_quadrature():
     def rec(self, *a, **k):
         lp = orig(self, *a, **k); calls.append((self, a, k, lp)); return lp
     triangle.TriangleGrid.path = rec
+    ns.clear_grid_cache()                     # the grids are shared across models and cache their paths: count fresh builds
     try:
         d = example_dict("ch1_delayed_finite"); d.setdefault("numerics", {})["nodes"] = 8
         ns.solve(ns.Model.from_dict(d))

@@ -75,7 +75,8 @@ def main(argv=None) -> int:
     t.add_argument("--window", type=float, metavar="T", help="the horizon T of the transition (or --settle)")
     t.add_argument("--settle", type=float, metavar="TOL", help="find the horizon by the march in T: stop when the best-response rules "
                    "on the last window are within TOL of the stationary ones (exactly one of --window and --settle)")
-    t.add_argument("--step", type=float, metavar="DT", help="the march's step in T (default one window of the past)")
+    t.add_argument("--step", type=float, metavar="DT", help="the march's step in T (default one window of the past; a unit step "
+                   "is available but cannot certify a first window and does not pay before the panels are reused)")
     t.add_argument("--max-window", type=int, metavar="K", help="the march stops at K windows (default 8)")
     t.add_argument("--nodes", type=int, help="numerics.nodes per side of each piece (default 12)")
     t.add_argument("-o", "--out", help="write the result as JSON")
