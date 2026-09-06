@@ -175,6 +175,9 @@ class FiniteSolver(EngineBase):
         """The cell grid's compiled model and the map shapes (nU, nR, N, N): g[u][r][i, v], the weight the
         control in cell i puts on the seen increment of cell v < i.  settings: the tuning constants
         (noisestate.Settings, or a dict of its fields; the defaults when None)."""
+        if model.horizon.kind == "transition":
+            raise ValueError(f"horizon.kind 'transition' ({model.name!r}) runs on the spectral finite engine only "
+                             "(noisestate.solve routes it there; this engine has no past)")
         super().__init__(model, verbose, settings=settings)
         self.c = FiniteCompiled(model)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N, self.c.N) for a in model.agents}

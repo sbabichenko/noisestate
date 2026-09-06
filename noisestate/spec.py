@@ -640,6 +640,8 @@ class Model:
                 seen[k] = eval_coef(v, seen)
             hout = {}
             for k, v in horizon.items():
+                if k == "past" and k in hsrc and _eval_past_block(copy.deepcopy(hsrc[k]), seen) == v:
+                    hout[k] = hsrc[k]; continue           # the past block with its expressions (the loadings evaluated agree)
                 if k in hsrc and (hsrc[k] == v or (isinstance(hsrc[k], str) and abs(eval_coef(hsrc[k], seen) - v) <= 1e-12 * max(1.0, abs(v)))
                                   or (isinstance(v, float) and not isinstance(hsrc[k], (list, str, bool)) and abs(float(hsrc[k]) - v) <= 1e-12 * max(1.0, abs(v)))):
                     hout[k] = hsrc[k]                     # unchanged: keep the source's spelling (an expression)
@@ -736,6 +738,7 @@ class Model:
         if base_dir and isinstance(horizon.past, dict) and isinstance(horizon.past.get("model"), str) \
                 and not os.path.isabs(horizon.past["model"]):
             horizon.past["model"] = os.path.normpath(os.path.join(base_dir, horizon.past["model"]))
+        _eval_past_block(horizon.past, params)                 # an initial shock's loadings may be parameter expressions
         states = [State(name=k, drift=parse_expr(v.get("drift"), params), noise=parse_expr(v.get("noise"), params),
                         initial=eval_coef(v["initial"], params) if v.get("initial") is not None else None)
                   for k, v in (d.get("states") or {}).items()]
@@ -765,6 +768,18 @@ class Model:
         if unused:
             raise ValueError(f"parameter(s) {unused} are defined but never used in the model (misspelled somewhere?)")
         return m
+
+
+def _eval_past_block(block, params):
+    """Evaluate the initial shocks' loadings (numbers or parameter expressions) of a horizon.past block in place;
+    returns the block."""
+    if isinstance(block, dict) and isinstance(block.get("initial"), list):
+        for sh in block["initial"]:
+            if isinstance(sh, dict):
+                for key in ("loads", "rows"):
+                    if isinstance(sh.get(key), dict):
+                        sh[key] = {k: eval_coef(v, params) for k, v in sh[key].items()}
+    return block
 
 
 # --------------------------------------------------------------- builder

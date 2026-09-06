@@ -1,236 +1,135 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-09-06) — transitions from a stationary past
 
-- Transition from a known past, stage 3c: the mean paths with a stationary continuation (a
-  `NotImplementedError` before, as with a past shorter than T).  On a strip cut at age L below the horizon the
-  line s = 0 does not reach T, so the mean system is built on the time line (`SpectralFiniteSolver.
-  _mean_system_line`; the old construction, `_mean_system_diag`, is kept where the line exists and the two
-  agree to 1e-15 at T = L): the state rows through a one-dimensional Volterra operator on the time nodes
-  (`SpectralCompiled.mean_volterra`, Gauss quadrature of each panel's interpolant), each control's mean
-  first-order condition as the per-atom operators of `_foc_operators` (the envelope responses, the agent's
-  own reaction off on the buffer too) applied to the embedded mean of Q zeta + q and read on the age-0
-  line (`mean_line0`: the birth of a shock at t, its continuation running to t + L through the buffer's
-  frozen maps), the mean of a lagged atom being the path at t - lag (`mean_read`; the strip's read of a
-  lagged kernel is zero below age lag, right for a shock and wrong for a path), the paths on the buffer's
-  time nodes frozen at the continuation's stationary means, and lagged reads before zero at the past's
-  constants.  With driven means `res.settled` is the larger of the maps' distance and the mean paths' at T-
-  from the continuation's means (relative to the largest mean: the means settle more slowly than the maps,
-  1.9e-4 against 6.3e-7 on the target change below).  `TriangleResult.mean()` reads a strip's path on the age-0 line (it read the cut line s = 0
-  and returned zero beyond L).  Tests (`tests/test_transition_means.py`): Chapter 3 with a target -2 X as
-  its own past and continuation (T = 6, 16 nodes) keeps the stationary means on every time node to 4.7e-10
-  (6.3e-7 at 12 nodes), the mean cost is T times the stationary mean flow to 1e-11 and the excess costs are
-  7e-11; the target moving from 1 to 2 has X's mean rising monotonically from the old 0.8662 to the new
-  1.7324 (reached at T to 1e-6) while D1 jumps at 0+ from 1.7989 to 4.1115 and falls to 3.5979; the game
-  ending at T with a past shorter than T solves as well.
-
-- Transition from a known past, stage 3b: `TransitionResult(TriangleResult)`, kind "transition", the result
-  of every solve with a past.  `res.times` and `res.loss_path[agent]`: E[loss(t)] at every time node of
-  [0, T] and the buffer, the variance part by row quadrature (`TriangleGrid.row_quadrature`: Gauss points
-  on every piece crossed at t, exact for products of interpolants) over every shock alive plus the mean part
-  when driven; its discounted integral over [0, T] is `res.costs` (to 3e-14 on a constant path, 1.6e-6 at
-  12 nodes on the regime change's transient).  `res.excess_costs[agent]` = int_0^T e^{-rho t} (E loss(t) -
-  the new stationary flow) dt, the cost of the transition (finite at rho = 0; empty when the game ends at T);
-  `res.old_flows`, `res.new_flows`.  `res.belief_error(agent, name)`: the variance of the agent's estimation
-  error of a state, control or definition at every time node, the kernel minus its projection on the agent's
-  seen rows (one Gram per date, the pre-zero increments and the initial shocks' point observations included),
-  integrated over the shocks.  `plot()`: the kernels against the shock time from -L with the band shaded, a row
-  of E[loss(t)] with the old and new flows as lines, a row of belief-error variances, the means when driven.
-  `to_dict()` adds `times`, `loss_path`, `excess_costs`, `old_flows`, `new_flows`; `engine` and `grid.kind`
-  are "transition".  `sweep` takes "horizon.window" as the parameter (the horizon T of a transition, warm-
-  starting each point from the previous maps read on the new grid and the stationary maps beyond it:
-  `SpectralFiniteSolver.warm_maps_from`) and, on a transition model, solves the past once for every point.
-  Tests (`tests/test_transition_result.py`): Chapter 3 as its own past and continuation (16 nodes) has a
-  loss path equal to the stationary flow on every node to 7e-11 and excess costs of 5e-11; the precision
-  change (T = 9, 12 nodes) starts from the old state variance (E X^2 to 1e-8; the controls jump, so E[loss(0+)]
-  0.43506 is not the old flow 0.42895), ends at the new flow to 1e-7 on the last node and the buffer's end
-  (settled 2.7e-6), excess costs 0.024027 and 0.028619; the one-agent prior start's belief error is the Kalman
-  variance from P0 (monotone falling) or from 0 to 3.4e-6; the sweep over T = 6, 9 takes 8 evaluations at 9
-  against 21 from the stationary maps alone, the same equilibrium to 2e-8.
-
-- Transition from a known past, stage 3a: the model-file and API surface.  `horizon: {kind: transition,
-  window: T, nodes: n, discount: rho, past: {model: old.yaml | an inline stationary model, initial:
-  [...]}, continuation: stationary | end, stationary: {window: L, nodes: m}}` compiles to the spectral
-  finite engine with the past solved on the fly (a relative `past.model` path is taken from the model
-  file's directory by `load()` and the CLI) and the continuation solved at `stationary.nodes`
-  (default horizon.nodes; its window must be the past's); the keywords `solve(model, past=,
-  continuation=)` override the file's blocks.  `Model.validate` gains `_check_transition` (kind
-  transition needs a past block with a `model` or `initial` shocks; the other kinds refuse the three
-  blocks; continuation is 'stationary' or 'end'), `ModelBuilder.transition(T, nodes, past=,
-  continuation=, discount=, stationary=, unit=)` mirrors the file, `noisestate validate` prints the
-  transition's structure and `noisestate solve` handles the kind.  `noisestate.transition(old, new, T,
-  nodes=12, continuation="stationary", stationary=None, **solve_kw)` (`noisestate/transition.py`) solves
-  the old stationary model (a path, dict, Model or ModelBuilder) or takes a converged result, solves
-  the new model's stationary equilibrium, builds the transition horizon on `new` (the past recorded in
-  its block) and starts from the new stationary maps read at every node's age (`solve(start=
-  "stationary")`, new; `solve()` keeps `start="zero"`), returning the result with `res.past` and
-  `res.stationary` (the continuation) attached.  Tests (`tests/test_transition_api.py`): the file form
-  and the helper equal the keyword form bit for bit (Chapter 3, p1 = 3 to 10, T = 6, 8 nodes; the
-  helper in 21 evaluations against 23 from zero), the builder with initial shocks equals
-  `past=[shocks]`, the validation errors, and the CLI round trip through `validate` and `solve -o` from
-  another working directory.
-
-- Transition from a known past, stage 1a (grid and operators; no engine behaviour changes).
-  `noisestate/past.py`: `Past`, the loadings of the pre-zero shocks on the old regime, built from a
-  converged `StationaryResult` (kernels of every state, control and signal row as functions of shock
-  age on the past's window, the rows' noise loadings, the constant means), from a stationary model,
-  dict or path solved on the fly, or from a hand-built list of initial shocks (`{"name", "loads":
-  {state: coef}, "rows": {"agent.row": coef}}`, point loadings at time 0-, an empty window);
-  `Past.validate(model)` matches channels, states and rows by name and checks the past grid's
-  breakpoints and delays against the new panel unit (an unconverged past is a `ValueError`, a
-  finite result a `TypeError`).  `TriangleGrid(breakpoints, nt, na, T=, window=)`: with a window L
-  the domain is the strip [0, T] x [0, L], today's pieces below the diagonal (same nodes and order,
-  cut off at age L) and, above it, the shocks born before zero (a mirrored Duffy triangle per square
-  and rectangles), each time panel's pieces contiguous; `interp` takes `side_d` for the diagonal,
-  `path` a `known_grid` (a known kernel on an `AgeGrid`, cut at its breakpoints), `LinePath.bilinear`
-  contracts both factors.  Without a window the grid, its cache key and every operator are
-  bit-identical to before (checked against master).  `SpectralCompiled(model, past=)`: the band's
-  state at zero is the past's state kernel propagated by e^{At}, lagged atoms read before zero are the
-  past's kernels (`past_read`, `row_past`, `zeta_past`), a row's increments observed before zero enter
-  the closed loop through the past's row kernel on the past's own grid (`past_conv_path`), initial
-  shocks are extra columns of the world with discrete observation weights (`disc_embed`,
-  `disc_select`), impulse columns are zero on the band.  Under the stationary maps of
-  `examples/ch3_two_player.yaml` the closed loop on the strip (T = 6, L = 3) returns K_stat(t - s)
-  on both shock families to 5e-9.
-- Transition from a known past, stage 1b (the engine; the game still ends at T).
-  `SpectralFiniteSolver(model, past=...)` and `solve(model, past=...)` take a `Past`, a
-  `StationaryResult`, a stationary model/dict/path (solved on the fly) or a list of initial
-  shocks; the past is recorded in `solver_kw`, so `refine()` and `stability()` rebuild it.  The
-  best response runs on the strip: the passive rows carry their pre-zero part (the excluded agent's
-  own pre-zero actions are history), the map gains the band (the weights on the increments observed
-  before zero, identified where the old row carried something), the projection the old-shock segment
-  of every increment and the past segment of every band node, and the cost is additive over the
-  shock families; the FOC system is assembled densely over the columns of the world.  Initial
-  shocks are columns after the channels (`res.kernel(name, "xi")`, `res.shocks`) with discrete
-  observation weights after each row's map nodes (`maps` are `(nU, nR, N + Nt)`; `map_init_time`
-  in the payload).  The degenerate corner row of every Duffy triangle is one unknown with the
-  corner action node as a point condition: with a past the control reacts at once, and the zero the
-  game at rest leaves there would pollute the piece.  Mean paths start from the past's constant
-  means (a nonzero per-state `initial` overrides) and lagged reads before zero return them; they
-  need the past's window to cover T.  `TriangleResult` gains `past`, `settled` (None until stage
-  2), `shocks`, kernels on the band through `kernel()`/`evaluate()` (s < 0) and the past's
-  provenance in `to_dict()`.  Tests (`tests/test_transition.py`): a zero past is the finite engine
-  bit for bit (Z, maps, costs, evaluations, the same cached grid); the Chapter 3 stationary
-  equilibrium as its own past (L = 3, T = 12, 16 nodes) is reproduced on every node with
-  t < T - 3L to 1.4e-9 (state) and 1.2e-8 (controls); the 1e-8 floor at t -> 3 is the end effect
-  reaching back to T - 3L, not discretisation (at 24 nodes per side the interior corner drops to
-  9e-11 while t = 3 stays at 1.3e-8; the identity holds to 1e-10 for t <= 2.5).  The end reaches
-  back 3L, not L: the maps within L of T carry the end, the FOC of every shock alive then (born
-  after T - 2L) with them, and the agent's own re-optimised end leaks further back through the
-  forward-backward FOC system at the closed-loop rate (4e-6 on [T - 3L, T - 2L), 1e-3 on the next
-  window).  That fixed point runs under NOISESTATE_SLOW=1 (40 s from a coarse start); the fast
-  suite keeps its content in one evaluation: each agent's best response to the stationary maps
-  carried onto the strip (T = 12, 16 nodes) returns the projected map on the first window to 5e-10
-  and 1.2e-8, the band included, 1.5e-7 on the next, 1.2e-4 and 2.7e-4 on [6, 9); the discounted
-  one-agent closed form with a prior N(0, P0) on the state, unobserved (a Kalman filter from
-  P(0) = P0) and observed at once (P(0) = 0), on the cost and the kernels of the prior's column;
-  the unobserved prior's column is sqrt(P0) times the state-noise channel's to round-off; a
-  precision change on Chapter 3 (p1 = 3 to 10) starts from the old kernels at 0+ exactly, and
-  `past=Model` equals `past=StationaryResult` bit for bit.  Not in this stage: the stationary
-  continuation beyond T (`settled`), a `transition` horizon kind in model files, plots and helpers,
-  a past with a window on rows observed with a delay (`NotImplementedError`), and the second-order
-  check ignores the initial-shock columns.  The shipped examples are unchanged to every digit.
-- Transition from a known past, stage 2c: `noisestate.solve(model, past=..., continuation=...)` routes
-  both keywords to the spectral finite engine (by its constructor's signature, as every constructor
-  option), which records them in `res.solver_kw`, so `refine()` and `stability()` rebuild the engine
-  with the same Past and the same StationaryResult; the payload's `options.solver.continuation` and
-  its top-level `continuation` carry the continuation's provenance (kind, name, params, window, nodes,
-  breakpoints, convergence, window tail, costs, means), not its kernels.
-- Transition from a known past, stage 2b: rows observed with a delay, and a switch's lagged kinks.  With
-  a past the map on a row observed with delay d is stored in raw age (`MAP_CONVENTION`, `map_axes`:
-  maps[agent][u][row][n] weighs the raw increment of age grid.age[n] at time grid.t[n], zero below the
-  delay, whole pieces since d is a breakpoint) and the row is undelayed to every operator, the band's
-  included (`SpectralCompiled.row_delays` keeps the delays; `rows` carry 0); the row's own noise is
-  the identity restricted to ages >= d, the discrete weights on an initial shock start at t = d, and
-  the continuation's stationary map (stored at the seen age) is read at a - d, a node on its piece's
-  top age edge taking the left limit (the map jumps where it is masked).  The past's kernels are read
-  the same way (`past_at`: the old kernels jump at the delays).  Without a past nothing changes.  A
-  switch of the maps at t0 (the regime change at 0, the passive world's at T) reaches a state through
-  a lag tau only at t0 + tau, so the kernels kink, more weakly at each step, along every line
-  s = t0 - k tau: above each region's diagonal every square piece is now split along its own diagonal
-  into two Duffy triangles (`Piece.origin = t0 - a0`, `grid.above`, `grid.origins`; `grid.upper` stays
-  the band), a piece's top corner reads from below on a strip, and every degenerate corner of a time
-  row gets its point condition.  `examples/ch1_delayed_finite.yaml` (a control lag and a delayed row,
-  tau = 0.25) with its stationary equilibrium at window 1 as past and continuation (T = 1.25, 56
-  pieces) is exact: one best response from the stationary maps returns them on every node to 1.4e-9
-  and 1.8e-9 at 8 nodes (without the split, 8e-5 and not converging; with the buffer's own reactions
-  in the FOC, 1e-4), the 6-node fixed point stays at the 6-node floor (1.2e-6) and is reached from
-  zero.  The two-firm Chapter 5 market (make_ch5_cycle_market.build(N=2), ties dropped) at the
-  sizes asked (L = 6, tau = 0.5, T = 6) has 11 000 nodes x 9 primaries, beyond the dense closed loop;
-  at tau = 1, L = T = 2, 5 nodes it is validated below (stage 2d).
-- `settings.settled_tol` is 1e-4 (was 1e-6, the grid's floor: it tripped a perfectly settled transition
-  at 12 nodes or fewer, the same-model identity sitting at 6.3e-7, and fired at T = 9 on the regime
-  change, 2.7e-6); the threshold is the closed-loop decay over a unit of t (1e-2 on Chapter 3), and the
-  `settled` row's flag says so.  The suite: the delayed-row one-shot is pinned at 7 nodes (5.1e-8 and
-  4.9e-8, 10 s; the 8-node one, 1.4e-9 and 1.8e-9, under NOISESTATE_SLOW), the regime change's
-  past=Model identity is checked at 8 nodes, and the same-model continuation's from-zero solve at 12
-  nodes is under NOISESTATE_SLOW: 215 s to 178 s.
-- Transition from a known past, stage 2d: the read of an agent's own lagged control.  The first-order
-  condition's own-lag term reads D(t - lag, a - lag) through `TriangleGrid._locate`, which at a corner
-  node of a band or buffer piece picked the wrong side of a diagonal: a node (L - lag, L - lag) below a
-  band square read (L, L), age exactly L, and was clamped onto the lower triangle's corner instead of
-  reading zero (the shock is gone); a node (T, 0) reading (T + lag, lag) on the buffer's diagonal took
-  the side from its own side_d (meaningless for a rectangle node) and landed on the buffer's lower
-  triangle, where the shifted value is zero instead of r D(T, 0); at T = L a buffer node (T, L) read
-  (L - lag, L - lag) and its split square's side_d sent it to the band's s = 0- side, where the own-noise
-  kernel jumps.  One rule fixes all three: on a diagonal (a region's or a split square's) the side is
-  the one the reader's (side_t, side_a) imply when unambiguous (t+ with a- is below the diagonal, t- with
-  a+ above), side_d only otherwise; and a point at age exactly L read from the right is outside.  Without
-  a window nothing changes (the shipped examples are identical to every digit).  Chapter 3 with player1's
-  control lagged 0.5 (unit 0.5, L = 1.5, T = 2) as its own past and continuation now returns the
-  stationary maps in one best response to the grid's closed-loop floor: the lag in a loss cross term
-  (6 nodes) 2.6e-6 on the band, 2.0e-6 in the interior, 1.2e-6 on the last window (player2 2.0e-5, its
-  floor 1.4e-5); the lag as the only coercive term (8 nodes) 1.4e-5 on the band, 1.4e-8 in the interior
-  (player2 4.6e-7); the band was 3e-2 off before.  The two-firm Chapter 5 market (tau = 1, L = 2, 5
-  nodes, ties and linear terms dropped) returns its stationary maps to 2.3e-4 on every node at T = 2 and
-  T = 3 against the 5-node closed loop's own floor of 1.4e-4 (P) and 2.5e-4 (o), pinned at 5e-4.  The
-  Chapter 3 same-model and the ch1_delayed identities are unchanged to the digit.
-- Transition from a known past, stage 2a: the stationary continuation.  `SpectralFiniteSolver(model,
-  past=..., continuation=...)` and `solve(model, past=..., continuation=...)`: `continuation` is a
-  converged `StationaryResult` of the new model at the past's window, `"stationary"` (that result
-  solved on the fly at horizon.nodes) or `"end"` / None (the game ends at T, as before).  The domain
-  gains a buffer [T, T + L] on which every agent's map is frozen at the stationary map at the node's
-  age; the unknowns stay on [0, T], the closed loop runs over the whole domain (the buffer's rows have
-  known coefficients), the first-order condition of every date t <= T integrates its continuation to
-  T + L through the envelope responses (the agent's own reaction off everywhere; they vanish beyond
-  t + L, so nothing beyond T + L exists), while the agent's world is the buffer's closed loop (its
-  passive world has its strategy off on [0, T] and frozen after, the response operators carry the
-  frozen reaction).  The buffer's pieces have their origin at T (`TriangleGrid(..., buffer=T)`: below
-  the diagonal a = t - T the shocks born after T, above it those born before, along which the passive
-  world kinks; `grid.upper` is the band only, `grid.above` every piece above its diagonal).  Exact by
-  construction: Chapter 3 as its own past and continuation (T = 6, 16 nodes) returns the stationary
-  maps in one best response on every node (5.2e-10 and 1.2e-8, 6.5e-10 on the last window), stays
-  there from them (3 evaluations; every kernel K_stat(t - s) to 1.9e-9 on X and D1, 1.5e-8 on D2, the
-  last window at 6e-10) and reaches them from zero.  `res.settled`: the largest relative distance of
-  any map on [T - L, T] from the frozen stationary map; the `settled` row of `diagnose()` (threshold
-  `settings.settled_tol` 1e-6) flags "TRANSITION NOT SETTLED by T - L: raise horizon.window"; the
-  `past window` and `continuation window` rows echo their window tails.  `res.costs` stays the
-  integral over [0, T]; `res.cost_parts[agent]["continuation"]` is the buffer's, reported apart.  The
-  regime-change test now continues through the new stationary equilibrium: its 12-node costs are
-  2.55448876 and 2.55908247 (2.56081481 and 2.56540852 when the game ended at T), moving 4.2e-5 and
-  4.9e-5 at 20 nodes; `settled` is 4.8e-4 at T = 6 (5.3e-4 at 20 nodes), 2.7e-6 at T = 9, 0.58 at
-  T = L = 3.  A frozen buffer whose own reactions enter the first-order condition instead (the exact
-  condition of the problem truncated at T + L) misses the identity by 1e-4 on [T - L, T], the
-  buffer's own conditions being cut there.  Not yet: the mean paths with a continuation
-  (`NotImplementedError`, as with a past shorter than T), a past on delayed rows.
-- Transition from a known past, review repairs.  A row's noise loading in the old regime on a channel
-  the new row does not load was dropped: the instantaneous entries of a seen row now exist on the
-  union of the two regimes' loadings (the old E on the band, the new one below the diagonal; tested
-  with a past whose y1 loads w2, which the new y1 does not: the closed loop at 0+ under the
-  stationary maps returns the old kernels on every channel to round-off).  The mean layer with a past
-  is pinned (Chapter 3 with a target -2 X for player1, T = L = 3, 12 nodes: Xbar(0) is the old mean
-  0.8662, Dbar1(0+) = 1.80019 against the old constant 1.79894, the controls vanish at T, the paths
-  within 8e-6 of their 16-node values).  `State.initial` is now None when not given (a given value,
-  zero included, is the model's; None with a past is the past's constant mean), so `initial: 0`
-  overrides a nonzero past mean; without a past nothing changes except that an explicit `initial: 0`
-  now round-trips through `to_dict()`.  The regime-change test pins its 12-node costs (2.56081481,
-  2.56540852, moving 2.4e-5 and 3.1e-5 at 20 nodes) at 1e-6.  The resolution guard of a transition
-  says where its error sits: `res.representation_parts[agent]` = {"interior", "band tip", "last
-  window"} (the band's tip is the upper triangle collapsing to the corner (L, L), the last window
-  [T - L, T]), the diagnose row's flag names the three (the threshold is unchanged): on the regime
-  change player2's 8.6e-4 is on the band tip (5.4e-4 at 16 nodes, the corner's floor), player1's
-  4.4e-5 the transient at 0+ (2.2e-6 at 16 nodes, resolution).
-
+- Transitions.  The spectral finite engine solves the equilibrium path of a regime change: the game runs
+  in the old stationary equilibrium until time zero, its coefficients change, and the new path is solved
+  on [0, T] from a known *past* (`noisestate/past.py`: `Past`, the loadings of the pre-zero shocks on the
+  old regime's states, controls and signal rows as functions of shock age on the past's window L, the
+  rows' noise loadings and the old constant means), given as a converged `StationaryResult`, a stationary
+  model / dict / path solved on the fly, or a list of initial shocks `{"name", "loads": {state: coef},
+  "rows": {"agent.row": coef}}` (point loadings at time 0-, a prior on a state seen at once by the rows
+  named; the loadings may be parameter expressions).  `Past.validate` matches channels, states, controls
+  and rows by name and checks the past grid's breakpoints and delays against the new panel unit; an
+  unconverged past is a `ValueError`, a finite result a `TypeError`.
+- The strip.  `TriangleGrid(breakpoints, nt, na, T=, window=, buffer=)`: with a window the domain is
+  [0, T] x [0, L], today's pieces below the diagonal (same nodes and order, cut off at age L) and above it
+  the shocks born before zero (the band: mirrored Duffy triangles and rectangles, every square above a
+  diagonal split along its own diagonal, since a switch of the maps at t0 reaches a state through a lag
+  tau only at t0 + tau and the kernels kink along s = t0 - k tau), each degenerate corner row one unknown
+  with a point condition; `interp` takes `side_d` for a diagonal, a lagged read at a corner takes the side
+  the reader's own sides imply, `path` a `known_grid` (a known kernel on an `AgeGrid`, cut at its
+  breakpoints), `row_quadrature` the Gauss points of a time row.  `SpectralCompiled(model, past=,
+  continuation=)`: the band's state at zero is the past's state kernel propagated by e^{At}, lagged
+  atoms read before zero are the past's kernels, a row's increments observed before zero enter the
+  closed loop through the past's row kernel on the past's own grid with the old noise loadings (on the
+  union of the two regimes' loadings), initial shocks are columns of the world with discrete observation
+  weights, a row observed with a delay keeps its map in raw age (masked below the delay, whole pieces;
+  `MAP_CONVENTION`, `map_axes`).  Without a past every array, the grid's cache key and the shipped
+  examples are unchanged to the digit: a solve with no past is the finite engine bit for bit (Z, maps,
+  costs, evaluations, the same cached grid).
+- The engine.  `SpectralFiniteSolver(model, past=, continuation=)` and `solve(model, past=,
+  continuation=)`: the best response runs on the strip (the passive rows carry their pre-zero part, the
+  excluded agent's own pre-zero actions being history; the map gains the band; the projection the old-
+  shock segments and the point conditions; the cost is additive over the shock families; the FOC system is
+  assembled densely over the columns of the world).  `continuation` is a converged `StationaryResult` of
+  the new model at the past's window, `"stationary"` (solved on the fly) or `"end"` / None (the game ends
+  at T): with one, every map is frozen at the stationary map on a buffer [T, T + L], the closed loop runs
+  over the whole domain, the first-order condition of every date integrates its continuation to T + L
+  through the envelope responses (the agent's own reaction off everywhere, the frozen buffer's included:
+  with the buffer's own reactions in the FOC the same-model identity fails by 1e-4 on [T - L, T]), and
+  the agent's world is the buffer's closed loop.  A settled transition solves the infinite problem
+  exactly: Chapter 3 as its own past and continuation returns its stationary maps in one best response
+  and keeps every kernel K(t - s) on every node to 2e-9 at 16 nodes (the band, the last window and the
+  buffer included), `examples/ch1_delayed_finite.yaml` (a control lag and a delayed row, 56 pieces) to
+  2e-9 at 8 nodes, Chapter 3 with its own control lagged 0.5 (in a loss cross term, or as the only
+  coercive term) to the grid's closed-loop floor, and the two-firm Chapter 5 market (tau = 1, L = T = 2,
+  5 nodes) to 2.3e-4 against its own floor of 1.4e-4 to 2.5e-4.  Both options are recorded in
+  `res.solver_kw`, so `refine()` and `stability()` rebuild the engine with the same past and
+  continuation.
+- The guards.  `res.settled` is the largest relative distance of any map on [T - L, T] from the frozen
+  stationary map (with driven means, of the mean paths at T- from the continuation's means as well);
+  the `settled` row of `diagnose()` flags "TRANSITION NOT SETTLED by T - L: raise horizon.window" above
+  `settings.settled_tol` = 1e-4, the closed loop's decay over a unit of t (1e-2 on Chapter 3), not the
+  grid's floor (the same-model identity sits at 6.3e-7 at 12 nodes; the Chapter 3 precision change at
+  4.8e-4 at T = 6, 2.7e-6 at T = 9, 0.58 at T = L).  The `past window` and `continuation window` rows echo
+  their window tails.  `res.representation_parts[agent]` = {"interior", "band tip", "last window",
+  "buffer"} says where the resolution guard's error sits (the band's collapsing tip and the last window
+  are geometry, not resolution) and the resolution row's flag names them.
+- The model file and the API.  `horizon: {kind: transition, window: T, nodes: n, discount: rho, past:
+  {model: old.yaml | an inline stationary model, initial: [...]}, continuation: stationary | end,
+  stationary: {window: L, nodes: m}}` compiles to the spectral finite engine with the past solved on the
+  fly (a relative `past.model` path is taken from the model file's directory by `load()` and the CLI) and
+  the continuation solved at `stationary.nodes` (default horizon.nodes; its window must be the past's);
+  the keywords `solve(model, past=, continuation=)` override the file's blocks; `Model.validate` gains
+  `_check_transition` (kind transition needs a past block; the other kinds refuse the blocks; continuation
+  is 'stationary' or 'end'); `ModelBuilder.transition(T, nodes, past=, continuation=, discount=,
+  stationary=, unit=)` mirrors the file; `noisestate validate` prints the transition's structure and
+  `noisestate solve` handles the kind.  `noisestate.transition(old, new, T, nodes=12, **solve_kw)`
+  (`noisestate/transition.py`) solves the old model (or takes its result), the new model's stationary
+  equilibrium and the transition, starting from the new stationary maps read at every node's age
+  (`solve(start="stationary")`, new; `solve()` keeps `start="zero"`), and returns the result with
+  `res.past` and `res.stationary` attached; the file form and the helper equal the keyword form bit for
+  bit.
+- The result.  `TransitionResult(TriangleResult)`, kind "transition", from every solve with a past:
+  `res.past`, `res.continuation` (`res.stationary`), `res.shocks` (the channels then the initial shocks,
+  `res.kernel(name, "v0")`), the kernels on the band through `kernel()` / `evaluate()` (s < 0),
+  `res.times` and `res.loss_path[agent]` (E[loss(t)] at every time node of [0, T] and the buffer: the
+  variance part by row quadrature over every shock alive, the mean part when driven; its discounted
+  integral over [0, T] is `res.costs`, which keeps its meaning, to 3e-14 on a constant path and 1.6e-6 at
+  12 nodes on the regime change's transient), `res.excess_costs[agent]` = int_0^T e^{-rho t} (E loss(t)
+  - the new stationary flow) dt (finite at rho = 0; empty when the game ends at T), `res.old_flows`,
+  `res.new_flows`, `res.belief_error(agent, name)` (the variance of the agent's estimation error of a
+  quantity at every time node: its kernel minus the projection on the agent's seen rows, one Gram per
+  date, the pre-zero increments and the initial shocks' point observations included; the Kalman variance
+  of the one-agent prior start to 3.4e-6), `res.cost_parts[agent]["continuation"]` (the buffer's cost,
+  reported apart).  `plot()` draws the kernels against the shock time from -L with the band shaded, a
+  row of E[loss(t)] with the old and new flows as lines, a row of belief-error variances and the mean
+  paths.  `to_dict()` carries the past's and the continuation's provenance (kind, model, parameters,
+  window, nodes, breakpoints, convergence, window tail, costs, means; no kernels), `times`, `loss_path`,
+  `excess_costs`, `old_flows`, `new_flows`, `settled`, `representation_parts`, the initial shocks'
+  kernels and `map_init_time`; `engine` and `grid.kind` are "transition".
+- The means.  Mean paths start from the past's constant means (`State.initial` is None when not given, so
+  `initial: 0` overrides a nonzero past mean; without a past an explicit `initial: 0` now round-trips
+  through `to_dict()`), lagged reads before zero return the old constants, and with a stationary
+  continuation (a `NotImplementedError` before, as with a past shorter than T) the system is built on the
+  time line (`SpectralFiniteSolver._mean_system_line`; the construction on the line s = 0,
+  `_mean_system_diag`, is kept where that line reaches T and the two agree to 1e-15): the dynamics
+  through a one-dimensional Volterra operator on the time nodes (`SpectralCompiled.mean_volterra`), each
+  control's condition as the per-atom operators of `_foc_operators` (the envelope responses) applied to
+  the embedded mean of Q zeta + q and read on the age-0 line (`mean_line0`; the birth of a shock at t,
+  its continuation running to t + L through the buffer's frozen maps), the mean of a lagged atom the path
+  at t - lag (`mean_read`), the paths on the buffer frozen at the continuation's stationary means.
+  `TriangleResult.mean()` reads a strip's path on the age-0 line.  Chapter 3 with a target -2 X as its
+  own past and continuation keeps the stationary means on every time node to 4.7e-10 at 16 nodes, the
+  mean cost T times the stationary mean flow to 1e-11; a target moving from 1 to 2 has X's mean rising
+  monotonically from the old 0.8662 to the new 1.7324 while D1 jumps at 0+ from 1.7989 to 4.1115 and
+  falls to 3.5979, the means settling more slowly than the maps (1.9e-4 against 6.3e-7 in `settled`).
+- Sweeps.  `sweep` takes "horizon.window" as the parameter (the window of a stationary model, the horizon
+  T of a finite one or of a transition, each point warm-started from the previous maps read on the new
+  grid and the stationary maps beyond it, `SpectralFiniteSolver.warm_maps_from`: 8 evaluations against
+  21 at T = 9 on the precision change) and, on a transition model, solves the past once for every point.
+- Examples and tests.  `examples/ch3_precision_change.yaml` (player1's precision 3 to 10, T = 6, 12
+  nodes, 9 s: excess costs 0.024027 and 0.028619, E[loss(0+)] of player1 0.43506 against the old flow
+  0.42895 with the state's variance continuous at zero, settled 4.8e-4 with the guard firing) and
+  `examples/kyle_back_prior.yaml` (the Kyle-Back market started from a prior V ~ N(0, Sigma0) seen at
+  once by the insider, the market maker from the prior variance, the game ending at T = 2, eps = 0.1:
+  lambda(0+) = 0.658872 at 8, 12 and 16 nodes, the market maker's belief error falling monotonically to
+  0.132 Sigma0; against Back's sqrt(Sigma0)/sigma_Z = 1 at eps = 0 a sweep over eps gives 0.614, 0.659,
+  0.683, 0.692, 0.697, 0.700 at 0.2 down to 0.01, the last two not converged from the warm start; no
+  finite-horizon reference exists, so the example is pinned by node convergence; open: the trader's
+  second-order check reports a saddle with the prior column, -0.013 at eps 0.2 at every node count,
+  while the same market without a prior passes).  The tests: `tests/test_transition.py` (the identities,
+  the prior start against the discounted Riccati and Kalman closed form, the regime change with its
+  12-node costs 2.55448876 and 2.55908247 pinned at 1e-6 and past=Model equal to past=StationaryResult
+  bit for bit, the old noise loading on a channel the new row drops, the validation errors),
+  `tests/test_transition_api.py`, `tests/test_transition_result.py`, `tests/test_transition_means.py`,
+  `tests/test_transition_examples.py`; the same-model fixed points from zero and the 8-node delayed
+  identity run under NOISESTATE_SLOW=1.
+- `extras/test_cpp_cascade.py` sets `rho = 0` on the two-trader model it builds from
+  `examples/ch4_kyle_back.yaml`: its reference (`ch4_N24_L8_e0.2_r0_q1_g1_1.json`) is the undiscounted
+  case and the example ships with `rho: 0.5` since 0.2.2, which made the script fail by 0.17 on the
+  kernels.
 - `noisestate.Settings`: the tuning constants (Anderson memory and iterations, the singular-system
   and mean-system condition thresholds, the projection ridges, the second-order tolerance and the
   dense/Lanczos switch, the result's resolution, window-tail, refinement and stability thresholds

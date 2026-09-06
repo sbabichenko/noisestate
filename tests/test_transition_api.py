@@ -125,6 +125,10 @@ def test_transition_validation():
     m = ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "missing.yaml"}, "continuation": "end"}})
     with pytest.raises(OSError):
         ns.solve(m)
+    t = ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "x.yaml"}}})
+    for engine in (ns.FiniteSolver, ns.StationarySolver):
+        with pytest.raises(ValueError, match="spectral finite engine only"):
+            engine(t)
     with pytest.raises(TypeError, match="horizon.kind 'finite'"):
         ns.solve({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": {**d, "horizon": {"kind": "finite", "window": 1.0}}}}})
 

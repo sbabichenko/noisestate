@@ -13,6 +13,7 @@ def test_cpp_cascade_replica_reproduces_published_two_trader_solution():
     from cpp_cascade_replica import CppCascadeReplica
     ref = ns.read_json(os.path.join(HERE, "refs", "ch4_N24_L8_e0.2_r0_q1_g1_1.json"))
     d = two_trader(ns.read_yaml(os.path.join(HERE, "..", "examples", "ch4_kyle_back.yaml")))
+    d["params"]["rho"] = 0.0                                          # the reference is the undiscounted case (r0); the example ships with rho 0.5
     res = CppCascadeReplica(ns.Model.from_dict(d)).solve()
     c_ref = np.stack([np.array(ref["traders"][0]["c"][k][0]) for k in range(4)], axis=1)
     assert res.converged

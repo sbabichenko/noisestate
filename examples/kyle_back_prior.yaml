@@ -1,0 +1,34 @@
+# Kyle-Back market started from a prior: V ~ N(0, Sigma0) is drawn once at time 0-, the insider sees it at
+# once (the initial shock's loading 1 on its row), the market maker starts from the prior variance (no
+# loading on its row); the game ends at T (continuation: end).  Trader: maximise E int [D (V - P) -
+# eps D^2] dt; market maker: P = E[V | flow history] (myopic, competitive).  In Back (1992), where eps = 0
+# and the value is revealed by T, the price impact is lambda = sqrt(Sigma0) / sigma_Z at every date; here
+# lambda(0+) is the market maker's weight on the flow increment at age 0 at time 0+ (res.maps
+# ["market_maker"][0, 0] at the node t = 0, age 0), which approaches it as eps falls (see the README).
+#   noisestate solve examples/kyle_back_prior.yaml --plot prior.png
+name: kyle_back_prior
+params: {eps: 0.1, Sigma0: 1.0, sigma_Z: 1.0}
+channels: [wZ]
+states:
+  V: {drift: {}, noise: {}}           # the value: constant, drawn at time 0- (the initial shock below)
+agents:
+  market_maker:
+    controls: [P]
+    myopic: true
+    signals:
+      flow: {drift: {D1: 1.0}, noise: {wZ: sigma_Z}}
+    loss: [[1.0, P, P], [-2.0, P, V]]
+  trader1:
+    controls: [D1]
+    signals:
+      flow: {drift: {}, noise: {wZ: sigma_Z}}     # the order flow net of its own orders; V(0) is seen on it at once
+    loss: [[-1.0, D1, V], [1.0, D1, P], [eps, D1, D1]]
+horizon:
+  kind: transition
+  window: 2.0
+  nodes: 12
+  discount: 0.0
+  past:
+    initial:
+      - {name: v0, loads: {V: "sqrt(Sigma0)"}, rows: {trader1.flow: 1.0}}
+  continuation: end

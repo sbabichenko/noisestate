@@ -53,6 +53,7 @@ res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"} kernels of the first
 res.means["X"]               # mean of a state or control (targets, constant drifts, initial states; see Means): a
                              # constant (stationary) or the path on the time nodes res.means_t (finite; res.mean("X", t))
 res.cost_parts["player1"]    # {"variance", "mean"}: the two parts of res.costs["player1"]
+ns.transition("examples/ch3_two_player.yaml", new_model, T=6.0)   # a regime change from a stationary past (Transitions)
 ```
 
 ## The model file
@@ -160,6 +161,102 @@ refused with a `ValueError`.  On the stationary engine the continuation integral
 the window like the kernels' own, which is what `window_tail` reports; the flag says so when the
 means are nonzero.
 
+## Transitions
+
+A regime change: the game runs in one stationary equilibrium until time zero, its coefficients
+change, and the new equilibrium path is solved on [0, T].  What the new problem needs from the
+time before zero is a *past*: the dependence of the physical state and of every agent's
+information on the shocks that arrived before zero (each state's, control's and signal row's
+kernel as a function of shock age on the past's window L, the rows' noise loadings, the old
+constant means).  A past is given in three ways: a converged `StationaryResult` of the old
+model, the old model itself (a `Model`, dict or path, solved on the fly), or a list of initial
+shocks `[{"name": "v0", "loads": {V: sigma}, "rows": {"trader1.flow": 1.0}}]` (a value drawn
+once at time 0- from a given covariance, seen at once by the rows named: a prior on a state).
+Old and new must share the channels, the states, each agent's controls and signal rows by
+name; every coefficient, delay, loss and discount may change.
+
+```yaml
+horizon:
+  kind: transition
+  window: 6.0                          # the horizon T (at least the past's window L)
+  nodes: 12
+  past: {model: ch3_two_player.yaml}   # or an inline model, or initial: [{name, loads, rows}, ...]
+  continuation: stationary             # the new model's stationary equilibrium closes the game (or: end)
+  stationary: {nodes: 12}              # sizes that solve (its window is the past's)
+```
+
+```python
+res = ns.solve("examples/ch3_precision_change.yaml")        # the file form
+res = ns.solve(new_model, past=old_result, continuation="stationary")   # the keywords override the file's blocks
+res = ns.transition(old, new_model, T=6.0, nodes=12)        # solves old, new's stationary equilibrium and the transition
+res.past, res.stationary, res.settled, res.loss_path, res.excess_costs, res.belief_error("player2", "X")
+```
+
+The old shocks stay alive on a band of nodes with shock time s < 0 until age L, where every
+shock is forgotten (on both families: this is what makes the same-model identity exact); the
+new shocks live on today's triangle, whose nodes and order are untouched, so a solve with no
+past is the finite engine bit for bit.  With `continuation: stationary` (the default of kind
+`transition`) the new model's stationary equilibrium is solved first and every map is frozen at
+its stationary value on a buffer [T, T + L]; the first-order conditions of [0, T] integrate their
+continuation to T + L through it, so a transition that has settled by T - L solves the infinite
+problem exactly.  Two exact identities pin the construction: a model as its own past and
+continuation returns its stationary kernels on every node (Chapter 3 to 2e-9 at 16 nodes, its
+mean paths to 4.7e-10, the delayed Chapter 1 model to 2e-9 at 8 nodes, the two-firm market to
+2.3e-4 at 5 nodes, each at its grid's closed-loop floor), and a prior on the state of the
+one-agent discounted model reproduces the Kalman filter from P0 (cost to 1e-7, the belief
+error to 3.4e-6).  `continuation: end` ends the game at T instead (the maps within L of T, hence
+the kernels within about 3L of T, carry the end).  Two guards: `res.settled`, the largest relative
+distance of any map on [T - L, T] (and, with driven means, of the mean paths at T-) from the
+stationary ones, with the `settled` row flagging "TRANSITION NOT SETTLED by T - L: raise
+horizon.window" above `settled_tol` (1e-4, the closed loop's decay over a unit of t; on the
+Chapter 3 precision change 4.8e-4 at T = 6, 2.7e-6 at T = 9); and `res.representation_parts`,
+which says whether the resolution guard's error sits in the interior, on the band's collapsing
+tip, on the last window or on the buffer (the tip and the last window are geometry, not
+resolution).  The past's and the continuation's own window tails are echoed as rows.
+
+`ns.transition(old, new, T, nodes=12, **solve_kw)` solves the old regime (or takes its result),
+the new model's stationary equilibrium and the transition, starting from the new stationary
+maps (`start="stationary"`; `solve()` keeps `start="zero"`), and returns the result with
+`res.past` and `res.stationary` attached.  The result (`TransitionResult`, kind `transition`)
+carries the kernels on the band (`res.kernel(name)` with `res.grid.s < 0`, `res.evaluate(name, ch,
+t, s)` for s >= -L, an initial shock as a column named after it: `res.shocks`), `res.times` and
+`res.loss_path[agent]` (E[loss(t)] at every time node of [0, T] and the buffer, by row quadrature;
+its discounted integral over [0, T] is `res.costs`, which keeps its meaning), `res.excess_costs
+[agent]` = the discounted integral over [0, T] of E[loss(t)] minus the new stationary flow (the
+cost of the transition, finite at rho = 0), `res.old_flows` and `res.new_flows`, and
+`res.belief_error(agent, name)` (the variance of the agent's estimation error of a quantity at
+every time node: its kernel minus the projection on the agent's seen rows, one Gram per date).
+`res.cost_parts[agent]["continuation"]` is the buffer's cost, reported apart.  The means run on
+[0, T] from the past's constants (a per-state `initial` overrides) and are frozen at the new
+stationary means on the buffer.  `plot()` draws the kernels against the shock time from -L with
+the band shaded, a row of E[loss(t)] with the old and new flows as horizontal lines, a row of
+belief-error variances and the mean paths.  `to_dict()` adds the past's and the continuation's
+provenance (kind, model, parameters, window, nodes, costs, window tail; no kernels), `times`,
+`loss_path`, `excess_costs`, `old_flows`, `new_flows` and `settled`; `refine()` and `stability()`
+rebuild the engine with the same past and continuation.  `sweep(model, "horizon.window", [6, 9,
+12])` sweeps T with each point warm-started from the previous maps read on the new grid (the
+stationary maps beyond it: 8 evaluations against 21 at T = 9), and a sweep over a change size
+on a transition model solves the past once.
+
+Two examples: `examples/ch3_precision_change.yaml` (player1's precision 3 to 10, T = 6, 12
+nodes, 9 s: excess costs 0.0240 and 0.0286 over the new flows, E[loss(0+)] of player1 0.4351
+against the old flow 0.4290, the state's variance continuous at zero while the controls jump)
+and `examples/kyle_back_prior.yaml` (the Kyle-Back market started from a prior V ~ N(0, Sigma0),
+the insider seeing V at once, the market maker from the prior variance, the game ending at
+T = 2, trading cost eps = 0.1: the initial price impact lambda(0+) = 0.658872 at 8, 12 and 16
+nodes, the market maker's belief error falling monotonically from Sigma0 to 0.132 Sigma0 at T).
+No finite-horizon reference exists for the latter (`tests/refs` and the dissertation's numerics
+are stationary; Back's model has a terminal payoff outside the grammar), so it is pinned by node
+convergence and compared with Back's price impact at eps = 0, sqrt(Sigma0)/sigma_Z = 1: a sweep
+over eps at 12 nodes gives lambda(0+) = 0.614 (0.2), 0.659 (0.1), 0.683 (0.05), 0.692 (0.03), and
+0.697 and 0.700 at 0.02 and 0.01, where the fixed point no longer converges from the warm start
+(the revealed share of Sigma0 by T rises from 75% to 99%): rising toward Back's value, short of
+it at the eps where the solve still converges.  Open: the trader's second-order check reports a
+saddle with the prior column (smallest curvature -0.013 at eps 0.2, -0.078 at 0.1, at every node
+count) while the same finite-horizon market without a prior passes (+1e-5); the check ignores the
+initial-shock columns, and whether the negative direction is the discrete treatment of those
+columns or of the problem is not settled.
+
 ## Sweeps and interactive use
 
 ```python
@@ -217,7 +314,8 @@ each with its default and a one-line meaning: the outer fixed point (`anderson_m
 `cell_krylov_rtol` 1e-12, `cell_krylov_maxiter` 400, `cell_krylov_retry` 1000), the second-order check
 (`second_order_tol` 1e-4, `second_order_dense` 4000, `second_order_lanczos_tol` 1e-6,
 `second_order_lanczos_maxiter` 300), the means (`mean_rcond` 1e-12, `lead_weight_warn` 100) and the
-result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `settled_tol` 1e-4, `mean_zero` 1e-12, `refine_cost_tol`
+result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `settled_tol` 1e-4 for a transition's maps and means
+on [T - L, T] against the stationary ones, `mean_zero` 1e-12, `refine_cost_tol`
 1e-6, `refine_kernel_tol` 1e-5, `stability_k` 2, `stability_eps` 1e-6, `stability_tol` 1e-3,
 `stability_max_evaluations` 200, `stability_fallback` 30).  Pass `settings=Settings(second_order_tol=1e-3)`
 (or a dict of the fields to change) to `solve()`, `sweep(solver_kw=...)` or an engine's constructor;
@@ -292,6 +390,8 @@ uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
 | 1 | finite-horizon two-player game | `spec_ch1` (16 x 16 nodes, Tikhonov 1e-7) and the Chapter 1 grid solver (160 nodes, first order); `tests/test_ch1_refs.py` | converged at 12 nodes per side: cost 0.39690577, stable to 1e-11 to 20 nodes, and the cell scheme's Richardson pairs close on it as h^2 (0.396956 at 80/160 cells, 0.396918 at 160/320); the kernels at lags >= 0.1 agree with the references to their own error, 2e-3 to 4.9e-2 (the largest on a player's response to its own signal noise) for `spec_ch1` and 3e-3 to 3e-2 for the grid solver, which the package is closer to than `spec_ch1` is on every control kernel; near the diagonal `spec_ch1`'s own README reports weakly determined modes (0.35 apart below lag 0.1) and the cell scheme's Richardson limit agrees with the spectral engine to 2e-3; the dissertation's solvers put the cost 3e-4 lower (`spec_ch1` 0.39665; its README estimates the penalty's bias at +6e-4 on 0.39689-0.39690) |
 | finite, discounted | one agent, rho = 0.5 (and 0 as the control) on [0, 3] | closed form: discounted Riccati equation, Kalman filter, closed-loop impulse responses (`tests/test_finite_discount.py`) | cost within 2e-8 and kernels within 6e-5 at 12 nodes per side; the cell scheme's error halves from 48 to 96 cells and its Richardson pair is within 5e-4 |
 | means, stationary | one agent with a target, dX = (-a X + D) dt + dW; two agents with opposite targets and private signals | closed form ubar = theta a / (1 + r a (a + rho)); the open-loop and the closed-loop (coupled algebraic Riccati) Nash constants of the deterministic game (`tests/test_means.py`) | the windowed closed form to 3e-15, the exact one to the window's truncation e^{-(a + rho) L} (2.8e-8 at a = 1, rho = 0, L = 16); open-loop to 4e-8 at signal precision 1e-6, then monotone toward closed-loop, 0.5622 at precision 1000 against 0.5570 (open-loop 0.6667) |
+| transitions, same-model identities | Chapter 3, `examples/ch1_delayed_finite.yaml` (a control lag and a delayed row) and the two-firm Chapter 5 market, each as its own past and continuation (`tests/test_transition.py`, `tests/test_transition_means.py`) | the stationary kernels K(t - s) on every node of the strip, the band, the last window and the buffer included; the stationary means with a target | Chapter 3 to 2e-9 at 16 nodes (settled 7e-10; the loss path equal to the stationary flow to 7e-11, excess costs 5e-11, the mean paths to 4.7e-10), ch1_delayed to 2e-9 at 8 nodes, the two-firm market to 2.3e-4 at 5 nodes (its own closed-loop floor 1.4e-4 to 2.5e-4) |
+| transitions, prior start | the one-agent discounted model of `tests/test_finite_discount.py` with X(0) ~ N(0, P0), unobserved and observed at once (`tests/test_transition.py`, `tests/test_transition_result.py`) | the discounted Riccati gain with a Kalman filter from P(0) = P0 or 0, the closed-loop impulse responses, the error variance P(t) | cost within 1e-7 and kernels within 1e-5 at 16 nodes; `belief_error` equal to P(t) to 3.4e-6 on every time node, monotone from P0 = 0.8 to the stationary 0.5466 |
 | means, finite (Chapter 1 with targets) | the Chapter 1 game with targets b1 = 1, b2 = -1, T = 1, r = 0.1, precisions p1 = p2 = p (`examples/ch1_mean_sweep.py`) | the dissertation's spectral solver (`spec_ch1`, 12 x 16 nodes, Tikhonov 1e-7, its Dbar1(0) converged to 0.03%): Dbar1(0), Dbar1(T/2), Jbar1 at p = 0.1, 1, 10, 100, 1000 and the p = 10 paths (`tests/refs/ch1_mean_p10.txt`); the cell engine's Richardson pairs (40, 80) and (80, 160); the deterministic LQ closed form (Riccati, solve_ivp at rtol 1e-12) for one agent (`tests/test_means_finite.py`) | 12 nodes per side, converged to 2e-5 up to p = 100 (20 nodes at p = 1000): Dbar1(0) = 9.93670, 9.47573, 7.79470, 5.98010, 5.10638 against the reference's 9.93688, 9.47708, 7.79761, 5.98117, 5.11630 (1.9e-5, 1.4e-4, 3.7e-4, 1.8e-4, 1.9e-3), Dbar1(T/2) to 1.1e-5, 7.7e-5, 1.9e-4, 5.3e-4, 1.8e-3, Jbar1 (the reference's includes the target's constant b^2 T = 1) to 5.7e-5, 4.3e-4, 1.1e-3, 1.3e-3, 3.1e-3; the p = 10 path within 1.4e-2 of the reference at every t (1.9e-3 of Dbar1(0), the largest at t = 0.075), where the cell engine's Richardson limits close on the package's path as h^2 (4.8e-3 then 1.2e-3 at T/2) and not on the reference, and the reference's variance cost is off by the same order (9e-5 at p = 10, 2e-4 at 100, 1.1e-3 at 1000): the gaps are the reference's own error, and at p = 3000 the reference is under-resolved on the sharp kernels: 4.9827 against the package's 4.9163 (1.3e-2), which 20 to 32 nodes agree on to 1e-6 and whose gap to the closed-loop limit keeps the 1/sqrt(p) law the stationary test finds; one agent alone within 1e-11 of the Riccati paths and 1e-10 of the cost, with a target, an initial state, and discounted (two states as well); open-loop 10 (1 - t) to 6.5e-9 at precision 1e-8, then monotone toward the closed-loop 4.6469 |
 
 Kyle-Back with two traders: the reference grid solver (`kb_multi.py`), Richardson-
@@ -487,29 +587,21 @@ start may land on another.
 
 The finite engines start every state at its `initial` value (a known number, zero when
 not given, which moves the mean path only; with a past, a state without one starts at
-the past's constant mean, and `initial: 0` overrides it) and integrate flow losses only.  The spectral
-engine can start from a known past instead (`SpectralFiniteSolver(model, past=...)`,
-`solve(model, past=...)`): a converged stationary result or model of the regime before
-zero (the old shocks stay alive on a band of nodes with s < 0 until age L;
-`res.representation_parts` says whether the resolution guard's error sits in the
-interior, on the band's collapsing tip, on the last window or on the buffer), or a list of initial shocks `{"name", "loads": {state: coef}, "rows":
-{"agent.row": coef}}` (a value drawn once at t = 0- from a given covariance, seen at
-once by the rows named, so a prior on a state is one column of the world).  After T the
-game either ends (`continuation="end"`, the default: the maps within L of T, hence the
-kernels within about 3L of T, carry the end) or continues through the new model's
-stationary equilibrium (`continuation=` a converged stationary result of the model at
-the past's window, or `"stationary"` to solve it): every map is then frozen at the
-stationary one on a buffer [T, T + L], the first-order conditions integrate to T + L,
-a settled transition solves the infinite problem exactly (the same-model identity holds
-on every node: Chapter 3 to 2e-9 at 16 nodes, with a control lag and a delayed row to 2e-9 at
-8 nodes, the two-firm Chapter 5 market to 2.3e-4 at 5 nodes, each at its grid's closed-loop
-floor), `res.settled` measures how far the maps on [T - L, T] are from the
-stationary ones (the `settled` row, threshold `settled_tol` 1e-4: the closed loop's decay over a
-unit of t, 1e-2 on Chapter 3, not the grid's floor), and
-`res.cost_parts[agent]["continuation"]` reports the buffer's cost apart from
-`res.costs`, which stays the integral over [0, T].  With a past the map on a row observed
-with a delay is stored in raw age (zero below the delay; `map_convention` in the payload),
-and mean paths need the past's window to cover T and no continuation.  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
+the past's constant mean, and `initial: 0` overrides it) and integrate flow losses only.
+Transitions (see Transitions) run on the spectral finite engine only: the cell engine
+refuses a past, and a model of kind `transition` compiles to the spectral engine.  With
+a past the map on a row observed with a delay is stored in raw age (zero below the
+delay; `map_convention` in the payload); the mean paths with a stationary continuation
+are frozen at the new stationary means on the buffer, so their own settling by T is
+part of `res.settled`.  Leads with a past are rejected as on every finite horizon.  A
+transition with a delayed model is large: the band adds one L-triangle of pieces and
+every square above a diagonal is split, so `ch1_delayed_finite.yaml` as its own
+transition (T = 1.25, L = 1) has 56 pieces, and the two-firm Chapter 5 market at its
+shipped sizes (L = 6, tau = 0.5) has 11 000 nodes x 9 primaries, beyond the dense closed
+loop (it is validated at tau = 1, L = T = 2, 5 nodes).  The closure after T assumes the
+transition has settled by T - L; a short T gives a biased answer that only the `settled`
+row reports.  The second-order check ignores the initial-shock columns, and with a prior
+column it flags the Kyle-Back trader's best response as a saddle (Transitions).  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
 outside the grammar; a state with an empty `drift` and `noise` validates and is carried
 as its initial value.  The Chapter 4 example is the stationary variant, where V is a
 random walk on the window and the agents keep receiving V shocks.

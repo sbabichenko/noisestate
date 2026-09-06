@@ -499,6 +499,9 @@ class StationarySolver(EngineBase):
         """naive_observers: {agent: [observers]} lists agents whose strategies do NOT react to that agent's
         deviations (Chapter 6's naive observers); every other observer is privy and reacts through its map.
         settings: the tuning constants (noisestate.Settings, or a dict of its fields; the defaults when None)."""
+        if model.horizon.kind == "transition":
+            raise ValueError(f"horizon.kind 'transition' ({model.name!r}) runs on the spectral finite engine only "
+                             "(noisestate.solve routes it there; this engine has no past)")
         super().__init__(model, verbose, settings=settings, naive_observers=naive_observers)
         self.c = Compiled(model, settings=self.settings)
         self.naive_observers = naive_observers or {}

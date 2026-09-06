@@ -1,0 +1,32 @@
+# Chapter 3 tracking game, a change of regime: player1's signal precision rises from 3 (the stationary
+# example ch3_two_player.yaml, the past) to 10 at time zero.  The transition is solved on [0, 6] from the old
+# stationary equilibrium (its kernels on the shocks born before zero stay alive on a band until age L = 3)
+# and continued by the new model's stationary equilibrium, at which every map is frozen on a buffer [6, 9]:
+# res.loss_path is E[loss(t)], res.excess_costs the discounted cost of the transition over the new stationary
+# flow, res.settled how far the maps on [3, 6] are from the new stationary ones (2.7e-6 at T = 9; the 1e-4
+# guard fires at T = 6, where they sit at 4.8e-4: raise horizon.window to quiet it).
+#   noisestate solve examples/ch3_precision_change.yaml --plot change.png
+name: ch3_precision_change
+params: {p1: 10.0, p2: 10.0, r1: 1.0, r2: 1.0}
+channels: [w0, w1, w2]
+states:
+  X: {drift: {D1: 1.0, D2: 1.0}, noise: {w0: 1.0}}
+agents:
+  player1:
+    controls: [D1]
+    signals:
+      y1: {drift: {X: "sqrt(p1)"}, noise: {w1: 1.0}}
+    loss: [[0.5, X, X], ["0.5*r1", D1, D1]]
+  player2:
+    controls: [D2]
+    signals:
+      y2: {drift: {X: "sqrt(p2)"}, noise: {w2: 1.0}}
+    loss: [[0.5, X, X], ["0.5*r2", D2, D2]]
+horizon:
+  kind: transition
+  window: 6.0                         # the horizon T of the transition (the past's window L = 3 is the band's depth)
+  nodes: 12                           # per side of each piece of the strip
+  discount: 0.0
+  past: {model: ch3_two_player.yaml}  # the old regime, solved on the fly (a path relative to this file)
+  continuation: stationary            # the new model's stationary equilibrium closes the game after T
+  stationary: {nodes: 12}             # the continuation's stationary solve (its window is the past's)
