@@ -129,6 +129,9 @@ def gap_pass(S, maps: Dict[str, np.ndarray], lo: float, hi: float) -> Dict[str, 
     return gap_passes(S, maps, {"range": (lo, hi)})["range"]
 
 
+FLOOR_FALL = 4.0          # the march stops at the grid's floor when the gap falls by less than this per window
+
+
 def _unit_of(model: Model, L: float) -> float:
     """The march's unit: numerics.unit when given, else the smallest lag or delay, else the past's window L (a
     model without lags has no unit of its own; the strip is then cut at the multiples of T below L)."""
@@ -184,8 +187,11 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
     range of the `settled` diagnostic (the design note feared the handover at T would never be small; it is
     once the transient has passed: on Chapter 3 the explicit T = 9 solve settles at 2.7e-6, so the march stops at
     the smallest T whose explicit solve settles under the tolerance).  Stops when every agent's gap is under
-    `settle` or when T would pass max_window * L (default 8 windows): then res.settled keeps the last solve's
-    diagnostic, its flag when above settled_tol, and res.march_stop says "max_window".  res.march is the list
+    `settle`, when T would pass max_window * L (default 8 windows: res.march_stop "max_window"), or at the grid's
+    floor (two windows past the first, a gap that fell by less than FLOOR_FALL = 4 over the last window: a
+    transient falls by hundreds, the one-shot floor by nothing; res.march_stop "floor", the `settle floor` row
+    flags that the tolerance is below what the grid resolves, with the advice to raise numerics.nodes); in the
+    last two cases res.settled keeps the last solve's diagnostic and its flag when above settled_tol.  res.march is the list
     of rows {"T", "gap", "evaluations", "seconds", "monitor"} (T = 0 first, evaluations 0: the pass from the
     stationary rules on the first strip built, [0, L] by default, [0, step] with a step; transition_gap's is on
     the smallest strip), res.extra["window"] the T found.
@@ -237,11 +243,22 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
             break
         if max(gap.values()) <= settle:
             stop = "settled"; break
+        # the grid's floor: a transient falls by hundreds per window (625 then 990 on Chapter 3 at 12 nodes), the
+        # one-shot floor by nothing; two windows past the first, a fall below a factor of FLOOR_FALL is the floor
+        # (the tolerance is below what the grid resolves: res.march_stop "floor", the settle floor row flags it)
+        if len(rows) >= 4 and abs((rows[-1]["T"] - rows[-2]["T"]) - L) <= eps and abs((rows[-2]["T"] - rows[-3]["T"]) - L) <= eps \
+                and max(rows[-1]["gap"].values()) * FLOOR_FALL > max(rows[-2]["gap"].values()):
+            stop = "floor"; break
         if after(T) > Tmax + eps:
             stop = "max_window"; break
         prev = res; T = after(T)
     res.march = rows; res.march_stop = stop
     res.march_settle = float(settle)
+    # the excess cost's tail from the march's own gap sequence: the ratio of the last two gaps, a window apart (at
+    # the floor the gaps no longer measure the transient: the loss path's own decay, already in the result, stays)
+    if stop != "floor" and len(rows) >= 3 and abs((rows[-1]["T"] - rows[-2]["T"]) - L) <= eps:
+        factor = {a: rows[-1]["gap"][a] / rows[-2]["gap"][a] for a in rows[-1]["gap"] if rows[-2]["gap"][a] > 0}
+        S.excess_tail(res, factor=factor, source="march gaps")
     return res
 
 

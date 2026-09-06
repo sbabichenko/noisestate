@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The excess cost's tail past T, and the march's floor stop.**  `res.excess_windows[agent]` (the excess's discounted
+  integral per window, the last window first), `res.excess_costs_tail` (the last window's excess times r / (1 - r),
+  the factor r per window from the loss path's decay over the last two windows or from the march's last two gaps),
+  `res.excess_costs_total` and `res.excess_tail` (source, factors, windows), in the payload and the summary.  On
+  Chapter 3's 3 -> 10 at 12 nodes the excess per window falls by about 4000 per window (2.40e-2, 5.85e-6, the floor),
+  so the untailed value (0.0240215, 0.0240273, 0.0240273 at T = 3, 6, 9) is converged by T = 6 to 1e-9 and the tail is
+  below the floor (1.4e-9 at T = 6, -1e-12 at T = 9).  The march stops at the grid's one-shot floor (two windows past
+  the first, a gap that fell by less than a factor of 4 over a window: a transient falls by hundreds) with
+  `march_stop = "floor"` and a `settle floor` row flagging SETTLE BELOW THE GRID'S FLOOR, advice raise numerics.nodes
+  (settle 1e-6 at 8 nodes: stopped at T = 12 after 1.8e-4, 1.8e-4); the default step is one window (see below).
 - **A transition horizon shorter than the past's window.**  The compile's refusal of T < L was an implementation
   artefact: for any T > 0 (a positive multiple of the unit) the strip is the rectangle [0, T] x [0, L], the new shocks
   below the diagonal, the old ones above it, the buffer [T, T + L] closing it as before.  `TriangleGrid` marks the

@@ -32,6 +32,7 @@ pins (the seconds are at four BLAS threads):
 | test_transition_api.py::test_settle_march_finds_the_window_and_equals_the_explicit_solve | the settle march on 3 -> 10 at 12 nodes: T = 3, 6, 9, the gap sequence and its factors, the window found, the maps against the explicit solve at T = 9 (the 6-node march with settle 5e-3 stays fast) | 40 |
 | test_transition_api.py::test_settle_march_equals_the_explicit_solve_at_a_tight_tol | the march's maps against the explicit solve's at tol 1e-11 (3e-11) | 55 |
 | test_transition_api.py::test_settle_march_by_unit_steps | step=1 with unit 1 visits T = 1, 2, 3 at 6 nodes; the default step is one window | 10 |
+| test_transition_api.py::test_excess_cost_sequences_over_the_march_windows | the excess-cost sequences at 12 nodes over T = 3, 6, 15 and the march's gap-factor tail (the 6-node mechanics stay fast) | 30 |
 | test_transition_result.py::test_same_model_loss_path_is_the_stationary_flow | the loss path of a same-model transition is the flow to 1e-9 at 16 nodes (the regime change's path stays fast) | 9 |
 | test_unit_range_finite.py::test_unit_range_below_the_window_coarsens_the_grid_within_the_measured_cost | unit_range 0.5 on window 2: the cuts, N 525 for 900, costs to 5e-5 (the default's bit identity and the transition stay fast) | 8 |
 

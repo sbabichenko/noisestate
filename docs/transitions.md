@@ -90,7 +90,26 @@ evaluations and the warm start no longer saves).  Unit steps below the first win
 T = 1, 2, 3 first (16, 13, 13 evaluations; gaps 0.575, 0.576, 0.577): the monitor's window [0, T] still holds the
 initial transient, so they can only stop a march whose T = 0 gap is already small, and on the unit-cut strip they are
 dear (3024 nodes at T = 1 against 576 at T = 3: 155 s and 213 s for the first two steps at 12 nodes against 4 s per
-window step), which is what the next stage's panel reuse is for; hence the default of one window.  Not built yet (the next stage): reuse of the panels, path factors and
+window step), which is what the next stage's panel reuse is for; hence the default of one window.  A tolerance below
+the grid's one-shot floor (3.7e-3 at 6 nodes, 1.8e-4 at 8, 3.8e-6 at 12 on Chapter 3) can never be met: the march
+detects the floor, two windows past the first, as a gap that fell by less than a factor of 4 over the last window (a
+transient falls by hundreds) and stops with `res.march_stop = "floor"`, `settled` as measured and the `settle floor`
+row flagging SETTLE BELOW THE GRID'S FLOOR with the advice to raise `numerics.nodes` (settle 1e-6 at 8 nodes: T = 3, 6,
+9, 12 with gaps 0.58, 1.5e-3, 1.8e-4, 1.8e-4, stopped at T = 12).
+
+The excess cost's tail.  `res.excess_costs` integrates over [0, T]; `res.excess_windows[agent]` are the discounted
+integrals of the excess loss over the windows [T - L, T], [T - 2L, T - L], ... (the last window first; they sum to
+`excess_costs`), and the piece past T, which decays at the closed-loop rate, is extrapolated as the last window's
+excess times r / (1 - r), the geometric sum of the windows to come, with the factor r per window read from the loss
+path's own decay over the last two windows (an explicit solve) or from the march's last two gaps (a march):
+`res.excess_costs_tail[agent]`, `res.excess_costs_total = excess_costs + tail`, `res.excess_tail` (the source, the
+factors, the windows), all in the payload and the summary; an agent whose factor is not in (0, 1) (a single window, a
+sign change at the floor) gets no tail, and a march stopped at the floor keeps the loss path's.  On Chapter 3's
+3 -> 10 at 12 nodes the excess per window falls by about 4000 per window, faster than the maps' gap (2.40e-2, 5.85e-6,
+then the floor at 1e-9 for player1), so the untailed value 0.0240215, 0.0240273, 0.0240273 at T = 3, 6, 9 (player2
+0.0286135, 0.0286190, 0.0286190) is converged by T = 6 to 1e-9 and the tail is below the floor (1.4e-9 at T = 6 from
+the loss path's factor 2.4e-4, -1e-12 at T = 9 from the march's gap factor 1.0e-3): the number is stable one window
+earlier than the strategies, as the design note expected, and at T = 3 no rate exists yet.  Not built yet (the next stage): reuse of the panels, path factors and
 preconditioner blocks across steps.
 
 `ns.transition(old, new, T, nodes=12, **solve_kw)` solves the old regime (or takes its result),

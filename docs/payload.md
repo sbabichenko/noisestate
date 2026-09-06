@@ -61,6 +61,10 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `march` | array (optional) | the settle march's rows `{T, gap, gap_last, evaluations, seconds, monitor}` (T = 0 first: the pass from the stationary rules) |
 | `march_stop` | string or null (optional) | `settled`, `settled at T = 0` or `max_window` (the settled flag then stays) |
 | `march_settle` | number or null (optional) | the march's tolerance |
+| `excess_windows` | map of list of number (optional) | per agent: the excess's discounted integral per window, the last window [T - L, T] first |
+| `excess_costs_tail` | map of number (optional) | per agent: the tail past T, the last window's excess times r / (1 - r) (agents with no factor in (0, 1) are absent) |
+| `excess_costs_total` | map of number (optional) | per agent: `excess_costs` + `excess_costs_tail` |
+| `excess_tail` | object (optional) | `{source: "loss path" | "march gaps", factor: {agent: r per window}, windows: [[lo, hi], ...]}` |
 
 ## Provenance and shapes
 

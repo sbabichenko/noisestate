@@ -134,6 +134,52 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 res.loss_path[a.name] = self.loss_path(a, res.world, res.means)
                 if self.c.cont is not None:
                     res.excess_costs[a.name] = float(self.c.time_mass(self.c.rho) @ (res.loss_path[a.name] - self.c.cont.costs[a.name]))
+            if self.c.cont is not None:
+                self.excess_tail(res)
+
+    # ------------------------------------------------ the excess cost's tail past T
+    def window_masses(self):
+        """[(lo, hi, w)] from the last window [T - L, T] back to time zero: the weights w (Nt,) of the discounted
+        integral over each window of a path on the time nodes (time_mass restricted to the window's panels;
+        a panel's shared end node counted once).  Stops early, with the windows it has, at a window edge that
+        is not a panel edge."""
+        c = self.c; g = c.g; L = g.L; T = c.T
+        w = c.time_mass(c.rho); tm = c.tm; side = c.tm_side
+        eps = 1e-9 * max(1.0, c.Tg); out = []; hi = T
+        while hi > eps:
+            lo = max(hi - L, 0.0)
+            if not np.any(np.abs(g.bp - lo) <= eps):
+                break
+            sel = ((tm > lo + eps) | ((np.abs(tm - lo) <= eps) & (side > 0))) & ((tm < hi - eps) | ((np.abs(tm - hi) <= eps) & (side < 0)))
+            out.append((lo, hi, w * sel)); hi = lo
+        return out
+
+    def excess_tail(self, res, factor: Optional[Dict[str, float]] = None, source: str = "loss path") -> None:
+        """The excess cost's tail past T, extrapolated at the closed-loop rate: res.excess_windows[agent], the
+        discounted integrals of E[loss(t)] minus the new stationary flow over the windows [T - L, T],
+        [T - 2L, T - L], ... (the last window first); the factor r per window, per agent, from the decay of the
+        loss path itself over the last two windows (E_last / E_prev, the default) or given (the march's gap
+        ratio, `factor`); with 0 < r < 1 the tail is E_last r / (1 - r) (the geometric sum of the windows past
+        T), res.excess_costs_tail[agent], and res.excess_costs_total = excess_costs + tail.  An agent whose
+        factor is not in (0, 1) (a single window, a sign change, no decay yet) gets no tail; res.excess_tail
+        records the factors and their source."""
+        c = self.c
+        wins = self.window_masses()
+        factors: Dict[str, float] = {}
+        res.excess_costs_tail = {}; res.excess_costs_total = {}
+        for a in self.model.agents:
+            E = [float(w @ (res.loss_path[a.name] - c.cont.costs[a.name])) for (_, _, w) in wins]
+            res.excess_windows[a.name] = E
+            r = None
+            if factor is not None:
+                r = factor.get(a.name)
+            elif len(E) >= 2 and E[1] != 0.0:
+                r = E[0] / E[1]
+            if r is not None and 0.0 < r < 1.0 and E:
+                factors[a.name] = float(r)
+                res.excess_costs_tail[a.name] = float(E[0] * r / (1.0 - r))
+                res.excess_costs_total[a.name] = float(res.excess_costs[a.name] + res.excess_costs_tail[a.name])
+        res.excess_tail = {"source": source, "factor": factors, "windows": [(float(lo), float(hi)) for (lo, hi, _) in wins]}
 
     # ------------------------------------------------ the transition's paths
     def _atoms(self, agent: Agent, Z: np.ndarray) -> np.ndarray:

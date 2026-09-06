@@ -324,3 +324,60 @@ def test_settle_march_by_unit_steps(regime):
     assert all(0.5 < max(r["gap"].values()) < 0.7 for r in units.march)
     assert units.march[0]["monitor"] == "[0, 1] from the stationary rules"
     assert [r["T"] for r in ns.transition(old, new, settle=1e-4, max_window=1, numerics={"nodes": 6, "unit": 1.0}).march] == [0.0, 3.0]
+
+
+def test_excess_cost_tail_and_the_floor_stop(regime):
+    """The excess cost's tail past T: res.excess_windows[agent] are the discounted integrals of the excess loss
+    over [T - L, T], [T - 2L, T - L], ... (they sum to res.excess_costs); the factor per window comes from the
+    loss path's own decay over the last two windows (an explicit solve) or from the march's last two gaps, and
+    the tail is E_last r / (1 - r), res.excess_costs_total the sum.  Chapter 3, 3 -> 10 at 6 nodes: the
+    explicit T = 6 solve's second window sits at the coarse grid's floor (-1.6e-4 against 2.2e-2; at 12 nodes
+    it is 5.85e-6, the slow test), so it has no loss-path factor and no tail, and neither has a single window
+    (T = 3); the march (settle 5e-3, T = 3 then 6) has the gap factor and the tail by the formula.  The floor
+    stop: settle 1e-6 at 8 nodes (the monitor's floor 1.8e-4) stops at T = 12 with res.march_stop "floor"
+    after the gap fell from 1.8e-4 to 1.8e-4 over a window, the `settle floor` row flags the tolerance as
+    below what the grid resolves, and the tail then comes from the loss path (none here: the floor)."""
+    old = regime["old"]; new = regime["m"].with_params(p1=10.0)
+    ex = ns.transition(old, new, T=6.0, numerics={"nodes": 6})
+    for a, E in ex.excess_windows.items():
+        assert len(E) == 2 and abs(sum(E) - ex.excess_costs[a]) < 1e-12 and E[1] > 0.02 and -1e-3 < E[0] < 0
+    assert ex.excess_tail == {"source": "loss path", "factor": {}, "windows": [(3.0, 6.0), (0.0, 3.0)]}
+    assert not ex.excess_costs_tail and not ex.excess_costs_total and "with the tail" not in ex.summary()
+    one = ns.transition(old, new, T=3.0, numerics={"nodes": 6}, continuation=ex.continuation)
+    assert all(len(E) == 1 and abs(E[0] - one.excess_costs[a]) < 1e-12 for a, E in one.excess_windows.items()) and not one.excess_costs_tail
+    d = ex.to_dict(); assert d["excess_tail"]["source"] == "loss path" and d["excess_costs_total"] == {} and len(d["excess_windows"]["player1"]) == 2
+    small = ns.transition(old, new, settle=5e-3, numerics={"nodes": 6}, continuation=ex.continuation)
+    assert small.excess_tail["source"] == "march gaps" and "with the tail past T" in small.summary()
+    for a in small.excess_costs:
+        r = small.march[2]["gap"][a] / small.march[1]["gap"][a]
+        assert 0 < r < 0.1 and abs(small.excess_tail["factor"][a] - r) < 1e-15
+        assert abs(small.excess_costs_tail[a] - small.excess_windows[a][0] * r / (1 - r)) < 1e-15
+        assert abs(small.excess_costs_total[a] - small.excess_costs[a] - small.excess_costs_tail[a]) < 1e-15
+    fl = ns.transition(old, new, settle=1e-6, numerics={"nodes": 8})
+    assert fl.march_stop == "floor" and fl.extra["window"] == 12.0 and [r["T"] for r in fl.march] == [0.0, 3.0, 6.0, 9.0, 12.0]
+    g = [max(r["gap"].values()) for r in fl.march]
+    assert g[3] < g[2] / 4 and g[4] > g[3] / 4 and 1e-4 < fl.settled < 3e-4
+    row = next(r for r in fl.diagnose() if r["name"] == "settle floor")
+    assert row["ok"] is False and "SETTLE BELOW THE GRID'S FLOOR" in row["flag"] and row["advice"] == "raise numerics.nodes" and "8 nodes" in row["flag"]
+    assert "SETTLE BELOW THE GRID'S FLOOR" in fl.summary() and fl.excess_tail["source"] == "loss path"
+    assert "settle floor" not in [r["name"] for r in ex.diagnose()]
+
+
+@slow()
+def test_excess_cost_sequences_over_the_march_windows(regime, marched):
+    """The excess-cost sequences on Chapter 3's 3 -> 10 at 12 nodes over the march's windows: untailed
+    res.excess_costs 0.0240215, 0.0240273, 0.0240273 (player1) and 0.0286135, 0.0286190, 0.0286190 (player2) at
+    T = 3, 6, 9; the excess per window falls by about 4000 per window (2.40e-2, 5.85e-6, then the floor at
+    1e-9), faster than the maps' gap (625 then 990), so the untailed value is converged by T = 6 to 1e-9 and the
+    tail is below the floor: 1.4e-9 at T = 6 from the loss path's factor 2.4e-4, -1e-12 at T = 9 from the
+    march's gap factor 1.0e-3 (a negative last window at the floor).  The total at T = 6 is within 1e-8 of the
+    T = 15 value, against the untailed T = 3 value's 5.8e-6."""
+    old = regime["old"]; new = regime["m"].with_params(p1=10.0); cont = marched.continuation
+    ex = {T: ns.transition(old, new, T=T, numerics={"nodes": 12}, continuation=cont) for T in (3.0, 6.0, 15.0)}
+    for a in ("player1", "player2"):
+        e3, e6, e15 = (ex[T].excess_costs[a] for T in (3.0, 6.0, 15.0))
+        assert 1e-6 < abs(e3 - e15) < 1e-5 and abs(e6 - e15) < 1e-8 and abs(ex[6.0].excess_costs_total[a] - e15) < 1e-8
+        E = ex[6.0].excess_windows[a]
+        assert 0.02 < E[1] < 0.03 and 1e-6 < E[0] < 1e-5 and 1e-4 < ex[6.0].excess_tail["factor"][a] < 1e-3 and ex[6.0].excess_costs_tail[a] < 1e-8
+        assert marched.excess_tail["source"] == "march gaps" and 1e-4 < marched.excess_tail["factor"][a] < 1e-2
+        assert abs(marched.excess_costs_tail[a]) < 1e-10 and abs(marched.excess_costs_total[a] - e15) < 3e-8
