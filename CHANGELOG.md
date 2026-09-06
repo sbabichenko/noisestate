@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **One mean layer.**  `mean_system`, `solve_means`, `mean_cost` and `_mean_part` are written once, in
+  `noisestate.means.MeanLayer` (a base of `EngineBase`), over seven mean hooks each engine fills in: the time
+  nodes of the mean paths, the mean state at time zero, whether anything drives the means, the mean dynamics
+  operator (the states' rows), the mean first-order-condition operator (each agent's rows), the loss atoms'
+  mean paths and the discounted quadrature weights.  The three engine copies are gone; the cell engine's mean
+  solve gains the rcond guard the other two had.  Means bit-identical on every shipped case; the finite mean
+  costs move by a summation order (4e-16 relative); the kernels untouched (baseline distance 0).
 - **API stage, D, F and G: the schema, one transition default, the CLI.**  `noisestate.schema("model" |
   "payload")` returns JSON Schema (draft 2020-12) for the model file (the `numerics:` block; the deprecated
   nested keys and `kind: finite_cells` marked `deprecated`) and for the payload (`payload_version` 1);

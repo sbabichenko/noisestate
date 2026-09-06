@@ -5,23 +5,20 @@ TimeLineOps is the compiled model's part (a mixin of SpectralCompiled, spectral_
 quadrature weights on the time nodes, the read of a kernel at age 0 on every time node, the one-dimensional
 Volterra operator of the mean dynamics and the read of a path at t - lag.  SpectralMeans is the solver's
 part (a mixin of SpectralFiniteSolver, finite_spectral.py): the mean system on the line s = 0 or on the time
-line, its solve, the loss atoms' mean paths, the mean part of the costs and the result's mean fields; its
-first-order conditions go through the FOC operators of spectral_operators.py (FocOps).  The stationary and
-cell engines carry their own copies (stationary.py, finite.py) until the mean layer is shared (step C5)."""
+line and the loss atoms' mean paths, the hooks of EngineBase's mean layer (engine.py: the assembly, the solve,
+the mean costs and the result's mean fields, shared by the three engines); its first-order conditions go
+through the FOC operators of spectral_operators.py (FocOps)."""
 from __future__ import annotations
 
 from typing import Dict, Optional
 
 from functools import cached_property
-import warnings
 
 import numpy as np
 from numpy.polynomial import legendre
-from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
 
 from . import finite_free
 from .grid import bary_rows
-from .settings import tunable
 from .spec import Agent
 
 
@@ -90,56 +87,90 @@ class TimeLineOps:
 
 
 class SpectralMeans:
-    """The mean system of SpectralFiniteSolver (mixed in), over the compiled model self.c (SpectralCompiled) and the
-    model self.model; EngineBase's _mean_part hook is filled in here."""
-    MEAN_RCOND = tunable("mean_rcond")          # a mean system whose reciprocal condition estimate is below this is singular (settings)
+    """The mean hooks of SpectralFiniteSolver (mixed in) for EngineBase's mean layer, over the compiled model
+    self.c (SpectralCompiled) and the model self.model.  A path is carried as a kernel constant in shock age
+    (mean_embed), on which the kernels' own operators restricted to the line s = 0 (the nodes `diag`: a kernel's
+    response to a shock at time 0) are the path's: a lagged read is the path at t - lag, zero before 0, the
+    Volterra propagation integrates from 0 and the continuation reads the path along s = 0.  On a strip cut at
+    age L below the horizon (a past's window shorter than T, or a stationary continuation, whose buffer follows
+    T) the line s = 0 does not reach T, and the system is built on the time line instead (line=True): the
+    dynamics by a one-dimensional Volterra operator, each control's condition on the line age = 0 (the birth of
+    a shock at t, its continuation running to t + L through the buffer's frozen maps), the paths on the buffer
+    frozen at the continuation's stationary means."""
 
-    def mean_system(self, maps: Dict[str, np.ndarray]):
-        """The linear system M zbar = b of the mean paths on the time nodes (states then controls, Nt values
-        each) under the strategies `maps`.  A path is carried as a kernel constant in shock age (mean_embed),
-        on which the kernels' own operators restricted to the line s = 0 (the nodes `diag`: a kernel's
-        response to a shock at time 0) are the path's: a lagged read is the path at t - lag, zero before 0,
-        the Volterra propagation integrates from 0 and the continuation reads the path along s = 0.  A
-        state's rows are its mean dynamics, xbar(t) = e^{At} x0 + int_0^t e^{A(t-r)} (inputs at their mean
-        paths + const) dr.  A control's rows are its owner's mean first-order condition at every time node:
-        the kernels' first-order condition (_foc_operators: the instantaneous derivative of 1/2 z'Qz + q'z in
-        the control, the discounted own lagged reads, the continuation int_t^T e^{-rho (t'-t)} R(t', t) g(t')
-        dt' through the passive-world impulse responses, the other agents answering through their
-        equilibrium kernels, the agent's own control passive) applied to the mean paths with no information
-        constraint (a deterministic path is common knowledge) and the targets q as the driver in place of
-        the shocks.  Linear in (q, x0, const): one direct solve, no iteration.
-        On a strip cut at age L below the horizon (a past's window shorter than T, or a stationary continuation,
-        whose buffer follows T) the line s = 0 does not reach T, and the system is built on the time line instead
-        (_mean_system_line): the dynamics by a one-dimensional Volterra operator, each control's condition on
-        the line age = 0 (the birth of a shock at t, its continuation running to t + L through the buffer's
-        frozen maps), the paths on the buffer frozen at the continuation's stationary means."""
+    def _mean_times(self) -> np.ndarray:
+        return self.c.tm
+
+    def _mean_weights(self) -> np.ndarray:
+        return self.c.time_mass(self.c.rho)
+
+    def _mean_driven(self) -> bool:
         c = self.c
-        if c.Nd < c.Nt:
-            return self._mean_system_line(maps)
-        return self._mean_system_diag(maps)
+        return (super()._mean_driven() or (c.past is not None and any(c.past.mean(n) for n in c.prim))
+                or (c.cont is not None and any(c.cont.means.get(n, 0.0) for n in c.prim)))
+
+    def _on_line(self, line: Optional[bool]) -> bool:
+        return self.c.Nd < self.c.Nt if line is None else line
 
     def _mean_system_diag(self, maps: Dict[str, np.ndarray]):
-        """mean_system on the line s = 0 (every time panel below the window): the kernels' operators restricted to
-        the nodes `diag` applied to the embedded paths."""
+        """mean_system on the line s = 0 (every time panel below the window)."""
+        return self.mean_system(maps, line=False)
+
+    def _mean_system_line(self, maps: Dict[str, np.ndarray]):
+        """mean_system on the time line (a strip cut at age L < T)."""
+        return self.mean_system(maps, line=True)
+
+    def _mean_dynamics(self, line: Optional[bool] = None):
+        """The states' rows, xbar(t) = e^{At} x0 + int_0^t e^{A(t-r)} (inputs at their mean paths + const) dr: on
+        the line s = 0 the kernels' state blocks restricted to the nodes `diag` applied to the embedded paths;
+        on the time line mean_volterra, a lagged input read before zero at the past's constant."""
         c = self.c; N, Nt, nP, nX = c.N, c.Nt, len(c.prim), c.nX
-        E, diag = c.mean_embed, c.diag
+        E = c.mean_embed
         blk = lambda i: slice(i * Nt, (i + 1) * Nt)
-        M = np.zeros((nP * Nt, nP * Nt)); b = np.zeros(nP * Nt); ones = np.ones(N)
-        x0 = self._mean_start()
-        if nX:
+        Mx = np.zeros((nX * Nt, nP * Nt)); bx = np.zeros(nX * Nt)
+        if not nX:
+            return Mx, bx, []
+        x0 = self._mean_start(); EA = c.expA(c.tm)
+        if not self._on_line(line):
+            diag = c.diag; ones = np.ones(N)
             for i in range(nX):
-                M[blk(i), blk(i)] = np.eye(Nt)
+                Mx[blk(i), blk(i)] = np.eye(Nt)
             for (i, p), B in c._state_blocks.items():
-                M[blk(i), blk(p)] -= B[diag] @ E
-            EA = c.expA(c.tm)
+                Mx[blk(i), blk(p)] -= B[diag] @ E
             for i in range(nX):
-                b[blk(i)] = EA[:, i, :] @ x0 + sum((c.const[j] * (c.Vol[i, j][diag] @ ones) for j in range(nX) if c.const[j]), 0.0)
+                bx[blk(i)] = EA[:, i, :] @ x0 + sum((c.const[j] * (c.Vol[i, j][diag] @ ones) for j in range(nX) if c.const[j]), 0.0)
                 for si, (nm, lag), coef in c.state_inputs:                  # lagged inputs read before zero: the old means
                     pre = self._mean_before(nm, lag)
                     if pre is not None:
-                        b[blk(i)] += coef * (c.Vol[i, si][diag] @ (E @ pre))
-        for a in self.model.agents:
-            atoms, Q, q = c.loss[a.name]
+                        bx[blk(i)] += coef * (c.Vol[i, si][diag] @ (E @ pre))
+        else:
+            V = c.mean_volterra; ones = np.ones(Nt)
+            for i in range(nX):
+                Mx[blk(i), blk(i)] = np.eye(Nt)
+                bx[blk(i)] = EA[:, i, :] @ x0 + sum((c.const[j] * (V[i, j] @ ones) for j in range(nX) if c.const[j]), 0.0)
+                for si, (nm, lag), coef in c.state_inputs:
+                    Mx[blk(i), blk(c.index[nm])] -= coef * (V[i, si] @ c.mean_read(lag))
+                    pre = self._mean_before(nm, lag)
+                    if pre is not None:
+                        bx[blk(i)] += coef * (V[i, si] @ pre)
+            self._freeze_buffer(Mx, bx, range(nX))
+        return Mx, bx, []
+
+    def _mean_conditions(self, agent: Agent, maps: Dict[str, np.ndarray], line: Optional[bool] = None):
+        """The agent's mean first-order condition at every time node, one block per control: the per-atom
+        operators of finite_free.FocOps (the instantaneous derivative, the discounted own lagged reads, the
+        continuation through the passive-world impulse responses) applied to the embedded mean paths and read
+        on the line s = 0 (diag), or on the time line read on the line age = 0 (mean_line0) with the mean of a
+        lagged atom the path at t - lag (mean_read; the strip's own read of a lagged kernel is zero below age
+        lag, which is right for a shock and wrong for a path) and the continuation to T + L (the envelope
+        responses: the agent's own reaction off on the buffer as well)."""
+        c = self.c; N, Nt, nP = c.N, c.Nt, len(c.prim); a = agent
+        E = c.mean_embed
+        blk = lambda i: slice(i * Nt, (i + 1) * Nt)
+        atoms, Q, q = c.loss[a.name]
+        Mu = np.zeros((len(a.controls) * Nt, nP * Nt)); bu = np.zeros(len(a.controls) * Nt)
+        if not self._on_line(line):
+            diag = c.diag; ones = np.ones(N)
             R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)[:, c.ncol:]
             R = self._impulse_responses(a, maps, R)
             foc = finite_free.FocOps(self, a, R)
@@ -150,69 +181,48 @@ class SpectralMeans:
                 if before is not None:
                     pre[i] = E @ before
                 bq[i] = q[i] * ones
-            for ui, u in enumerate(a.controls):
-                row = blk(c.index[u])
+            for ui in range(len(a.controls)):
                 for p in range(nP):                                         # the condition on primary p's embedded path
                     Zp = np.zeros((nP, N, Nt)); Zp[p] = E
-                    M[row, blk(p)] = foc.apply(ui, Zp)[diag]
-                b[row] = -foc.on_qzeta(ui, bq)[diag] - foc.foc(ui, pre)[diag]
-        return M, b
-
-    def _mean_system_line(self, maps: Dict[str, np.ndarray]):
-        """mean_system on the time line (a strip cut at age L < T).  The state rows are xbar(t) = e^{At} x0 +
-        int_0^t e^{A(t-r)} (inputs at their mean paths + const) dr through mean_volterra, a lagged input read
-        before zero at the past's constant.  A control's rows are its mean first-order condition at every time
-        node: the per-atom operators of finite_free.FocOps (the instantaneous derivative, the discounted own
-        lagged reads, the continuation through the passive-world impulse responses to T + L) applied to the
-        embedded mean of Q zeta + q and read on the line age = 0 (mean_line0), the mean of a lagged atom being
-        the path at t - lag (mean_read; the strip's own read of a lagged kernel is zero below age lag, which is
-        right for a shock and wrong for a path).  With a continuation the paths on the buffer's time nodes are
-        its stationary means (frozen, like the maps: the closure assumes the transition has settled by T)."""
-        c = self.c; Nt, nP, nX = c.Nt, len(c.prim), c.nX
-        E, S0 = c.mean_embed, c.mean_line0
-        blk = lambda i: slice(i * Nt, (i + 1) * Nt)
-        M = np.zeros((nP * Nt, nP * Nt)); b = np.zeros(nP * Nt); ones = np.ones(Nt)
-        x0 = self._mean_start()
+                    Mu[blk(ui), blk(p)] = foc.apply(ui, Zp)[diag]
+                bu[blk(ui)] = -foc.on_qzeta(ui, bq)[diag] - foc.foc(ui, pre)[diag]
+            return Mu, bu
+        S0 = c.mean_line0; ones = np.ones(Nt)
         reads = {}
         def read(lag):
             if lag not in reads:
                 reads[lag] = c.mean_read(lag)
             return reads[lag]
-        if nX:
-            V = c.mean_volterra; EA = c.expA(c.tm)
-            for i in range(nX):
-                M[blk(i), blk(i)] = np.eye(Nt)
-                b[blk(i)] = EA[:, i, :] @ x0 + sum((c.const[j] * (V[i, j] @ ones) for j in range(nX) if c.const[j]), 0.0)
-                for si, (nm, lag), coef in c.state_inputs:
-                    M[blk(i), blk(c.index[nm])] -= coef * (V[i, si] @ read(lag))
-                    pre = self._mean_before(nm, lag)
-                    if pre is not None:
-                        b[blk(i)] += coef * (V[i, si] @ pre)
-        for a in self.model.agents:
-            atoms, Q, q = c.loss[a.name]
-            # the envelope responses (best_response): the agent's own reaction off on the buffer as well
-            R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls, own_frozen=False)[:, c.ncol:]
-            R = self._impulse_responses(a, maps, R)
-            foc = finite_free.FocOps(self, a, R)
-            for ui, u in enumerate(a.controls):
-                row = blk(c.index[u])
-                for j in range(len(atoms)):
-                    bj = np.zeros((len(atoms), c.N, Nt)); bj[j] = E
-                    Oj = S0 @ foc.on_qzeta(ui, bj)                              # the condition's read of (Q zeta + q)_j's mean
-                    if q[j]:
-                        b[row] -= q[j] * (Oj @ ones)
-                    for i, (nm, lag) in enumerate(atoms):
-                        if Q[j, i]:
-                            M[row, blk(c.index[nm])] += Q[j, i] * (Oj @ read(lag))
-                            pre = self._mean_before(nm, lag)
-                            if pre is not None:
-                                b[row] -= Q[j, i] * (Oj @ pre)
-        if c.cont is not None:                                                  # the buffer: the new stationary means
-            frozen = np.arange(Nt) >= c.P_T * c.g.nt
-            for p, name in enumerate(c.prim):
-                idx = np.flatnonzero(frozen) + p * Nt
-                M[idx, :] = 0.0; M[idx, idx] = 1.0; b[idx] = float(c.cont.means.get(name, 0.0))
-        return M, b
+        R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls, own_frozen=False)[:, c.ncol:]
+        R = self._impulse_responses(a, maps, R)
+        foc = finite_free.FocOps(self, a, R)
+        for ui in range(len(a.controls)):
+            row = blk(ui)
+            for j in range(len(atoms)):
+                bj = np.zeros((len(atoms), N, Nt)); bj[j] = E
+                Oj = S0 @ foc.on_qzeta(ui, bj)                              # the condition's read of (Q zeta + q)_j's mean
+                if q[j]:
+                    bu[row] -= q[j] * (Oj @ ones)
+                for i, (nm, lag) in enumerate(atoms):
+                    if Q[j, i]:
+                        Mu[row, blk(c.index[nm])] += Q[j, i] * (Oj @ read(lag))
+                        pre = self._mean_before(nm, lag)
+                        if pre is not None:
+                            bu[row] -= Q[j, i] * (Oj @ pre)
+        self._freeze_buffer(Mu, bu, [c.index[u] for u in a.controls])
+        return Mu, bu
+
+    def _freeze_buffer(self, M: np.ndarray, b: np.ndarray, prims) -> None:
+        """On the time line with a continuation: the rows of the given primaries (in the order of M's row blocks)
+        on the buffer's time nodes are frozen at the continuation's stationary means (like the maps: the closure
+        assumes the transition has settled by T)."""
+        c = self.c; Nt = c.Nt
+        if c.cont is None:
+            return
+        frozen = np.flatnonzero(np.arange(Nt) >= c.P_T * c.g.nt)
+        for k, p in enumerate(prims):
+            rows = frozen + k * Nt; cols = frozen + p * Nt
+            M[rows, :] = 0.0; M[rows, cols] = 1.0; b[rows] = float(c.cont.means.get(c.prim[p], 0.0))
 
     def _mean_start(self) -> np.ndarray:
         """The mean state at time zero: the model's per-state `initial` where given (a given 0 overrides the past),
@@ -234,35 +244,13 @@ class SpectralMeans:
         tpanel = np.repeat(np.arange(g.P), g.nt)
         return np.where(g.bp[tpanel + 1] <= lag + 1e-12, c.past.mean(name), 0.0)
 
-    def solve_means(self, maps: Dict[str, np.ndarray]) -> np.ndarray:
-        """The mean paths of the primaries (states then controls, Nt values each) under `maps`: exactly zero,
-        with no solve, when nothing drives them (every q zero, no constant drift, no initial state); else
-        the direct solve of mean_system, refusing a singular system."""
-        c = self.c
-        driven = c.x0.any() or c.const.any() or any(q.any() for atoms, Q, q in c.loss.values())
-        if c.past is not None and any(c.past.mean(n) for n in c.prim):
-            driven = True
-        if c.cont is not None and any(c.cont.means.get(n, 0.0) for n in c.prim):
-            driven = True
-        if not driven:
-            return np.zeros(len(c.prim) * c.Nt)
-        M, b = self.mean_system(maps)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", LinAlgWarning)
-            lu, piv = lu_factor(M, check_finite=False)
-        gecon, = get_lapack_funcs(("gecon",), (lu,))
-        rcond = float(gecon(lu, np.linalg.norm(M, 1))[0])
-        if not rcond > self.MEAN_RCOND:
-            raise ValueError(f"the mean system is singular (reciprocal condition estimate {rcond:.1e}): a control's mean "
-                             "first-order condition is empty (no quadratic term in the control's current value); the kernels "
-                             "do not depend on the means, so the model solves without its targets, constant drifts and initial states")
-        return lu_solve((lu, piv), b, check_finite=False)
-
     def _mean_atoms(self, zbar: np.ndarray, atoms) -> np.ndarray:
         """The loss atoms' mean paths (m, Nt) from the primaries' paths: the kernels' atom operators on the embedded
         paths, read on the line s = 0 (a lagged atom is the path at t - lag, zero before 0)."""
         c = self.c; Nt = c.Nt
-        if c.Nd < Nt:                                     # the time line (see _mean_system_line): the path at t - lag
+        if not atoms:
+            return np.zeros((0, Nt))
+        if c.Nd < Nt:                                     # the time line (see _mean_conditions): the path at t - lag
             out = np.stack([c.mean_read(lag) @ zbar[c.index[nm] * Nt:(c.index[nm] + 1) * Nt] for (nm, lag) in atoms])
         else:
             Zm = np.concatenate([c.mean_embed @ zbar[p * Nt:(p + 1) * Nt] for p in range(len(c.prim))])
@@ -272,29 +260,3 @@ class SpectralMeans:
             if pre is not None:
                 out[i] += pre[:out.shape[1]]
         return out
-
-    def mean_cost(self, agent: Agent, zbar: np.ndarray) -> float:
-        """The mean part of the agent's discounted cost, int_0^T e^{-rho t} (1/2 zbar'Q zbar + q'zbar) dt over its
-        loss atoms at the mean paths `zbar` (the constant of a target, theta^2, is not in the model): spectral
-        quadrature on the time panels."""
-        atoms, Q, q = self.c.loss[agent.name]
-        zeta = self._mean_atoms(zbar, atoms); w = self.c.time_mass(self.c.rho)[:zeta.shape[1]]
-        return float(0.5 * np.einsum("it,ij,jt,t->", zeta, Q, zeta, w) + q @ (zeta @ w))
-
-    def _mean_part(self, res) -> None:
-        """res.means: the path on the time nodes res.means_t of every state, control and definition and of the
-        mean drift rate of every signal row ("agent.row", at the time of the observation, its delay not applied);
-        res.cost_parts and the mean part added to res.costs."""
-        c = self.c; m = self.model; Nt = c.Nt
-        zbar = self.solve_means(res.maps)
-        blk = lambda nm: slice(c.index[nm] * Nt, (c.index[nm] + 1) * Nt)
-        before = lambda nm, lag: (lambda pre: np.zeros(Nt) if pre is None else pre)(self._mean_before(nm, lag))
-        value = lambda expr: sum((coef * (c.mean_read(lag) @ zbar[blk(nm)] + before(nm, lag)) for (nm, lag), coef in expr.items()), np.zeros(Nt))
-        res.means = {name: zbar[blk(name)].copy() for name in c.prim}
-        res.means.update({d.name: value(m.expand({d.name: 1.0})) for d in m.definitions})
-        res.means.update({f"{a.name}.{r.name}": value(m.expand(r.drift)) for a in m.agents for r in a.signals})
-        res.means_t = c.tm.copy()
-        for a in m.agents:
-            mean = self.mean_cost(a, zbar)
-            res.cost_parts[a.name] = {"variance": res.costs[a.name], "mean": mean}
-            res.costs[a.name] += mean

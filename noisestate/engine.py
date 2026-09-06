@@ -16,6 +16,7 @@ import numpy as np
 import scipy.linalg as sla
 
 from .accel import solve_fixed_point
+from .means import MeanLayer
 from .settings import Settings, tunable
 from .spec import Agent, Model
 
@@ -34,7 +35,7 @@ def singular_system_message(name: str) -> str:
             "may be too ill-conditioned at this resolution (a very small control penalty, a long window)")
 
 
-class EngineBase:
+class EngineBase(MeanLayer):
     """The passive-world best response and the outer fixed point, written once against a small
     kernel algebra that each compiled model supplies and a set of hooks the engines fill in.
 
@@ -48,7 +49,7 @@ class EngineBase:
     a mask over map nodes is (nR N,) in (row, node) order.  The cell engine has its own layouts
     (Z (n_prim, N, ncol) per cell, maps (nU, nR, N, N)) and overrides best_response wholesale, so
     the base's best-response pieces (_seen_rows to _foc_system, _decompose, _second_order) never
-    see them; it uses the packing, the fixed point, _finish and the mean hook only.  The spectral
+    see them; it uses the packing, the fixed point, _finish and the mean layer only.  The spectral
     finite engine (finite_spectral.py) overrides best_response, _seen_rows, _representation_error and
     expected_cost with the operator form of finite_free.py on spectral_operators.py (the same pieces as
     applications of the line paths and sparse reads of its compiled model, spectral_compiled.py, whose
@@ -100,8 +101,20 @@ class EngineBase:
         interpolate_maps     a coarser result's maps on this grid [NotImplementedError] stationary, spectral
         maps_from_actions    raw maps reproducing action kernels in their world [abstract]  stationary, spectral
         expected_cost        variance part of an agent's cost from Z [abstract]        all three
-        _mean_part           means and the mean part of the costs [no-op]              all three
         _diagnostics         checks at the equilibrium [no-op]                         stationary, spectral
+
+    The mean layer (mean_system, solve_means, mean_cost, _mean_part: means.MeanLayer, a base of this class)
+    is the base's, over these mean hooks (Nt = 1 on the stationary engine, the time nodes on the finite ones;
+    nP primaries, states first):
+
+        hook                 returns                                                   overridden by
+        _mean_times          the time nodes (Nt,) of the mean paths [None: floats]     spectral, cells
+        _mean_start          the mean state at time zero (nX,) [c.x0]                  stationary (0), spectral (the past)
+        _mean_driven         whether anything moves the means [const, q, x0]           spectral (the past, the continuation)
+        _mean_dynamics       (Mx (nX Nt, nP Nt), bx (nX Nt,), pinned rows) [abstract]  all three
+        _mean_conditions     (Mu (nU Nt, nP Nt), bu (nU Nt,)) per agent [abstract]     all three
+        _mean_atoms          the loss atoms' mean paths (m, Nt) [the primaries']       spectral, cells
+        _mean_weights        discounted quadrature weights (Nt,) [1]                   spectral, cells
 
     Class attributes the engines set: RESULT (the result class), TOL / DAMPING / MAX_NEWTON (solve()
     defaults), ACTIONS (whether the engine can iterate on action kernels), SECOND_ORDER_QUADRATIC
@@ -836,14 +849,6 @@ class EngineBase:
         self._mean_part(res)
         if res.solve_kw.get("diagnostics", True) is not False:
             self._diagnostics(res)
-
-    def _mean_part(self, res) -> None:
-        """Hook (every engine overrides it): the means (targets, constant drifts, initial states) and the
-        mean part of every cost.  Receives the result with res.maps, res.Z and res.costs already holding the
-        variance part of every agent's cost; must fill res.means (name -> a float on the stationary engine, a
-        path over res.means_t on the finite engines, for every primary, definition and "agent.row" drift
-        rate), res.cost_parts[agent] = {"variance", "mean"} and add the mean part to res.costs[agent].  Part
-        of the answer, not a check: it runs with diagnostics=False too.  The default does nothing."""
 
     def _diagnostics(self, res) -> None:
         """Hook (stationary, spectral; the cell engine keeps the no-op): the checks at the equilibrium,

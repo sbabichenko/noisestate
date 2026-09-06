@@ -17,14 +17,15 @@ page says which module holds what, and follows one best response and one transit
 | `past.py` | 256 | `Past`: what the time before zero leaves behind (a stationary result's kernels on the past's age grid, or initial shocks) |
 | `settings.py` | 102 | `Settings`, the tuning constants; `tunable` binds a class attribute to one of them |
 | `accel.py` | 156 | the Anderson-accelerated fixed point and the Newton-Krylov polish on the best-response map |
-| `engine.py` | 882 | `EngineBase`: the packing of the tie representatives, the passive world and passive rows, the base best response on the kernel algebra (the stationary engine's), the fixed point (`solve`), `_finish`, the second-order check's Lanczos, the hooks; its class docstring lists the kernel algebra and which engine overrides which hook |
-| `stationary.py` | 817 | the stationary engine: `Compiled` (the kernel algebra on the age grid, the closed loop, its cyclic-symmetric reduction) and `StationarySolver` |
-| `finite.py` | 425 | the uniform-cell finite-horizon engine `FiniteSolver`, first order in the cell, kept as a cross-check |
+| `engine.py` | 887 | `EngineBase`: the packing of the tie representatives, the passive world and passive rows, the base best response on the kernel algebra (the stationary engine's), the fixed point (`solve`), `_finish`, the second-order check's Lanczos, the hooks; its class docstring lists the kernel algebra and which engine overrides which hook |
+| `means.py` | 162 | `MeanLayer`, a base of `EngineBase`: the mean system assembled from the engines' mean hooks, its solve with the rcond guard, the mean cost quadrature and the result's mean fields |
+| `stationary.py` | 774 | the stationary engine: `Compiled` (the kernel algebra on the age grid, the closed loop, its cyclic-symmetric reduction) and `StationarySolver` |
+| `finite.py` | 406 | the uniform-cell finite-horizon engine `FiniteSolver`, first order in the cell, kept as a cross-check |
 | `spectral_compiled.py` | 863 | `SpectralCompiled`: the breakpoint sequence and its closure under the lags (or the unit panels within `unit_range`), the grid, the past's and the buffer's wiring, the reads and node-to-node shifts (dense and CSR), the line paths, the initial shocks' discrete weights, the masses |
 | `closed_loop.py` | 212 | `ClosedLoopSources` (the Volterra rows, the states' forcing columns, a control's convolution rows; mixed into `SpectralCompiled`) and `ClosedLoopRows`, the assembly of (I - M) Z = B one time panel at a time and its forward substitution |
 | `spectral_operators.py` | 479 | the best-response operators as applications of the line paths and the sparse reads: `PathOp`, `RowOps` (G_k), `ProjOps` (H_k), `RespOps` (Resp_u), `FocOps` (Fu_u), `PanelRows` (the rows of G_k one time panel at a time); each with `dense()` |
 | `finite_free.py` | 463 | `FocSystem` (the first-order conditions on the kept unknowns: assembled and factored within `foc_dense_max`, GMRES with the time-row preconditioner beyond), `best_response`, the decomposition and the second-order form, `reconstruction`, `panel_rows` |
-| `spectral_means.py` | 300 | the means on the time line: `TimeLineOps` (the compiled model's time-node operators) and `SpectralMeans` (the solver's mean system and mean costs), both mixins |
+| `spectral_means.py` | 262 | the means on the time line: `TimeLineOps` (the compiled model's time-node operators) and `SpectralMeans` (the spectral engine's mean hooks: the mean dynamics and conditions on the line s = 0 or on the time line, the atoms' mean paths), both mixins |
 | `finite_spectral.py` | 552 | `SpectralFiniteSolver`: the options (a past, a continuation), the shapes, the identified unknowns and corner ties, `maps_from_world` (the projection, one system per time row), the costs, `loss_path`, `belief_error`, `settled`, the warm starts, the diagnostics hooks |
 | `results.py` | 795 | `StationaryResult`, `TriangleResult`, `TransitionResult`: one interface over three grids, `check`, `refine`, `stability`, the plots |
 | `symmetry.py` | 154 | the cyclic symmetry of a tied model, found from the ties and verified on the expanded model |
@@ -63,9 +64,9 @@ evaluation calls `SpectralFiniteSolver.best_response`, which is `finite_free.bes
    wedge), the second-order form on the operators (`_second_order`, dense within `second_order_dense`, Lanczos
    beyond) and the representation error (`reconstruction` against the actions, located by region).
 
-The means (`spectral_means.py`) are solved once at the end, in `_mean_part`: one linear system on the time
-nodes from every control's mean first-order condition (`FocOps.on_qzeta` on the embedded paths) and the mean
-dynamics.
+The means (`spectral_means.py`, the hooks of `EngineBase`'s mean layer) are solved once at the end, in
+`_mean_part`: one linear system on the time nodes from every control's mean first-order condition
+(`FocOps.on_qzeta` on the embedded paths) and the mean dynamics.
 
 ## One transition
 
@@ -96,5 +97,12 @@ lists, the second-order check's Lanczos, the singular-system message and the hoo
 engine uses the base best response on its `Compiled`'s kernel algebra; the spectral finite engine overrides
 `best_response`, `_seen_rows`, `_representation_error` and `expected_cost` with the operator form and supplies
 `closed_loop`, `block` and `atom_op` only; the cell engine overrides `best_response` wholesale and uses the
-packing, the fixed point, `_finish` and the mean hook.  Each engine still carries its own mean layer
-(`mean_system`, `solve_means`, `mean_cost`); sharing it is the next consolidation step.
+packing, the fixed point, `_finish` and the mean layer.  The mean layer (`mean_system`, `solve_means`,
+`mean_cost`, `_mean_part`; `means.MeanLayer`, a base of `EngineBase`) is the base's as well, over seven mean hooks the engines fill in: the time nodes of
+the mean paths, the mean state at time zero, whether anything drives the means, the mean dynamics operator
+(the states' rows: a matrix on the stationary engine, a Volterra operator on the time line for the finite
+ones), the mean first-order-condition operator (each agent's rows: the instantaneous derivative plus the
+discounted continuation through the passive-world impulse responses, the DC gain on the stationary engine),
+the loss atoms' mean paths and the discounted quadrature weights of the mean cost.  The base assembles the
+joint (xbar, ubar) system, solves it with the rcond guard and fills `res.means`, `res.means_t` and
+`res.cost_parts`.
