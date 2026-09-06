@@ -72,7 +72,7 @@ def compile_structure(model: Model) -> Structure:
         for ch, c in s.noise.items():
             sigma[i, channels.index(ch)] = c
     const = np.array([model.constant(s.drift) for s in model.states], dtype=float)
-    x0 = np.array([s.initial for s in model.states], dtype=float)
+    x0 = np.array([s.initial or 0.0 for s in model.states], dtype=float)
     rows = {}
     for a in model.agents:
         rr = []

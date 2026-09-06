@@ -485,13 +485,15 @@ the action-kernel path is the default and the more accurate one.  A game can hav
 several equilibria: `ties` selects the symmetric one, an untied solve from a zero
 start may land on another.
 
-The finite engines start every state at its `initial` value (a known number, zero by
-default, which moves the mean path only) and integrate flow losses only.  The spectral
+The finite engines start every state at its `initial` value (a known number, zero when
+not given, which moves the mean path only; with a past, a state without one starts at
+the past's constant mean, and `initial: 0` overrides it) and integrate flow losses only.  The spectral
 engine can start from a known past instead (`SpectralFiniteSolver(model, past=...)`,
 `solve(model, past=...)`): a converged stationary result or model of the regime before
 zero (the old shocks stay alive on a band of nodes with s < 0 until age L; the game
 still ends at T, and the maps within L of T, hence the kernels within about 3L of T,
-carry the end), or a list of initial shocks `{"name", "loads": {state: coef}, "rows":
+carry the end; `res.representation_parts` says whether the resolution guard's error sits
+in the interior, on the band's collapsing tip or on the last window), or a list of initial shocks `{"name", "loads": {state: coef}, "rows":
 {"agent.row": coef}}` (a value drawn once at t = 0- from a given covariance, seen at
 once by the rows named, so a prior on a state is one column of the world).  A past with
 a window needs rows without observation delays, and mean paths need the past's window to

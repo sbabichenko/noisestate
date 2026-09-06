@@ -137,7 +137,8 @@ class State:
     name: str
     drift: Dict[str, float] = field(default_factory=dict)   # linear in atoms (states, controls, defs, lags)
     noise: Dict[str, float] = field(default_factory=dict)   # channel -> loading (sigma row)
-    initial: float = 0.0                                    # value at t = 0 (finite horizon; it moves the means only)
+    initial: Optional[float] = None                         # value at t = 0 (finite horizon; it moves the means only); None: not
+                                                            # given (zero, or with a past the past's constant mean)
 
 
 @dataclass
@@ -241,7 +242,7 @@ class Model:
     def means_driven(self) -> bool:
         """Whether anything moves the means: a linear loss term, a constant in a state's drift, an initial state."""
         return (any(len(t) == 2 for a in self.agents for t in a.loss) or any(self.constant(s.drift) != 0 for s in self.states)
-                or any(s.initial != 0 for s in self.states))
+                or any(s.initial for s in self.states))
 
     def all_lags(self) -> List[float]:
         """Every distinct positive lag or observation delay in the model."""
@@ -291,7 +292,7 @@ class Model:
                 # a private state is compared by its dynamics: drift (canonicalised, with its constant) and noise loadings
                 s = states[name]
                 drift = canon(self.expand(s.drift), depth + 1) if depth < 3 else "..."
-                return "private_state:" + repr((drift, round(self.constant(s.drift), 9), round(s.initial, 9),
+                return "private_state:" + repr((drift, round(self.constant(s.drift), 9), round(s.initial or 0.0, 9),
                                                 tuple(sorted(round(v, 9) for v in s.noise.values()))))
             return "state:" + name
 
@@ -335,7 +336,7 @@ class Model:
             k = self.constant(s.drift)
             if k != 0:
                 out.append(f"state {s.name}: the constant drift {k:g} moves only the means (the kernels do not depend on it)" + self._means_note())
-            if s.initial != 0:
+            if s.initial:
                 out.append(f"state {s.name}: the initial value {s.initial:g} moves only the means (the kernels do not depend on it)" + self._means_note())
         if self.horizon.kind == "stationary" and self.means_driven:
             walks = [s.name for s in self.states if not self.expand(s.drift) and self.constant(s.drift) == 0]
@@ -396,9 +397,9 @@ class Model:
             for (n, l) in self.expand(s.drift):
                 if l < 0:
                     raise ValueError(f"state {s.name}: its drift depends on the future value {n}@{l}; drifts must be causal")
-            if isinstance(s.initial, bool) or not isinstance(s.initial, (int, float)) or not math.isfinite(s.initial):
+            if s.initial is not None and (isinstance(s.initial, bool) or not isinstance(s.initial, (int, float)) or not math.isfinite(s.initial)):
                 raise ValueError(f"state {s.name}: initial must be a finite number, got {s.initial!r}")
-            if s.initial != 0 and self.horizon.kind == "stationary":
+            if s.initial and self.horizon.kind == "stationary":
                 raise ValueError(f"state {s.name}: an initial value ({s.initial:g}) has no meaning in a stationary model, which "
                                  "has no initial time; drop it, or solve a finite horizon")
 
@@ -612,7 +613,7 @@ class Model:
         def ex(e: Dict[str, float]) -> Dict[str, float]:
             return {atom(k): float(v) for k, v in e.items()}
         d = {"name": self.name, "channels": list(self.channels),
-             "states": {s.name: {"drift": ex(s.drift), "noise": ex(s.noise), **({"initial": float(s.initial)} if s.initial else {})}
+             "states": {s.name: {"drift": ex(s.drift), "noise": ex(s.noise), **({"initial": float(s.initial)} if s.initial is not None else {})}
                         for s in self.states},
              "definitions": {x.name: ex(x.expr) for x in self.definitions},
              "agents": {}, "ties": [list(g) for g in self.ties], "horizon": horizon}
@@ -683,7 +684,7 @@ class Model:
                           unit_range=eval_coef(hz["unit_range"], params) if hz.get("unit_range") is not None else None,
                           nodes=hz.get("nodes", 16))
         states = [State(name=k, drift=parse_expr(v.get("drift"), params), noise=parse_expr(v.get("noise"), params),
-                        initial=eval_coef(v.get("initial", 0.0), params))
+                        initial=eval_coef(v["initial"], params) if v.get("initial") is not None else None)
                   for k, v in (d.get("states") or {}).items()]
         defs = [Definition(name=k, expr=parse_expr(v, params)) for k, v in (d.get("definitions") or {}).items()]
         agents = []
@@ -728,8 +729,8 @@ class ModelBuilder:
     def channel(self, *names):
         self.d["channels"].extend(names); return self
 
-    def state(self, name, drift=None, noise=None, initial=0.0):
-        self.d["states"][name] = {"drift": drift or {}, "noise": noise or {}, **({"initial": initial} if initial else {})}; return self
+    def state(self, name, drift=None, noise=None, initial=None):
+        self.d["states"][name] = {"drift": drift or {}, "noise": noise or {}, **({"initial": initial} if initial is not None else {})}; return self
 
     def define(self, name, expr):
         self.d["definitions"][name] = expr; return self

@@ -54,6 +54,7 @@ class BaseResult:
     costs: Dict[str, float] = field(default_factory=dict)
     message: str = ""
     representation_error: Dict[str, float] = field(default_factory=dict)   # agent -> relative residual, see resolution_ok
+    representation_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> where it sits (transition: interior / band tip / last window)
     refinement: Optional[dict] = None          # filled by refine(): change of costs/kernels under a finer grid
     solver_class: object = None                # the engine that produced this result, with its options, so that
     solver_kw: dict = field(default_factory=dict)      # refine()/stability() rebuild the same solver
@@ -186,8 +187,14 @@ class BaseResult:
             row("diagnostics", None, None, None, "diagnostics skipped (solve(diagnostics=False): no second-order check, "
                 "first-order-condition decomposition or representation error)", "solve again with diagnostics=True")
         rep = max(self.representation_error.values()) if self.representation_error else None
+        where = {}                                   # a transition's error by region, the worst agent per region
+        for parts in self.representation_parts.values():
+            for k, v in parts.items():
+                where[k] = max(where.get(k, 0.0), float(v))
+        at = " (" + ", ".join(f"{k} {v:.1e}" for k, v in where.items()) + ")" if where else ""
         row("resolution", rep, self.RESOLUTION_TOL, self.resolution_ok,
-            f"UNDER-RESOLVED (representation error {rep:.1e}: raise horizon.nodes)" if rep is not None else "", "raise horizon.nodes")
+            f"UNDER-RESOLVED (representation error {rep:.1e}{at}: raise horizon.nodes" + ("; an error only on the band tip or the last "
+            "window is the geometry there, not the interior's resolution)" if where else ")") if rep is not None else "", "raise horizon.nodes")
         tail = getattr(self, "window_tail", None)
         if tail is not None:
             row("window", float(tail), self.WINDOW_TAIL_TOL, bool(tail <= self.WINDOW_TAIL_TOL),
@@ -328,6 +335,8 @@ class BaseResult:
                "means": {k: (v.tolist() if isinstance(v, np.ndarray) else float(v)) for k, v in self.means.items()},
                "means_t": None if self.means_t is None else self.means_t.tolist()}
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
+        if self.representation_parts:
+            out["representation_parts"] = {a: {k: float(v) for k, v in p.items()} for a, p in self.representation_parts.items()}
         out["diagnostics"] = [{k: (None if v is None else v) for k, v in d.items()} for d in self.diagnose()]
         out["resolution_ok"] = None if self.resolution_ok is None else bool(self.resolution_ok)
         out["cost_kind"] = self.cost_kind

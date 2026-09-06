@@ -44,10 +44,16 @@
   provenance in `to_dict()`.  Tests (`tests/test_transition.py`): a zero past is the finite engine
   bit for bit (Z, maps, costs, evaluations, the same cached grid); the Chapter 3 stationary
   equilibrium as its own past (L = 3, T = 12, 16 nodes) is reproduced on every node with
-  t < T - 3L to 1.4e-9 (state) and 1.2e-8 (controls), the end reaching back 3L, not L: the maps
-  within L of T carry the end, the FOC of every shock alive then (born after T - 2L) with them, and
-  the agent's own re-optimised end leaks further back through the forward-backward FOC system at
-  the closed-loop rate (4e-6 on [T - 3L, T - 2L), 1e-3 on the next window); the discounted
+  t < T - 3L to 1.4e-9 (state) and 1.2e-8 (controls); the 1e-8 floor at t -> 3 is the end effect
+  reaching back to T - 3L, not discretisation (at 24 nodes per side the interior corner drops to
+  9e-11 while t = 3 stays at 1.3e-8; the identity holds to 1e-10 for t <= 2.5).  The end reaches
+  back 3L, not L: the maps within L of T carry the end, the FOC of every shock alive then (born
+  after T - 2L) with them, and the agent's own re-optimised end leaks further back through the
+  forward-backward FOC system at the closed-loop rate (4e-6 on [T - 3L, T - 2L), 1e-3 on the next
+  window).  That fixed point runs under NOISESTATE_SLOW=1 (40 s from a coarse start); the fast
+  suite keeps its content in one evaluation: each agent's best response to the stationary maps
+  carried onto the strip (T = 12, 16 nodes) returns the projected map on the first window to 5e-10
+  and 1.2e-8, the band included, 1.5e-7 on the next, 1.2e-4 and 2.7e-4 on [6, 9); the discounted
   one-agent closed form with a prior N(0, P0) on the state, unobserved (a Kalman filter from
   P(0) = P0) and observed at once (P(0) = 0), on the cost and the kernels of the prior's column;
   the unobserved prior's column is sqrt(P0) times the state-noise channel's to round-off; a
@@ -56,6 +62,23 @@
   continuation beyond T (`settled`), a `transition` horizon kind in model files, plots and helpers,
   a past with a window on rows observed with a delay (`NotImplementedError`), and the second-order
   check ignores the initial-shock columns.  The shipped examples are unchanged to every digit.
+- Transition from a known past, review repairs.  A row's noise loading in the old regime on a channel
+  the new row does not load was dropped: the instantaneous entries of a seen row now exist on the
+  union of the two regimes' loadings (the old E on the band, the new one below the diagonal; tested
+  with a past whose y1 loads w2, which the new y1 does not: the closed loop at 0+ under the
+  stationary maps returns the old kernels on every channel to round-off).  The mean layer with a past
+  is pinned (Chapter 3 with a target -2 X for player1, T = L = 3, 12 nodes: Xbar(0) is the old mean
+  0.8662, Dbar1(0+) = 1.80019 against the old constant 1.79894, the controls vanish at T, the paths
+  within 8e-6 of their 16-node values).  `State.initial` is now None when not given (a given value,
+  zero included, is the model's; None with a past is the past's constant mean), so `initial: 0`
+  overrides a nonzero past mean; without a past nothing changes except that an explicit `initial: 0`
+  now round-trips through `to_dict()`.  The regime-change test pins its 12-node costs (2.56081481,
+  2.56540852, moving 2.4e-5 and 3.1e-5 at 20 nodes) at 1e-6.  The resolution guard of a transition
+  says where its error sits: `res.representation_parts[agent]` = {"interior", "band tip", "last
+  window"} (the band's tip is the upper triangle collapsing to the corner (L, L), the last window
+  [T - L, T]), the diagnose row's flag names the three (the threshold is unchanged): on the regime
+  change player2's 8.6e-4 is on the band tip (5.4e-4 at 16 nodes, the corner's floor), player1's
+  4.4e-5 the transient at 0+ (2.2e-6 at 16 nodes, resolution).
 
 - `noisestate.Settings`: the tuning constants (Anderson memory and iterations, the singular-system
   and mean-system condition thresholds, the projection ridges, the second-order tolerance and the

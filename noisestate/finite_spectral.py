@@ -341,7 +341,9 @@ class SpectralCompiled(CompiledBase):
                 op = c * (S @ self.read(l, l))
                 blocks[n] = blocks[n] + op if n in blocks else op
         for k, ch in enumerate(self.channels):
-            if E[k] != 0.0:
+            # with a past the entry exists on the union of the two regimes' loadings: an increment observed before
+            # zero carries the old E on the band (noise_weight), and a channel only the old row loaded is not dropped
+            if E[k] != 0.0 or (self.E_old is not None and self.E_old[agent][r][k] != 0.0):
                 deltas.setdefault(ch, []).append((delay, E[k]))
         return blocks, deltas
 
@@ -858,6 +860,7 @@ class SpectralFiniteSolver(EngineBase):
         self.c = SpectralCompiled(model, past=past)
         self.Nm = self.c.N + (self.c.Nt if self.c.n_init else 0)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.Nm) for a in model.agents}
+        self._rep_parts: Dict[str, Dict[str, float]] = {}      # agent -> where the representation error sits (with a past)
 
     @property
     def action_shapes(self) -> Dict[str, Tuple[int, int, int]]:
@@ -1284,13 +1287,23 @@ class SpectralFiniteSolver(EngineBase):
             return super()._representation_error(agent, Zfull, actions, g)
         rows, inst = self._seen_rows(agent, Zfull, set())
         Bk = self._row_operator(agent, rows, inst)
-        c = self.c; worst = 0.0
+        c = self.c; gr = c.g; worst = 0.0
+        # where the error sits: the band's tip (the upper triangle collapsing to the corner (L, L), where the
+        # map's pieces degenerate), the last window [T - L, T] (the end), or the interior, so that a resolution
+        # problem can be told from the two geometric floors
+        tip = gr.upper & (gr.t >= gr.bp[gr.PL - 1] - 1e-9) if gr.L is not None else np.zeros(c.N, dtype=bool)
+        last = ~gr.upper & (gr.t >= c.T - gr.L - 1e-9) if gr.L is not None else np.zeros(c.N, dtype=bool)
+        parts = {"interior": 0.0, "band tip": 0.0, "last window": 0.0}
         for ui in range(len(agent.controls)):
             recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(Bk.shape[0])], axis=1)
             err = np.abs(recon - actions[ui])
             err[:, c.nW:] = 0.0
             err[c.diag, c.nW:] = np.abs(recon - actions[ui])[c.diag, c.nW:]     # an initial shock's column: on the line s = 0 only
-            worst = max(worst, float(err.max() / max(1e-300, np.abs(actions[ui][:, :c.nW]).max(), np.abs(actions[ui][c.diag, c.nW:]).max(initial=0.0))))
+            rel = err.max(axis=1) / max(1e-300, np.abs(actions[ui][:, :c.nW]).max(), np.abs(actions[ui][c.diag, c.nW:]).max(initial=0.0))
+            worst = max(worst, float(rel.max()))
+            for key, sel in (("interior", ~tip & ~last), ("band tip", tip), ("last window", last)):
+                parts[key] = max(parts[key], float(rel[sel].max(initial=0.0)))
+        self._rep_parts[agent.name] = parts
         return worst
 
     # ------------------------------------------------------------ means
@@ -1352,14 +1365,14 @@ class SpectralFiniteSolver(EngineBase):
         return M, b
 
     def _mean_start(self) -> np.ndarray:
-        """The mean state at time zero: the model's per-state `initial` where given (nonzero), else the past's
-        constant mean of the state (zero without a past)."""
+        """The mean state at time zero: the model's per-state `initial` where given (a given 0 overrides the past),
+        else the past's constant mean of the state (zero without a past)."""
         c = self.c
         x0 = np.array(c.x0, dtype=float)
         if c.past is not None:
-            for i, name in enumerate(self.model.state_names):
-                if x0[i] == 0.0:
-                    x0[i] = c.past.mean(name)
+            for i, s in enumerate(self.model.states):
+                if s.initial is None:
+                    x0[i] = c.past.mean(s.name)
         return x0
 
     def _mean_before(self, name: str, lag: float) -> Optional[np.ndarray]:
@@ -1442,5 +1455,7 @@ class SpectralFiniteSolver(EngineBase):
             if out["second_order"] is not None:
                 res.second_order[a.name] = out["second_order"]
             res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
+            if a.name in self._rep_parts:
+                res.representation_parts[a.name] = dict(self._rep_parts[a.name])
         self._loss_forms.clear()                  # the second-order check is done: its (n_prim N)^2 form is not kept
 
