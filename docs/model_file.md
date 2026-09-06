@@ -38,6 +38,7 @@ coefficient may be a number or an expression in the parameters (`"sqrt(p1)"`, `"
 | `horizon.past.initial[].loads` | map of number or expression |  |  |
 | `horizon.past.initial[].rows` | map of number or expression |  |  |
 | `horizon.continuation` | `stationary` \| `end` | kind transition only; default stationary | `stationary` |
+| `horizon.settle` | number or expression | kind transition only, in place of `window` (exactly one): the settle tolerance the horizon T is found for by the march in T ([transitions.md](transitions.md)) |  |
 | `horizon.stationary` | object | kind transition only: the continuation's stationary solve |  |
 | `horizon.stationary.window` | number or expression | must equal the past's window | the past's window |
 | `horizon.stationary.nodes` | integer >= 2 | **deprecated**: numerics.continuation_nodes (read until 0.6) |  |

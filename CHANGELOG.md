@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **The horizon as an output: `transition(old, new, settle=tol)`, the march in T.**  Exactly one of `T` and `settle`
+  (`T` keeps today's behaviour bit for bit); the file form takes `settle:` in place of `window:` under kind transition
+  (exactly one), the CLI `transition --settle TOL [--step DT] [--max-window K]`.  The march starts at the T = 0 pass
+  (`transition_gap`; under the tolerance the smallest-window solve is the transition), grows T by `step` (default one
+  window; the engine's floor is T = L) with each solve warm-started from the previous maps (`warm_maps_from`, the
+  continuation solved once), and after each solve runs the monitor, the best-response pass (`transition.gap_passes`)
+  on the window before the last ([T - 2L, T - L] once T >= 2L; the strip under T - L before; each row says which),
+  stopping under `settle` or at `max_window` windows (default 8: the settled flag stays and names the stop).
+  `res.extra["window"]`, `res.march` (rows `{T, gap, gap_last, evaluations, seconds, monitor}`), `res.march_stop`, in
+  the payload too.  Chapter 3, 3 -> 10 at 12 nodes, settle 1e-4: T = 3, 6, 9, 12 in 20, 8, 4, 4 evaluations, gaps 0.577,
+  0.577, 9.2e-4, 9.3e-7 (a factor of 625 then 990 per window), 36 evaluations and 16.8 s against 20 and 12.3 s for the
+  explicit solve at T = 12, the maps agreeing to 5e-8; the same-model past stops at T = 0.  No number of an explicit
+  solve moves (baseline at 0).
+
 - **The T = 0 pass of the settle march: `transition_gap(old, new)`.**  With nothing solved, every agent at the
   new model's stationary rules from date zero and the old regime's shocks attached, one best response per agent;
   returned per agent is the relative distance of the best-response rule from the stationary rule (max over the

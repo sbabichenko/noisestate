@@ -160,6 +160,7 @@ res = ns.solve("examples/ch3_precision_change.yaml")           # the file form: 
 old = ns.solve("examples/ch3_two_player.yaml")
 new = ns.load("examples/ch3_two_player.yaml").with_params(p1=10.0)
 res = ns.transition(old, new, T=6.0, numerics={"nodes": 12})   # solves the new stationary equilibrium and the transition
+res = ns.transition(old, new, settle=1e-4, numerics={"nodes": 12})   # or finds the horizon: a march in T (res.extra["window"], res.march)
 res.settled, res.excess_costs, res.loss_path["player1"], res.belief_error("player2", "X")
 ```
 
@@ -277,6 +278,7 @@ noisestate solve examples/ch4_kyle_back.yaml -o kb.json --plot kb.pdf --param rh
 noisestate solve examples/ch3_two_player.yaml --refine --stability --max-evaluations 50 --deadline 60
 noisestate sweep examples/ch4_kyle_back.yaml eps 0.2,0.1,0.05 -o sweep.json
 noisestate transition examples/ch3_two_player.yaml new.yaml --window 6 --nodes 12 -o change.json
+noisestate transition examples/ch3_two_player.yaml new.yaml --settle 1e-4 --nodes 12     # the horizon found by the march in T
 noisestate schema model > model.schema.json               # JSON Schema (draft 2020-12); also: schema payload
 noisestate plot kb.json kb.pdf                            # re-solves the payload's model under its recorded options
 noisestate --version

@@ -1,6 +1,6 @@
 """Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--engine E] [--param k=v ...]
 [--max-evaluations N] [--deadline S]`; `validate model.yaml` (the schema, then the model's own checks);
-`sweep model.yaml param v1,v2,... -o out.json`; `transition old.yaml new.yaml --window T [-o out] [--nodes N]`;
+`sweep model.yaml param v1,v2,... -o out.json`; `transition old.yaml new.yaml --window T | --settle TOL [-o out] [--nodes N]`;
 `schema {model|payload}`; `plot result.json out.pdf` (re-solves the payload's model under its recorded options and
 plots); `--version`.
 Exit status: 0 converged (a sweep: every point), 1 solved but not converged, 2 a usage error (a bad option, a
@@ -72,7 +72,11 @@ def main(argv=None) -> int:
     v.add_argument("model")
     t = sub.add_parser("transition", help="the transition from the stationary regime of old.yaml to the model of new.yaml on [0, T]")
     t.add_argument("old"); t.add_argument("new")
-    t.add_argument("--window", type=float, required=True, metavar="T", help="the horizon T of the transition")
+    t.add_argument("--window", type=float, metavar="T", help="the horizon T of the transition (or --settle)")
+    t.add_argument("--settle", type=float, metavar="TOL", help="find the horizon by the march in T: stop when the best-response rules "
+                   "on the window before the last are within TOL of the stationary ones (exactly one of --window and --settle)")
+    t.add_argument("--step", type=float, metavar="DT", help="the march's step in T (default one window of the past)")
+    t.add_argument("--max-window", type=int, metavar="K", help="the march stops at K windows (default 8)")
     t.add_argument("--nodes", type=int, help="numerics.nodes per side of each piece (default 12)")
     t.add_argument("-o", "--out", help="write the result as JSON")
     t.add_argument("--plot", help="write the transition plot (.pdf/.png)")
@@ -129,7 +133,15 @@ def _run(p, args) -> int:
         for path in (args.old, args.new):
             with open(path) as fh:
                 _schema_check(yaml.safe_load(fh), path)
-        res = transition(args.old, args.new, T=args.window, numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
+        if (args.window is None) == (args.settle is None):
+            p.error("transition takes exactly one of --window T and --settle TOL")
+        if args.window is None:
+            res = transition(args.old, args.new, settle=args.settle, step=args.step, max_window=args.max_window,
+                             numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
+            print(f"settle march: window {res.extra['window']:g} ({res.march_stop}); " +
+                  ", ".join(f"T = {r['T']:g}: {max(r['gap'].values()):.1e} in {r['evaluations']} evaluations" for r in res.march))
+        else:
+            res = transition(args.old, args.new, T=args.window, numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
         print(res.summary())
         if args.out:
             save_result(res, args.out); print("wrote", args.out)

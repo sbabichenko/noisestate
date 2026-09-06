@@ -181,6 +181,7 @@ class Horizon:
     past: Optional[dict] = None
     continuation: Optional[str] = None
     stationary: Optional[dict] = None
+    settle: Optional[float] = None    # kind "transition" only: in place of window, the settle tolerance the horizon T is found for (a march in T)
     # ---- the resolved numerics (numerics.py): the grid
     breakpoints: Optional[List[float]] = None
     unit: Optional[float] = None
@@ -689,7 +690,7 @@ class Model:
         at least 2 nodes; the other kinds refuse all three blocks (a keyword past goes to solve(past=))."""
         hz = self.horizon
         if hz.kind != "transition":
-            for k in ("past", "continuation", "stationary"):
+            for k in ("past", "continuation", "stationary", "settle"):
                 if getattr(hz, k) is not None:
                     raise ValueError(f"horizon.{k} belongs to horizon.kind 'transition', not {hz.kind!r} (a past given by keyword goes "
                                      "to solve(model, past=...))")
@@ -706,6 +707,13 @@ class Model:
             raise ValueError("horizon.past.initial must be a list of shocks {name, loads, rows}")
         if hz.continuation is not None and hz.continuation not in ("stationary", "end"):
             raise ValueError(f"horizon.continuation must be 'stationary' or 'end', not {hz.continuation!r}")
+        if hz.settle is not None:
+            if not isinstance(hz.settle, (int, float)) or isinstance(hz.settle, bool) or not hz.settle > 0:
+                raise ValueError("horizon.settle must be a positive tolerance (the relative distance of the best-response rules from "
+                                 "the stationary ones the horizon T is found for)")
+            if hz.continuation == "end":
+                raise ValueError("horizon.settle needs continuation 'stationary': the march measures the rules against the new model's "
+                                 "stationary equilibrium")
         if hz.stationary is not None:
             self._check_keys("horizon.stationary", hz.stationary, {"window", "nodes"})
             if hz.stationary.get("window") is not None and not hz.stationary["window"] > 0:
@@ -717,7 +725,7 @@ class Model:
     # ------------------------------------------------------- construction
     _KEYS = {
         "model": {"name", "params", "channels", "states", "definitions", "agents", "ties", "horizon", "numerics"},
-        "horizon": {"kind", "discount", "window", "past", "continuation", "stationary",
+        "horizon": {"kind", "discount", "window", "past", "continuation", "stationary", "settle",
                     "breakpoints", "unit", "unit_range", "nodes"},         # the last four: the old nesting, deprecated
         "numerics": {"engine", "nodes", "unit", "unit_range", "breakpoints", "continuation_nodes", "tol", "damping", "max_newton",
                      "variable", "settings"},
@@ -740,6 +748,8 @@ class Model:
         numeric=True, or when there is no source, coefficients are returned as numbers."""
         hz = self.horizon
         horizon = {"kind": hz.kind, "discount": hz.discount, "window": hz.window}
+        if hz.settle is not None:                             # the horizon is the march's output: the file says settle, not window
+            horizon = {"kind": hz.kind, "discount": hz.discount, "settle": hz.settle}
         for k in ("past", "continuation"):
             if getattr(hz, k) is not None:
                 horizon[k] = copy.deepcopy(getattr(hz, k))
@@ -878,6 +888,9 @@ class Model:
                 raise
         params = _Recording(params)                            # records which parameters the model references
         hz = d.get("horizon") or {}
+        if hz.get("settle") is not None and hz.get("window") is not None:
+            raise ValueError("horizon takes exactly one of window (the horizon T) and settle (the tolerance the horizon is found for "
+                             "by a march in T), not both")
         nm, kind, deprecations = _numerics_block(d)
         from .settings import Settings
         cls._check_keys("numerics", nm, cls._KEYS["numerics"])
@@ -898,6 +911,7 @@ class Model:
                           past=copy.deepcopy(hz["past"]) if hz.get("past") is not None else None,
                           continuation=hz.get("continuation"),
                           stationary=stationary,
+                          settle=None if hz.get("settle") is None else float(eval_coef(hz["settle"], params)),
                           breakpoints=[eval_coef(b, params) for b in nm["breakpoints"]] if nm.get("breakpoints") else None,
                           unit=eval_coef(nm["unit"], params) if nm.get("unit") is not None else None,
                           unit_range=eval_coef(nm["unit_range"], params) if nm.get("unit_range") is not None else None,

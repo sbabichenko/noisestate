@@ -683,10 +683,14 @@ class TriangleResult(Result):
                 f"window {self.past.window:g}: solve the past with a longer window)", "solve the past with a longer window")
         if self.settled is not None:
             info = self.compiled.continuation_info or {}
+            stopped = getattr(self, "march_stop", None) == "max_window"
             row("settled", float(self.settled), self.SETTLED_TOL, bool(self.settled <= self.SETTLED_TOL),
                 f"TRANSITION NOT SETTLED by T - L: raise horizon.window (a map on [T - L, T] is {self.settled:.1e} of its peak "
                 f"from the stationary map the buffer is frozen at, against settled_tol {self.SETTLED_TOL:g}: the closed-loop "
-                "decay over a unit of t, not the grid's floor)", "raise horizon.window")
+                "decay over a unit of t, not the grid's floor)"
+                + (f"; the settle march stopped at max_window, T = {self.compiled.T:g}, with the gap at "
+                   f"{max(self.march[-1]['gap'].values()):.1e} against settle {self.march_settle:g}: raise max_window" if stopped else ""),
+                "raise max_window" if stopped else "raise horizon.window")
             if info.get("window_tail") is not None:
                 tail = float(info["window_tail"])
                 row("continuation window", tail, tol, bool(tail <= tol),
@@ -734,6 +738,9 @@ class TransitionResult(TriangleResult):
     times: Optional[np.ndarray] = None                              # the time nodes of the paths
     loss_path: Dict[str, np.ndarray] = field(default_factory=dict)   # agent -> E[loss(t)] on times
     excess_costs: Dict[str, float] = field(default_factory=dict)     # agent -> int_0^T e^{-rho t} (E loss(t) - the new stationary flow) dt
+    march: Optional[list] = None                                     # the settle march's rows {T, gap, evaluations, seconds, monitor} (transition(settle=))
+    march_stop: Optional[str] = None                                 # why it stopped: "settled", "settled at T = 0" or "max_window"
+    march_settle: Optional[float] = None                             # its tolerance
 
     @property
     def paths(self) -> dict:
@@ -746,6 +753,9 @@ class TransitionResult(TriangleResult):
     def extra(self) -> dict:
         out = super().extra
         out.update(old_flows=self.old_flows, new_flows=self.new_flows, excess_costs=dict(self.excess_costs))
+        out["window"] = float(self.compiled.T)
+        if self.march is not None:
+            out.update(march=list(self.march), march_stop=self.march_stop)
         return out
 
     @property
@@ -777,6 +787,13 @@ class TransitionResult(TriangleResult):
         out["loss_path"] = {k: v.tolist() for k, v in self.loss_path.items()}
         out["excess_costs"] = {k: float(v) for k, v in self.excess_costs.items()}
         out["old_flows"] = self.old_flows; out["new_flows"] = self.new_flows
+        out["window"] = float(self.compiled.T)
+        if self.march is not None:
+            out["march"] = [{"T": r["T"], "gap": {k: float(v) for k, v in r["gap"].items()}, "evaluations": int(r["evaluations"]),
+                             "seconds": float(r["seconds"]), "monitor": r["monitor"],
+                             **({"gap_last": {k: float(v) for k, v in r["gap_last"].items()}} if "gap_last" in r else {})}
+                            for r in self.march]
+            out["march_stop"] = self.march_stop; out["march_settle"] = self.march_settle
         return out
 
     def plot(self, path: str) -> None:

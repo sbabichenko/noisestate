@@ -76,6 +76,8 @@ def model_schema() -> dict:
                                            "initial": {"type": "array", "items": _SHOCK, "description": "initial shocks {name, loads, rows}"}},
                             "description": "kind transition only"},
                    "continuation": {"enum": ["stationary", "end"], "description": "kind transition only; default stationary"},
+                   "settle": {**_NUMBER_OR_EXPR, "description": "kind transition only, in place of window: the settle tolerance the "
+                              "horizon T is found for by a march in T (exactly one of window and settle)"},
                    "stationary": {"type": "object", "additionalProperties": False,
                                   "properties": {"window": {**_NUMBER_OR_EXPR, "description": "must equal the past's window"},
                                                  "nodes": {"type": "integer", "minimum": 2, "deprecated": True,
@@ -167,6 +169,8 @@ def payload_schema() -> dict:
                 "stability": {"type": "object", "required": ["radius", "stable"]},
                 "past": {"type": "object"}, "settled": {"type": ["number", "null"]}, "continuation": {"type": "object"},
                 "loss_path": by_name(numbers), "excess_costs": by_name({"type": "number"}),
+                "window": {"type": "number"}, "march": {"type": "array"}, "march_stop": {"type": ["string", "null"]},
+                "march_settle": {"type": ["number", "null"]},
                 "old_flows": by_name({"type": "number"}), "new_flows": by_name({"type": "number"})},
             "$defs": {"model": {k: v for k, v in model_schema().items() if k not in ("$schema", "$id")},
                       "numerics": numerics_schema()}}

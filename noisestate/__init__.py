@@ -133,6 +133,18 @@ def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluati
         hint = (f"; {fields} are fields of Numerics: solve(model, Numerics({fields[0]}=...))" if fields else "") + \
                (f"; {tuning} are fields of Settings: solve(model, Numerics(settings={{{tuning[0]!r}: ...}}))" if tuning else "")
         raise TypeError(f"unknown option(s) {bad} for solve()" + (hint or "; see help(noisestate.solve)"))
+    if model.horizon.kind == "transition" and model.horizon.settle is not None:      # the horizon is the march's output
+        from .transition import march_model
+        if init is not None or start is not None:
+            raise ValueError("a transition with horizon.settle is solved by the march in T, which starts every point itself; "
+                             "init and start do not apply")
+        res = march_model(model, numerics, past=past, continuation=continuation, verbose=verbose, tol=tol, max_evaluations=max_evaluations,
+                          deadline=deadline, progress=progress, diagnostics=diagnostics)
+        if refine:
+            res.refine()
+        if stability:
+            res.stability()
+        return res
     S, num = engines.build(model, numerics, verbose=verbose, naive_observers=naive_observers, past=past, continuation=continuation)
     kw = num.solve_kw()
     if tol is not None:
