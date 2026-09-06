@@ -14,6 +14,14 @@
   gated behind NOISESTATE_SLOW=1 (`helpers.slow`, `helpers.slow_param`, which also mark them `slow`);
   `tests/SLOW.md` lists every gated test with what it pins, and the weekly CI job selects them with `-m slow`
   (its `-k` expression would have missed the moved tests).  No assertion or tolerance changed.
+- The re-baselining instrument.  `extras/compare_baseline.py` solves the five shipped examples, the Chapter 1
+  target sweep's p = 10 point, Chapter 3 as its own past and continuation at 6 nodes and the Kyle-Back prior,
+  and writes a record per case (costs and their parts to full repr, the evaluation count, the residual,
+  `settled`, the scalar means, Z's shape, Z's SHA-256 at 12 significant digits and the SHA-256 of its raw
+  bytes; `write` and `check` modes).  `tests/refs/baseline_0.4.json` is the record of master 222eb96 and
+  `tests/test_baseline.py` (under NOISESTATE_SLOW=1, 11 s) holds the package to it: costs to 1e-12, the
+  evaluation counts equal, Z equal at 12 digits; a change of Z's bytes with the 12-digit SHA intact (BLAS
+  rounding) is reported as a warning, not asserted.
 - The spectral finite engine's best response matrix-free.  Beyond `settings.foc_dense_max` unknowns nU nR N
   (the largest agent's; default 8192, above every shipped example and test, whose numbers are unchanged to
   the bit) `SpectralFiniteSolver.best_response` no longer builds the row, response, first-order-condition and

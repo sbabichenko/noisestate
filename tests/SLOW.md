@@ -12,6 +12,7 @@ pins (the seconds are at four BLAS threads):
 
 | test | pins | s |
 |---|---|---|
+| test_baseline.py::test_current_package_matches_the_baseline_record | every shipped case against tests/refs/baseline_0.4.json (master 222eb96: costs to 1e-12, evaluations, Z at 12 digits; Z's bytes reported); the re-baselining instrument, `python extras/compare_baseline.py write tests/refs/baseline_0.4.json` | 11 |
 | test_ch5.py::test_ch5_cycle_market_matches_recorded_sweep | the Chapter 5 market's maps against the dissertation's sweep point to 6% | 5 |
 | test_exact_delay.py::test_lagged_undelayed_finite_model_is_resolved_at_six_nodes | the undelayed multi-panel grid: 6 against 10 nodes to 1e-6 (the 5-node grid is test_unit_range_finite's) | 9 |
 | test_finite_free.py::test_matrix_free_best_response_matches_the_dense_one_without_a_past | the matrix-free best response and fixed point on ch1_delayed at 8 nodes (the with-a-past case at 6 nodes stays fast) | 12 |

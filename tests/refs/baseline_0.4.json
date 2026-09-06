@@ -1,0 +1,311 @@
+{
+ "Z_digits": 12,
+ "cases": {
+  "ch1_delayed_finite": {
+   "Z_bits": "b8eebb1918978d27ed2322c9921d14092b14137623f8259461b3c234951c7642",
+   "Z_sha12": "15d5df81f82e4c913aa0864f8017712f27e0f14e2dc9595a4f4832878376b060",
+   "Z_shape": [
+    1920,
+    3
+   ],
+   "converged": true,
+   "cost_parts": {
+    "player1": {
+     "mean": 0.0,
+     "variance": 0.4838242662682089
+    },
+    "player2": {
+     "mean": 0.0,
+     "variance": 0.476678011994978
+    }
+   },
+   "costs": {
+    "player1": 0.4838242662682089,
+    "player2": 0.476678011994978
+   },
+   "engine": "TriangleResult",
+   "evaluations": 13,
+   "means": {},
+   "residual": 6.21070983461022e-09,
+   "seconds": 2.92
+  },
+  "ch1_mean_sweep_p10": {
+   "Z_bits": "68b141efe85062cb3f8a80a09f17528433963217d28b5c1c58d2ffd84da0e9de",
+   "Z_sha12": "da2990e4a75c82a85ba23f0a6569093581940823a515b010a46c82598a1308d4",
+   "Z_shape": [
+    432,
+    3
+   ],
+   "converged": true,
+   "cost_parts": {
+    "player1": {
+     "mean": 2.22243942736941,
+     "variance": 0.3248313561743904
+    },
+    "player2": {
+     "mean": 2.222439427369411,
+     "variance": 0.3248313561743904
+    }
+   },
+   "costs": {
+    "player1": 2.5472707835438007,
+    "player2": 2.5472707835438015
+   },
+   "engine": "TriangleResult",
+   "evaluations": 15,
+   "means": {},
+   "residual": 6.0439793515286466e-09,
+   "seconds": 0.29
+  },
+  "ch1_two_player_finite": {
+   "Z_bits": "e3027d76fe8559e5b1f907d43f26966de502a7f0589ce83f54a8dde3cb5ba7f3",
+   "Z_sha12": "60b131aabef1e4f8eabd64af85ed1d605cccede131a53750143583632f594922",
+   "Z_shape": [
+    432,
+    3
+   ],
+   "converged": true,
+   "cost_parts": {
+    "player1": {
+     "mean": 0.0,
+     "variance": 0.396905768985999
+    },
+    "player2": {
+     "mean": 0.0,
+     "variance": 0.396905768985999
+    }
+   },
+   "costs": {
+    "player1": 0.396905768985999,
+    "player2": 0.396905768985999
+   },
+   "engine": "TriangleResult",
+   "evaluations": 15,
+   "means": {},
+   "residual": 5.901114120978749e-09,
+   "seconds": 0.47
+  },
+  "ch3_same_model_T6_n6": {
+   "Z_bits": "d9f742493ed74a8e74054f2bc5e65d9e74771c3938bf68d62255443d720c8de1",
+   "Z_sha12": "5344b4457f95599ed61465e008bd76f8f2ccff7c02f384d8fae1968edcbd2706",
+   "Z_shape": [
+    540,
+    3
+   ],
+   "converged": true,
+   "cost_parts": {
+    "player1": {
+     "continuation": 1.288899988768057,
+     "mean": 0.0,
+     "variance": 2.5769823851804903
+    },
+    "player2": {
+     "continuation": 1.4966663422666595,
+     "mean": 0.0,
+     "variance": 2.9933277473867372
+    }
+   },
+   "costs": {
+    "player1": 2.5769823851804903,
+    "player2": 2.9933277473867372
+   },
+   "engine": "TransitionResult",
+   "evaluations": 19,
+   "means": {},
+   "residual": 5.012884176848907e-09,
+   "seconds": 0.36,
+   "settled": 0.004536898545055321
+  },
+  "ch3_two_player": {
+   "Z_bits": "b3cf529570a073713fcbb9624b646a9d78b71293475b98176ad22f6afcd28dff",
+   "Z_sha12": "10b9c44e2bdb228ddf36ab3cdef5d87967b8f2f71559808091ad647d1f116e39",
+   "Z_shape": [
+    72,
+    3
+   ],
+   "converged": true,
+   "cost_parts": {
+    "player1": {
+     "mean": 0.0,
+     "variance": 0.42895400568415015
+    },
+    "player2": {
+     "mean": 0.0,
+     "variance": 0.4981433279062427
+    }
+   },
+   "costs": {
+    "player1": 0.42895400568415015,
+    "player2": 0.4981433279062427
+   },
+   "engine": "StationaryResult",
+   "evaluations": 21,
+   "means": {
+    "D1": 0.0,
+    "D2": 0.0,
+    "X": 0.0,
+    "player1.y1": 0.0,
+    "player2.y2": 0.0
+   },
+   "residual": 5.188467161776373e-11,
+   "seconds": 0.04
+  },
+  "ch4_kyle_back": {
+   "Z_bits": "ba825183063b7396eb733b3faabca9cffd61681d3110c66448b2890b723735b3",
+   "Z_sha12": "3b0799c1702caae5ddebb3f5f1b935e8cf1ccb88eb2120cba9cd89e32070923b",
+   "Z_shape": [
+    72,
+    3
+   ],
+   "converged": true,
+   "cost_parts": {
+    "market_maker": {
+     "mean": 0.0,
+     "variance": -5.883704533857754
+    },
+    "trader1": {
+     "mean": 0.0,
+     "variance": -0.8208181983218137
+    }
+   },
+   "costs": {
+    "market_maker": -5.883704533857754,
+    "trader1": -0.8208181983218137
+   },
+   "engine": "StationaryResult",
+   "evaluations": 47,
+   "means": {
+    "D1": 0.0,
+    "P": 0.0,
+    "V": 0.0,
+    "market_maker.flow": 0.0,
+    "trader1.flow": 0.0,
+    "trader1.y1": 0.0
+   },
+   "residual": 5.7965149773644397e-11,
+   "seconds": 0.08
+  },
+  "ch5_cycle_market": {
+   "Z_bits": "65fb5a31d277d387be7624e3b86e1016e6c00d316416ead47742ef404b633081",
+   "Z_sha12": "c85303a66081def7130c5d5dd6871889137c35e91145425af439c5c13a243ddc",
+   "Z_shape": [
+    2080,
+    19
+   ],
+   "converged": true,
+   "cost_parts": {
+    "firm0": {
+     "mean": -0.494616582617108,
+     "variance": 5.0217636801394265
+    },
+    "firm1": {
+     "mean": -0.49461658261710795,
+     "variance": 5.021763680139413
+    },
+    "firm2": {
+     "mean": -0.49461658261710806,
+     "variance": 5.021763680139427
+    }
+   },
+   "costs": {
+    "firm0": 4.5271470975223185,
+    "firm1": 4.527147097522305,
+    "firm2": 4.527147097522319
+   },
+   "engine": "StationaryResult",
+   "evaluations": 37,
+   "means": {
+    "P0": -0.2740216433923256,
+    "P1": -0.2740216433923256,
+    "P2": -0.27402164339232565,
+    "Pidx": -0.2740216433923256,
+    "Pnext": -0.2740216433923256,
+    "a0": 1.7127857482963755e-17,
+    "a1": 1.4703896414599487e-16,
+    "a2": -1.730954326644246e-16,
+    "bill0": -8.326672684688674e-17,
+    "bill1": 0.0,
+    "bill2": 0.0,
+    "d0": 1.0362162923447542,
+    "d1": 1.0362162923447544,
+    "d2": 1.036216292344754,
+    "dev0": -0.04110324650884877,
+    "dev1": -0.041103246508848716,
+    "dev2": -0.041103246508848945,
+    "eta0": -0.0,
+    "eta1": -0.0,
+    "eta2": -0.0,
+    "firm0.order_book": 1.0362162923447542,
+    "firm0.own_prod": 0.0,
+    "firm0.sales": 0.27402164339232554,
+    "firm0.trans_price": -0.27402164339232565,
+    "firm0.upstream_order": 1.0362162923447544,
+    "firm1.order_book": 1.0362162923447544,
+    "firm1.own_prod": 0.0,
+    "firm1.sales": 0.27402164339232554,
+    "firm1.trans_price": -0.2740216433923256,
+    "firm1.upstream_order": 1.036216292344754,
+    "firm2.order_book": 1.036216292344754,
+    "firm2.own_prod": 0.0,
+    "firm2.sales": 0.2740216433923257,
+    "firm2.trans_price": -0.2740216433923256,
+    "firm2.upstream_order": 1.0362162923447542,
+    "i0": 1.036216292344754,
+    "i1": 1.0362162923447542,
+    "i2": 1.0362162923447544,
+    "mis0": -0.27402164339232576,
+    "mis1": -0.27402164339232554,
+    "mis2": -0.2740216433923255,
+    "o0": 1.036216292344754,
+    "o1": 1.0362162923447542,
+    "o2": 1.0362162923447544,
+    "pi0": -0.2740216433923256,
+    "pi1": -0.2740216433923256,
+    "pi2": -0.27402164339232565,
+    "q": 0.0,
+    "quote_gap0": 0.0,
+    "quote_gap1": 0.0,
+    "quote_gap2": -8.326672684688674e-17,
+    "yH0": 0.27402164339232554,
+    "yH1": 0.27402164339232554,
+    "yH2": 0.2740216433923257
+   },
+   "residual": 8.62637334428049e-11,
+   "seconds": 5.76
+  },
+  "kyle_back_prior": {
+   "Z_bits": "7cb710c928d8dbe36efb2e9949bcd61b6b2a4d3bde78b1c61df839af73082263",
+   "Z_sha12": "17df0905869a04743825a755ac8f988d861b7dea74bcf9b5c68bc3e30524e24c",
+   "Z_shape": [
+    432,
+    2
+   ],
+   "converged": true,
+   "cost_parts": {
+    "market_maker": {
+     "mean": 0.0,
+     "variance": -0.8682256615768676
+    },
+    "trader1": {
+     "mean": 0.0,
+     "variance": -1.115078225386477
+    }
+   },
+   "costs": {
+    "market_maker": -0.8682256615768676,
+    "trader1": -1.115078225386477
+   },
+   "engine": "TransitionResult",
+   "evaluations": 67,
+   "means": {},
+   "residual": 5.913230828893849e-09,
+   "seconds": 0.76
+  }
+ },
+ "commit": "222eb96",
+ "cost_tol": 1e-12,
+ "date": "2026-09-06",
+ "noisestate": "0.4.0",
+ "numpy": "2.5.2",
+ "python": "3.12.3"
+}
