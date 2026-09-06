@@ -144,7 +144,10 @@ class ClosedLoopRows:
                 bi = c.index[u]
                 for r, (rname, drift, E, delay) in enumerate(c.rows[a.name]):
                     blocks, deltas = c.row_blocks_sparse(a.name, r, excl)
-                    gker = c.with_frozen(a.name, ui, r, np.zeros(N) if off else gm[ui, r][:N]) if past else gm[ui, r]
+                    # an excluded agent's kernel is zero on [0, T], the panels fixed by freeze_before included (its fixed early
+                    # actions enter its passive world as a known response, finite_free.best_response: the impulse columns stay
+                    # the responses with its reaction off, smooth across the fixed panels' shock times)
+                    gker = c.with_frozen(a.name, ui, r, np.zeros(N) if off else gm[ui, r][:N], fixed=not off) if past else gm[ui, r]
                     self.rows.append((bi, a.name, r, delay, gker, blocks))
                     if band:
                         B[bi, :, :nW] += c.past_conv_path().bilinear(gker, c.past_row_kernel(a.name, r))   # increments before zero

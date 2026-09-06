@@ -111,6 +111,29 @@ class FocSystem:
         corner group's columns summed and its equations summed."""
         from scipy.sparse import csr_matrix
         N, ncol, nU, nR, Nm, nG = self.N, self.ncol, self.nU, self.nR, self.Nm, self.nG
+        Rm = csr_matrix((np.ones(self.kept.size), (self.inv, np.arange(self.kept.size))), shape=(self.n, self.kept.size))
+        c = self.c
+        if c.past is not None and c.P_lo > 0:
+            # freeze_before: the kept unknowns lie on the panels from t_lo on, where the free maps act, the world
+            # responds and the first-order conditions are projected (a lagged atom's read before t_lo meets a zero
+            # response); every operator is built on those nodes only and the kept system is assembled directly:
+            # the whole strip's products never exist
+            lo = c._panel_ranges[c.P_lo][0]
+            act = slice(lo, N); world = np.concatenate([p * N + np.arange(lo, N) for p in range(self.nP)])
+            Gk = self.rowops.dense(lo); H = self.projops.dense(lo)
+            Resp = [self.resp.dense(vi, lo)[world][:, act] for vi in range(nU)]
+            blk = nR * Nm
+            kp = [self.kept[(self.kept >= ui * blk) & (self.kept < (ui + 1) * blk)] - ui * blk for ui in range(nU)]
+            off = np.cumsum([0] + [k.size for k in kp])
+            A = np.zeros((self.kept.size, self.kept.size))
+            Gr = [[Gk[k][act][:, kp[vi]] for vi in range(nU)] for k in range(ncol)]
+            for ui in range(nU):
+                Fu = self.foc.dense(ui, lo)[act][:, world]
+                Hr = [H[kp[ui]][:, k * N + lo:(k + 1) * N] for k in range(ncol)]
+                for vi in range(nU):
+                    FR = Fu @ Resp[vi]
+                    A[off[ui]:off[ui + 1], off[vi]:off[vi + 1]] = sum(Hr[k] @ (FR @ Gr[k][vi]) for k in range(ncol))
+            return np.asarray(Rm @ A @ Rm.T)
         Gk = self.rowops.dense(); H = self.projops.dense()
         Resp = [self.resp.dense(vi) for vi in range(nU)]
         Amat = np.zeros((nG, nG))
@@ -120,7 +143,6 @@ class FocSystem:
             for vi in range(nU):
                 FR = Fu @ Resp[vi]
                 Amat[rows_u, vi * nR * Nm:(vi + 1) * nR * Nm] = sum(H[:, k * N:(k + 1) * N] @ (FR @ Gk[k]) for k in range(ncol))
-        Rm = csr_matrix((np.ones(self.kept.size), (self.inv, np.arange(self.kept.size))), shape=(self.n, self.kept.size))
         return np.asarray(Rm @ Amat[np.ix_(self.kept, self.kept)] @ Rm.T)
 
     # ---- the preconditioner: the time-row-diagonal part of the operator
@@ -137,7 +159,7 @@ class FocSystem:
         blocks = []
         ranges = c._panel_ranges
         for (p, it), idx in sorted(c.trow_by_pit.items()):
-            if c.past is not None and p >= c.P_T:
+            if c.past is not None and (p >= c.P_T or p < c.P_lo):
                 continue
             lo, hi = ranges[p]
             parts = []                                          # (row, map unknowns of the row at this time row)
@@ -290,6 +312,16 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
     rowops = RowOps(solver, agent, ytil, yinst)
     projops = ProjOps(solver, agent, ytil, yinst)
     resp = RespOps(solver, agent, R)
+    fixed = getattr(solver, "_fixed_actions", {}).get(agent.name)
+    if fixed is not None:
+        # freeze_before: the agent's own actions on the fixed panels are known; their response joins the passive
+        # world the first-order conditions see (the right-hand side, the loss atoms), while the rows the free map
+        # unknowns read stay the ones with the agent's strategy off everywhere on [0, T]: the same representation
+        # as the whole strip's solve, whose fixed point this reproduces with the early unknowns moved to the right
+        Zp = Zpass.reshape(nP, N, ncol).copy()
+        for ui in range(nU):
+            Zp += resp.apply(ui, fixed[ui])
+        Zpass = Zp.reshape(nP * N, ncol)
     foc = FocOps(solver, agent, Roff)
     phi_past = solver._foc_affine(agent, foc)
     system = FocSystem(solver, agent, rowops, projops, resp, foc, Zpass, phi_past)

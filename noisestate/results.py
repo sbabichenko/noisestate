@@ -566,6 +566,7 @@ class TriangleResult(Result):
     past: object = None                     # the Past a transition started from (None: the game starts at rest)
     continuation: object = None             # the StationaryResult the maps are frozen at after T (None: the game ends at T)
     settled: Optional[float] = None         # with a continuation: how far the maps on [T - L, T] are from its stationary maps
+    actions: Optional[Dict[str, np.ndarray]] = None   # agent -> the fixed point's action kernels (nU, N, ncol) when it iterated on them (the march's warm start)
     SETTLED_TOL = tunable("settled_tol")
     MAP_CONVENTION = ("the map on a row observed with delay d is stored at the shifted time t - d: maps[agent][u][row][n] "
                       "is the weight the control at time agents[agent].signals[row].map_time[n] = grid.t[n] + delay puts "
@@ -692,12 +693,14 @@ class TriangleResult(Result):
                    f"{max(self.march[-1]['gap'].values()):.1e} against settle {self.march_settle:g}: raise max_window" if stopped else ""),
                 "raise max_window" if stopped else "raise horizon.window")
             if getattr(self, "march_stop", None) == "floor" and self.march:
-                g1, g0 = max(self.march[-1]["gap"].values()), max(self.march[-2]["gap"].values())
-                row("settle floor", float(g1), float(self.march_settle), False,
-                    f"SETTLE BELOW THE GRID'S FLOOR (the settle march stopped at T = {self.compiled.T:g}: the gap fell from {g0:.1e} to "
-                    f"{g1:.1e} over the last window, where a transient falls by hundreds, so settle {self.march_settle:g} is below what "
-                    f"{self.compiled.g.nt} nodes resolve; the maps are within {self.settled:.1e} of the stationary ones: raise numerics.nodes)",
-                    "raise numerics.nodes")
+                fl = max(self.march_floor.values()) if self.march_floor else float("nan")
+                g1 = max(self.march[-1]["gap"].values())
+                where = (f"the settle march stopped at T = {self.compiled.T:g} with the gap at {g1:.1e}, within a factor {2:g} of the floor"
+                         if len(self.march) > 1 else "nothing was marched")
+                row("settle floor", float(fl), float(self.march_settle), False,
+                    f"SETTLE BELOW THE GRID'S FLOOR ({where}: the grid's floor, the one-shot deviation of the stationary rules from "
+                    f"themselves at {self.compiled.g.nt} nodes, is {fl:.1e}, above settle {self.march_settle:g}; the maps are within "
+                    f"{self.settled:.1e} of the stationary ones: raise numerics.nodes)", "raise numerics.nodes")
             if info.get("window_tail") is not None:
                 tail = float(info["window_tail"])
                 row("continuation window", tail, tol, bool(tail <= tol),
@@ -752,6 +755,8 @@ class TransitionResult(TriangleResult):
     march: Optional[list] = None                                     # the settle march's rows {T, gap, evaluations, seconds, monitor} (transition(settle=))
     march_stop: Optional[str] = None                                 # why it stopped: "settled", "settled at T = 0" or "max_window"
     march_settle: Optional[float] = None                             # its tolerance
+    march_floor: Optional[Dict[str, float]] = None                   # the grid's floor per agent (transition.settle_floor)
+    march_window: Optional[float] = None                             # the window the march found when it is not the strip's T (0: nothing solved)
 
     @property
     def paths(self) -> dict:
@@ -766,9 +771,9 @@ class TransitionResult(TriangleResult):
         out.update(old_flows=self.old_flows, new_flows=self.new_flows, excess_costs=dict(self.excess_costs))
         if self.excess_tail is not None:
             out.update(excess_costs_tail=dict(self.excess_costs_tail), excess_costs_total=dict(self.excess_costs_total), excess_tail=self.excess_tail)
-        out["window"] = float(self.compiled.T)
+        out["window"] = float(self.compiled.T) if self.march_window is None else float(self.march_window)
         if self.march is not None:
-            out.update(march=list(self.march), march_stop=self.march_stop)
+            out.update(march=list(self.march), march_stop=self.march_stop, settle_floor=self.march_floor)
         return out
 
     @property
@@ -806,11 +811,13 @@ class TransitionResult(TriangleResult):
             out["excess_costs_total"] = {k: float(v) for k, v in self.excess_costs_total.items()}
             out["excess_tail"] = {"source": self.excess_tail["source"], "factor": {k: float(v) for k, v in self.excess_tail["factor"].items()},
                                   "windows": [list(w) for w in self.excess_tail["windows"]]}
-        out["window"] = float(self.compiled.T)
+        out["window"] = float(self.compiled.T) if self.march_window is None else float(self.march_window)
         if self.march is not None:
             out["march"] = [{"T": r["T"], "gap": {k: float(v) for k, v in r["gap"].items()}, "evaluations": int(r["evaluations"]),
-                             "seconds": float(r["seconds"]), "monitor": r["monitor"]} for r in self.march]
+                             "seconds": float(r["seconds"]), "monitor": r["monitor"], "unknowns": int(r.get("unknowns", 0)),
+                             **({"polish": int(r["polish"])} if "polish" in r else {})} for r in self.march]
             out["march_stop"] = self.march_stop; out["march_settle"] = self.march_settle
+            out["settle_floor"] = None if self.march_floor is None else {k: float(v) for k, v in self.march_floor.items()}
         return out
 
     def plot(self, path: str) -> None:

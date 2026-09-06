@@ -172,7 +172,7 @@ def payload_schema() -> dict:
                 "window": {"type": "number"}, "march": {"type": "array"}, "march_stop": {"type": ["string", "null"]},
                 "excess_windows": by_name(numbers), "excess_costs_tail": by_name({"type": "number"}),
                 "excess_costs_total": by_name({"type": "number"}), "excess_tail": {"type": "object"},
-                "march_settle": {"type": ["number", "null"]},
+                "march_settle": {"type": ["number", "null"]}, "settle_floor": {"type": ["object", "null"]},
                 "old_flows": by_name({"type": "number"}), "new_flows": by_name({"type": "number"})},
             "$defs": {"model": {k: v for k, v in model_schema().items() if k not in ("$schema", "$id")},
                       "numerics": numerics_schema()}}

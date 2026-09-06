@@ -68,6 +68,8 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         self._krylov_log: List[Tuple[str, int, float]] = []  # (agent, GMRES iterations, relative residual) of every Krylov solve
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.Nm) for a in model.agents}
         self._rep_parts: Dict[str, Dict[str, float]] = {}      # agent -> where the representation error sits (with a past)
+        self._fixed_disc: Dict[str, np.ndarray] = {}           # agent -> the fixed discrete weights (freeze_before)
+        self._fixed_actions: Dict[str, np.ndarray] = {}        # agent -> its action kernels (nU, N, ncol) on the fixed panels, zero elsewhere
 
     @staticmethod
     def _continuation_of(model: Model, past, continuation, stationary: Optional[dict] = None):
@@ -256,6 +258,65 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             out[a.name] = gm
         return out
 
+    def warm_actions_from(self, prev, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Action kernels to start from, given a result of this engine on another grid of the same model and the
+        raw maps of warm_maps_from: the previous fixed point's own action kernels (prev.actions, the iterate the
+        solve converged in; its maps are their projection) read at this grid's nodes where they exist, the closed
+        loop of `maps` elsewhere (and everywhere when the previous solve iterated on maps)."""
+        act = self.actions_from_maps(maps)
+        if getattr(prev, "actions", None) is None:
+            return act
+        c = self.c; g, gc = c.g, prev.compiled.g
+        I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_ds)
+        inside = np.asarray(I != 0).any(axis=1)
+        for a in self.model.agents:
+            act[a.name][:, inside, :] = np.einsum("fn,unk->ufk", I[inside], prev.actions[a.name])
+        return act
+
+    def freeze_before(self, t_lo: float, maps: Optional[Dict[str, np.ndarray]] = None, actions: Optional[Dict[str, np.ndarray]] = None) -> None:
+        """Fix every agent's map on the time panels before t_lo at `maps` (raw maps of this engine's shapes; the
+        march's warm start) and solve for the rest: SpectralCompiled.freeze_before.  The agents' own action kernels
+        on those panels are fixed too, at `actions` (agent -> (nU, N, ncol); the previous fixed point's, warm_actions_from)
+        or, without them, at the closed loop of the maps: an agent's best response adds their response to the passive
+        world its first-order conditions see (finite_free.best_response), the closed loop keeping its kernel off
+        there as everywhere on [0, T] (the impulse columns stay smooth across the fixed panels' shock times).  With
+        the fixed point's own actions the reduced solve reproduces the whole strip's fixed point exactly (to 1e-15 in
+        a best response); with the closed loop's it differs by the maps' representation error there (1e-5 on Chapter
+        3's free maps at 12 nodes, the band's tip being where a map represents its actions worst).  The fixed point
+        then runs on the free entries only (free_mask).  t_lo <= 0 clears it."""
+        c = self.c
+        if not t_lo > 0:
+            c.unfreeze(); self._fixed_disc = {}; self._fixed_actions = {}; return
+        if maps is None or self.init_kind(maps) != "maps":
+            raise ValueError("freeze_before takes the raw maps to fix the early panels at (this engine's shapes)")
+        c.freeze_before(t_lo, maps)
+        self._fixed_disc = {a.name: np.asarray(maps[a.name], dtype=float)[:, :, c.N:] for a in self.model.agents}
+        g = c.g; eps = 1e-9 * max(1.0, c.Tg)
+        early = np.concatenate([np.full(pc.n, bool(pc.t1 <= c.t_lo + eps)) for pc in g.pieces])
+        if actions is None:
+            actions = self.actions_from_maps(maps)
+        self._fixed_actions = {a.name: np.asarray(actions[a.name], dtype=float) * early[None, :, None] for a in self.model.agents}
+
+    def free_mask(self, variable: str) -> Optional[np.ndarray]:
+        """The free entries of the packed fixed-point vector under freeze_before (None when nothing is fixed
+        beyond the buffer): for "actions" the action kernels on the nodes of the panels from t_lo on (the world
+        before t_lo is the fixed strategies' and does not move), for "maps" the map nodes and time nodes there."""
+        c = self.c
+        if c.P_lo == 0:
+            return None
+        g = c.g; eps = 1e-9 * max(1.0, c.Tg)
+        early = np.concatenate([np.full(pc.n, bool(pc.t1 <= c.t_lo + eps)) for pc in g.pieces])
+        parts = []
+        for a in self.model.agents:
+            if variable == "actions":
+                nU, N, ncol = self.action_shapes[a.name]
+                parts.append(np.broadcast_to(~early[None, :, None], (nU, N, ncol)).ravel())
+            else:
+                nU, nR, Nm = self.shapes[a.name]
+                free = np.concatenate([~early, ~c.fixed_time]) if Nm > c.N else ~early
+                parts.append(np.broadcast_to(free[None, None, :], (nU, nR, Nm)).ravel())
+        return np.concatenate(parts)
+
     # ------------------------------------------------ best-response pieces
     def _identified(self, agent: Agent) -> np.ndarray:
         """The map on a row observed with delay d is stored at the shifted time t' = t - d, so its nodes on
@@ -285,10 +346,10 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 empty = not np.any(c.past_row_kernel(agent.name, r)) and not np.any(c.E_old[agent.name][r])
                 if empty:
                     flow = flow & ~g.upper
-            keep[r * Nm:r * Nm + N] = flow & ~c.buffer                     # the buffer's map is frozen, not solved
+            keep[r * Nm:r * Nm + N] = flow & ~c.fixed_nodes                # the buffer's map is frozen, not solved (freeze_before: the early panels too)
             if c.n_init and np.any(c.init_rows[agent.name][r]):
                 tpanel = np.repeat(np.arange(g.P), g.nt)
-                keep[r * Nm + N:(r + 1) * Nm] = (tpanel < c.P_T) & (g.bp[tpanel] >= d - eps)
+                keep[r * Nm + N:(r + 1) * Nm] = (tpanel < c.P_T) & (tpanel >= c.P_lo) & (g.bp[tpanel] >= d - eps)
         return keep
 
     def _corner_index(self, agent: Agent) -> np.ndarray:
@@ -348,8 +409,8 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         ctx = self._projection_context(agent) if past else None
         systems: Dict[int, list] = {}                     # size -> [(cols, Rm, G, rhs (nU, n))]
         for (p, it), idx in sorted(c.trow_by_pit.items()):
-            if past and p >= c.P_T:
-                continue                                                            # the buffer's rows are frozen
+            if past and (p >= c.P_T or p < c.P_lo):
+                continue                                                            # the buffer's rows are frozen (and the panels before t_lo)
             item = self._time_row_system(agent, p, it, idx, cact, sub, shifts, ctx)
             if item is not None:
                 systems.setdefault(item[2].shape[0], []).append(item)
@@ -359,8 +420,10 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 sol = np.linalg.solve(Gs, np.stack([rhs[ui] for _, _, _, rhs in items])[:, :, None])[:, :, 0]
                 for (cols, Rm, _, _), x in zip(items, sol):
                     gmap[ui].reshape(-1)[cols] = x if Rm is None else Rm @ x
-        if c.frozen is not None:
-            gmap[:, :, :N][:, :, c.buffer] = c.frozen[agent.name][:, :, c.buffer]
+        if c.fixed_maps is not None:
+            gmap[:, :, :N][:, :, c.fixed_nodes] = c.fixed_maps[agent.name][:, :, c.fixed_nodes]
+            if c.fixed_time is not None and c.n_init:
+                gmap[:, :, N:][:, :, c.fixed_time] = self._fixed_disc[agent.name][:, :, c.fixed_time]
         return gmap
 
     def _projection_context(self, agent: Agent):

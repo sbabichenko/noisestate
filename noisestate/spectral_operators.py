@@ -188,13 +188,14 @@ class RowOps:
         return out
 
 
-    def dense(self) -> np.ndarray:
-        """Every G_k as a dense array, (ncol, N, nR Nm): the rows of every panel (the factored FOC system)."""
+    def dense(self, lo: int = 0) -> np.ndarray:
+        """Every G_k as a dense array, (ncol, N, nR Nm): the rows of every panel (the factored FOC system); with lo
+        the rows of the action nodes from lo on only (the reduced system under freeze_before), zero before."""
         out = np.zeros((self.ncol, self.N, self.nR * self.Nm))
-        for r, (flow, disc) in enumerate(self.rows(0, self.N, [(0, self.N)] * self.nR)):
-            out[:, :, r * self.Nm:r * self.Nm + self.N] = flow
+        for r, (flow, disc) in enumerate(self.rows(lo, self.N, [(lo, self.N)] * self.nR)):
+            out[:, lo:, r * self.Nm + lo:r * self.Nm + self.N] = flow
             if disc is not None:
-                out[:, :, r * self.Nm + self.N:(r + 1) * self.Nm] = disc
+                out[:, lo:, r * self.Nm + self.N:(r + 1) * self.Nm] = disc
         return out
 
 
@@ -286,17 +287,18 @@ class ProjOps:
         return flow, disc
 
 
-    def dense(self) -> np.ndarray:
+    def dense(self, lo: int = 0) -> np.ndarray:
         """H as a dense array (nR Nm, ncol N), columns (channel, node): every row's map nodes against every
-        action node (the factored FOC system)."""
+        action node (the factored FOC system); with lo the map nodes and action nodes from lo on only (the
+        reduced system under freeze_before), zero before."""
         N, Nm, ncol = self.N, self.Nm, self.ncol
         out = np.zeros((self.nR * Nm, ncol * N))
         for r in range(self.nR):
-            flow, disc = self.rows(r, 0, N, 0, N)
+            flow, disc = self.rows(r, lo, N, lo, N)
             for k in range(ncol):
-                out[r * Nm:r * Nm + N, k * N:(k + 1) * N] = flow[k]
+                out[r * Nm + lo:r * Nm + N, k * N + lo:(k + 1) * N] = flow[k]
                 if disc is not None:
-                    out[r * Nm + N:(r + 1) * Nm, k * N:(k + 1) * N] = disc[k]
+                    out[r * Nm + N:(r + 1) * Nm, k * N + lo:(k + 1) * N] = disc[k]
         return out
 
 
@@ -331,14 +333,15 @@ class RespOps:
         Z[own] += C
         return Z
 
-    def dense(self, ui: int) -> np.ndarray:
+    def dense(self, ui: int, lo: int = 0) -> np.ndarray:
         """Resp_u as a dense array (nP N, N): the rows of the response path per responding primary, the own
-        block the identity (the factored FOC system)."""
+        block the identity (the factored FOC system); with lo the world's nodes from lo on only (the reduced
+        system under freeze_before), zero before."""
         own, ps, op = self.ops[ui]
         Z = np.zeros((self.nP, self.N, self.N))
         if op is not None:
             for j, p in enumerate(ps):
-                Z[p] += op.rows(j, 0, self.N)
+                Z[p, lo:] += op.rows(j, lo, self.N)
         Z[own] += np.eye(self.N)
         return Z.reshape(self.nP * self.N, self.N)
 
@@ -412,26 +415,27 @@ class FocOps:
     def apply(self, ui: int, Z: np.ndarray) -> np.ndarray:
         return self.foc(ui, self.atoms_of(Z))
 
-    def dense(self, ui: int) -> np.ndarray:
+    def dense(self, ui: int, lo: int = 0) -> np.ndarray:
         """Fu_u as a dense array (N, nP N): the per-atom operators M_j as dense rows (the identity, the rows of the
         continuation path, the lag reads), contracted with Q and the atoms' reads, sum_i (sum_j Q[j, i] M_j) A_i
-        (the factored FOC system)."""
+        (the factored FOC system); with lo the rows of the action nodes from lo on only (the reduced system under
+        freeze_before), zero before."""
         N = self.N
         j0, cont, lags = self.per_control[ui]
-        M = np.zeros((len(self.atoms), N, N))
+        M = np.zeros((len(self.atoms), N - lo, N))
         if j0 is not None:
-            M[j0] += np.eye(N)
+            M[j0] += np.eye(N)[lo:]
         if cont is not None:
             js, op = cont
             for i, j in enumerate(js):
-                M[j] += op.rows(i, 0, N)
+                M[j] += op.rows(i, lo, N)
         for (j, w, S) in lags:
-            M[j] += w * S.toarray()
+            M[j] += w * S.toarray()[lo:]
         MQ = np.tensordot(self.Q.T, M, axes=1)                              # MQ[i] = sum_j Q[j, i] M_j
         out = np.zeros((N, self.nP * N))
         for i, (p, A) in enumerate(self.AO):
             if np.any(MQ[i]):
-                out[:, p * N:(p + 1) * N] += (A.T @ MQ[i].T).T
+                out[lo:, p * N:(p + 1) * N] += (A.T @ MQ[i].T).T
         return out
 
     def own_lags(self) -> Dict[float, float]:

@@ -129,7 +129,7 @@ def gap_pass(S, maps: Dict[str, np.ndarray], lo: float, hi: float) -> Dict[str, 
     return gap_passes(S, maps, {"range": (lo, hi)})["range"]
 
 
-FLOOR_FALL = 4.0          # the march stops at the grid's floor when the gap falls by less than this per window
+FLOOR_FACTOR = 2.0        # a gap within this factor of the grid's floor is the floor: the march stops there
 
 
 def _unit_of(model: Model, L: float) -> float:
@@ -154,9 +154,9 @@ def transition_gap(old, new, numerics=None, continuation="stationary") -> Dict[s
     window keeps the old shocks alive on the buffer, where the strip carries them as the band); the
     transition() march starts from this point.  Caveat: with the old model equal to the new one the gap is not
     zero but the grid's one-shot floor (Chapter 3 at 12 nodes: 3.8e-6 and 1.3e-5, the same at T = 1, 3 and 6;
-    the two-firm market 2e-4 at 5 nodes), so a tolerance below that floor is never met.  `old`, `new`,
-    `numerics` and `continuation` are transition()'s (a stationary continuation is required: the pass needs
-    the rules the strategies are held at)."""
+    the two-firm market 2e-4 at 5 nodes), so a tolerance below that floor is never met (the march measures
+    that floor first: settle_floor).  `old`, `new`, `numerics` and `continuation` are transition()'s (a
+    stationary continuation is required: the pass needs the rules the strategies are held at)."""
     num = Numerics.of(numerics)
     past = Past.of(old)
     if not past.window > 0 or continuation == "end":
@@ -170,31 +170,62 @@ def transition_gap(old, new, numerics=None, continuation="stationary") -> Dict[s
     return gap_pass(S, S.stationary_start(), 0.0, S.c.T)
 
 
+def settle_floor(model: Model, cont, numerics=None) -> Dict[str, float]:
+    """The grid's floor of the settle monitor at these numerics, per agent: the one-shot deviation of the
+    continuation's own stationary rules on the strip of `model` (a transition model at some T) with the
+    continuation as its own past, the same-model gap (transition_gap of the new model as its own regime).  A
+    settle tolerance below it is never met; a gap within FLOOR_FACTOR of it is the floor.  One strip build and
+    one best response per agent."""
+    S = engines.build(model, numerics, past=Past.of(cont), continuation=cont)[0]
+    return gap_pass(S, S.stationary_start(), 0.0, S.c.T)
+
+
+def _stationary_result(S, gap: Dict[str, float], kw: dict, diagnostics: bool):
+    """The transition result when nothing needs solving (the T = 0 pass under settle, or the tolerance below the
+    floor): the continuation's stationary maps on the strip built (stationary_start), the world their closed
+    loop, no evaluation; the result type is the engine's (a TransitionResult), march_window 0 (res.extra["window"])."""
+    maps = S.stationary_start()
+    Z = S.c.closed_loop(maps)
+    res = S.RESULT(model=S.model, compiled=S.c, maps=maps, world=Z, converged=True, residual=float(max(gap.values())),
+                   evaluations=0, seconds=0.0, message="the stationary equilibrium: the T = 0 pass is under settle (no solve)",
+                   solver_class=type(S), solver_kw=S.solver_kw, settings=S.settings,
+                   solve_kw={k: kw[k] for k in ("tol", "damping", "max_newton", "variable") if k in kw})
+    if not diagnostics:
+        res.solve_kw["diagnostics"] = False
+    S._finish(res)
+    res.march_window = 0.0
+    return res
+
+
 def march(make_model: Callable[[float], Model], past: Past, continuation, settle: float, numerics=None, step: Optional[float] = None,
           max_window: Optional[int] = None, verbose: bool = False, **solve_kw):
     """The march in T (docs/design/transition_settle_march.md): make_model(T) is the transition model on [0, T].  The
-    first point is the T = 0 pass (transition_gap: the best response from the stationary rules on the smallest
-    strip [0, u], u the unit of _unit_of, nothing solved); under `settle` the smallest-strip solve, a few
-    evaluations from the stationary start, is the transition.  Otherwise the first solve is at T = L and T
-    grows by one window per step (each T snapped up to a multiple of the unit), each solve warm-started from
-    the previous maps read on the new grid with the stationary rules on the new stretch (warm_maps_from, the
-    sweep's warm start), the continuation solved once.  Steps by units below the first window are available
-    by an explicit `step=` only: a first window cannot certify anything (its monitor window [0, T] holds the
-    initial transient, so on a regime change the gap stays at its T = 0 size until T reaches L) and without
-    reuse of the panels across steps they cannot pay (the unit-cut strip has 3024 nodes at T = 1 against 576
-    at T = 3 on Chapter 3 at 12 nodes: 155 s against 4 s per step),
-    and after each solve the monitor: gap_pass on the converged maps over the last window [T - L, T], the
-    range of the `settled` diagnostic (the design note feared the handover at T would never be small; it is
-    once the transient has passed: on Chapter 3 the explicit T = 9 solve settles at 2.7e-6, so the march stops at
-    the smallest T whose explicit solve settles under the tolerance).  Stops when every agent's gap is under
-    `settle`, when T would pass max_window * L (default 8 windows: res.march_stop "max_window"), or at the grid's
-    floor (two windows past the first, a gap that fell by less than FLOOR_FALL = 4 over the last window: a
-    transient falls by hundreds, the one-shot floor by nothing; res.march_stop "floor", the `settle floor` row
-    flags that the tolerance is below what the grid resolves, with the advice to raise numerics.nodes); in the
-    last two cases res.settled keeps the last solve's diagnostic and its flag when above settled_tol.  res.march is the list
-    of rows {"T", "gap", "evaluations", "seconds", "monitor"} (T = 0 first, evaluations 0: the pass from the
-    stationary rules on the first strip built, [0, L] by default, [0, step] with a step; transition_gap's is on
-    the smallest strip), res.extra["window"] the T found.
+    first point is the T = 0 pass (transition_gap: the best response from the stationary rules on the first strip
+    built, nothing solved); under `settle` the stationary equilibrium is the transition and the result is the
+    continuation's maps on that strip with no solve (_stationary_result: res.march_stop "settled at T = 0",
+    window 0).  Then the floor (settle_floor: the same-model gap on the first strip, one best response per agent;
+    res.march_floor, res.extra["settle_floor"]): a tolerance below it is never met, so the march stops at once with
+    march_stop "floor" and the stationary result (the `settle floor` row flags SETTLE BELOW THE GRID'S FLOOR, advice
+    raise numerics.nodes).  Otherwise the first solve is at T = L and T grows by one window per step (each T snapped
+    up to a multiple of the unit; `step=` sets the step, unit steps below the first window are its business: a first
+    window cannot certify anything, its monitor window [0, T] holding the initial transient), the continuation
+    solved once.  Each step is local: the solve is warm-started from the previous maps read on the new grid with
+    the stationary rules on the new stretch (warm_maps_from), and the strategies before T_prev - L are frozen at
+    those values (SpectralFiniteSolver.freeze_before: the end effect leaks back at the closed-loop rate only, so
+    they are converged), the unknowns being the new stretch plus the last window of the old horizon; the fixed
+    point runs on that reduced vector, and the diagnostics (res.foc, the second-order check, the representation
+    error) run once, on the final strip, with nothing frozen.  After each solve the monitor: gap_pass on the
+    converged maps over the last window [T - L, T], the range of the `settled` diagnostic (on Chapter 3 the explicit
+    T = 9 solve settles at 2.7e-6, so the march stops at the smallest T whose explicit solve settles under the
+    tolerance).  Stops when every agent's gap is under `settle` ("settled"), at the floor (a gap within FLOOR_FACTOR
+    of it: "floor", the `settle floor` row), or when T would pass max_window * L (default 8 windows: "max_window");
+    in the last two cases res.settled keeps the last solve's diagnostic and its flag when above settled_tol.
+    After the last local step one polishing pass runs with every unknown free, warm-started from that step's fixed
+    point (one to three evaluations), so the returned maps are the whole strip's fixed point to the solve tolerance
+    (the local step alone leaves the previous handover frozen into the early part: 2e-8 on Chapter 3 at 12 nodes);
+    its count is the last row's "polish".  res.march is the list of rows {"T", "gap", "evaluations", "seconds",
+    "monitor", "unknowns"} (T = 0 first, evaluations 0; unknowns the map unknowns solved for, summed over agents;
+    seconds includes the polish), res.extra["window"] the T found.
     solve_kw goes to every solve (tol, max_evaluations, deadline, progress, diagnostics)."""
     if not settle > 0:
         raise ValueError("settle must be a positive tolerance (the relative distance of the best-response rules from the stationary ones)")
@@ -216,44 +247,73 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
     def after(T: float) -> float:
         """The next horizon: T + step when given, else T + L, snapped up to a multiple of the unit."""
         return snap(T + (float(step) if step is not None else L))
-    rows = []; prev = None; T = snap(u) if step is not None else snap(L); stop = None
+
+    def unknowns(S) -> int:
+        return int(sum(S._identified(a).sum() * len(a.controls) for a in S.model.agents))
+    rows = []; prev = None; T = snap(u) if step is not None else snap(L); stop = None; floor = None
     while True:
         S, num = engines.build(make_model(T), numerics, verbose=verbose, past=past, continuation=continuation)
         continuation = S.c.cont                                     # solved once, shared by every step
         kw = {**num.solve_kw(), **solve_kw}
+        diagnostics = kw.pop("diagnostics", True)                   # run once, on the final strip
         t0 = time.time()
         if prev is None:
             gap0 = gap_pass(S, S.stationary_start(), 0.0, T)
-            rows.append(SweepPoint({"T": 0.0, "gap": gap0, "evaluations": 0, "seconds": time.time() - t0, "monitor": f"[0, {T:g}] from the stationary rules"}))
+            rows.append(SweepPoint({"T": 0.0, "gap": gap0, "evaluations": 0, "seconds": time.time() - t0, "monitor": f"[0, {T:g}] from the stationary rules",
+                                    "unknowns": 0}))
             if verbose:
                 print(f"settle march: T = 0 (the stationary rules): gap {max(gap0.values()):.2e}, {time.time() - t0:.1f}s", flush=True)
             if max(gap0.values()) <= settle:
                 stop = "settled at T = 0"
+                res = _stationary_result(S, gap0, kw, diagnostics); break
+            t1 = time.time()
+            floor = settle_floor(make_model(T), continuation, numerics)
+            if verbose:
+                print(f"settle march: the grid's floor {max(floor.values()):.2e} (the same-model gap on [0, {T:g}]), {time.time() - t1:.1f}s", flush=True)
+            if settle < max(floor.values()):
+                stop = "floor"
+                res = _stationary_result(S, gap0, kw, diagnostics); break
             t0 = time.time()
-            res = S.solve(start="stationary", **kw)
+            res = S.solve(start="stationary", diagnostics=False, **kw)
         else:
-            res = S.solve(init=S.warm_maps_from(prev), **kw)
+            init = S.warm_maps_from(prev)
+            act = S.warm_actions_from(prev, init)
+            t_lo = max(0.0, prev.compiled.T - L)
+            bp = S.c.g.bp[S.c.g.bp <= t_lo + eps]
+            S.freeze_before(float(bp[-1]) if len(bp) else 0.0, init, actions=act)
+            res = S.solve(init=act, diagnostics=False, **kw)
         gap = gap_pass(S, res.maps, T - L, T)
         rows.append(SweepPoint({"T": float(T), "gap": gap, "evaluations": int(res.evaluations), "seconds": time.time() - t0,
-                                "monitor": "[T - L, T]"}))
+                                "monitor": "[T - L, T]", "unknowns": unknowns(S)}))
         if verbose:
             print(f"settle march: T = {T:g}: gap {max(gap.values()):.2e} on [T - L, T], {res.evaluations} evaluations, "
-                  f"{time.time() - t0:.1f}s", flush=True)
-        if stop is not None:
-            break
+                  f"{rows[-1]['unknowns']} unknowns, {time.time() - t0:.1f}s", flush=True)
         if max(gap.values()) <= settle:
             stop = "settled"; break
-        # the grid's floor: a transient falls by hundreds per window (625 then 990 on Chapter 3 at 12 nodes), the
-        # one-shot floor by nothing; two windows past the first, a fall below a factor of FLOOR_FALL is the floor
-        # (the tolerance is below what the grid resolves: res.march_stop "floor", the settle floor row flags it)
-        if len(rows) >= 4 and abs((rows[-1]["T"] - rows[-2]["T"]) - L) <= eps and abs((rows[-2]["T"] - rows[-3]["T"]) - L) <= eps \
-                and max(rows[-1]["gap"].values()) * FLOOR_FALL > max(rows[-2]["gap"].values()):
+        if max(gap.values()) <= FLOOR_FACTOR * max(floor.values()):
             stop = "floor"; break
         if after(T) > Tmax + eps:
             stop = "max_window"; break
         prev = res; T = after(T)
+    if res.evaluations and S.c.P_lo > 0:
+        # the polish: the local step left the previous step's end effect frozen into the early part (2e-8 on Chapter 3
+        # at 12 nodes); one pass with every unknown free, warm-started from the local step's fixed point, makes the
+        # maps the whole strip's fixed point to the solve tolerance again (one to three evaluations)
+        t0 = time.time()
+        S.freeze_before(0.0)
+        init = res.actions if res.actions is not None else res.maps
+        polished = S.solve(init=init, diagnostics=False, **kw)
+        polished.actions = polished.actions if polished.actions is not None else res.actions
+        rows[-1]["polish"] = int(polished.evaluations); rows[-1]["seconds"] += time.time() - t0
+        if verbose:
+            print(f"settle march: polish on the whole strip at T = {T:g}: {polished.evaluations} evaluations, {time.time() - t0:.1f}s", flush=True)
+        res = polished
+    if res.evaluations and diagnostics:                              # the deferred diagnostics, on the whole strip
+        S.freeze_before(0.0)
+        res.solve_kw.pop("diagnostics", None)
+        S._diagnostics(res)
     res.march = rows; res.march_stop = stop
-    res.march_settle = float(settle)
+    res.march_settle = float(settle); res.march_floor = floor
     # the excess cost's tail from the march's own gap sequence: the ratio of the last two gaps, a window apart (at
     # the floor the gaps no longer measure the transient: the loss path's own decay, already in the result, stays)
     if stop != "floor" and len(rows) >= 3 and abs((rows[-1]["T"] - rows[-2]["T"]) - L) <= eps:

@@ -416,6 +416,11 @@ class EngineBase(MeanLayer):
             dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
         out["decomp"] = dec
 
+    def free_mask(self, variable: str) -> Optional[np.ndarray]:
+        """Hook: the free entries of the packed fixed-point vector (a boolean mask), or None when every entry
+        is (the default; the spectral finite engine under freeze_before fixes part of its maps)."""
+        return None
+
     def _identified(self, agent: Agent) -> np.ndarray:
         """Hook (stationary, spectral): boolean mask (nR N,) in (row, node) order of the map nodes at
         which the map on each row reads something within the window; the default keeps all of
@@ -788,14 +793,22 @@ class EngineBase(MeanLayer):
                 x0 = init if kind == "maps" else self.maps_from_actions(init)
             pack, unpack, respond = self.pack, self.unpack, self.response_map
 
+        z0 = pack(x0)
+        free = self.free_mask(variable)                    # an engine with part of the vector fixed iterates on the rest
+
         def F(zz):
             evals[0] += 1
-            return pack(respond(unpack(zz))) - zz
+            if free is None:
+                return pack(respond(unpack(zz))) - zz
+            full = z0.copy(); full[free] = zz
+            return (pack(respond(unpack(full))) - full)[free]
         st = self.settings
-        z, resid, _, converged, message = solve_fixed_point(F, pack(x0), tol=tol, verbose=self.verbose, damping=damping,
+        z, resid, _, converged, message = solve_fixed_point(F, z0 if free is None else z0[free], tol=tol, verbose=self.verbose, damping=damping,
                                                             anderson_iters=st.anderson_iters, max_newton=max_newton, M=self.ANDERSON_M,
                                                             reg=st.anderson_reg, inner_m=st.newton_inner_m, max_evaluations=max_evaluations,
                                                             deadline=deadline, progress=progress, t0=t0)
+        if free is not None:
+            full = z0.copy(); full[free] = z; z = full
         maps = self.maps_from_actions(unpack(z)) if variable == "actions" else unpack(z)
         Z = self.c.closed_loop(maps)
         if coarse_evals:
@@ -806,6 +819,8 @@ class EngineBase(MeanLayer):
                           solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start": start,
                                     **{k: v for k, v in (("max_evaluations", max_evaluations), ("deadline", deadline)) if v is not None},
                                     **({} if diagnostics else {"diagnostics": False})})
+        if variable == "actions" and "actions" in getattr(res, "__dataclass_fields__", {}):
+            res.actions = unpack(z)                # the iterate itself (the maps are its projection): a later solve's warm start
         self._finish(res)
         res.seconds = time.time() - t0            # the diagnostics of _finish are part of the solve's time
         return res

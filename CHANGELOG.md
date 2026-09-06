@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **The march's steps are local.**  After the first step, a solve at the next T fixes every strategy on the panels before
+  T_prev - L at the previous solve's values (`SpectralFiniteSolver.freeze_before(t_lo, maps, actions=)`: the fixed
+  maps enter the closed loop as known, the agents' own fixed actions join the passive world their first-order
+  conditions see, the kept unknowns are the identified nodes from t_lo on, and the first-order-condition system,
+  the projection and the preconditioner are built on those nodes only) and the fixed point runs on the free entries
+  of its vector (`free_mask`); the warm start carries the previous fixed point's own action kernels (`res.actions`,
+  `warm_actions_from`), so a reduced best response reproduces the whole strip's to 1e-15.  A local step leaves the
+  previous handover frozen into the early part (2e-8 on Chapter 3 at 12 nodes), so after the last one a polishing pass
+  with every unknown free, warm-started from it, runs to the solve tolerance (one evaluation at tol 1e-8, five at
+  1e-11: the maps then equal the explicit solve's to 4e-11; the last row's `polish`).  The diagnostics run once, on
+  the final strip.  Chapter 3, 3 -> 10 at 12 nodes: T = 3, 6, 9 in 20, 7, 5 evaluations on 576, 864, 576 unknowns
+  plus the polish, 12 s (12.7 s before), the same window and gaps.  Unit steps below the past's window stay dear (the strip below L is cut at every unit: 1728 and 3168
+  unknowns at T = 1 and 2, 135 and 197 s per step); above it a unit step costs 2.4 to 3.4 s.  `res.march` rows carry
+  `unknowns`.
+- **Nothing to solve, and the floor up front.**  When the T = 0 pass is under `settle`, the transition is the stationary
+  equilibrium and the march returns it without solving: the continuation's maps on the first strip built, window 0
+  (`res.extra["window"]`, `res.march_window`), one march row, no evaluation.  Before marching, the grid's floor is
+  measured (`transition.settle_floor`: the same-model gap on the first strip, one best response per agent;
+  `res.march_floor`, `res.extra["settle_floor"]`, in the payload): a `settle` below it stops at once with
+  `march_stop = "floor"`, the stationary result and the `settle floor` row (raise numerics.nodes), and a gap within a
+  factor FLOOR_FACTOR = 2 of it during the walk is the floor (the fall-rate rule is gone).  Chapter 3's first strip:
+  3.3e-2 at 6 nodes, 2.5e-3 at 8, 7.8e-6 at 12 (the first window holds the band's tip, where the one-shot floor is
+  worst: the last window's floor at a later T is lower, 3.7e-3 at 6 nodes, 1.8e-4 at 8).
+
 - **The excess cost's tail past T, and the march's floor stop.**  `res.excess_windows[agent]` (the excess's discounted
   integral per window, the last window first), `res.excess_costs_tail` (the last window's excess times r / (1 - r),
   the factor r per window from the loss path's decay over the last two windows or from the march's last two gaps),

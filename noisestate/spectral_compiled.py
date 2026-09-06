@@ -227,6 +227,41 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         self.buffer = np.concatenate([np.full(pc.n, bool(pc.t0 >= self.T - eps)) for pc in g.pieces]) if continuation is not None \
             else np.zeros(self.N, dtype=bool)
         self.frozen: Optional[Dict[str, np.ndarray]] = self._frozen_maps() if continuation is not None else None
+        self.unfreeze()
+
+    def unfreeze(self) -> None:
+        """The fixed part of every map is the buffer alone (the default): fixed_nodes (N,) the buffer's mask,
+        fixed_maps[agent] the frozen stationary maps there, fixed_time (Nt,) no time node, P_lo = 0 (the first
+        time panel with unknowns), t_lo = 0."""
+        self.P_lo = 0; self.t_lo = 0.0
+        self.fixed_nodes = self.buffer
+        self.fixed_maps: Optional[Dict[str, np.ndarray]] = self.frozen
+        self.fixed_time: Optional[np.ndarray] = None
+
+    def freeze_before(self, t_lo: float, maps: Dict[str, np.ndarray]) -> None:
+        """Fix every agent's map on the time panels before t_lo (a breakpoint at or below T) at the given maps
+        (agent -> (nU, nR, N[+ Nt]): the values on those panels, and the discrete weights on the time nodes of
+        those panels), in addition to the buffer's frozen stationary maps: the closed loop and the right-hand
+        sides read them as known (with_frozen), the unknowns (_identified, the FOC system, the projection, the
+        preconditioner) are the identified nodes of the panels from t_lo on.  The march's local step: after the
+        first step the strategies before the previous horizon less one window are converged (the end effect
+        leaks back at the closed-loop rate only), so a step solves for the new stretch plus the last window of
+        the old horizon.  t_lo <= 0 clears it (unfreeze)."""
+        g = self.g; eps = 1e-9 * max(1.0, self.Tg)
+        if not t_lo > eps:
+            self.unfreeze(); return
+        if self.cont is None:
+            raise ValueError("freeze_before needs a stationary continuation (the buffer's frozen maps it extends)")
+        if t_lo > self.T + eps or not np.any(np.abs(g.bp - t_lo) <= eps):
+            raise ValueError(f"t_lo = {t_lo:g} must be a time breakpoint at or below T = {self.T:g}: {[float(b) for b in g.bp]}")
+        self.P_lo = int(np.sum(g.bp < t_lo - eps)); self.t_lo = float(t_lo)
+        early = np.concatenate([np.full(pc.n, bool(pc.t1 <= t_lo + eps)) for pc in g.pieces])
+        self.fixed_nodes = early | self.buffer
+        self.fixed_maps = {}
+        for a in self.model.agents:
+            gm = np.asarray(maps[a.name], dtype=float)
+            self.fixed_maps[a.name] = np.where(self.buffer, self.frozen[a.name], gm[:, :, :self.N])
+        self.fixed_time = np.repeat(np.arange(g.P), g.nt) < self.P_lo
 
     def _wire_past(self, model: Model, L: Optional[float]) -> None:
         """The columns of the world and the old regime's loadings: the channels, then one column per initial
@@ -386,10 +421,14 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             out[a.name] = fm
         return out
 
-    def with_frozen(self, agent: str, ui: int, r: int, gker: np.ndarray) -> np.ndarray:
-        """The map kernel (N,) with the buffer's nodes at the frozen stationary map (the input elsewhere)."""
+    def with_frozen(self, agent: str, ui: int, r: int, gker: np.ndarray, fixed: bool = True) -> np.ndarray:
+        """The map kernel (N,) with the fixed nodes at their fixed values (the input elsewhere): the buffer's at the
+        frozen stationary map and, with freeze_before, the panels before t_lo at the given maps; fixed=False takes
+        the buffer alone (an excluded agent's kernel in the closed loop)."""
         if self.frozen is None:
             return gker
+        if fixed and self.fixed_maps is not None:
+            return np.where(self.fixed_nodes, self.fixed_maps[agent][ui, r], gker)
         return np.where(self.buffer, self.frozen[agent][ui, r], gker)
 
     # ------------------------------------------------------------ reads

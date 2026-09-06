@@ -84,6 +84,24 @@ buffer, and the whole march about one solve at the final T plus a small overhead
 that reuse (today: a fresh grid per solve) the steps should be coarse, a window at a time, and the
 warm start alone (8 evaluations against 21 from scratch when measured) carries the saving.
 
+Local steps (built 2026-09-06).  After the first step the strategies before T_prev - L are converged: the
+end effect leaks back at the closed-loop rate only.  A step fixes them (the maps enter the closed loop as
+known, each agent's own fixed actions join the passive world its first-order conditions see, while the rows
+its free map unknowns read keep the agent's strategy off everywhere on [0, T], the same representation as the
+whole strip's solve), solves for the new stretch plus the last window of the old horizon, and runs the fixed
+point on that reduced vector; warm-started from the previous fixed point's own action kernels, the reduced
+problem has the whole strip's fixed point as its solution (a reduced best response reproduces the full one to
+1e-15).  Two things learned building it: the closed loop must keep the excluded agent's kernel off on the fixed
+panels too (with it on, the impulse columns kink along the fixed panels' shock times, inside the pieces the
+response path interpolates on: 5e-3 on the last window), and the fixed actions must be the fixed point's own
+iterate, not the closed loop of the fixed maps (the maps represent their actions to the representation error,
+worst at the band's tip: 1e-5 on the free maps).  A local step leaves the previous handover frozen into the
+early part (2e-8 at tol 1e-8 on Chapter 3), so the march ends with one polishing pass on the whole strip,
+warm-started from the last step: one evaluation at the default tolerance, and the maps are the explicit solve's
+to 4e-11 at tol 1e-11.  The T = 0 pass under tolerance returns the stationary
+equilibrium without a solve; the grid's floor (the same-model gap on the first strip) is measured before the
+walk, and a tolerance below it is refused at once.
+
 Tail extrapolation.  The excess cost of the transition has a piece past T that decays at the
 closed-loop rate; its integral is the last window's excess times a known factor.  Reporting the
 excess cost with that extrapolated tail makes the number converge in T much faster than the
