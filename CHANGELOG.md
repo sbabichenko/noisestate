@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `docs/architecture.md` (step C4): the modules and what each holds, the data flow of one best response
+  (compiled model, closed loop, passive rows, operators, FOC solve, projection, checks) and of one transition
+  (past, band, buffer, continuation), and where the three engines share the base; linked from README's
+  "How it works".
 - The three long functions of the spectral finite engine in named parts, the same statements in the same order
   (step C4, bit for bit): `SpectralCompiled.__init__` (168 lines) calls `_regimes` (the past and the
   continuation, T, Tg), `_breakpoints` (the sequence and its closure under the lags, or the unit panels

@@ -362,7 +362,8 @@ operations that each compiled model supplies (convolution with a row, the instan
 and its adjoint, the response to an action, the discounted continuation, the read of a lagged own
 control, the projection onto a row).  The engines keep what differs: the closed-loop solve (dense
 on the age grid, causal block substitution on the triangle), the regularisation of the
-first-order-condition system, and the projection back to raw maps.
+first-order-condition system, and the projection back to raw maps.  The modules, and the path of one best
+response and of one transition through them, are drawn in [docs/architecture.md](docs/architecture.md).
 
 Stationary form: every process is a kernel in shock age on `[0, L]`, stored at
 Chebyshev nodes on panels whose breakpoints include every delay, so delays are
