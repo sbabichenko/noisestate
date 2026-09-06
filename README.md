@@ -501,7 +501,9 @@ stationary equilibrium (`continuation=` a converged stationary result of the mod
 the past's window, or `"stationary"` to solve it): every map is then frozen at the
 stationary one on a buffer [T, T + L], the first-order conditions integrate to T + L,
 a settled transition solves the infinite problem exactly (the same-model identity holds
-on every node), `res.settled` measures how far the maps on [T - L, T] are from the
+on every node: Chapter 3 to 2e-9 at 16 nodes, with a control lag and a delayed row to 2e-9 at
+8 nodes, the two-firm Chapter 5 market to 2.3e-4 at 5 nodes, each at its grid's closed-loop
+floor), `res.settled` measures how far the maps on [T - L, T] are from the
 stationary ones (the `settled` row, threshold `settled_tol` 1e-6), and
 `res.cost_parts[agent]["continuation"]` reports the buffer's cost apart from
 `res.costs`, which stays the integral over [0, T].  With a past the map on a row observed

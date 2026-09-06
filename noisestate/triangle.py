@@ -207,10 +207,22 @@ class TriangleGrid:
 
     def _locate(self, t, a, side_t, side_a, side_d):
         """Where the points (t, a) fall: (inside, time panel, age panel, above the diagonal, clipped t, clipped a).
-        At a breakpoint the sides select the piece (+1: the piece above/right, -1: below/left); on the
-        diagonal side_d (+1: the upper triangle, -1: the lower one, the default) does."""
+        At a breakpoint the sides select the piece (+1: the piece above/right, -1: below/left); side_a None
+        is the plain read: from the right, and at the window's edge a = L the edge value (the only one
+        there).  With a window and side_a given, two rules for the reads a node makes with its own sides.
+        On a diagonal (a region's a = t - origin, or a split square's own) the side is the one (side_t,
+        side_a) imply when they are unambiguous: t+ with a- is the limit s -> s0+, the triangle below the
+        diagonal; t- with a+ is s -> s0-, the one above; only when they agree does side_d (+1: the upper
+        triangle, -1: the lower one, the default) decide.  And a point at age exactly L with side_a = +1
+        is outside the window (the limit from beyond L: the shock is gone) and gets no piece.  Both
+        matter to the shifted read of a lagged control, D(t - lag, a - lag) from every node: a node
+        (T - lag, a - lag) reading (T, a) with side_t = -1 must land in the piece of the shock it reads, not
+        the one side_d names for the reader, which sits on another diagonal, and the read of a node at
+        age L - lag with side_a = +1 is zero, not the corner value from inside the window.  Without a
+        window nothing here applies."""
         t = np.atleast_1d(np.asarray(t, dtype=float)); a = np.atleast_1d(np.asarray(a, dtype=float))
-        st = np.broadcast_to(np.asarray(side_t), t.shape); sa = np.broadcast_to(np.asarray(side_a), a.shape)
+        st = np.broadcast_to(np.asarray(side_t), t.shape)
+        sa = np.broadcast_to(np.asarray(+1 if side_a is None else side_a), a.shape)
         if self.L is None:
             inside = (a >= -1e-12) & (a <= t + 1e-12) & (t <= self.T + 1e-12) & (t >= -1e-12)
             tc = np.clip(t, 0.0, self.T); ac = np.clip(a, 0.0, tc)
@@ -219,6 +231,10 @@ class TriangleGrid:
             return inside, p, np.minimum(q, p), np.zeros(len(t), dtype=bool), tc, ac
         sd = np.broadcast_to(np.asarray(side_d), t.shape)
         inside = (a >= -1e-12) & (a <= self.L + 1e-12) & (t <= self.T + 1e-12) & (t >= -1e-12)
+        if side_a is not None:
+            ss = np.where((st > 0) & (sa < 0), 1, np.where((st < 0) & (sa > 0), -1, 0))   # the s-side the sides imply
+            sd = np.where(ss == 0, sd, -ss)
+            inside = inside & ~((np.abs(a - self.L) <= 1e-12 * max(1.0, self.T)) & (sa > 0))
         tc = np.clip(t, 0.0, self.T); ac = np.clip(a, 0.0, self.L)
         p = np.where(st > 0, self.panel_of(tc, +1), self.panel_of(tc, -1))
         if self.Tb is None:
@@ -237,11 +253,12 @@ class TriangleGrid:
             up = np.where(split, (d2 > 1e-12) | ((np.abs(d2) <= 1e-12) & (sd > 0)), up)
         return inside, p, q, up, tc, ac
 
-    def interp(self, t, a, side_t=+1, side_a=+1, side_d=-1) -> np.ndarray:
+    def interp(self, t, a, side_t=+1, side_a=None, side_d=-1) -> np.ndarray:
         """Matrix I (npts x N): values of a kernel at (t, a).  Points outside the domain
         (a < 0, a > t without a window, a > L with one, t > T) get zero rows.  At a breakpoint, side
         selects the piece (+1: the piece above/right, -1: below/left) so one-sided limits are available;
-        on the diagonal side_d picks the lower (-1, default) or the upper (+1) triangle."""
+        on the diagonal side_d picks the lower (-1, default) or the upper (+1) triangle, unless the sides
+        given settle it (see _locate); side_a None reads from the right and, at a = L, the edge value."""
         t = np.atleast_1d(np.asarray(t, dtype=float))
         I = np.zeros((len(t), self.N))
         inside, p, q, up, tc, ac = self._locate(t, a, side_t, side_a, side_d)
@@ -255,7 +272,7 @@ class TriangleGrid:
             I[np.ix_(sel, np.arange(pc.offset, pc.offset + pc.n))] = (Rt[:, :, None] * Rx[:, None, :]).reshape(len(sel), -1)
         return I
 
-    def interp_factors(self, t, a, side_t=+1, side_a=+1, side_d=-1):
+    def interp_factors(self, t, a, side_t=+1, side_a=None, side_d=-1):
         """The interpolation at (t, a) as its factors: [(piece, point indices, Rt (m, nt), Rx (m, na))] over the
         pieces the points fall in (a point outside the domain is in no piece); the interpolation row of a point is
         the outer product Rt Rx' over the piece's nodes."""
@@ -270,7 +287,7 @@ class TriangleGrid:
             out.append((pc, sel, _bary_rows(tt, pc.tn, pc.wt), _bary_rows(xx, pc.xn, pc.wx)))
         return out
 
-    def interp_sparse(self, t, a, side_t=+1, side_a=+1, factors=None, side_d=-1):
+    def interp_sparse(self, t, a, side_t=+1, side_a=None, factors=None, side_d=-1):
         """interp() as a CSR matrix built directly: each point touches one piece's nt x na nodes, so the
         dense form (npts x N) is wasteful for the tens of thousands of quadrature points of a path."""
         from scipy.sparse import csr_matrix

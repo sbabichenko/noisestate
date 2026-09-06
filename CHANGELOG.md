@@ -87,11 +87,29 @@
   pieces) is exact: one best response from the stationary maps returns them on every node to 1.4e-9
   and 1.8e-9 at 8 nodes (without the split, 8e-5 and not converging; with the buffer's own reactions
   in the FOC, 1e-4), the 6-node fixed point stays at the 6-node floor (1.2e-6) and is reached from
-  zero.  The two-firm Chapter 5 market (make_ch5_cycle_market.build(N=2), ties dropped) is NOT
-  validated: at the sizes asked (L = 6, tau = 0.5, T = 6) the strip has 11 000 nodes x 9 primaries,
-  beyond the dense closed loop, and at tau = 1, L = T = 2, 5 nodes the first-order condition at its
-  own stationary maps has a residual of 3e-2 in the interior (rows and losses that read lagged
-  controls across the band; cause not found), so no number is pinned.
+  zero.  The two-firm Chapter 5 market (make_ch5_cycle_market.build(N=2), ties dropped) at the
+  sizes asked (L = 6, tau = 0.5, T = 6) has 11 000 nodes x 9 primaries, beyond the dense closed loop;
+  at tau = 1, L = T = 2, 5 nodes it is validated below (stage 2d).
+- Transition from a known past, stage 2d: the read of an agent's own lagged control.  The first-order
+  condition's own-lag term reads D(t - lag, a - lag) through `TriangleGrid._locate`, which at a corner
+  node of a band or buffer piece picked the wrong side of a diagonal: a node (L - lag, L - lag) below a
+  band square read (L, L), age exactly L, and was clamped onto the lower triangle's corner instead of
+  reading zero (the shock is gone); a node (T, 0) reading (T + lag, lag) on the buffer's diagonal took
+  the side from its own side_d (meaningless for a rectangle node) and landed on the buffer's lower
+  triangle, where the shifted value is zero instead of r D(T, 0); at T = L a buffer node (T, L) read
+  (L - lag, L - lag) and its split square's side_d sent it to the band's s = 0- side, where the own-noise
+  kernel jumps.  One rule fixes all three: on a diagonal (a region's or a split square's) the side is
+  the one the reader's (side_t, side_a) imply when unambiguous (t+ with a- is below the diagonal, t- with
+  a+ above), side_d only otherwise; and a point at age exactly L read from the right is outside.  Without
+  a window nothing changes (the shipped examples are identical to every digit).  Chapter 3 with player1's
+  control lagged 0.5 (unit 0.5, L = 1.5, T = 2) as its own past and continuation now returns the
+  stationary maps in one best response to the grid's closed-loop floor: the lag in a loss cross term
+  (6 nodes) 2.6e-6 on the band, 2.0e-6 in the interior, 1.2e-6 on the last window (player2 2.0e-5, its
+  floor 1.4e-5); the lag as the only coercive term (8 nodes) 1.4e-5 on the band, 1.4e-8 in the interior
+  (player2 4.6e-7); the band was 3e-2 off before.  The two-firm Chapter 5 market (tau = 1, L = 2, 5
+  nodes, ties and linear terms dropped) returns its stationary maps to 2.3e-4 on every node at T = 2 and
+  T = 3 against the 5-node closed loop's own floor of 1.4e-4 (P) and 2.5e-4 (o), pinned at 5e-4.  The
+  Chapter 3 same-model and the ch1_delayed identities are unchanged to the digit.
 - Transition from a known past, stage 2a: the stationary continuation.  `SpectralFiniteSolver(model,
   past=..., continuation=...)` and `solve(model, past=..., continuation=...)`: `continuation` is a
   converged `StationaryResult` of the new model at the past's window, `"stationary"` (that result

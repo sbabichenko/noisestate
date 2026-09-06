@@ -10,7 +10,9 @@ identity is exact on the whole region; (6) a precision change on Chapter 3 start
 is continued by its new stationary equilibrium, with its costs and `settled` pinned; (7) an old row's noise
 loading on a channel the new row drops is kept on the band; (8) the mean paths start from the past's means,
 `initial: 0` overriding; (9) a model with a control lag and a delayed row (the map in raw age) as its own past and
-continuation is exact on every node; (10) the validation errors.
+continuation is exact on every node; (10) an agent's own lagged control read across the band, in a loss cross
+term and as the only coercive term, and the two-firm Chapter 5 market, each as its own past and continuation,
+return the stationary maps in one best response; (11) the validation errors.
 """
 import json
 import os
@@ -363,6 +365,71 @@ def test_solve_routes_past_and_continuation_and_the_result_rebuilds_them():
         assert prov["kind"] == "stationary" and prov["window"] == 3.0 and prov["nodes"] == 8 and "kernels" not in prov
         assert abs(prov["window_tail"] - res.continuation.window_tail) < 1e-12 and set(prov["costs"]) == {"player1", "player2"}
     assert d["settled"] == res.settled and d["options"]["solver"]["past"]["kind"] == "stationary"
+
+
+def chapter3_with_lag(kind, nodes, L=1.5, lag=0.5):
+    """Chapter 3 with player1's own control read lag behind: in a loss cross term with the state (`loss`), or as the
+    only coercive term (`onlylag`: the instantaneous quadratic 0.01, the lag's 0.5 r1, the Chapter 5 structure)."""
+    d = ns.load(EX + "ch3_two_player.yaml").to_dict()
+    if kind == "loss":
+        d["agents"]["player1"]["loss"].append([0.3, f"D1@{lag}", "X"])
+    else:
+        d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["0.5*r1", f"D1@{lag}", f"D1@{lag}"], [0.01, "D1", "D1"]]
+    d["horizon"] = {"kind": "stationary", "discount": 0.0, "window": L, "nodes": nodes, "unit": lag, "unit_range": L}
+    return ns.Model.from_dict(d)
+
+
+def one_shot_from_the_stationary_maps(m, stat, T, nodes, **kw):
+    """Each agent's best response to the frozen stationary maps on the strip [0, T] with `stat` as past and
+    continuation: the relative deviation from those maps on the identified nodes, by agent, and the solver."""
+    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=nodes, **kw), past=stat, continuation=stat)
+    c = solver.c; out = {}
+    for a in m.agents:
+        gm, _ = solver.best_response(a, c.frozen)
+        keep = solver._identified(a).reshape(len(a.signals), -1)[:, :c.N]
+        out[a.name] = (np.abs(gm - c.frozen[a.name]) * keep / np.abs(c.frozen[a.name]).max()).max(axis=(0, 1))
+    return out, solver
+
+
+@pytest.mark.parametrize("kind, nodes, floor", [("loss", 6, (1e-5, 5e-5)), ("onlylag", 8, (5e-5, 5e-6))])
+def test_own_lagged_control_read_across_the_band_returns_the_stationary_maps(kind, nodes, floor):
+    """Player1's own control lagged by 0.5 (unit 0.5, L = 1.5, T = 2), Chapter 3 as its own past and continuation:
+    the first-order condition reads D1(t - lag, a - lag) through the band and the buffer, whose corner nodes sit
+    on a diagonal or at age exactly L, where the read must take the side the reader's own sides imply.  One
+    best response from the stationary maps returns them on every node to the grid's closed-loop floor: with
+    the lag in a loss cross term (6 nodes) 2.6e-6 on the band, 2.0e-6 in the interior and 1.2e-6 on the last
+    window for player1 (the closed loop itself sits 4e-6 from the stationary kernels there), 2.0e-5 for player2
+    (its floor 1.4e-5); with the lag as the only coercive term (8 nodes: at 6 the map is weakly identified and
+    sits at 1e-3) 1.4e-5 on the band and 1.4e-8 in the interior for player1, 4.6e-7 for player2.  Before the
+    read took its side from side_d at those corners, the band's deviation was 3e-2."""
+    m = chapter3_with_lag(kind, nodes)
+    stat = ns.solve(m).check()
+    dev, solver = one_shot_from_the_stationary_maps(m, stat, 2.0, nodes)
+    g = solver.c.g
+    assert [float(b) for b in g.bp] == [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5] and len(g.pieces) == 33
+    assert dev["player1"].max() < floor[0] and dev["player2"].max() < floor[1], {k: v.max() for k, v in dev.items()}
+    assert dev["player1"][g.upper].max() < floor[0] and dev["player1"][~g.upper & (g.t >= 0.5 - 1e-9)].max() < floor[0]
+
+
+@pytest.mark.parametrize("T", [2.0, 3.0])
+def test_two_firm_market_as_its_own_transition_returns_the_stationary_maps(T):
+    """examples/make_ch5_cycle_market.build(N=2) (tau = 1, L = 2, rP = 0.1; the ties and the linear terms
+    dropped, 5 nodes) as its own past and continuation: the firms' prices and orders enter each other's rows
+    and losses a lag behind, so every first-order condition reads controls across the band.  One best response
+    from the stationary maps returns them to 2.3e-4 on every node at T = 2 and T = 3, the floor of the 5-node
+    closed loop itself (1.4e-4 on P, 2.5e-4 on o against the stationary kernels); pinned at 5e-4."""
+    import sys
+    sys.path.insert(0, EX.rstrip("/"))
+    from make_ch5_cycle_market import build
+    d = build(N=2, tau=1.0, L=2.0, nodes=5, unit_range=2.0, rP=0.1).to_dict()
+    d["ties"] = []; d["params"].pop("kappa", None)
+    for a in d["agents"].values():
+        a["loss"] = [term for term in a["loss"] if len(term) == 3]
+    m = ns.Model.from_dict(d)
+    stat = ns.solve(m).check()
+    dev, solver = one_shot_from_the_stationary_maps(m, stat, T, 5, unit=1.0)
+    assert len(solver.c.g.pieces) == {2.0: 14, 3.0: 16}[T] and solver.c.N == {2.0: 350, 3.0: 400}[T]
+    assert all(v.max() < 5e-4 for v in dev.values()), {k: v.max() for k, v in dev.items()}
 
 
 def test_past_validation():
