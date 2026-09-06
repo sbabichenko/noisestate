@@ -25,6 +25,9 @@ engines as paths on [0, T] (res.means, res.cost_parts).
 """
 from __future__ import annotations
 
+import copy
+import os
+
 import ast
 import math
 import re
@@ -166,13 +169,23 @@ class Agent:
 
 @dataclass
 class Horizon:
-    kind: str = "stationary"          # "stationary" | "finite" (spectral triangle) | "finite_cells"
+    kind: str = "stationary"          # "stationary" | "finite" (spectral triangle) | "finite_cells" | "transition"
     discount: float = 0.0
-    window: float = 8.0               # L for stationary; T for finite
+    window: float = 8.0               # L for stationary; T for finite and transition
     breakpoints: Optional[List[float]] = None
     unit: Optional[float] = None
     unit_range: Optional[float] = None
     nodes: int = 16
+    # kind "transition" only: the past ({"model": a path or an inline stationary model dict, "initial": [shocks]}),
+    # the continuation ("stationary", the default, or "end") and the sizing of the new model's stationary solve
+    # for the continuation ({"window", "nodes"}; default the past's window and horizon.nodes)
+    past: Optional[dict] = None
+    continuation: Optional[str] = None
+    stationary: Optional[dict] = None
+
+    @property
+    def is_transition(self) -> bool:
+        return self.kind == "transition"
 
 
 @dataclass
@@ -371,6 +384,7 @@ class Model:
         self._check_channels_used()
         self._check_control_terms()
         self._check_horizon()
+        self._check_transition()
 
     def _check_names(self) -> None:
         """Quantity names (states, controls, definitions) are distinct and none is the reserved `const`;
@@ -555,13 +569,44 @@ class Model:
             raise ValueError("horizon.window must be positive")
         if hz.discount < 0:
             raise ValueError("horizon.discount must be non-negative")
-        if self.horizon.kind not in ("stationary", "finite", "finite_cells"):
-            raise ValueError("horizon.kind must be 'stationary', 'finite' (spectral triangle) or 'finite_cells'")
+        if self.horizon.kind not in ("stationary", "finite", "finite_cells", "transition"):
+            raise ValueError("horizon.kind must be 'stationary', 'finite' (spectral triangle), 'finite_cells' or 'transition'")
+
+    def _check_transition(self) -> None:
+        """The transition blocks: kind 'transition' requires a past block (a `model`, a list of `initial` shocks,
+        or both), its continuation is 'stationary' or 'end', its `stationary` block has a positive window and
+        at least 2 nodes; the other kinds refuse all three blocks (a keyword past goes to solve(past=))."""
+        hz = self.horizon
+        if hz.kind != "transition":
+            for k in ("past", "continuation", "stationary"):
+                if getattr(hz, k) is not None:
+                    raise ValueError(f"horizon.{k} belongs to horizon.kind 'transition', not {hz.kind!r} (a past given by keyword goes "
+                                     "to solve(model, past=...))")
+            return
+        if not isinstance(hz.past, dict) or not hz.past:
+            raise ValueError("horizon.kind 'transition' needs a past block: horizon.past: {model: old.yaml | an inline stationary "
+                             "model, initial: [{name, loads: {state: coef}, rows: {agent.row: coef}}, ...]}")
+        self._check_keys("horizon.past", hz.past, {"model", "initial"})
+        if hz.past.get("model") is None and not hz.past.get("initial"):
+            raise ValueError("horizon.past needs a `model` (a path or an inline stationary model) or a list of `initial` shocks")
+        if hz.past.get("model") is not None and not isinstance(hz.past["model"], (str, dict)):
+            raise ValueError(f"horizon.past.model must be a path or an inline model dict, not {type(hz.past['model']).__name__}")
+        if hz.past.get("initial") is not None and not isinstance(hz.past["initial"], list):
+            raise ValueError("horizon.past.initial must be a list of shocks {name, loads, rows}")
+        if hz.continuation is not None and hz.continuation not in ("stationary", "end"):
+            raise ValueError(f"horizon.continuation must be 'stationary' or 'end', not {hz.continuation!r}")
+        if hz.stationary is not None:
+            self._check_keys("horizon.stationary", hz.stationary, {"window", "nodes"})
+            if hz.stationary.get("window") is not None and not hz.stationary["window"] > 0:
+                raise ValueError("horizon.stationary.window must be positive")
+            n = hz.stationary.get("nodes")
+            if n is not None and (n != int(n) or n < 2):
+                raise ValueError("horizon.stationary.nodes must be an integer of at least 2")
 
     # ------------------------------------------------------- construction
     _KEYS = {
         "model": {"name", "params", "channels", "states", "definitions", "agents", "ties", "horizon"},
-        "horizon": {"kind", "discount", "window", "breakpoints", "unit", "unit_range", "nodes"},
+        "horizon": {"kind", "discount", "window", "breakpoints", "unit", "unit_range", "nodes", "past", "continuation", "stationary"},
         "state": {"drift", "noise", "initial"},
         "agent": {"controls", "signals", "loss", "myopic"},
         "signal": {"drift", "noise", "delay"},
@@ -579,12 +624,11 @@ class Model:
         """The file structure of this model.  When the model was built from a file or dict, that
         source (with its parameter expressions) is returned, so re-parametrising it works; with
         numeric=True, or when there is no source, coefficients are returned as numbers."""
-        import copy
         hz = self.horizon
         horizon = {"kind": hz.kind, "discount": hz.discount, "window": hz.window, "nodes": hz.nodes}
-        for k in ("breakpoints", "unit", "unit_range"):
+        for k in ("breakpoints", "unit", "unit_range", "past", "continuation", "stationary"):
             if getattr(hz, k) is not None:
-                horizon[k] = getattr(hz, k)
+                horizon[k] = copy.deepcopy(getattr(hz, k))
         if self.source is not None and not numeric:
             # the source (parameter expressions intact) with the live horizon: horizon fields may be changed
             # on the object (the engines read them at compile time); parameters may not (coefficients are
@@ -644,7 +688,9 @@ class Model:
         return Model.from_dict(d)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Model":
+    def from_dict(cls, d: dict, base_dir: Optional[str] = None) -> "Model":
+        """A Model from the file structure.  base_dir: the directory a relative path in horizon.past.model is
+        resolved against (the model file's own directory when loaded from a file); None leaves it as given."""
         cls._check_keys("model", d, cls._KEYS["model"])
         cls._check_keys("horizon", d.get("horizon") or {}, cls._KEYS["horizon"])
         for k, v in (d.get("states") or {}).items():
@@ -682,7 +728,14 @@ class Model:
                           breakpoints=[eval_coef(b, params) for b in hz["breakpoints"]] if hz.get("breakpoints") else None,
                           unit=eval_coef(hz["unit"], params) if hz.get("unit") is not None else None,
                           unit_range=eval_coef(hz["unit_range"], params) if hz.get("unit_range") is not None else None,
-                          nodes=hz.get("nodes", 16))
+                          nodes=hz.get("nodes", 16),
+                          past=copy.deepcopy(hz["past"]) if hz.get("past") is not None else None,
+                          continuation=hz.get("continuation"),
+                          stationary={k: eval_coef(v, params) if k == "window" else v for k, v in hz["stationary"].items()}
+                          if isinstance(hz.get("stationary"), dict) else hz.get("stationary"))
+        if base_dir and isinstance(horizon.past, dict) and isinstance(horizon.past.get("model"), str) \
+                and not os.path.isabs(horizon.past["model"]):
+            horizon.past["model"] = os.path.normpath(os.path.join(base_dir, horizon.past["model"]))
         states = [State(name=k, drift=parse_expr(v.get("drift"), params), noise=parse_expr(v.get("noise"), params),
                         initial=eval_coef(v["initial"], params) if v.get("initial") is not None else None)
                   for k, v in (d.get("states") or {}).items()]
@@ -699,7 +752,6 @@ class Model:
                 loss.append([eval_coef(term[0], params)] + [str(x) for x in term[1:]])
             agents.append(Agent(name=k, controls=list(v.get("controls") or []), signals=rows, loss=loss,
                                 myopic=v.get("myopic", False)))
-        import copy
         from types import MappingProxyType
         m = cls(name=d.get("name", "model"), channels=list(d.get("channels") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
@@ -753,6 +805,20 @@ class ModelBuilder:
 
     def finite(self, T=1.0, nodes=16, discount=0.0):
         self.d["horizon"] = {"kind": "finite", "window": T, "nodes": nodes, "discount": discount}; return self
+
+    def transition(self, T=1.0, nodes=12, past=None, continuation="stationary", discount=0.0, stationary=None, unit=None):
+        """A transition on [0, T] from `past` (a path to the old stationary model file, its dict, a Model or
+        ModelBuilder (their dict is inlined), or a list of initial shocks) continued by 'stationary' (the new
+        model's stationary equilibrium, sized by `stationary` = {"window", "nodes"}) or ending at T ('end')."""
+        if isinstance(past, ModelBuilder):
+            past = past.to_dict()
+        elif isinstance(past, Model):
+            past = past.to_dict()
+        block = {"initial": list(past)} if isinstance(past, (list, tuple)) else {"model": past}
+        self.d["horizon"] = {"kind": "transition", "window": T, "nodes": nodes, "discount": discount, "past": block,
+                             "continuation": continuation, **({"stationary": dict(stationary)} if stationary else {}),
+                             **({"unit": unit} if unit is not None else {})}
+        return self
 
     def build(self) -> Model:
         return Model.from_dict(self.d)

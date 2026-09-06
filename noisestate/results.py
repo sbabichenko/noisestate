@@ -471,6 +471,12 @@ class TriangleResult(BaseResult):
         return self.compiled.g
 
     @property
+    def stationary(self):
+        """The new regime's stationary result the transition is continued by (res.continuation; None when the
+        game ends at T)."""
+        return self.continuation
+
+    @property
     def shocks(self) -> List[str]:
         """The columns of the kernels: the channels, then the initial shocks of the past."""
         return list(self.compiled.channels) + list(getattr(self.compiled, "init_names", []))

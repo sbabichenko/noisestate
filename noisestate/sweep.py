@@ -37,7 +37,8 @@ def _load_dict(model: Union[str, dict, Model]) -> dict:
     return copy.deepcopy(model)
 
 
-ENGINES = {"stationary": StationarySolver, "finite": SpectralFiniteSolver, "finite_cells": FiniteSolver}
+ENGINES = {"stationary": StationarySolver, "finite": SpectralFiniteSolver, "finite_cells": FiniteSolver,
+           "transition": SpectralFiniteSolver}
 
 
 def make_solver(model: Model, **kw):

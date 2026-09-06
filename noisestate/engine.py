@@ -691,6 +691,11 @@ class EngineBase:
         it, has no coarse start)."""
         raise NotImplementedError
 
+    def stationary_start(self) -> Dict[str, np.ndarray]:
+        """Hook: the raw maps a solve with start="stationary" begins from (the spectral finite engine with a
+        stationary continuation implements it)."""
+        raise NotImplementedError("start='stationary' is for the spectral finite engine with a stationary continuation")
+
     def coarse_start(self, factor: float = 0.5, **solve_kw) -> Dict[str, np.ndarray]:
         """Raw maps to start from: the equilibrium at `factor` times the nodes, interpolated to this
         grid.  A coarse solve costs a few fine evaluations and usually saves many."""
@@ -713,6 +718,8 @@ class EngineBase:
         with ties (tied agents' action kernels differ by a channel permutation) and on the cell engine.
         init: action kernels or raw maps per agent, either is accepted.  start="coarse" (with no init)
         solves first at half the nodes and starts from that equilibrium interpolated to this grid.
+        start="stationary" (the spectral finite engine with a stationary continuation) starts from the
+        continuation's stationary maps read at every node's age (what noisestate.transition() does).
         max_evaluations bounds the best-response evaluations (Anderson mixing and the polish together, the
         count res.iterations reports) and deadline the wall time of the solve in seconds; at least one
         evaluation is made, and past either bound the best iterate so far is returned with converged=False
@@ -741,6 +748,10 @@ class EngineBase:
                                      max_evaluations=max_evaluations, deadline=deadline, progress=None if progress is None else
                                      (lambda info: progress({**info, "phase": "coarse " + info["phase"], "seconds": time.time() - t0})))
             coarse_evals = getattr(self, "_coarse_evals", 0)
+        elif init is None and start == "stationary":
+            init = self.stationary_start()
+        elif start not in ("zero", "coarse"):
+            raise ValueError(f"start must be 'zero', 'coarse' or 'stationary', not {start!r}")
         if variable == "actions" and (self.model.ties or not self.ACTIONS):
             variable = "maps"
         kind = self.init_kind(init) if init is not None else None

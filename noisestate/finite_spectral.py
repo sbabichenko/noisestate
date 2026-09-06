@@ -985,8 +985,15 @@ class SpectralFiniteSolver(EngineBase):
         on [T - L, T] are from the stationary ones.  Both are recorded in solver_kw, so refine() and
         stability() rebuild them.  With initial shocks the maps are (nU, nR, N + Nt): after each row's map
         nodes, the discrete weights on the row's point observation of the shocks, on the time nodes."""
+        hz = model.horizon
+        if hz.kind == "transition":                    # the file's blocks, each overridden by its keyword
+            if past is None:
+                past = Past.of(hz.past["model"], hz.past.get("initial")) if hz.past.get("model") is not None \
+                    else Past.from_shocks(hz.past["initial"])
+            if continuation is None:
+                continuation = hz.continuation or "stationary"
         past = Past.of(past) if past is not None else None
-        continuation = self._continuation_of(model, past, continuation)
+        continuation = self._continuation_of(model, past, continuation, hz.stationary if hz.kind == "transition" else None)
         opts = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
         super().__init__(model, verbose, settings=settings, **opts)
         self.c = SpectralCompiled(model, past=past, continuation=continuation)
@@ -995,10 +1002,11 @@ class SpectralFiniteSolver(EngineBase):
         self._rep_parts: Dict[str, Dict[str, float]] = {}      # agent -> where the representation error sits (with a past)
 
     @staticmethod
-    def _continuation_of(model: Model, past, continuation):
+    def _continuation_of(model: Model, past, continuation, stationary: Optional[dict] = None):
         """None / "end" -> None; "stationary" -> this model's stationary equilibrium at the past's window, solved
-        here (horizon.nodes per panel, the finite horizon's breakpoints and initial values dropped); a
-        StationaryResult -> itself (checked by the compile)."""
+        here (horizon.nodes per panel, the finite horizon's breakpoints, initial values and transition blocks
+        dropped; `stationary` = {"window", "nodes"}, a transition file's sizing block, overrides the nodes and
+        must agree with the past's window); a StationaryResult -> itself (checked by the compile)."""
         if continuation is None or continuation == "end":
             return None
         if isinstance(continuation, str):
@@ -1011,8 +1019,29 @@ class SpectralFiniteSolver(EngineBase):
             for s in d["states"].values():
                 s.pop("initial", None)
             hz = d.setdefault("horizon", {}); hz.update(kind="stationary", window=float(past.window)); hz.pop("breakpoints", None)
+            for k in ("past", "continuation", "stationary"):
+                hz.pop(k, None)
+            if stationary:
+                if stationary.get("window") is not None and abs(float(stationary["window"]) - past.window) > 1e-9 * max(1.0, past.window):
+                    raise ValueError(f"horizon.stationary.window ({stationary['window']:g}) must equal the past's window ({past.window:g}): "
+                                     "the buffer after T is one window of the past, on which the stationary maps are read at the node's age")
+                if stationary.get("nodes") is not None:
+                    hz["nodes"] = int(stationary["nodes"])
             return solve(Model.from_dict(d)).check()
         return continuation
+
+    def stationary_start(self) -> Dict[str, np.ndarray]:
+        """The raw maps a solve with start="stationary" begins from: the continuation's stationary maps at every
+        node's age (the frozen maps of the buffer, on the whole strip), zero weights on the initial shocks."""
+        if self.c.cont is None:
+            raise ValueError("start='stationary' needs a stationary continuation (continuation='stationary' or a StationaryResult): "
+                             "the start is its maps read at every node's age")
+        out = {}
+        for a in self.model.agents:
+            gm = np.zeros(self.shapes[a.name])
+            gm[:, :, :self.c.N] = self.c.frozen[a.name]
+            out[a.name] = gm
+        return out
 
     @property
     def action_shapes(self) -> Dict[str, Tuple[int, int, int]]:

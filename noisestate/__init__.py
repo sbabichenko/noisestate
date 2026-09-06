@@ -10,10 +10,11 @@ from .finite import FiniteSolver
 from .finite_spectral import SpectralFiniteSolver
 from .sweep import sweep, make_solver, ENGINES
 from .grid_cache import clear as clear_grid_cache
+from .transition import transition
 
 __all__ = ["Model", "ModelBuilder", "ConvergenceError", "Settings", "BaseResult", "StationaryResult", "TriangleResult",
            "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "load", "solve", "sweep",
-           "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache"]
+           "transition", "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache"]
 
 def _read_version() -> str:
     """The version pyproject.toml declares when the package is imported from a source tree (a checkout on
@@ -49,15 +50,18 @@ def read_json(path: str):
 
 
 def load(path: str) -> Model:
-    return Model.from_dict(read_yaml(path))
+    """The model of a YAML file; a relative path in horizon.past.model is taken from the file's directory."""
+    import os
+    return Model.from_dict(read_yaml(path), base_dir=os.path.dirname(os.path.abspath(path)))
 
 
 def solve(model, refine: bool = False, stability: bool = False, **kw) -> BaseResult:
     """Solve a model (a Model, a dict, or a path to a YAML file) with the engine its horizon selects.
     Keyword arguments go to the engine's constructor (e.g. verbose, naive_observers, settings; on the
     spectral finite engine past=, the known past of a transition, and continuation=, how it goes on
-    after T: "end", "stationary" or a stationary result of the model) or to its solve() (e.g. tol,
-    init, start, variable); unknown ones are an error.  The constructor options are recorded in
+    after T: "end", "stationary" or a stationary result of the model; on a model of kind "transition"
+    each overrides the file's block) or to its solve() (e.g. tol, init, start, variable); unknown ones
+    are an error.  The constructor options are recorded in
     res.solver_kw, so refine() and stability() rebuild the same engine.  refine=True re-solves on a
     finer grid and reports the change (res.refinement); stability=True adds res.stability()."""
     if isinstance(model, str):

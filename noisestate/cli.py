@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 import numpy as np
@@ -15,6 +16,26 @@ import yaml
 from . import __version__, solve as _solve
 from .spec import Model
 from .sweep import sweep
+
+
+def transition_lines(m: Model) -> list:
+    """The structure of a transition model's horizon: the past, the continuation and its sizing."""
+    hz = m.horizon; past = hz.past or {}; out = []
+    if isinstance(past.get("model"), str):
+        out.append(f"past: the stationary model file {past['model']}")
+    elif isinstance(past.get("model"), dict):
+        out.append(f"past: the inline stationary model {past['model'].get('name', 'model')!r}")
+    for sh in past.get("initial") or []:
+        out.append(f"initial shock {sh.get('name', '?')}: loads {sh.get('loads') or {}}, seen on rows {sh.get('rows') or {}}")
+    cont = hz.continuation or "stationary"
+    if cont == "end":
+        out.append(f"continuation: the game ends at T = {hz.window:g}")
+    else:
+        st = hz.stationary or {}
+        out.append(f"continuation: the new model's stationary equilibrium on a buffer of one window after T = {hz.window:g}"
+                   + (f" (window {st['window']:g})" if st.get("window") is not None else " (the past's window)")
+                   + f", {st.get('nodes', hz.nodes)} nodes per panel")
+    return out
 
 
 def save_result(res, path: str) -> None:
@@ -61,6 +82,7 @@ def main(argv=None) -> int:
 def _run(p, args) -> int:
     with open(args.model) as fh:
         d = yaml.safe_load(fh)
+    base_dir = os.path.dirname(os.path.abspath(args.model))     # a relative horizon.past.model is taken from the file's directory
     bounds = {k: v for k, v in (("max_evaluations", getattr(args, "max_evaluations", None)), ("deadline", getattr(args, "deadline", None)))
               if v is not None}
     if args.cmd == "sweep":
@@ -71,13 +93,16 @@ def _run(p, args) -> int:
         print("wrote", args.out, f"({len(rows)} points, {sum(r['seconds'] for r in rows):.1f}s)")
         return 0 if all(r["converged"] for r in rows) else 1
     if args.cmd == "validate":
-        m = Model.from_dict(d)
+        m = Model.from_dict(d, base_dir=base_dir)
         print(f"{m.name}: {len(m.channels)} channels, {len(m.states)} states, {len(m.definitions)} definitions, "
               f"{len(m.agents)} agents, {len(m.control_names)} controls; horizon {m.horizon.kind}, "
               f"discount {m.horizon.discount}, window {m.horizon.window}; lags {m.all_lags()}")
         for a in m.agents:
             print(f"  {a.name}: controls {a.controls}; rows {[r.name for r in a.signals]}; {len(a.loss)} loss terms"
                   + ("; myopic" if a.myopic else ""))
+        if m.horizon.kind == "transition":
+            for line in transition_lines(m):
+                print("  " + line)
         for note in m.notes:
             print("  note:", note)
         return 0
@@ -97,7 +122,7 @@ def _run(p, args) -> int:
         if not args.window > 0:
             p.error("--window must be positive")
         d.setdefault("horizon", {})["window"] = args.window
-    m = Model.from_dict(d)
+    m = Model.from_dict(d, base_dir=base_dir)
     kw = dict(bounds) if args.tol is None else {"tol": args.tol, **bounds}
     res = _solve(m, verbose=args.verbose, refine=args.refine, stability=args.stability, **kw)
     print(res.summary())

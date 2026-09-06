@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Transition from a known past, stage 3a: the model-file and API surface.  `horizon: {kind: transition,
+  window: T, nodes: n, discount: rho, past: {model: old.yaml | an inline stationary model, initial:
+  [...]}, continuation: stationary | end, stationary: {window: L, nodes: m}}` compiles to the spectral
+  finite engine with the past solved on the fly (a relative `past.model` path is taken from the model
+  file's directory by `load()` and the CLI) and the continuation solved at `stationary.nodes`
+  (default horizon.nodes; its window must be the past's); the keywords `solve(model, past=,
+  continuation=)` override the file's blocks.  `Model.validate` gains `_check_transition` (kind
+  transition needs a past block with a `model` or `initial` shocks; the other kinds refuse the three
+  blocks; continuation is 'stationary' or 'end'), `ModelBuilder.transition(T, nodes, past=,
+  continuation=, discount=, stationary=, unit=)` mirrors the file, `noisestate validate` prints the
+  transition's structure and `noisestate solve` handles the kind.  `noisestate.transition(old, new, T,
+  nodes=12, continuation="stationary", stationary=None, **solve_kw)` (`noisestate/transition.py`) solves
+  the old stationary model (a path, dict, Model or ModelBuilder) or takes a converged result, solves
+  the new model's stationary equilibrium, builds the transition horizon on `new` (the past recorded in
+  its block) and starts from the new stationary maps read at every node's age (`solve(start=
+  "stationary")`, new; `solve()` keeps `start="zero"`), returning the result with `res.past` and
+  `res.stationary` (the continuation) attached.  Tests (`tests/test_transition_api.py`): the file form
+  and the helper equal the keyword form bit for bit (Chapter 3, p1 = 3 to 10, T = 6, 8 nodes; the
+  helper in 21 evaluations against 23 from zero), the builder with initial shocks equals
+  `past=[shocks]`, the validation errors, and the CLI round trip through `validate` and `solve -o` from
+  another working directory.
+
 - Transition from a known past, stage 1a (grid and operators; no engine behaviour changes).
   `noisestate/past.py`: `Past`, the loadings of the pre-zero shocks on the old regime, built from a
   converged `StationaryResult` (kernels of every state, control and signal row as functions of shock
