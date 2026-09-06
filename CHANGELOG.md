@@ -60,6 +60,9 @@
   `res.numerics` is the resolved object and the payload's `options.numerics` carries it.  The shipped
   examples and the README use the block.  No number moved: every shipped case at distance 0 from ec1b533.
 
+- The baseline record re-taken at ec1b533 (`tests/refs/baseline_0.4.json` and `.npz`): the operator step (C3) had
+  moved the spectral cases by up to 4e-15 in the last bits, and the API stage that follows must move no number,
+  so the record is the state at its starting point; every case at distance exactly 0 from there on.
 - `docs/architecture.md` (step C4): the modules and what each holds, the data flow of one best response
   (compiled model, closed loop, passive rows, operators, FOC solve, projection, checks) and of one transition
   (past, band, buffer, continuation), and where the three engines share the base; linked from README's
