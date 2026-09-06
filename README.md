@@ -246,16 +246,33 @@ the insider seeing V at once, the market maker from the prior variance, the game
 T = 2, trading cost eps = 0.1: the initial price impact lambda(0+) = 0.658872 at 8, 12 and 16
 nodes, the market maker's belief error falling monotonically from Sigma0 to 0.132 Sigma0 at T).
 No finite-horizon reference exists for the latter (`tests/refs` and the dissertation's numerics
-are stationary; Back's model has a terminal payoff outside the grammar), so it is pinned by node
-convergence and compared with Back's price impact at eps = 0, sqrt(Sigma0)/sigma_Z = 1: a sweep
-over eps at 12 nodes gives lambda(0+) = 0.614 (0.2), 0.659 (0.1), 0.683 (0.05), 0.692 (0.03), and
-0.697 and 0.700 at 0.02 and 0.01, where the fixed point no longer converges from the warm start
-(the revealed share of Sigma0 by T rises from 75% to 99%): rising toward Back's value, short of
-it at the eps where the solve still converges.  Open: the trader's second-order check reports a
-saddle with the prior column (smallest curvature -0.013 at eps 0.2, -0.078 at 0.1, at every node
-count) while the same finite-horizon market without a prior passes (+1e-5); the check ignores the
-initial-shock columns, and whether the negative direction is the discrete treatment of those
-columns or of the problem is not settled.
+are stationary; Back's model has a terminal payoff outside the grammar), but the market's own
+structure pins it: the price is a martingale with a constant impact (the market maker's map is
+the constant lambda on every node of the strip, spread 7e-7 at eps 0.2), so lambda^2 sigma_Z^2 T
+= Sigma0 - Sigma_T, with Sigma_T = `res.belief_error("market_maker", "V")[-1]`, must hold at
+every eps, and it does: at 12 nodes lambda = 0.614143 against sqrt((Sigma0 - Sigma_T)/T) =
+0.614142 at eps 0.2, 0.658872 against 0.658865 at 0.1, 0.682548 against 0.682514 at 0.05,
+0.692248 against 0.692185 at 0.03 (`tests/test_transition_examples.py` pins the first two to
+1e-4).  Back's eps = 0 limit, where V is revealed by T, is lambda = sqrt(Sigma0/T)/sigma_Z =
+0.7071 here (sqrt(Sigma0)/sigma_Z only at T = 1), and a sweep over eps converges to it: 0.614,
+0.659, 0.683, 0.692, 0.697 at 0.2, 0.1, 0.05, 0.03, 0.02, the revealed share of Sigma0 by T
+rising from 75% to 99%; eps 0.05 and below converge only warm-started from the previous point
+(`sweep`), not from a zero start, and at 0.02 the fixed point no longer converges from the warm
+start (0.697066 against the identity's 0.697067 all the same).  The trader's second-order check
+reports NOT A MINIMUM: -0.0098 at 8 nodes and -0.0128 at 12 at eps 0.2, -0.072, -0.078, -0.086 at
+8, 12, 16 at eps 0.1, passing at eps 1.  The report is correct about the discrete objective
+(finite differences of the trader's cost along the flagged direction equal the form to 7 digits)
+and has nothing to do with the prior: the direction is the trader's response to the first flow
+increments, alternating in t along the line s = 0, with no weight on the prior column, and the
+same finite-horizon market without a prior (V a random walk seen by the trader) flags the trader
+as well (-0.0042 at 8 nodes).  It is a quadrature artefact of the strip on the D P cross term:
+with a constant lambda the continuous cross term is (lambda/2)(int delta dt)^2 >= 0 and the
+continuous problem is strongly convex (modulus 2 eps), but the strip does not integrate the
+product of an interpolant with its own Volterra integral exactly on the s = 0 mode, where the eps
+term's convexity is only the edge weights' (along the flagged direction at 8 nodes the eps term
+gives +5.8e-3 and the cross term -7.0e-3); the error does not vanish with nodes (the form's
+generalised eigenvalue against the eps term -1.83 at 8, -2.21 at 12) and vanishes when eps
+dominates.  A known limitation of the strip quadrature (Limits), not a saddle of the market.
 
 ## Sweeps and interactive use
 
@@ -392,6 +409,7 @@ uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
 | means, stationary | one agent with a target, dX = (-a X + D) dt + dW; two agents with opposite targets and private signals | closed form ubar = theta a / (1 + r a (a + rho)); the open-loop and the closed-loop (coupled algebraic Riccati) Nash constants of the deterministic game (`tests/test_means.py`) | the windowed closed form to 3e-15, the exact one to the window's truncation e^{-(a + rho) L} (2.8e-8 at a = 1, rho = 0, L = 16); open-loop to 4e-8 at signal precision 1e-6, then monotone toward closed-loop, 0.5622 at precision 1000 against 0.5570 (open-loop 0.6667) |
 | transitions, same-model identities | Chapter 3, `examples/ch1_delayed_finite.yaml` (a control lag and a delayed row) and the two-firm Chapter 5 market, each as its own past and continuation (`tests/test_transition.py`, `tests/test_transition_means.py`) | the stationary kernels K(t - s) on every node of the strip, the band, the last window and the buffer included; the stationary means with a target | Chapter 3 to 2e-9 at 16 nodes (settled 7e-10; the loss path equal to the stationary flow to 7e-11, excess costs 5e-11, the mean paths to 4.7e-10), ch1_delayed to 2e-9 at 8 nodes, the two-firm market to 2.3e-4 at 5 nodes (its own closed-loop floor 1.4e-4 to 2.5e-4) |
 | transitions, prior start | the one-agent discounted model of `tests/test_finite_discount.py` with X(0) ~ N(0, P0), unobserved and observed at once (`tests/test_transition.py`, `tests/test_transition_result.py`) | the discounted Riccati gain with a Kalman filter from P(0) = P0 or 0, the closed-loop impulse responses, the error variance P(t) | cost within 1e-7 and kernels within 1e-5 at 16 nodes; `belief_error` equal to P(t) to 3.4e-6 on every time node, monotone from P0 = 0.8 to the stationary 0.5466 |
+| transitions, Kyle-Back from a prior | `examples/kyle_back_prior.yaml`: the market started from V ~ N(0, Sigma0) seen at once by the insider, the game ending at T = 2 (`tests/test_transition_examples.py`) | the martingale price's identity lambda^2 sigma_Z^2 T = Sigma0 - Sigma_T (the market maker's map a constant, Sigma_T its belief error of V at T) and Back's eps = 0 limit sqrt(Sigma0/T)/sigma_Z = 0.7071 | at 12 nodes lambda = 0.614143 against 0.614142 (eps 0.2), 0.658872 against 0.658865 (0.1), 0.682548 against 0.682514 (0.05), 0.692248 against 0.692185 (0.03), pinned to 1e-4 at 0.2 and 0.1; lambda(0+) equal at 8, 12 and 16 nodes to 2e-6; the eps sweep converging to the limit (0.697 at 0.02) |
 | means, finite (Chapter 1 with targets) | the Chapter 1 game with targets b1 = 1, b2 = -1, T = 1, r = 0.1, precisions p1 = p2 = p (`examples/ch1_mean_sweep.py`) | the dissertation's spectral solver (`spec_ch1`, 12 x 16 nodes, Tikhonov 1e-7, its Dbar1(0) converged to 0.03%): Dbar1(0), Dbar1(T/2), Jbar1 at p = 0.1, 1, 10, 100, 1000 and the p = 10 paths (`tests/refs/ch1_mean_p10.txt`); the cell engine's Richardson pairs (40, 80) and (80, 160); the deterministic LQ closed form (Riccati, solve_ivp at rtol 1e-12) for one agent (`tests/test_means_finite.py`) | 12 nodes per side, converged to 2e-5 up to p = 100 (20 nodes at p = 1000): Dbar1(0) = 9.93670, 9.47573, 7.79470, 5.98010, 5.10638 against the reference's 9.93688, 9.47708, 7.79761, 5.98117, 5.11630 (1.9e-5, 1.4e-4, 3.7e-4, 1.8e-4, 1.9e-3), Dbar1(T/2) to 1.1e-5, 7.7e-5, 1.9e-4, 5.3e-4, 1.8e-3, Jbar1 (the reference's includes the target's constant b^2 T = 1) to 5.7e-5, 4.3e-4, 1.1e-3, 1.3e-3, 3.1e-3; the p = 10 path within 1.4e-2 of the reference at every t (1.9e-3 of Dbar1(0), the largest at t = 0.075), where the cell engine's Richardson limits close on the package's path as h^2 (4.8e-3 then 1.2e-3 at T/2) and not on the reference, and the reference's variance cost is off by the same order (9e-5 at p = 10, 2e-4 at 100, 1.1e-3 at 1000): the gaps are the reference's own error, and at p = 3000 the reference is under-resolved on the sharp kernels: 4.9827 against the package's 4.9163 (1.3e-2), which 20 to 32 nodes agree on to 1e-6 and whose gap to the closed-loop limit keeps the 1/sqrt(p) law the stationary test finds; one agent alone within 1e-11 of the Riccati paths and 1e-10 of the cost, with a target, an initial state, and discounted (two states as well); open-loop 10 (1 - t) to 6.5e-9 at precision 1e-8, then monotone toward the closed-loop 4.6469 |
 
 Kyle-Back with two traders: the reference grid solver (`kb_multi.py`), Richardson-
@@ -600,8 +618,13 @@ transition (T = 1.25, L = 1) has 56 pieces, and the two-firm Chapter 5 market at
 shipped sizes (L = 6, tau = 0.5) has 11 000 nodes x 9 primaries, beyond the dense closed
 loop (it is validated at tau = 1, L = T = 2, 5 nodes).  The closure after T assumes the
 transition has settled by T - L; a short T gives a biased answer that only the `settled`
-row reports.  The second-order check ignores the initial-shock columns, and with a prior
-column it flags the Kyle-Back trader's best response as a saddle (Transitions).  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
+row reports.  The strip's quadrature is not exact on the product of an interpolant with its
+own Volterra integral along the line s = 0, so at a small trading cost the second-order check
+flags the Kyle-Back trader, with or without a prior: -0.013 at eps 0.2 and 12 nodes, not
+vanishing with nodes, gone at eps 1, a correct report on the discrete objective and the
+quadrature's artefact on the D P cross term, not a saddle of the market (Transitions); a
+product rule for that term on the diagonal is a candidate fix.  The second-order check ignores
+the initial-shock columns.  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
 outside the grammar; a state with an empty `drift` and `noise` validates and is carried
 as its initial value.  The Chapter 4 example is the stationary variant, where V is a
 random walk on the window and the agents keep receiving V shocks.

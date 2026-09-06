@@ -115,11 +115,16 @@
   `examples/kyle_back_prior.yaml` (the Kyle-Back market started from a prior V ~ N(0, Sigma0) seen at
   once by the insider, the market maker from the prior variance, the game ending at T = 2, eps = 0.1:
   lambda(0+) = 0.658872 at 8, 12 and 16 nodes, the market maker's belief error falling monotonically to
-  0.132 Sigma0; against Back's sqrt(Sigma0)/sigma_Z = 1 at eps = 0 a sweep over eps gives 0.614, 0.659,
-  0.683, 0.692, 0.697, 0.700 at 0.2 down to 0.01, the last two not converged from the warm start; no
-  finite-horizon reference exists, so the example is pinned by node convergence; open: the trader's
-  second-order check reports a saddle with the prior column, -0.013 at eps 0.2 at every node count,
-  while the same market without a prior passes).  The tests: `tests/test_transition.py` (the identities,
+  0.132 Sigma0; the price is a martingale with a constant impact, so lambda^2 sigma_Z^2 T = Sigma0 -
+  Sigma_T is the validation: 0.614143 against 0.614142 at eps 0.2 and 0.658872 against 0.658865 at 0.1 at
+  12 nodes, pinned to 1e-4, 3e-5 and 6e-5 at 0.05 and 0.03; Back's eps = 0 limit is sqrt(Sigma0/T)/sigma_Z
+  = 0.7071 at T = 2 and the eps sweep converges to it, 0.614, 0.659, 0.683, 0.692, 0.697 at 0.2 down to
+  0.02, eps 0.05 and below warm-started only; the trader's second-order check reports NOT A MINIMUM,
+  -0.0098 at 8 nodes and -0.0128 at 12 at eps 0.2, -0.078 at 12 at eps 0.1, passing at eps 1: a correct
+  report on the discrete objective, the strip quadrature's error on the D P cross term along the line
+  s = 0 at a small trading cost, present with or without the prior, not vanishing with nodes, a known
+  limitation of the quadrature and not a saddle of the market; README, Transitions and Limits).  The
+  tests: `tests/test_transition.py` (the identities,
   the prior start against the discounted Riccati and Kalman closed form, the regime change with its
   12-node costs 2.55448876 and 2.55908247 pinned at 1e-6 and past=Model equal to past=StationaryResult
   bit for bit, the old noise loading on a channel the new row drops, the validation errors),

@@ -1,10 +1,17 @@
 # Kyle-Back market started from a prior: V ~ N(0, Sigma0) is drawn once at time 0-, the insider sees it at
 # once (the initial shock's loading 1 on its row), the market maker starts from the prior variance (no
 # loading on its row); the game ends at T (continuation: end).  Trader: maximise E int [D (V - P) -
-# eps D^2] dt; market maker: P = E[V | flow history] (myopic, competitive).  In Back (1992), where eps = 0
-# and the value is revealed by T, the price impact is lambda = sqrt(Sigma0) / sigma_Z at every date; here
-# lambda(0+) is the market maker's weight on the flow increment at age 0 at time 0+ (res.maps
-# ["market_maker"][0, 0] at the node t = 0, age 0), which approaches it as eps falls (see the README).
+# eps D^2] dt; market maker: P = E[V | flow history] (myopic, competitive).  The price is a martingale with
+# a constant impact: the market maker's map is the constant lambda on every node of the strip (spread 7e-7
+# at eps 0.2), so lambda^2 sigma_Z^2 T = Sigma0 - Sigma_T, Sigma_T the market maker's belief error of V at
+# T (res.belief_error), must hold at every eps and does: 0.614143 against 0.614142 at eps 0.2, 0.658872
+# against 0.658865 at 0.1 (12 nodes; tests/test_transition_examples.py).  Back (1992), eps = 0 and the
+# value revealed by T, has lambda = sqrt(Sigma0 / T) / sigma_Z = 0.7071 here (sqrt(Sigma0) / sigma_Z only
+# at T = 1), and a sweep over eps converges to it (0.697 at eps 0.02; eps 0.05 and below converge only
+# warm-started from the previous point, see the README).  lambda(0+) is res.maps["market_maker"][0, 0] at
+# the node t = 0, age 0.  The trader's second-order check reports NOT A MINIMUM (-0.078 at eps 0.1, 12
+# nodes): the strip quadrature's error on the D P cross term along the line s = 0 at a small trading cost,
+# present with or without the prior, gone at eps 1 (README, Transitions and Limits).
 #   noisestate solve examples/kyle_back_prior.yaml --plot prior.png
 name: kyle_back_prior
 params: {eps: 0.1, Sigma0: 1.0, sigma_Z: 1.0}

@@ -3,8 +3,14 @@
 # stationary equilibrium (its kernels on the shocks born before zero stay alive on a band until age L = 3)
 # and continued by the new model's stationary equilibrium, at which every map is frozen on a buffer [6, 9]:
 # res.loss_path is E[loss(t)], res.excess_costs the discounted cost of the transition over the new stationary
-# flow, res.settled how far the maps on [3, 6] are from the new stationary ones (2.7e-6 at T = 9; the 1e-4
-# guard fires at T = 6, where they sit at 4.8e-4: raise horizon.window to quiet it).
+# flow, res.settled how far the maps on [3, 6] are from the new stationary ones.  At this size the summary
+# raises three flags, each expected: TRANSITION NOT SETTLED (4.8e-4 against settled_tol 1e-4: T = 6 is
+# short for a closed-loop decay of 1e-2 per unit of t; 2.7e-6 at T = 9, raise horizon.window to quiet it),
+# UNDER-RESOLVED (representation error 8.6e-4, all of it on the band's collapsing tip, where the old shocks'
+# kernels are cut at age L: geometry, not the interior's resolution, which sits at 4e-5; see
+# res.representation_parts) and PAST WINDOW TOO SHORT (the old regime's kernels still move by 2.4% of their
+# peak over the last tenth of its window L = 3, the shipped ch3_two_player.yaml's: solve the past with a
+# longer window for a sharper band).
 #   noisestate solve examples/ch3_precision_change.yaml --plot change.png
 name: ch3_precision_change
 params: {p1: 10.0, p2: 10.0, r1: 1.0, r2: 1.0}
