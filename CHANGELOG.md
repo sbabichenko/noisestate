@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- The spectral finite engine's closed loop assembled one time panel at a time.  Beyond
+  `settings.closed_loop_dense_max` unknowns (n_prim N; default 16384) `SpectralCompiled.closed_loop` no longer
+  builds the (n_prim N)^2 dense system: for each time panel the rows of the state part (the Volterra path
+  restricted to the panel's output nodes, `LinePath.apply(rows=)`) and of the map convolutions
+  (`conv_left_rows`, `LinePath.with_known(rows=)`) are built against the sparse reads of the primaries
+  (`read_sparse`, `map_shift_sparse`, `row_blocks_sparse`, `state_inputs_sparse`: an interpolation touches one
+  piece per point) and solved by forward substitution from the earlier panels, then discarded; the band's and
+  the buffer's forcing goes the same way, and the state columns are shared with the dense path
+  (`_state_columns`, the Volterra products on the path without the N x N operator).  Peak memory is
+  n_prim^2 N N_panel: ch1_delayed as its own transition at window 3, T = 6 (36 panels) goes from 13.0 GB and
+  44 s to 1.3 GB and 7 s per closed loop at 4 nodes (N = 9408), from 31.9 GB and 157 s to 3.6 GB and 20 s
+  at 5 nodes (N = 14700), and runs at 7 nodes (N = 28812, 86k unknowns, a 56 GB dense system) in 18 GB and
+  123 s.  Within the limit the dense path is kept and every shipped example and transition case is the
+  0.4.0 result bit for bit; the per-panel world agrees with it to BLAS rounding (2e-16 to 3e-13 relative on
+  the examples), not to the bit, because OpenBLAS rounds the product of a row block differently from the
+  rows of the full product (one entry in a thousand differs in the last bit on this machine).  The Volterra
+  operator `Vol` is built on first use (the dense path and `world_from_actions`); the best response still
+  holds about thirty N x N dense operators (`conv_rows`, `response`, `continuation`, `projection_rows`, the
+  row and projection operators), 20 GB at N = 9408, which is now the size ceiling.
+
 ## 0.4.0 (2026-09-06) — transitions from a stationary past
 
 - Transitions.  The spectral finite engine solves the equilibrium path of a regime change: the game runs

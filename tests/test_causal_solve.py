@@ -22,3 +22,37 @@ def test_block_forward_substitution_matches_dense_solve():
     c._solve_causal = lambda M_, B_: np.linalg.solve(np.eye(n) - M_, B_)
     Zd = c.closed_loop(maps)
     assert np.abs(Zb - Zd).max() < 1e-9 * max(1.0, np.abs(Zd).max())
+
+
+def test_per_panel_closed_loop_matches_the_dense_one():
+    """The closed loop assembled one time panel at a time (settings.closed_loop_dense_max below n_prim N: the
+    rows of each panel from the line paths and the sparse reads, the (n_prim N)^2 system never built) is the
+    dense one to BLAS rounding: without a past (ch1_delayed, 5 nodes; an agent excluded with its impulse
+    column) and with a past and a continuation (Chapter 3 as its own, T = 6, L = 3, 6 nodes: the band, the
+    buffer, the excluded agent frozen or off on the buffer) the worlds agree to 1e-13 of their peak, while
+    the dense path within the limit is the default (measured 2e-16 to 3e-13 on the shipped examples; the
+    two are not bit-identical since a BLAS product of a row block rounds differently from the full one)."""
+    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_delayed_finite.yaml")); d["horizon"]["nodes"] = 5
+    m = ns.Model.from_dict(d)
+    dense = SpectralFiniteSolver(m); panel = SpectralFiniteSolver(m, settings={"closed_loop_dense_max": 0})
+    assert not dense.c.per_panel and panel.c.per_panel and panel.c.N == dense.c.N
+    c = dense.c; rng = np.random.default_rng(5)
+    acts = {a.name: rng.standard_normal((len(a.controls), c.N, c.nW)) * 0.1 for a in m.agents}
+    maps = dense.maps_from_actions(acts)
+    for excl, imp in ((None, ()), ("player2", ("D2",))):
+        Zd = dense.c.closed_loop(maps, excluded=excl, impulse_controls=imp)
+        Zp = panel.c.closed_loop(maps, excluded=excl, impulse_controls=imp)
+        assert Zd.shape == Zp.shape and np.abs(Zp - Zd).max() < 1e-13 * np.abs(Zd).max()
+    m3 = ns.load(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml"))
+    stat = ns.solve(m3.with_horizon(nodes=6)).check()
+    hz = m3.with_horizon(kind="finite", window=6.0, nodes=6)
+    dense = SpectralFiniteSolver(hz, past=stat, continuation=stat)
+    panel = SpectralFiniteSolver(hz, past=stat, continuation=stat, settings={"closed_loop_dense_max": 0})
+    assert panel.c.per_panel and panel.c.buffer.any() and panel.c.g.upper.any()
+    for a in m3.agents:
+        for own_frozen in (True, False):
+            Zd = dense.c.closed_loop(dense.c.frozen, excluded=a.name, impulse_controls=a.controls, own_frozen=own_frozen)
+            Zp = panel.c.closed_loop(panel.c.frozen, excluded=a.name, impulse_controls=a.controls, own_frozen=own_frozen)
+            assert np.abs(Zp - Zd).max() < 1e-13 * np.abs(Zd).max()
+    Zd = dense.c.closed_loop(dense.c.frozen); Zp = panel.c.closed_loop(panel.c.frozen)
+    assert np.abs(Zp - Zd).max() < 1e-13 * np.abs(Zd).max()

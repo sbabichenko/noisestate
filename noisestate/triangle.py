@@ -593,28 +593,57 @@ class LinePath:
         rowidx = None if uniform else np.repeat(np.arange(nq), counts)
         return indptr, rowidx
 
-    def _weighted_sum(self, d: np.ndarray) -> np.ndarray:
-        """R @ (diag(d) @ I) as a dense (n_out, N) array."""
+    @cached_property
+    def _starts(self):
+        """First quadrature point of every output node (and the total), the points being grouped by node."""
+        return np.searchsorted(self.rows, np.arange(self.n_out + 1))
+
+    def points(self, rows):
+        """The quadrature-point range [i0, i1) of the output nodes [lo, hi) = rows."""
+        lo, hi = rows
+        return int(self._starts[lo]), int(self._starts[hi])
+
+    def _weighted_sum(self, d: np.ndarray, rows=None) -> np.ndarray:
+        """R @ (diag(d) @ I) as a dense (n_out, N) array; with rows = (lo, hi) the rows of the output nodes
+        [lo, hi) only, (hi - lo, N), from d at their quadrature points (d given at every point, or at
+        theirs).  The rows are the same sums in the same order whether or not the others are built."""
         layout = self._sum_layout
+        if rows is None:
+            lo, hi = 0, self.n_out
+        else:
+            lo, hi = rows
         if layout is None or not np.issubdtype(d.dtype, np.floating):
             from scipy.sparse import diags
-            return (self.R @ (diags(d) @ self.I)).toarray()
+            R = self.R if rows is None else self.R[lo:hi]
+            return (R @ (diags(d) @ self.I)).toarray()
         indptr, rowidx = layout
         I = self.I
+        i0, i1 = (0, len(self.rows)) if rows is None else self.points(rows)
+        if i1 == i0:
+            return np.zeros((hi - lo, self.N))
+        if len(d) != i1 - i0:
+            d = d[i0:i1]
+        j0, j1 = int(indptr[lo]), int(indptr[hi])
         if rowidx is None:
-            data = (I.data.reshape(len(d), -1) * d[:, None]).reshape(-1)
+            data = (I.data[j0:j1].reshape(i1 - i0, -1) * d[:, None]).reshape(-1)
         else:
-            data = I.data * d[rowidx]
+            data = I.data[j0:j1] * d[rowidx[j0:j1] - i0]
         from scipy.sparse import _sparsetools
-        out = np.zeros((self.n_out, self.N))
-        _sparsetools.csr_todense(self.n_out, self.N, indptr, I.indices, data, out)
+        out = np.zeros((hi - lo, self.N))
+        _sparsetools.csr_todense(hi - lo, self.N, indptr[lo:hi + 1] - j0, I.indices[j0:j1], data, out)
         return out
 
-    def apply(self, factor: np.ndarray) -> np.ndarray:
-        """Operator with weight = base weight x factor (factor evaluated at the quadrature points)."""
+    def apply(self, factor: np.ndarray, rows=None) -> np.ndarray:
+        """Operator with weight = base weight x factor (factor evaluated at the quadrature points); with
+        rows = (lo, hi) the rows of those output nodes only, from the factor at every point or at theirs."""
         if self.rows is None:
-            return np.zeros((self.n_out, self.N), dtype=np.result_type(factor, float))
-        return self._weighted_sum(self.w * factor)
+            n = self.n_out if rows is None else rows[1] - rows[0]
+            return np.zeros((n, self.N), dtype=np.result_type(factor, float))
+        if rows is None:
+            return self._weighted_sum(self.w * factor)
+        i0, i1 = self.points(rows)
+        f = factor if len(factor) == i1 - i0 else factor[i0:i1]
+        return self._weighted_sum(self.w[i0:i1] * f, rows)
 
     def bilinear(self, f: np.ndarray, kernel: np.ndarray) -> np.ndarray:
         """The integrals with both factors known: (n_out, m) for the unknown's nodal vector f (N,) and the
@@ -627,10 +656,18 @@ class LinePath:
         prod = (self.w * g)[:, None] * K if K.ndim == 2 else self.w * g * K
         return self.R @ prod
 
-    def with_known(self, kernel: np.ndarray, extra: Optional[np.ndarray] = None) -> np.ndarray:
-        """Operator whose weight is the known kernel read along the path (times `extra` per point)."""
+    def with_known(self, kernel: np.ndarray, extra: Optional[np.ndarray] = None, rows=None) -> np.ndarray:
+        """Operator whose weight is the known kernel read along the path (times `extra` per point); with
+        rows = (lo, hi) the rows of those output nodes only, (hi - lo, N), the known read at their points."""
         if self.rows is None:
-            return np.zeros((self.n_out, self.N))
+            n = self.n_out if rows is None else rows[1] - rows[0]
+            return np.zeros((n, self.N))
+        if rows is not None:
+            i0, i1 = self.points(rows)
+            f = self.J[i0:i1] @ kernel
+            if extra is not None:
+                f = f * extra[i0:i1]
+            return self.apply(f, rows)
         f = self.read(kernel) if self.Jf is not None else self.J @ kernel
         if extra is not None:
             f = f * extra

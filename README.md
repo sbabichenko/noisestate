@@ -330,7 +330,9 @@ The tuning constants live in one frozen dataclass, `noisestate.Settings` (`noise
 each with its default and a one-line meaning: the outer fixed point (`anderson_m` 15,
 `anderson_iters` 150, `anderson_reg` 1e-8, `newton_inner_m` 15), the best response (`foc_rcond`
 1e-10, `stationary_map_ridge` 1e-14, `map_ridge` 1e-13, and the cell engine's `cell_dense_max` 200,
-`cell_krylov_rtol` 1e-12, `cell_krylov_maxiter` 400, `cell_krylov_retry` 1000), the second-order check
+`cell_krylov_rtol` 1e-12, `cell_krylov_maxiter` 400, `cell_krylov_retry` 1000, and the spectral finite engine's
+`closed_loop_dense_max` 16384, the unknowns n_prim N up to which the closed loop is one dense system, beyond
+which it is assembled and solved one time panel at a time), the second-order check
 (`second_order_tol` 1e-4, `second_order_dense` 4000, `second_order_lanczos_tol` 1e-6,
 `second_order_lanczos_maxiter` 300), the means (`mean_rcond` 1e-12, `lead_weight_warn` 100) and the
 result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `settled_tol` 1e-4 for a transition's maps and means

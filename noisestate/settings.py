@@ -34,6 +34,7 @@ class Settings:
     stationary_map_ridge: float = 1e-14  # ridge of the stationary map projection's Gram, relative to its mean diagonal
     map_ridge: float = 1e-13            # ridge of the finite engines' per-time-row (per-cell) map projection, relative to the row's own Gram
     cell_dense_max: int = 200           # cell engine: unknowns up to which the best-response system is assembled densely; LGMRES above
+    closed_loop_dense_max: int = 16384  # spectral finite engine: unknowns n_prim N up to which the closed loop is one dense system (the numbers of 0.4.0 to the bit); above it the rows of each time panel are built from the line paths and solved in turn, the (n_prim N)^2 system never materialised (the same numbers to BLAS rounding)
     cell_krylov_rtol: float = 1e-12     # cell engine: relative tolerance of the LGMRES best-response solve
     cell_krylov_maxiter: int = 400      # cell engine: LGMRES iterations of the first attempt
     cell_krylov_retry: int = 1000       # cell engine: LGMRES iterations of the second attempt, warm-started from the first

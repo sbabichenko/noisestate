@@ -59,12 +59,13 @@ def _common_unit_hint(lags, kmax: int = 100) -> str:
 
 
 class SpectralCompiled(CompiledBase):
-    def __init__(self, model: Model, past=None, continuation=None):
+    def __init__(self, model: Model, past=None, continuation=None, dense_max: Optional[int] = None):
         """past: a Past (the game starts at time zero from that regime); continuation: a converged
         StationaryResult of this model at the past's window, on which every agent's map is frozen on the
         buffer [T, T + L] after the horizon (the unknowns stay on [0, T]; the closed loop and the
         first-order conditions run to T + L, by when every shock born before T is forgotten), or None:
-        the game ends at T."""
+        the game ends at T.  dense_max: the closed loop is assembled as one dense system when n_prim N
+        is at most this (None: always), else panel by panel (_closed_loop_panels)."""
         super().__init__(model)
         reject_leads(model, 'spectral finite engine')
         hz = model.horizon
@@ -162,13 +163,8 @@ class SpectralCompiled(CompiledBase):
             # is exact for defective A too (an eigen-decomposition would not be).  An old shock's
             # Volterra path runs from time zero (its earlier inputs are inside the past's state kernel).
             lp = g.path(g.t, g.a, r_lo=g.s if L is None else np.maximum(g.s, 0.0), r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]))
-            self.Vol = np.zeros((self.nX, self.nX, self.N, self.N))
-            if lp.rows is not None:
-                d = g.t[lp.rows] - lp.r
-                E = self._expm_batch(d)                                        # (nq, nX, nX)
-                for i in range(self.nX):
-                    for j in range(self.nX):
-                        self.Vol[i, j] = lp.apply(E[:, i, j])
+            self._vol_path = lp
+            self._vol_E = self._expm_batch(g.t[lp.rows] - lp.r) if lp.rows is not None else None    # (nq, nX, nX)
         # time rows (for per-time projections)
         rows = {}
         for pc in g.pieces:
@@ -203,6 +199,39 @@ class SpectralCompiled(CompiledBase):
         self._past_reads: Dict[tuple, np.ndarray] = {}    # (name, lag) -> the past's kernel at the nodes before zero
         self._row_pasts: Dict[tuple, np.ndarray] = {}     # (agent, row) -> the seen row's pre-zero part at the nodes
         self._disc: Dict[tuple, np.ndarray] = {}          # ("embed"/"select", delay) -> discrete-weight operators
+        self._state_cols: Dict[tuple, np.ndarray] = {}    # (excluded, impulses) -> shock and impulse columns of the state rows
+        self._sparse: Dict[tuple, object] = {}            # sparse reads, shifts and row blocks of the per-panel closed loop
+        # the closed loop of a system beyond dense_max unknowns is built panel by panel (see _closed_loop_panels)
+        self.per_panel = dense_max is not None and len(self.prim) * self.N > dense_max
+
+    @cached_property
+    def Vol(self) -> np.ndarray:
+        """(nX, nX, N, N) Volterra propagation of the state inputs: e^{A(t-r)} along the path from the shock
+        time to t (dense; built on first use, the per-panel closed loop works from the path instead)."""
+        Vol = np.zeros((self.nX, self.nX, self.N, self.N))
+        if self._vol_E is not None:
+            for i in range(self.nX):
+                for j in range(self.nX):
+                    Vol[i, j] = self._vol_path.apply(self._vol_E[:, i, j])
+        return Vol
+
+    def _vol_rows(self, i: int, j: int, lo: int, hi: int) -> np.ndarray:
+        """Rows [lo, hi) of Vol[i, j], from the path."""
+        if self._vol_E is None:
+            return np.zeros((hi - lo, self.N))
+        return self._vol_path.apply(self._vol_E[:, i, j], rows=(lo, hi))
+
+    def _vol_mat(self, i: int, j: int, X: np.ndarray) -> np.ndarray:
+        """Vol[i, j] @ X for X (N, m): the dense product, or on the per-panel path the same integrals
+        with X read along the path (no N x N operator)."""
+        if not self.per_panel:
+            return self.Vol[i, j] @ X
+        lp = self._vol_path
+        if self._vol_E is None:
+            return np.zeros((self.N,) + X.shape[1:])
+        G = lp.I @ X
+        d = lp.w * self._vol_E[:, i, j]
+        return lp.R @ (d[:, None] * G if G.ndim == 2 else d * G)
 
     # ------------------------------------------------------------ continuation
     @staticmethod
@@ -441,23 +470,121 @@ class SpectralCompiled(CompiledBase):
         """The primaries whose N x N block of the row operator is not identically zero."""
         return [p for p in range(len(self.prim)) if np.any(reg[:, p * self.N:(p + 1) * self.N])]
 
-    def _row_blocks(self, agent: str, r: int, excluded: set):
+    def _row_blocks(self, agent: str, r: int, excluded: set, sparse: bool = False):
+        """The blocks and deltas of row_blocks; sparse: the blocks as CSR matrices (the per-panel closed loop)."""
         name, drift, E, delay = self.rows[agent][r]
-        S = self.read(delay, delay)
+        read = self.read_sparse if sparse else self.read
+        S = read(delay, delay)
         blocks: Dict[str, np.ndarray] = {}
+        for (n, l), c in drift.items():
+            if n not in excluded or self.cont is not None:      # an excluded control still acts on the buffer (its frozen map)
+                op = c * (S @ read(l, l))
+                blocks[n] = blocks[n] + op if n in blocks else op
+        return blocks, self._row_deltas(agent, r, excluded)
+
+    def _row_deltas(self, agent: str, r: int, excluded: set):
+        """The instantaneous entries of seen row r: {source: [(age, weight)]}, the excluded controls' impulses
+        at the observation delay plus their lag and the channels' noise at the delay."""
+        name, drift, E, delay = self.rows[agent][r]
         deltas: Dict[str, List[Tuple[float, float]]] = {}
         for (n, l), c in drift.items():
             if n in excluded:
                 deltas.setdefault(n, []).append((delay + l, c))
-            if n not in excluded or self.cont is not None:      # an excluded control still acts on the buffer (its frozen map)
-                op = c * (S @ self.read(l, l))
-                blocks[n] = blocks[n] + op if n in blocks else op
         for k, ch in enumerate(self.channels):
             # with a past the entry exists on the union of the two regimes' loadings: an increment observed before
             # zero carries the old E on the band (noise_weight), and a channel only the old row loaded is not dropped
             if E[k] != 0.0 or (self.E_old is not None and self.E_old[agent][r][k] != 0.0):
                 deltas.setdefault(ch, []).append((delay, E[k]))
-        return blocks, deltas
+        return deltas
+
+    # ------------------------------------------------------ sparse reads (the per-panel closed loop)
+    # The reads, shifts and row blocks as CSR matrices: an interpolation touches one piece's nodes per point, so
+    # the N x N dense forms (a gigabyte each at ten thousand nodes) are never built on the per-panel path.
+    def read_sparse(self, dt: float, da: float):
+        """read(dt, da) as a CSR matrix."""
+        from scipy.sparse import csr_matrix, diags, identity
+        key = ("read", round(dt, 12), round(da, 12))
+        if key not in self._sparse:
+            g = self.g
+            if dt == 0.0 and da == 0.0:
+                M = identity(self.N, format="csr")
+            else:
+                M = g.interp_sparse(g.t - dt, g.a - da, side_t=g.side_t, side_a=g.side_a, side_d=g.side_d)
+                zero = np.zeros(self.N, dtype=bool)
+                if da > 0:
+                    zero |= g.a0 < da - 1e-12
+                if dt > 0 and g.L is not None:
+                    zero |= self._before(dt)
+                if zero.any():
+                    M = csr_matrix(diags((~zero).astype(float)) @ M)
+                    M.eliminate_zeros()
+            self._sparse[key] = M
+        return self._sparse[key]
+
+    def map_shift_sparse(self, delay: float):
+        """map_shift(delay) as a CSR matrix."""
+        from scipy.sparse import csr_matrix
+        key = ("shift", round(float(delay), 12))
+        if key not in self._sparse:
+            g = self.g; k = self.panel_shift(delay)
+            rows, cols, vals = [], [], []
+            for pc in g.pieces:
+                if pc.p - k < 0 or pc.q - k < 0:
+                    continue
+                if pc.p >= g.P_T and pc.p - k < g.P_T:
+                    if pc.triangle:
+                        idx = pc.offset + np.arange(pc.n)
+                        I = g.interp_sparse(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx],
+                                            side_d=g.side_d[idx]).tocoo()
+                        rows.append(idx[I.row]); cols.append(I.col); vals.append(I.data)
+                        continue
+                    tgt = g._piece_by_pq[(pc.p - k, pc.q - k)]
+                else:
+                    tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq)[(pc.p - k, pc.q - k)]
+                tol = 1e-9 * max(1.0, self.Tg)
+                if abs(tgt.t0 + delay - pc.t0) > tol or abs(tgt.t1 + delay - pc.t1) > tol:
+                    self.map_shift(delay)                       # raises with the message of the dense form
+                rows.append(pc.offset + np.arange(pc.n)); cols.append(tgt.offset + np.arange(pc.n)); vals.append(np.ones(pc.n))
+            if rows:
+                M = csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(self.N, self.N))
+            else:
+                M = csr_matrix((self.N, self.N))
+            self._sparse[key] = M
+        return self._sparse[key]
+
+    def instant_sparse(self, age: float, delay: float = 0.0):
+        """instant(age, delay) as a CSR matrix."""
+        if delay > 0 and abs(age - delay) < 1e-12:
+            return self.map_shift_sparse(delay)
+        return self.read_sparse(delay, age)
+
+    def atom_sparse(self, atom: Atom):
+        """The N x N block of atom_op (the kernel of name@lag from the primary's kernel) as a CSR matrix."""
+        name, lag = atom
+        return self.map_shift_sparse(lag) if lag > 0 else self.read_sparse(lag, lag)
+
+    def row_blocks_sparse(self, agent: str, r: int, excluded: set):
+        """row_blocks with the blocks as CSR matrices (cached, shared: not to be written to)."""
+        key = ("row", agent, r, frozenset(excluded))
+        if key not in self._sparse:
+            self._sparse[key] = self._row_blocks(agent, r, excluded, sparse=True)
+        blocks, deltas = self._sparse[key]
+        return blocks, {k: list(v) for k, v in deltas.items()}
+
+    def state_inputs_sparse(self, excl: set):
+        """The state inputs' operators of the closed loop as {state: {primary index: CSR N x N}} (the atoms the
+        state's drift reads, an excluded control's kept only where it acts on a buffer)."""
+        key = ("inputs", frozenset(excl))
+        if key not in self._sparse:
+            inp: Dict[int, Dict[int, object]] = {si: {} for si in range(self.nX)}
+            for si, (nm, lag), c in self.state_inputs:
+                if nm in excl and (self.past is None or self.cont is None):
+                    continue
+                pi = self.index[nm]
+                op = c * self.atom_sparse((nm, lag))
+                inp[si][pi] = inp[si][pi] + op if pi in inp[si] else op
+            self._sparse[key] = inp
+        return self._sparse[key]
 
     # ------------------------------------------------------ line operators
     # Each family of line integrals is a cached quadrature structure (triangle.LinePath);
@@ -779,6 +906,8 @@ class SpectralCompiled(CompiledBase):
         With a continuation every map is the frozen stationary one on the buffer; the excluded agent's
         too (its strategy off on [0, T] only: the buffer's is part of its environment) unless
         own_frozen=False switches it off on the buffer as well (the envelope response of its FOC)."""
+        if self.per_panel:
+            return self._closed_loop_panels(maps, excluded, impulse_controls, own_frozen)
         if self.past is not None:
             return self._closed_loop_past(maps, excluded, impulse_controls, own_frozen)
         N = self.N; nW = self.nW
@@ -877,15 +1006,10 @@ class SpectralCompiled(CompiledBase):
         key = (excluded, tuple(imp))
         if key in self._state_parts:
             return self._state_parts[key]
-        g = self.g; N = self.N; nW = self.nW; n = len(self.prim) * N
+        N = self.N; n = len(self.prim) * N
         if self.past is not None:
             return self._state_part_past(key, excl, imp)
-        B0 = np.zeros((n, nW + len(imp)))
-        EA = self.expA(g.a)                                             # (N, nX, nX)
-        for k in range(nW):
-            v = self.sigma[:, k]
-            for i in range(self.nX):
-                B0[self.block(self.prim[i]), k] += EA[:, i, :] @ v
+        B0 = self._state_columns(key, excl, imp)
         inp = np.zeros((self.nX, N, n))
         for si, (nm, lag), c in self.state_inputs:
             if nm in excl:
@@ -900,6 +1024,48 @@ class SpectralCompiled(CompiledBase):
                         blocks[(i, p)] += blk
                     else:
                         blocks[(i, p)] = blk
+        self._state_parts[key] = (blocks, B0)
+        return blocks, B0
+
+    def _state_columns(self, key, excl: set, imp: list) -> np.ndarray:
+        """The shock and impulse columns of the state rows, B0 (n, ncol + len(imp)), cached per (excluded
+        agent, impulse controls): the state's response to each channel's shock (with a past on the new-shock
+        region; on the band the past's state kernel at age a - t propagated by e^{At}), the initial shocks'
+        loads, the lagged inputs read before zero through the Volterra operator (every control, the excluded
+        one's pre-zero actions being history), and each impulse's column (zero on the band: a deviation before
+        zero is sunk)."""
+        if key in self._state_cols:
+            return self._state_cols[key]
+        g = self.g; N = self.N; nW = self.nW; n = len(self.prim) * N; ncol = self.ncol
+        B0 = np.zeros((n, ncol + len(imp)))
+        EA = self.expA(g.a)                                             # (N, nX, nX)
+        if self.past is None:
+            for k in range(nW):
+                v = self.sigma[:, k]
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), k] += EA[:, i, :] @ v
+        else:
+            up = g.upper; lower = ~up
+            for k in range(nW):
+                v = self.sigma[:, k]
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), k] += lower * (EA[:, i, :] @ v)
+            if up.any():
+                EAt = self.expA(g.t[up])                                     # (n_up, nX, nX)
+                iu = np.where(up)[0]
+                K0 = np.stack([self.past_at(self.prim[j], iu, g.a[iu] - g.t[iu]) for j in range(self.nX)], axis=1)   # (n_up, nX, nW)
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), :nW][up] += np.einsum("nj,njk->nk", EAt[:, i, :], K0)
+            for col in range(self.n_init):
+                v = self.init_sigma[:, col]
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), nW + col] += lower * (EA[:, i, :] @ v)
+            for si, (nm, lag), c in self.state_inputs:
+                if lag > 0 and g.L is not None:
+                    pr = self.past_read(nm, lag)
+                    if np.any(pr):
+                        for i in range(self.nX):
+                            B0[self.block(self.prim[i]), :nW] += c * (self._vol_mat(i, si, pr))
         for col, u in enumerate(imp):
             for si, (nm, lag), c in self.state_inputs:
                 if nm != u:
@@ -907,10 +1073,12 @@ class SpectralCompiled(CompiledBase):
                 v = np.zeros(self.nX); v[si] = c
                 EAd = self.expA(np.maximum(g.a - lag, 0.0)) if lag else EA
                 on = (g.a0 >= lag - 1e-12) if lag else np.ones(N, dtype=bool)
+                if self.past is not None:
+                    on = on & lower
                 for i in range(self.nX):
-                    B0[self.block(self.prim[i]), nW + col] += on * (EAd[:, i, :] @ v)
-        self._state_parts[key] = (blocks, B0)
-        return blocks, B0
+                    B0[self.block(self.prim[i]), ncol + col] += on * (EAd[:, i, :] @ v)
+        self._state_cols[key] = B0
+        return B0
 
     def _state_part_past(self, key, excl: set, imp: list):
         """_state_part with a past: on the band the state at zero is the past's state kernel at age a - t
@@ -918,31 +1086,10 @@ class SpectralCompiled(CompiledBase):
         pre-zero actions being history) are a known forcing through the Volterra operator; the initial
         shocks' columns start from their loads on the new-shock region; the impulse columns are zero on
         the band (a deviation before zero is sunk)."""
-        g = self.g; N = self.N; nW = self.nW; n = len(self.prim) * N; ncol = self.ncol
-        B0 = np.zeros((n, ncol + len(imp)))
-        up = g.upper; lower = ~up
-        EA = self.expA(g.a)                                             # (N, nX, nX)
-        for k in range(nW):
-            v = self.sigma[:, k]
-            for i in range(self.nX):
-                B0[self.block(self.prim[i]), k] += lower * (EA[:, i, :] @ v)
-        if up.any():
-            EAt = self.expA(g.t[up])                                     # (n_up, nX, nX)
-            iu = np.where(up)[0]
-            K0 = np.stack([self.past_at(self.prim[j], iu, g.a[iu] - g.t[iu]) for j in range(self.nX)], axis=1)   # (n_up, nX, nW)
-            for i in range(self.nX):
-                B0[self.block(self.prim[i]), :nW][up] += np.einsum("nj,njk->nk", EAt[:, i, :], K0)
-        for col in range(self.n_init):
-            v = self.init_sigma[:, col]
-            for i in range(self.nX):
-                B0[self.block(self.prim[i]), nW + col] += lower * (EA[:, i, :] @ v)
+        N = self.N; n = len(self.prim) * N
+        B0 = self._state_columns(key, excl, imp)
         inp = np.zeros((self.nX, N, n))
         for si, (nm, lag), c in self.state_inputs:
-            if lag > 0 and g.L is not None:
-                pr = self.past_read(nm, lag)
-                if np.any(pr):
-                    for i in range(self.nX):
-                        B0[self.block(self.prim[i]), :nW] += c * (self.Vol[i, si] @ pr)
             if nm in excl and self.cont is None:
                 continue                                    # with a continuation the excluded control acts on the buffer
             inp[si] += c * self.atom_op((nm, lag))
@@ -955,17 +1102,96 @@ class SpectralCompiled(CompiledBase):
                         blocks[(i, p)] += blk
                     else:
                         blocks[(i, p)] = blk
-        for col, u in enumerate(imp):
-            for si, (nm, lag), c in self.state_inputs:
-                if nm != u:
-                    continue
-                v = np.zeros(self.nX); v[si] = c
-                EAd = self.expA(np.maximum(g.a - lag, 0.0)) if lag else EA
-                on = ((g.a0 >= lag - 1e-12) if lag else np.ones(N, dtype=bool)) & lower
-                for i in range(self.nX):
-                    B0[self.block(self.prim[i]), ncol + col] += on * (EAd[:, i, :] @ v)
         self._state_parts[key] = (blocks, B0)
         return blocks, B0
+
+    def _closed_loop_panels(self, maps, excluded, impulse_controls, own_frozen=True):
+        """closed_loop assembled one time panel at a time: the rows of panel p of the system (I - M) Z = B
+        (the state rows from the Volterra path, the control rows from the map convolutions, each restricted to
+        the panel's output nodes and applied to the sparse reads of the primaries) are built, its unknowns
+        solved by forward substitution from the earlier panels' and the rows discarded, so the (n_prim N)^2
+        system never exists: the memory is n_prim^2 N N_panel for the largest panel.  The same integrals and
+        sums as the dense assembly; not the same to the bit, since a BLAS product of a row block is rounded
+        differently from the rows of the full product (this machine's OpenBLAS differs in the last bit on
+        one entry in a thousand), which is why a system within dense_max keeps the dense path."""
+        N = self.N; nW = self.nW; ncol = self.ncol; g = self.g; nP = len(self.prim)
+        imp = list(impulse_controls); nc = ncol + len(imp)
+        excl = set(next(a for a in self.model.agents if a.name == excluded).controls) if excluded else set()
+        past = self.past is not None; band = g.L is not None; lower = ~g.upper
+        B = np.zeros((nP, N, nc))
+        inp = None
+        if self.nX:
+            B[:] = self._state_columns((excluded, tuple(imp)), excl, imp).reshape(nP, N, nc)
+            inp = self.state_inputs_sparse(excl)
+        rowspec = []                                    # (control index, agent, row, delay, map kernel, sparse blocks)
+        for a in self.model.agents:
+            off = a.name == excluded
+            if off and (not past or self.cont is None or not own_frozen):
+                continue
+            gm = maps[a.name]
+            for ui, u in enumerate(a.controls):
+                bi = self.index[u]
+                for r, (rname, drift, E, delay) in enumerate(self.rows[a.name]):
+                    blocks, deltas = self.row_blocks_sparse(a.name, r, excl)
+                    gker = self.with_frozen(a.name, ui, r, np.zeros(N) if off else gm[ui, r][:N]) if past else gm[ui, r]
+                    rowspec.append((bi, a.name, r, delay, gker, blocks))
+                    if band:
+                        B[bi, :, :nW] += self.past_conv_path().bilinear(gker, self.past_row_kernel(a.name, r))   # increments before zero
+                    for src, dl in deltas.items():
+                        if src in self.channels:
+                            col = self.channels.index(src)
+                            for (age, w) in dl:
+                                v = self.instant_sparse(age, delay) @ gker
+                                B[bi, :, col] += self.noise_weight(a.name, r, col, w) * v if past else w * v
+                        elif src in imp:
+                            col = ncol + imp.index(src)
+                            for (age, w) in dl:
+                                v = self.instant_sparse(age, delay) @ gker
+                                B[bi, :, col] += w * lower * v if past else w * v
+                    if self.n_init and not off:
+                        gd = gm[ui, r][N:]
+                        for i in range(self.n_init):
+                            e = self.init_rows[a.name][r, i]
+                            if e:
+                                B[bi, :, nW + i] += e * (self.disc_embed(delay) @ gd)
+        Z = np.zeros((nP, N, nc))
+        ranges = self._panel_ranges
+        for p, (lo, hi) in enumerate(ranges):
+            Np = hi - lo; np_ = nP * Np
+            blk: Dict[Tuple[int, int], np.ndarray] = {}      # (row primary, column primary) -> (Np, hi): the panel reads nodes < hi
+            if inp is not None:
+                for i in range(self.nX):
+                    for j in range(self.nX):
+                        if not inp[j]:
+                            continue
+                        Vr = self._vol_rows(i, j, lo, hi)[:, :hi]
+                        for pi, S in inp[j].items():
+                            X = Vr @ S[:hi, :hi]
+                            blk[(i, pi)] = blk[(i, pi)] + X if (i, pi) in blk else X
+            for (bi, an, r, delay, gker, blocks) in rowspec:
+                Cr = self.conv_left_rows(gker, delay, lo, hi)
+                for nm, S in blocks.items():
+                    pi = self.index[nm]
+                    X = Cr[:, :hi] @ S[:hi, :hi]
+                    blk[(bi, pi)] = blk[(bi, pi)] + X if (bi, pi) in blk else X
+                if band:
+                    B[bi, lo:hi, :nW] += Cr @ self.row_past(an, r)                            # lagged atoms before zero
+            rhs = B[:, lo:hi].reshape(np_, nc).copy()
+            for (i, j), X in blk.items():
+                if lo:
+                    rhs[i * Np:(i + 1) * Np] += X[:, :lo] @ Z[j, :lo]
+            diag = np.eye(np_)
+            for (i, j), X in blk.items():
+                diag[i * Np:(i + 1) * Np, j * Np:(j + 1) * Np] -= X[:, lo:hi]
+            Z[:, lo:hi] = np.linalg.solve(diag, rhs).reshape(nP, Np, nc)
+        return Z.reshape(nP * N, nc)
+
+    def conv_left_rows(self, gker: np.ndarray, delay: float, lo: int, hi: int) -> np.ndarray:
+        """Rows [lo, hi) of conv_left(gker, delay)."""
+        g = self.g
+        lp = self._path(("conv_left", delay), r_lo=g.s + delay, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
+                        known_fn=lambda k, r: (np.full_like(r, g.t[k] - delay), g.t[k] - r))
+        return lp.with_known(gker, rows=(lo, hi))
 
     @cached_property
     def _panel_ranges(self):
@@ -1023,7 +1249,7 @@ class SpectralFiniteSolver(EngineBase):
         continuation = self._continuation_of(model, past, continuation, hz.stationary if hz.kind == "transition" else None)
         opts = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
         super().__init__(model, verbose, settings=settings, **opts)
-        self.c = SpectralCompiled(model, past=past, continuation=continuation)
+        self.c = SpectralCompiled(model, past=past, continuation=continuation, dense_max=self.settings.closed_loop_dense_max)
         if past is not None:
             self.RESULT = TransitionResult
         self.Nm = self.c.N + (self.c.Nt if self.c.n_init else 0)
