@@ -1,4 +1,4 @@
-"""The spectral finite engine's closed loop (noisestate.finite_spectral.ClosedLoopRows): the one assembly, its rows
+"""The spectral finite engine's closed loop (noisestate.closed_loop.ClosedLoopRows): the one assembly, its rows
 built one time panel at a time and solved by block forward substitution, against the dense system those rows stack
 into."""
 import numpy as np

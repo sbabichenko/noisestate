@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The spectral finite engine in six modules, one responsibility each (the consolidation pass, step C4; pure
+  moves, every shipped case's Z bit for bit): `spectral_compiled.py` (SpectralCompiled: the breakpoints and
+  their closure, the grid, the past's and the buffer's wiring, the reads and sparse reads, the line paths,
+  the masses), `closed_loop.py` (ClosedLoopRows), `spectral_operators.py` (PathOp, RowOps, ProjOps,
+  RespOps, FocOps, PanelRows), `finite_free.py` (FocSystem and its preconditioner, best_response, the
+  decomposition and the second-order form; it re-exports the operators), `spectral_means.py` (the means on
+  the time line: TimeLineOps, the compiled model's time-node operators, and SpectralMeans, the solver's
+  mean system, both mixed in) and `finite_spectral.py` (SpectralFiniteSolver with maps_from_world and the
+  diagnostics hooks; `from noisestate.finite_spectral import SpectralCompiled, ClosedLoopRows` still
+  works).  No function body changed; the module docstrings and EngineBase's say where each neighbour is.
 - `TriangleGrid.path` cuts and quadratures every output node at once (the consolidation pass, step C3): the
   read point's breakpoint crossings in t and in a, the triangles' diagonals, the known's age grid and the
   extra cuts are computed as arrays over the nodes (`_crossings`, `_crossings_1d`, `_cut_values`), the edges

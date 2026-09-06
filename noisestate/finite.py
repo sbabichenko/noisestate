@@ -347,7 +347,7 @@ class FiniteSolver(EngineBase):
 
     def mean_system(self, maps: Dict[str, np.ndarray]):
         """The linear system M zbar = b of the mean paths on the cells (states then controls, N values each) under
-        the strategies `maps`: the spectral engine's formulation (finite_spectral.SpectralFiniteSolver.mean_system)
+        the strategies `maps`: the spectral engine's formulation (spectral_means.SpectralMeans.mean_system)
         on the cells.  A state's rows are the Euler march of its mean dynamics from x0; a control's rows are its
         owner's mean first-order condition in every cell, the best response's per-cell condition (the instantaneous
         derivative of 1/2 z'Qz + q'z in the control, the discounted own lagged reads, the continuation h sum_{tau > i}

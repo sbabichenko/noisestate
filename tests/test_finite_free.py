@@ -1,4 +1,4 @@
-"""The spectral finite engine's matrix-free best response (noisestate/finite_free.py, settings.foc_dense_max)
+"""The spectral finite engine's matrix-free best response (noisestate/finite_free.py on the operators of noisestate/spectral_operators.py, settings.foc_dense_max)
 against the dense one: the same best response and the same fixed point to the Krylov tolerance."""
 import numpy as np
 

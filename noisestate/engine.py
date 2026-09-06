@@ -49,9 +49,11 @@ class EngineBase:
     (Z (n_prim, N, ncol) per cell, maps (nU, nR, N, N)) and overrides best_response wholesale, so
     the base's best-response pieces (_seen_rows to _foc_system, _decompose, _second_order) never
     see them; it uses the packing, the fixed point, _finish and the mean hook only.  The spectral
-    finite engine overrides best_response, _seen_rows, _representation_error and expected_cost with
-    the operator form of finite_free (the same pieces as applications of its line paths and sparse
-    reads), so of the kernel algebra below it supplies closed_loop, block and atom_op only.
+    finite engine (finite_spectral.py) overrides best_response, _seen_rows, _representation_error and
+    expected_cost with the operator form of finite_free.py on spectral_operators.py (the same pieces as
+    applications of the line paths and sparse reads of its compiled model, spectral_compiled.py, whose
+    closed loop is closed_loop.py's and whose means are spectral_means.py's), so of the kernel algebra
+    below it supplies closed_loop, block and atom_op only.  docs/architecture.md draws the modules.
 
     Kernel algebra of the compiled model self.c (see each engine's Compiled class):
 
