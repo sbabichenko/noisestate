@@ -11,7 +11,8 @@ def test_payload_round_trips_and_rebuilds_the_solve():
     d = json.loads(json.dumps(res.to_dict()))
     assert d["version"] == ns.__version__ and d["name"] == "ch3_two_player" and d["engine"] == "stationary"
     assert d["params"] == {"p1": 3.0, "p2": 10.0, "r1": 1.0, "r2": 1.0}
-    assert d["horizon"] == {"kind": "stationary", "discount": 0.0, "window": 3.0, "nodes": 24}
+    assert d["horizon"] == {"kind": "stationary", "discount": 0.0, "window": 3.0} and d["numerics"] == {"engine": "stationary", "nodes": 24, "tol": 1e-10, "damping": 0.6, "max_newton": 60, "variable": "actions"}
+    assert d["payload_version"] == 1 and d["axes"]["age"] == d["grid"]["ages"] and d["times"] is None and d["status"]["ok"] is False
     assert d["options"]["solve"]["start"] == "zero" and d["options"]["solver"]["verbose"] is False
     assert d["agents"]["player2"] == {"controls": ["D2"], "signals": {"y2": {"delay": 0.0, "map_age": d["grid"]["ages"]}}}
     m2 = ns.Model.from_dict(d["model"]); assert m2.to_dict() == m.to_dict()

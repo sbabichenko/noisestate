@@ -61,3 +61,32 @@ def test_engines_namespace_and_the_cell_engine_by_numerics():
         engines.build(m, {"engine": "cells"}, past=[])
     rows = ns.sweep(m, "p1", [3.0, 4.0], numerics={"nodes": 6})
     assert all(r["result"].compiled.g.nt == 6 for r in rows)
+
+
+@pytest.mark.parametrize("numerics", [{"engine": "spectral", "nodes": 12}, {"engine": "cells", "nodes": 12}])
+def test_one_result_reads_the_same_on_every_engine(numerics):
+    """A consumer reads a kernel with its axes without knowing the engine: every axis in res.axes has the
+    length of the kernel's node axis (or axes), the maps' axes are there too, and the aliases hold."""
+    m = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml"))
+    r = ns.solve(m, numerics).check()
+    K = r.kernel("X", "w1")
+    node_axes = {k: v for k, v in r.axes.items() if k != "maps"}
+    assert K.ndim == (2 if numerics["engine"] == "cells" else 1) and all(len(v) == K.shape[0] for v in node_axes.values())
+    assert "time" in node_axes and "shock_time" in node_axes and r.times is not None and len(r.times) == len(r.paths["means"]["X"])
+    assert r.axes["maps"]["player1"]["y1"]["map_time"].shape[0] == r.maps["player1"].shape[2]
+    assert r.evaluations == r.iterations and r.world is r.Z and isinstance(r, ns.Result) and isinstance(r, ns.BaseResult)
+    assert r.status["ok"] is True and r.status["flags"] == [] and r.status["rows"] == r.diagnose()
+    assert r.cost_kind.startswith("discounted") and set(r.cost_parts["player1"]) == {"variance", "mean"}
+    p = r.to_dict()
+    assert p["payload_version"] == 1 and p["engine"] == numerics["engine"] and set(p["axes"]) == set(node_axes) and p["status"]["ok"]
+
+
+def test_the_stationary_result_and_a_transition_read_the_same_way():
+    s = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8})
+    assert list(s.axes) == ["age", "maps"] and s.times is None and s.paths == {} and "window_tail" in s.extra
+    assert s.kernel("X").shape == (len(s.axes["age"]), 3) and s.status["ok"] is False and any("WINDOW" in f for f in s.status["flags"])
+    t = ns.solve(os.path.join(EX, "ch3_precision_change.yaml"), {"nodes": 5, "continuation_nodes": 8}, max_evaluations=3)
+    assert (t.axes["shock_time"] < 0).any() and set(t.paths) == {"means", "loss", "belief_error"}
+    assert t.paths["loss"]["player1"].shape == t.times.shape and t.paths["belief_error"]("player2", "X").shape == t.times.shape
+    assert {"past", "continuation", "settled", "old_flows", "new_flows", "excess_costs"} <= set(t.extra) and t.extra["settled"] == t.settled
+    assert t.to_dict()["kind"] == "transition" and t.to_dict()["engine"] == "spectral"

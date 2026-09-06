@@ -739,7 +739,7 @@ class EngineBase:
             return None
         coarse = type(self)(self.model.with_numerics(nodes=n0), **self.solver_kw)
         res = coarse.solve(**{k: v for k, v in solve_kw.items() if k not in ("init", "start")})
-        self._coarse_evals, self._coarse_nodes = res.iterations, n0
+        self._coarse_evals, self._coarse_nodes = res.evaluations, n0
         return self.interpolate_maps(res)
 
     def solve(self, init: Optional[Dict[str, np.ndarray]] = None, tol: Optional[float] = None, damping: Optional[float] = None,
@@ -755,7 +755,7 @@ class EngineBase:
         start="stationary" (the spectral finite engine with a stationary continuation) starts from the
         continuation's stationary maps read at every node's age (what noisestate.transition() does).
         max_evaluations bounds the best-response evaluations (Anderson mixing and the polish together, the
-        count res.iterations reports) and deadline the wall time of the solve in seconds; at least one
+        count res.evaluations reports) and deadline the wall time of the solve in seconds; at least one
         evaluation is made, and past either bound the best iterate so far is returned with converged=False
         and res.message naming the bound (no exception; check() raises).  A coarse start is bounded the same
         way.  progress(info) is called after every evaluation with {"evaluation": the count so far,
@@ -817,7 +817,7 @@ class EngineBase:
         if coarse_evals:
             message = f"coarse start: {coarse_evals} evaluations at {self._coarse_nodes} nodes; " + message
         res = self.RESULT(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
-                          iterations=evals[0], seconds=0.0, message=message, solver_class=type(self),
+                          evaluations=evals[0], seconds=0.0, message=message, solver_class=type(self),
                           solver_kw=self.solver_kw, settings=self.settings,
                           solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start": start,
                                     **{k: v for k, v in (("max_evaluations", max_evaluations), ("deadline", deadline)) if v is not None},

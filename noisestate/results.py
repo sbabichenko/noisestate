@@ -1,7 +1,20 @@
-"""Results returned by the engines: one interface, three grids.
+"""Results returned by the engines: one Result, three grids.
 
     res.converged, res.residual, res.message     outcome of the outer solve
+    res.evaluations                              best-response evaluations made (res.iterations is an alias)
+    res.status                                   {"ok", "flags", "rows"}: the verdict, the failing checks' flags, diagnose()'s rows
     res.check()                                  raise ConvergenceError unless converged
+    res.axes                                     the coordinate arrays of kernel(): {"age": ages} (stationary), {"time", "age",
+                                                 "shock_time"} node-wise (spectral finite; shock_time < 0 on a transition's band),
+                                                 {"time", "shock_time"} (cells, the two axes of the (N, N) matrix); and "maps":
+                                                 {agent: {row: {axis: values}}}, where each row's map values belong (map_axes)
+    res.times                                    the time nodes of the paths (None on the stationary engine)
+    res.paths                                    {"means": {name: path}} over res.times on a finite horizon; a transition adds
+                                                 "loss" ({agent: E[loss(t)]}) and "belief_error" (a callable (agent, name) -> path)
+    res.world                                    the closed-loop kernels of every primary on the shocks (res.Z is an alias)
+    res.extra                                    engine-specific extras: window_tail (stationary); past, continuation, settled
+                                                 (a transition), old_flows, new_flows, excess_costs, representation_parts
+    res.numerics                                 the resolved Numerics the result was solved with
     res.costs[agent]                             stationary flow loss per unit time, or the discounted
                                                  integral over [0, T] (res.cost_kind says which): the variance
                                                  part (the shocks) plus the mean part (targets, constant drifts)
@@ -27,7 +40,7 @@ Kernel layout by engine:
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -42,14 +55,17 @@ class _StabilityBudget(Exception):
 
 
 @dataclass
-class BaseResult:
+class Result:
+    """One result type; the engines' subclasses (StationaryResult, TriangleResult, TransitionResult, CellResult)
+    fill in the grid-specific hooks and are internal: isinstance(res, noisestate.Result) holds for every
+    result, and the attributes above read the same on every engine."""
     model: Model
     compiled: object
     maps: Dict[str, np.ndarray]
     Z: np.ndarray
     converged: bool
     residual: float
-    iterations: int
+    evaluations: int
     seconds: float
     costs: Dict[str, float] = field(default_factory=dict)
     message: str = ""
@@ -85,6 +101,60 @@ class BaseResult:
         raise NotImplementedError
 
     MEAN_ZERO = tunable("mean_zero")          # below this a mean is round-off (the mean system is solved only when something drives it)
+
+    # ----------------------------------------------------------- the common surface (C and E of the API design)
+    @property
+    def iterations(self) -> int:
+        """Alias of evaluations (until 0.6)."""
+        return self.evaluations
+
+    @iterations.setter
+    def iterations(self, value: int) -> None:
+        self.evaluations = int(value)
+
+    @property
+    def world(self) -> np.ndarray:
+        """The closed-loop kernels of every primary on the shocks, stacked (res.Z)."""
+        return self.Z
+
+    @property
+    def times(self) -> Optional[np.ndarray]:
+        """The time nodes of the paths; None on the stationary engine (its means are constants)."""
+        return None
+
+    def _node_axes(self) -> dict:
+        """Hook: the coordinate arrays of kernel()'s node axis (or axes), by name."""
+        raise NotImplementedError
+
+    @property
+    def axes(self) -> dict:
+        """The coordinate arrays of kernel(name, channel) by name (the module docstring lists them per engine),
+        and under "maps" where every agent's row's map values belong ({agent: {row: {axis: values}}})."""
+        out = dict(self._node_axes())
+        out["maps"] = {a.name: {r.name: {k: np.asarray(v) for k, v in self.map_axes(r.delay).items()} for r in a.signals}
+                       for a in self.model.agents}
+        return out
+
+    @property
+    def paths(self) -> dict:
+        """The paths over res.times: "means" ({name: path}) on a finite horizon; a transition adds "loss"
+        ({agent: E[loss(t)]}) and "belief_error" (a callable (agent, name) -> path).  Empty on the stationary engine."""
+        if self.times is None:
+            return {}
+        return {"means": {k: np.asarray(v, dtype=float) for k, v in self.means.items()}}
+
+    @property
+    def status(self) -> dict:
+        """{"ok": converged and no check failed, "flags": the flags of the failing checks (and of the checks
+        without a verdict, when they carry one), "rows": diagnose()'s rows}."""
+        rows = self.diagnose()
+        failed = [d["flag"] for d in rows if d["ok"] is False and d["flag"]]
+        return {"ok": bool(self.converged) and not failed, "flags": failed, "rows": rows}
+
+    @property
+    def extra(self) -> dict:
+        """Engine-specific extras (the module docstring lists them); {} when the engine has none."""
+        return {}
 
     @property
     def means_driven(self) -> bool:
@@ -326,11 +396,15 @@ class BaseResult:
         first-order-condition decomposition where the engine provides it."""
         from . import __version__
         c = self.compiled; m = self.model
-        out = {"version": __version__, "name": m.name, "engine": self.kind, "converged": bool(self.converged),
-               "residual": float(self.residual), "evaluations": int(self.iterations), "seconds": float(self.seconds),
+        num = self.numerics
+        out = {"payload_version": 1, "version": __version__, "name": m.name, "engine": num.engine, "kind": self.kind,
+               "converged": bool(self.converged),
+               "residual": float(self.residual), "evaluations": int(self.evaluations), "seconds": float(self.seconds),
                "message": self.message, "params": {k: float(v) for k, v in m.params.items()}, "model": m.to_dict(),
-               "horizon": {k: v for k, v in asdict(m.horizon).items() if v is not None},
-               "options": {"numerics": self.numerics.to_dict(),
+               "horizon": m.to_dict()["horizon"], "numerics": num.to_dict(),
+               "axes": {k: np.asarray(v).tolist() for k, v in self._node_axes().items()},
+               "times": None if self.times is None else np.asarray(self.times).tolist(),
+               "options": {"numerics": num.to_dict(),
                            "solver": {k: (v.to_dict() if hasattr(v, "to_dict") else v) for k, v in self.solver_kw.items()},
                            "solve": dict(self.solve_kw)},
                "grid": self.grid_info(), "discount": float(c.rho), "channels": self.channels,
@@ -347,6 +421,8 @@ class BaseResult:
             out["representation_parts"] = {a: {k: float(v) for k, v in p.items()} for a, p in self.representation_parts.items()}
         out["diagnostics"] = [{k: (None if v is None else v) for k, v in d.items()} for d in self.diagnose()]
         out["resolution_ok"] = None if self.resolution_ok is None else bool(self.resolution_ok)
+        st = self.status
+        out["status"] = {"ok": st["ok"], "flags": st["flags"]}
         out["cost_kind"] = self.cost_kind
         out["second_order"] = {a: dict(so) for a, so in self.second_order.items()}
         out["notes"] = self.model.notes
@@ -372,8 +448,11 @@ class BaseResult:
         return out
 
 
+BaseResult = Result                      # the old name (until 0.6)
+
+
 @dataclass
-class StationaryResult(BaseResult):
+class StationaryResult(Result):
     kind: str = "stationary"
     MAP_CONVENTION = ("maps[agent][u][row][n] is the weight the control puts on the increment of the row as the agent "
                       "sees it (delayed) at age ages[n] before the control; that increment entered the raw row at age "
@@ -383,6 +462,13 @@ class StationaryResult(BaseResult):
     @property
     def ages(self) -> np.ndarray:
         return self.compiled.grid.nodes
+
+    def _node_axes(self) -> dict:
+        return {"age": self.ages}
+
+    @property
+    def extra(self) -> dict:
+        return {"window_tail": self.window_tail}
 
     def map_axes(self, delay: float) -> dict:
         return {"map_age": (self.ages + delay).tolist()}
@@ -443,7 +529,7 @@ class StationaryResult(BaseResult):
 
     def summary(self) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.iterations} evaluations, "
+        lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.evaluations} evaluations, "
                  f"{self.seconds:.1f}s; grid {c.grid.P} panels x {c.grid.n} nodes on [0, {c.grid.L}], rho={c.rho}"]
         for a in self.model.agents:
             parts = self.cost_parts.get(a.name)
@@ -458,7 +544,7 @@ class StationaryResult(BaseResult):
 
 
 @dataclass
-class TriangleResult(BaseResult):
+class TriangleResult(Result):
     kind: str = "finite"
     past: object = None                     # the Past a transition started from (None: the game starts at rest)
     continuation: object = None             # the StationaryResult the maps are frozen at after T (None: the game ends at T)
@@ -488,6 +574,23 @@ class TriangleResult(BaseResult):
     def shocks(self) -> List[str]:
         """The columns of the kernels: the channels, then the initial shocks of the past."""
         return list(self.compiled.channels) + list(getattr(self.compiled, "init_names", []))
+
+    def _node_axes(self) -> dict:
+        g = self.grid
+        return {"time": g.t, "age": g.a, "shock_time": g.s}
+
+    @property
+    def times(self) -> Optional[np.ndarray]:
+        return self.means_t
+
+    @property
+    def extra(self) -> dict:
+        out = {}
+        if self.past is not None:
+            out.update(past=self.past, continuation=self.continuation, settled=self.settled)
+        if self.representation_parts:
+            out["representation_parts"] = self.representation_parts
+        return out
 
     def map_axes(self, delay: float) -> dict:
         g = self.grid; c = self.compiled
@@ -590,7 +693,7 @@ class TriangleResult(BaseResult):
 
     def summary(self) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.iterations} evaluations, "
+        lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.evaluations} evaluations, "
                  f"{self.seconds:.1f}s; triangle grid {c.g.P} panels, {len(c.g.pieces)} pieces x {c.g.nt}x{c.g.na} nodes "
                  f"= {c.N} nodes on [0, {c.T}]" + (f" and the buffer [{c.T}, {c.g.T}] (maps frozen at the stationary ones)"
                                                   if self.continuation is not None else "") + f", rho={c.rho}"]
@@ -614,6 +717,19 @@ class TransitionResult(TriangleResult):
     times: Optional[np.ndarray] = None                              # the time nodes of the paths
     loss_path: Dict[str, np.ndarray] = field(default_factory=dict)   # agent -> E[loss(t)] on times
     excess_costs: Dict[str, float] = field(default_factory=dict)     # agent -> int_0^T e^{-rho t} (E loss(t) - the new stationary flow) dt
+
+    @property
+    def paths(self) -> dict:
+        out = super().paths
+        out["loss"] = {k: np.asarray(v, dtype=float) for k, v in self.loss_path.items()}
+        out["belief_error"] = self.belief_error
+        return out
+
+    @property
+    def extra(self) -> dict:
+        out = super().extra
+        out.update(old_flows=self.old_flows, new_flows=self.new_flows, excess_costs=dict(self.excess_costs))
+        return out
 
     @property
     def old_flows(self) -> Dict[str, float]:
@@ -660,7 +776,7 @@ class TransitionResult(TriangleResult):
 
 
 @dataclass
-class CellResult(BaseResult):
+class CellResult(Result):
     kind: str = "finite_cells"
     MAP_CONVENTION = ("maps[agent][u][row][i][v] is the weight the control in cell i (time grid.t[i]) puts on the increment "
                       "of the row as the agent sees it in cell v; that increment entered the raw row in cell v - delay / h "
@@ -670,6 +786,9 @@ class CellResult(BaseResult):
     @property
     def times(self) -> np.ndarray:
         return self.compiled.times
+
+    def _node_axes(self) -> dict:
+        return {"time": self.times, "shock_time": self.times}
 
     def map_axes(self, delay: float) -> dict:
         return {"map_time": self.times.tolist(), "map_shock_time": (self.times - delay).tolist()}
@@ -708,7 +827,7 @@ class CellResult(BaseResult):
 
     def summary(self) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.iterations} evaluations, "
+        lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.evaluations} evaluations, "
                  f"{self.seconds:.1f}s; {c.N} cells on [0, {c.T}], rho={c.rho}"]
         for a in self.model.agents:
             parts = self.cost_parts.get(a.name)

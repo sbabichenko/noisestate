@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **API stage, C and E: one `Result`.**  `noisestate.Result` is the type every engine returns
+  (`isinstance(res, ns.Result)`; `StationaryResult`, `TriangleResult`, `TransitionResult` and `CellResult` are
+  its internal subclasses, importable until 0.6, `BaseResult` an alias of `Result`).  A consumer reads a kernel
+  without knowing the engine: `res.axes` gives the coordinates of `kernel(name, channel)` ({"age"} on the
+  stationary engine; {"time", "age", "shock_time"} node-wise on the spectral triangle, shock_time < 0 on a
+  transition's band; {"time", "shock_time"} for the cell engine's matrices) and, under "maps", where every
+  row's map values belong (the former `map_axes`); `res.times` and `res.paths` ({"means"}; a transition adds
+  "loss" and "belief_error") hold the paths; `res.status` = {"ok", "flags", "rows"}; `res.extra` the
+  engine's extras (window_tail; past, continuation, settled, old_flows, new_flows, excess_costs,
+  representation_parts).  Names: `res.evaluations` (`iterations` kept as an alias until 0.6), `res.world`
+  (`Z` kept).  The payload carries `payload_version` 1, `engine` (the Numerics engine) beside `kind`, the
+  `horizon` as the file's economics and `numerics` beside it, `axes`, `times` and `status`.
+
 - **API stage, A and B: the numerics apart from the model, and an explicit `solve()`.**  `noisestate.Numerics`
   (`numerics.py`) holds how a model is solved: `engine` ("stationary" | "spectral" | "cells", default from
   the horizon kind), `nodes`, `unit`, `unit_range`, `breakpoints`, `continuation_nodes`, `tol`, `damping`,

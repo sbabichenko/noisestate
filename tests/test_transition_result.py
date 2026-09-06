@@ -26,7 +26,7 @@ def test_same_model_loss_path_is_the_stationary_flow():
         assert abs(res.excess_costs[ag]) < 1e-9, res.excess_costs
         assert abs(res.compiled.time_mass(0.0) @ lp - res.costs[ag]) < 1e-12
     d = json.loads(json.dumps(res.to_dict()))
-    assert d["engine"] == "transition" and d["grid"]["kind"] == "transition" and len(d["times"]) == res.compiled.Nt
+    assert d["engine"] == "spectral" and d["kind"] == "transition" and d["grid"]["kind"] == "transition" and len(d["times"]) == res.compiled.Nt
     assert set(d["loss_path"]) == {"player1", "player2"} and set(d["excess_costs"]) == {"player1", "player2"}
     assert d["old_flows"] == stat.costs and d["new_flows"] == stat.costs and d["past"]["kind"] == "stationary" and "continuation" in d
     assert "excess cost over the new stationary flow" in res.summary()

@@ -106,10 +106,10 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
             a1, a0 = warm_start(res), warm_start(prev)
             num = max(np.abs(a1[k] - a0[k]).max() for k in a1); den = max(max(np.abs(a0[k]).max() for k in a0), 1e-12)
             change = float(num / den)
-        rows.append({"param": param, "value": float(v), "result": res, "seconds": time.time() - t0, "evaluations": int(res.iterations),
+        rows.append({"param": param, "value": float(v), "result": res, "seconds": time.time() - t0, "evaluations": int(res.evaluations),
                      "converged": bool(res.converged), "change": change})
         if verbose:
-            print(f"{param} = {v:g}: {'ok' if res.converged else 'NOT converged'} in {res.iterations} evaluations, {time.time()-t0:.1f}s", flush=True)
+            print(f"{param} = {v:g}: {'ok' if res.converged else 'NOT converged'} in {res.evaluations} evaluations, {time.time()-t0:.1f}s", flush=True)
         prev2, prev = prev, res
     # continuity: a point whose change from its predecessor is far above the sweep's typical change is a
     # candidate branch jump (the change per point, not per unit of parameter: a geometric sweep moves

@@ -13,7 +13,7 @@ from .spec import Model, ModelBuilder
 from .numerics import Numerics
 from .accel import ConvergenceError
 from .settings import Settings
-from .results import BaseResult, StationaryResult, TriangleResult, TransitionResult, CellResult
+from .results import Result, BaseResult, StationaryResult, TriangleResult, TransitionResult, CellResult
 from .stationary import StationarySolver
 from .finite import FiniteSolver
 from .finite_spectral import SpectralFiniteSolver
@@ -23,7 +23,7 @@ from .sweep import sweep, make_solver
 from .grid_cache import clear as clear_grid_cache
 from .transition import transition
 
-__all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "BaseResult", "StationaryResult", "TriangleResult",
+__all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "Result", "BaseResult", "StationaryResult", "TriangleResult",
            "TransitionResult", "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "engines", "load", "solve",
            "sweep", "transition", "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache"]
 
@@ -84,7 +84,7 @@ _ALIASES = {"nodes": "numerics.nodes", "settings": "numerics.settings"}      # a
 
 def solve(model, numerics=None, *, init=None, start: str = "zero", tol=None, max_evaluations=None, deadline=None,
           progress=None, diagnostics: bool = True, refine: bool = False, stability: bool = False, verbose: bool = False,
-          naive_observers=None, past=None, continuation=None, **deprecated) -> BaseResult:
+          naive_observers=None, past=None, continuation=None, **deprecated) -> Result:
     """Solve a model (a Model, a ModelBuilder, a dict, or a path to a YAML file) under `numerics` (a Numerics or
     a dict of its fields, laid over the model's own: engine, nodes, unit, unit_range, breakpoints,
     continuation_nodes, tol, damping, max_newton, variable, settings).  The other options are the solve's:

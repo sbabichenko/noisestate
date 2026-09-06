@@ -46,8 +46,15 @@ res = ns.solve("examples/ch3_two_player.yaml")
 res = ns.solve("examples/ch3_two_player.yaml", ns.Numerics(nodes=32, tol=1e-12))   # a change of resolution, not of model
 print(res.summary())
 res.numerics                 # the resolved Numerics: engine, nodes, unit, unit_range, breakpoints, tol, damping, ..., settings
+res.status                   # {"ok", "flags", "rows"}: the verdict, the failing checks, diagnose()'s rows
+res.axes                     # the coordinates of kernel(): {"age": ages} here; {"time", "age", "shock_time"} node-wise on
+                             # the spectral triangle; {"time", "shock_time"} for the cell engine's (N, N) matrices; and
+                             # "maps": where each row's map values belong (the same on every engine)
 res.ages                     # shock ages (Chebyshev nodes on the panels)
 res.kernel("X")              # closed-loop kernel of X, one column per channel
+res.paths                    # {} here; {"means": paths over res.times} on a finite horizon, a transition adds "loss"
+                             # and "belief_error"; res.extra holds the engine's extras (window_tail, settled, old_flows, ...)
+res.evaluations, res.world   # best-response evaluations, the closed-loop kernels stacked (aliases: iterations, Z)
 res.action_kernel("D1")      # closed-loop kernel of a control
 res.maps["player1"]          # raw strategy g[u][r](b) on the agent's signal rows, b the age of the increment as the
                              # agent sees it (a delayed row's raw increment is older by the delay: res.MAP_CONVENTION)
