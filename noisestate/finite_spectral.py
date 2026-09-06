@@ -126,12 +126,12 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         super()._finish(res)
         if self.c.cont is not None:
             for a in self.model.agents:
-                res.cost_parts[a.name]["continuation"] = self.continuation_cost(a, res.Z)
+                res.cost_parts[a.name]["continuation"] = self.continuation_cost(a, res.world)
             res.settled = max(self.settled(res.maps), self.settled_means(res.means))
         if self.c.past is not None:
             res.times = self.c.tm.copy()
             for a in self.model.agents:
-                res.loss_path[a.name] = self.loss_path(a, res.Z, res.means)
+                res.loss_path[a.name] = self.loss_path(a, res.world, res.means)
                 if self.c.cont is not None:
                     res.excess_costs[a.name] = float(self.c.time_mass(self.c.rho) @ (res.loss_path[a.name] - self.c.cont.costs[a.name]))
 

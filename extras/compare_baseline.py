@@ -1,6 +1,6 @@
 """The shipped cases solved and reduced to a record each, against which a later package is compared.
 
-The cases: the five shipped examples, the Chapter 1 target sweep's p = 10 point (examples/ch1_mean_sweep.py's
+The cases: the six shipped examples (ch3_precision_change.yaml is the file form of a transition), the Chapter 1 target sweep's p = 10 point (examples/ch1_mean_sweep.py's
 model at 12 nodes), Chapter 3 as its own past and continuation at 6 nodes (T = 6, from the stationary maps) and
 examples/kyle_back_prior.yaml.  A record (tests/helpers.solve_record) holds the costs and their parts to full
 repr, the evaluation count, the residual, `settled`, the means where they are scalars, Z's shape and the
@@ -51,6 +51,7 @@ CASES = {
     "ch3_two_player": lambda: ns.solve(example_path("ch3_two_player")),
     "ch4_kyle_back": lambda: ns.solve(example_path("ch4_kyle_back")),
     "ch5_cycle_market": lambda: ns.solve(example_path("ch5_cycle_market")),
+    "ch3_precision_change": lambda: ns.solve(example_path("ch3_precision_change")),
     "ch1_mean_sweep_p10": lambda: ns.solve(ch1_targets(10.0, nodes=12)),
     "ch3_same_model_T6_n6": _ch3_same_model,
     "kyle_back_prior": lambda: ns.solve(example_path("kyle_back_prior")),
@@ -63,7 +64,7 @@ def run(names=None, log=None):
     out = {}
     for name in names or CASES:
         t0 = time.time(); res = CASES[name](); rec = solve_record(res); rec["seconds"] = round(time.time() - t0, 2)
-        rec["Z"] = np.asarray(res.Z, dtype=float)
+        rec["Z"] = np.asarray(res.world, dtype=float)
         out[name] = rec
         if log:
             log(f"{name:24s} {rec['evaluations']:4d} evaluations  {rec['seconds']:6.1f} s  Z {tuple(rec['Z_shape'])}  "

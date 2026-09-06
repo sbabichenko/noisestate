@@ -31,7 +31,7 @@ res = ns.solve("examples/ch3_two_player.yaml", ns.Numerics(nodes=32, tol=1e-12))
 print(res.summary())
 res.check()                  # raises ConvergenceError unless converged
 res.costs["player1"]         # the cost of each agent (res.cost_kind says what it is)
-res.kernel("X")              # closed-loop kernel of a state, one column per channel; res.axes gives its coordinates
+res.kernel("X")              # closed-loop kernel of a state, one column per channel (the last axis); res.axes gives its coordinates
 res.action_kernel("D1")      # closed-loop kernel of a control
 res.maps["player1"]          # raw strategy g[u][r](b) on the agent's own signal rows
 res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"}: the first-order condition decomposed
@@ -216,8 +216,10 @@ The table is [docs/settings.md](docs/settings.md).
 Errors are typed by whose problem they are.  A `ValueError` is a model problem: a file that does not
 validate, a parameter that is not the model's, a lag off the panels, a singular best-response system, a
 solve bound out of range.  A `TypeError` is a wrong argument: an unknown solve option (the message names
-the `Numerics` field it belongs to), `naive_observers` that is not a mapping.  A `NotImplementedError` is
-a feature the engine does not have (leads on the finite engines, a past on the cell engine).  A
+the `Numerics` field it belongs to, or the `Numerics(settings=...)` route for a `Settings` field),
+`naive_observers` that is not a mapping.  A `NotImplementedError` is a feature the engine does not have
+(leads on the finite engines); a past on the cell engine is a `ValueError` from the numerics (`numerics.engine
+'cells' solves a finite horizon only`).  A
 `RuntimeError` is a solver problem: a Krylov best response not converging, a non-finite value from the
 best-response map, and `ConvergenceError` (a `RuntimeError`) from `res.check()`.  A fixed point that does
 not reach `tol`, or is stopped at `max_evaluations` or `deadline`, does not raise: `solve()` returns the

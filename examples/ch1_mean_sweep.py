@@ -37,7 +37,7 @@ def main(argv=None) -> None:
         res = ns.solve(model(p, args.nodes)).check()
         d0, dh = res.mean("D1", [0.0, 0.5 * T])
         print(f"{p:8g} {d0:10.6f} {dh:11.6f} {res.cost_parts['player1']['mean']:10.6f} {res.cost_parts['player1']['variance']:10.6f} "
-              f"{res.iterations:5d} {res.seconds:5.1f}")
+              f"{res.evaluations:5d} {res.seconds:5.1f}")
         if args.paths:
             ts = np.linspace(0.0, T, 11)
             print("    t     " + " ".join(f"{t:7.2f}" for t in ts))

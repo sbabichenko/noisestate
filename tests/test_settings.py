@@ -3,6 +3,7 @@ through settings=, with the older class-attribute names kept as aliases."""
 import json, os, pytest
 import noisestate as ns
 from noisestate import Settings
+from noisestate.results import StationaryResult
 from noisestate.engine import EngineBase
 from noisestate.settings import DEFAULT
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
@@ -28,7 +29,7 @@ def test_defaults_aliases_and_the_dict_form():
     with pytest.raises(TypeError, match="unknown settings"):
         Settings.of({"nope": 1})
     with pytest.raises(TypeError):
-        ns.solve(m, settings=3)
+        ns.solve(m, {"settings": 3})
     with pytest.raises(TypeError):
         Settings(nope=1)
 
@@ -41,7 +42,7 @@ def test_settings_reach_the_checks_and_are_recorded():
     # the thresholds of the checks: a curvature tolerance between the two agents' minima (a negative one, so a
     # positive curvature can fail it), a resolution tolerance below the representation error, a stability budget
     s = Settings(second_order_tol=-0.5 * (lo + hi), resolution_tol=1e-20, stability_max_evaluations=5)
-    r = ns.solve(m, settings=s, stability=True)
+    r = ns.solve(m, {"settings": s}, stability=True)
     assert r.settings is s and r.solver_kw["settings"] == s.changed() == {"second_order_tol": -0.5 * (lo + hi), "resolution_tol": 1e-20,
                                                                           "stability_max_evaluations": 5}
     assert r.costs == r0.costs and all((r.maps[a] == r0.maps[a]).all() for a in r.maps)      # the checks' thresholds do not touch the numbers
@@ -54,15 +55,15 @@ def test_settings_reach_the_checks_and_are_recorded():
     d = r.to_dict(); json.dumps(d)
     assert d["options"]["solver"]["settings"] == s.changed()
     assert ns.make_solver(m, **d["options"]["solver"]).settings == s and r._make_solver(m).settings == s
-    assert r._make_solver(m).RESULT is ns.StationaryResult
+    assert r._make_solver(m).RESULT is StationaryResult
 
 
 def test_settings_reach_the_best_response_and_the_solve():
     m = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).with_horizon(nodes=4)
     r0 = ns.solve(m).check()
     with pytest.raises(ValueError, match="singular"):                        # every system fails a condition threshold of 1
-        ns.solve(m, settings=Settings(foc_rcond=1.0))
-    r = ns.solve(m, settings=Settings(anderson_iters=2))                      # two Anderson iterations, then the Newton polish
+        ns.solve(m, {"settings": Settings(foc_rcond=1.0)})
+    r = ns.solve(m, {"settings": Settings(anderson_iters=2)})                    # two Anderson iterations, then the Newton polish
     assert "anderson: 3 evaluations" in r.message and "newton polish" in r.message
     assert r.converged and abs(r.costs["player1"] - r0.costs["player1"]) < 1e-9
     assert ns.SpectralFiniteSolver(m, settings=Settings(map_ridge=1e-9)).MAP_RIDGE == 1e-9

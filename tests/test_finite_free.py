@@ -28,7 +28,7 @@ def _same_best_response(dense, free, maps, tol=1e-10):
 
 
 def _same_fixed_point(rd, rf, cost_tol=1e-10):
-    assert rf.converged and abs(rd.iterations - rf.iterations) <= 1 and rd.converged
+    assert rf.converged and abs(rd.evaluations - rf.evaluations) <= 1 and rd.converged
     for a in rd.model.agents:
         assert abs(rd.costs[a.name] - rf.costs[a.name]) < cost_tol, (a.name, rd.costs[a.name], rf.costs[a.name])
         assert np.abs(rd.maps[a.name] - rf.maps[a.name]).max() < 1e-9 * np.abs(rd.maps[a.name]).max()
@@ -70,7 +70,7 @@ def test_matrix_free_best_response_matches_the_dense_one_with_a_past():
     _same_best_response(dense, free, dense.c.frozen)
     _same_fixed_point(dense.solve(start="stationary"), free.solve(start="stationary"))
     kb = example("kyle_back_prior").with_horizon(nodes=8)
-    rd = ns.solve(kb); rf = ns.solve(kb, settings=FREE)
+    rd = ns.solve(kb); rf = ns.solve(kb, {"settings": FREE})
     assert rd.compiled.n_init == 1 and rf.solver_kw["settings"] == FREE
     _same_fixed_point(rd, rf)
 

@@ -9,11 +9,13 @@ The model (Model, ModelBuilder, a dict or a path) is the problem; a Numerics (or
 is solved: the engine, the grid, the tolerances, the settings.  solve() lays the given numerics over the
 model's own, builds the engine (noisestate.engines) and returns one Result.
 """
+import dataclasses
+
 from .spec import Model, ModelBuilder
 from .numerics import Numerics
 from .accel import ConvergenceError
 from .settings import Settings
-from .results import Result, BaseResult, StationaryResult, TriangleResult, TransitionResult, CellResult
+from .results import Result, BaseResult
 from .stationary import StationarySolver
 from .finite import FiniteSolver
 from .finite_spectral import SpectralFiniteSolver
@@ -24,9 +26,23 @@ from .grid_cache import clear as clear_grid_cache
 from .transition import transition
 from .schema import schema
 
-__all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "Result", "BaseResult", "StationaryResult", "TriangleResult",
-           "TransitionResult", "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "engines", "load", "solve",
-           "sweep", "transition", "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache", "schema"]
+__all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "Result", "BaseResult", "StationarySolver",
+           "FiniteSolver", "SpectralFiniteSolver", "engines", "load", "solve", "sweep", "transition", "read_yaml", "read_json",
+           "make_solver", "ENGINES", "clear_grid_cache", "schema"]
+
+_DEPRECATED_RESULTS = ("StationaryResult", "TriangleResult", "TransitionResult", "CellResult")      # until 0.6 (CHANGELOG)
+
+
+def __getattr__(name: str):
+    """The engines' result subclasses by name (noisestate.StationaryResult, ...) with a DeprecationWarning: they are
+    internal since one Result; isinstance(res, noisestate.Result) holds for every result."""
+    if name in _DEPRECATED_RESULTS:
+        import warnings
+        from . import results
+        warnings.warn(f"noisestate.{name} is deprecated: every engine returns noisestate.Result (the name goes in 0.6)",
+                      DeprecationWarning, stacklevel=2)
+        return getattr(results, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 def _read_version() -> str:
     """The version pyproject.toml declares when the package is imported from a source tree (a checkout on
@@ -97,16 +113,21 @@ def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluati
     on a finer grid and report the change, res.refinement), stability (add res.stability()), verbose;
     naive_observers ({agent: [observers]}, the stationary engine); past and continuation (a transition's, on the
     spectral engine; on a model of kind "transition" each overrides the file's block).  Unknown options are a
-    TypeError naming the Numerics field they belong to.  res.numerics is the resolved Numerics."""
+    TypeError naming the Numerics or Settings field they belong to; nodes= and settings= are accepted as aliases of the
+    Numerics fields until 0.6, with a DeprecationWarning.  res.numerics is the resolved Numerics."""
     model = as_model(model)
     for k in list(deprecated):
         if k in _ALIASES:
+            import warnings
+            warnings.warn(f"solve({k}=) is deprecated, pass Numerics({k}=) (the alias goes in 0.6)", DeprecationWarning, stacklevel=2)
             numerics = Numerics.of(numerics).merged(Numerics.of({k: deprecated.pop(k)}))
     if deprecated:
         bad = sorted(deprecated)
         fields = [k for k in bad if k in Numerics.field_names()]
-        raise TypeError(f"unknown option(s) {bad} for solve()" + (f"; {fields} are fields of Numerics: solve(model, Numerics({fields[0]}=...))"
-                                                                  if fields else "; see help(noisestate.solve)"))
+        tuning = [k for k in bad if k in {f.name for f in dataclasses.fields(Settings)}]
+        hint = (f"; {fields} are fields of Numerics: solve(model, Numerics({fields[0]}=...))" if fields else "") + \
+               (f"; {tuning} are fields of Settings: solve(model, Numerics(settings={{{tuning[0]!r}: ...}}))" if tuning else "")
+        raise TypeError(f"unknown option(s) {bad} for solve()" + (hint or "; see help(noisestate.solve)"))
     S, num = engines.build(model, numerics, verbose=verbose, naive_observers=naive_observers, past=past, continuation=continuation)
     kw = num.solve_kw()
     if tol is not None:

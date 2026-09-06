@@ -14,6 +14,7 @@ moderate change, a few best responses from the answer.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import replace
 
 from .spec import Model, ModelBuilder
@@ -46,7 +47,7 @@ def _past_block(old, past: Past) -> dict:
     if isinstance(old, dict):
         return {"model": dict(old)}
     src = getattr(old, "source", old)                       # a Past made from a result, or the result itself
-    if hasattr(src, "model") and hasattr(src, "Z"):
+    if hasattr(src, "model") and hasattr(src, "world"):
         return {"model": src.model.to_dict()}
     return {"initial": [sh.to_dict() for sh in past.initial]}
 
@@ -62,10 +63,14 @@ def transition(old, new, T: float, numerics=None, continuation="stationary", nod
     converged StationaryResult of the new model; "end" ends the game at T).  Keyword arguments go to solve()
     (tol, max_evaluations, verbose, ...); the start is the new stationary maps unless `start` is given or the
     game ends at T.  `nodes=` and `stationary={"nodes": m}` are accepted as aliases of the numerics fields
-    until 0.6.  Returns the Result with res.past and res.stationary attached."""
+    until 0.6, each with a DeprecationWarning.  Returns the Result with res.past and res.stationary attached."""
     num = Numerics.of(numerics)
     if nodes is not None:
+        warnings.warn("transition(nodes=) is deprecated, pass Numerics(nodes=) (the alias goes in 0.6)", DeprecationWarning, stacklevel=2)
         num = replace(num, nodes=int(nodes))
+    if stationary is not None:
+        warnings.warn("transition(stationary=) is deprecated, pass Numerics(continuation_nodes=) and horizon.stationary.window "
+                      "(the alias goes in 0.6)", DeprecationWarning, stacklevel=2)
     if stationary and stationary.get("nodes") is not None:
         num = replace(num, continuation_nodes=int(stationary["nodes"]))
     past = Past.of(old)

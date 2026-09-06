@@ -316,7 +316,7 @@ def test_coarse_start_reaches_the_same_equilibrium_with_fewer_fine_evaluations()
     for path in ("ch3_two_player.yaml", "ch1_two_player_finite.yaml"):
         m = ns.load(os.path.join(EX, path))
         cold = ns.make_solver(m).solve().check(); warm = ns.make_solver(m).solve(start="coarse").check()
-        assert warm.iterations < cold.iterations and "coarse start" in warm.message
+        assert warm.evaluations < cold.evaluations and "coarse start" in warm.message
         assert max(np.abs(cold.maps[k] - warm.maps[k]).max() for k in cold.maps) < 1e-7
     r = ns.solve(os.path.join(EX, "ch3_two_player.yaml")); r.refine()
     assert r.refinement["resolved"]                                            # refine warm-starts from this result

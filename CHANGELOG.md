@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **Review fixes (the consolidation branch's review).**  The names kept from before one `Result` warn: a
+  `DeprecationWarning` on `res.iterations` and `res.Z` (read `res.evaluations`, `res.world`), on
+  `solve(nodes=)`, `solve(settings=)`, `transition(nodes=)` and `transition(stationary=)` (pass a `Numerics`),
+  and on `noisestate.StationaryResult`, `TriangleResult`, `TransitionResult`, `CellResult` by name (every
+  engine returns `noisestate.Result`; the classes stay in `noisestate.results`); all go in 0.6.  The cell
+  engine's `res.kernel(name)` without a channel returns the stack over the channels, (N, N, nW), the last axis
+  one column per channel as on the other engines, instead of raising.  A `Settings` field passed to `solve()`
+  is a `TypeError` naming the `Numerics(settings={...})` route.  README's error contract: a past on the cell
+  engine is a `ValueError` from the numerics, not a `NotImplementedError`.  `engine.py` drops the dead
+  fallbacks to `c.row` and to a compiled model without `causal_chunks` (`KernelAlgebra` declares
+  `row_blocks` and `causal_chunks`; `row` leaves the interface).  `docs/architecture.md`'s module table
+  refreshed (`numerics.py`, `engines.py`, `schema.py`, `means.py`, `algebra.py` listed) with a "Metrics"
+  paragraph naming the files and functions over the plan's limits.  Tests: each deprecated name warns once
+  and the suite reads the new names; the cell engine's kernel stack; its mean solve's rcond guard.
+- **README as the user's document; the reference material in `docs/`.**  README (259 lines) is what it is,
+  install, a first solve on Model / Numerics / Result, the model file in brief, transitions and sweeps in
+  brief, the guards with the flag text each prints, settings, the error contract, the command line and where
+  things are, every snippet executed.  `docs/` holds `model_file.md` (every key of the schema with type,
+  default and the deprecated keys marked), `payload.md` (every `to_dict` key), `guards.md`, `settings.md`,
+  `validation.md`, `method.md`, `limits.md`, `transitions.md` and `design/` (the transition, size and
+  consolidation records); `docs/README.md` indexes them.
 - **The kernel algebra as an explicit interface.**  `noisestate.algebra.KernelAlgebra` declares every operator
   the base engine calls on a compiled model (the closed loop, `block`, `atom_op`, `expr_op`, `expr_kernel`,
   `row_blocks` / `row`, `conv_rows`, `instant`, `instant_adjoint`, `response`, `continuation`, `own_lag_read`,
@@ -27,7 +48,11 @@
   options), and `validate` checks the file against the schema first, reporting each error with its path.
   `start` defaults to `"stationary"` wherever a continuation is given (`solve(past=, continuation=)`, the
   file form, `sweep()`'s first point, `transition()`), else `"zero"`; `solve(start="zero")` asks for the zero
-  start explicitly (`solve()`'s `start` default is None).
+  start explicitly (`solve()`'s `start` default is None).  The file form of a transition therefore starts from
+  the stationary maps too: `examples/ch3_precision_change.yaml` goes from 23 to 20 evaluations and its costs
+  and excess costs move by 4e-8 (both fixed points within tol 1e-8).  The example is now a case of the baseline
+  record, re-taken with it (the eight earlier cases bit-identical in Z; ch1_mean_sweep_p10's mean costs carry the
+  mean layer's 4e-16 summation-order move).
 
 - **API stage, C and E: one `Result`.**  `noisestate.Result` is the type every engine returns
   (`isinstance(res, ns.Result)`; `StationaryResult`, `TriangleResult`, `TransitionResult` and `CellResult` are

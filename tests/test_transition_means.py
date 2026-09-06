@@ -3,6 +3,7 @@
 means, closed on the buffer with the new stationary means."""
 import numpy as np
 import noisestate as ns
+from noisestate.results import TransitionResult
 from helpers import example, stationary, same_model_solver, slow
 
 
@@ -34,7 +35,7 @@ def test_same_model_means_are_the_stationary_constants():
     mt = with_target(1.0)
     stat = stationary(mt, 16)
     res = ns.solve(mt.with_horizon(kind="finite", window=6.0, nodes=16), past=stat, continuation=stat, start="stationary").check()
-    assert res.iterations <= 2 and res.means_t.shape == (res.compiled.Nt,)
+    assert res.evaluations <= 2 and res.means_t.shape == (res.compiled.Nt,)
     buf = res.means_t >= 6.0 + 1e-9
     for n in ("X", "D1", "D2"):
         assert np.abs(res.means[n] - stat.means[n]).max() < 1e-8, (n, np.abs(res.means[n] - stat.means[n]).max())
@@ -72,6 +73,6 @@ def test_target_change_runs_from_the_old_means_to_the_new():
     assert 1.5e-4 < res.settled < 2.5e-4 and res.cost_parts["player1"]["mean"] > 0
     assert res.settled == max(res._make_solver(res.model).settled(res.maps), res._make_solver(res.model).settled_means(res.means))
     end = ns.solve(with_target(1.0).with_horizon(kind="finite", window=6.0, nodes=12), past=old).check()
-    assert isinstance(end, ns.TransitionResult) and end.continuation is None
+    assert isinstance(end, TransitionResult) and end.continuation is None
     assert abs(end.mean("X", 0.0)[0] - old.means["X"]) < 1e-12 and abs(end.mean("D1", 6.0)[0]) < 1e-12
     assert abs(end.mean("D1", 1.0)[0] - 1.7997) < 1e-3 and end.mean("D1", 5.0)[0] < 1.0

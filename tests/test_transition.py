@@ -33,9 +33,9 @@ def test_zero_past_is_the_finite_engine_bit_for_bit(name):
     identical (np.array_equal), and the grid is the same cached object."""
     m = example(name)
     r0 = ns.solve(m); r1 = ns.solve(m, past=None)
-    assert np.array_equal(r0.Z, r1.Z)
+    assert np.array_equal(r0.world, r1.world)
     assert all(np.array_equal(r0.maps[a], r1.maps[a]) for a in r0.maps)
-    assert r0.costs == r1.costs and r0.iterations == r1.iterations
+    assert r0.costs == r1.costs and r0.evaluations == r1.evaluations
     assert r1.grid is r0.grid and ns.SpectralFiniteSolver(m, past=None).c.g is r0.grid
     assert r1.past is None and r1.settled is None and "past" not in r1.to_dict()
 
@@ -170,7 +170,7 @@ def test_same_model_continuation_is_exact_on_the_whole_region():
         dev = np.abs(gm - maps[a.name]).max(axis=(0, 1)) / np.abs(maps[a.name]).max()
         assert dev.max() < 5e-8 and dev[last].max() < 5e-9, (a.name, dev.max(), dev[last].max())
     res = solver.solve(init=maps, tol=1e-10).check()
-    assert res.iterations <= 4 and res.settled < 1e-8 and res.continuation is stat
+    assert res.evaluations <= 4 and res.settled < 1e-8 and res.continuation is stat
     for name in c.prim:
         dev = np.abs(res.kernel(name) - gs.interp(g.a) @ stat.kernel(name)).max(axis=1) / np.abs(stat.kernel(name)).max()
         assert dev.max() < 5e-8 and dev[last].max() < 5e-9 and dev[c.buffer].max() < 5e-8, (name, dev.max())
@@ -232,7 +232,7 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     new8 = new.with_horizon(nodes=8)
     res8 = ns.solve(new8, past=old, continuation="stationary")
     res2 = ns.solve(new8, past=m.with_params(p1=3.0), continuation=res8.continuation)
-    assert np.array_equal(res8.Z, res2.Z) and res8.costs == res2.costs and 6e-4 < res8.settled < 7e-4
+    assert np.array_equal(res8.world, res2.world) and res8.costs == res2.costs and 6e-4 < res8.settled < 7e-4
     assert all(np.array_equal(res8.maps[k], res2.maps[k]) for k in res8.maps)
     assert res.evaluate("X", "w0", np.array([1.0, 1.0]), np.array([-1.0, 0.5])).shape == (2,)
     assert res.second_order["player1"]["ok"] and res.solver_kw["past"] is res.past
@@ -287,7 +287,7 @@ def test_mean_paths_start_from_the_past_means_and_initial_overrides():
     assert abs(r0.mean("X", 0.0)[0]) < 1e-12
     assert np.abs(r0.mean("X", at) - [0.0, 0.39555973, 0.61918718, 0.84513578, 0.92167413]).max() < 1e-6
     assert abs(r0.mean("D1", 0.0)[0] - 2.31569976) < 1e-5
-    assert np.array_equal(r0.Z, res.Z)                             # the kernels do not depend on the means
+    assert np.array_equal(r0.world, res.world)                             # the kernels do not depend on the means
 
 
 @slow("slow (33 s; the 3-node copy is tests/test_unit_range_finite.py's transition); set NOISESTATE_SLOW=1")
@@ -320,7 +320,7 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
     solver = same_model_solver(m, stat, T, 6)
     c = solver.c; g = c.g
     res = solver.solve(init=c.frozen, tol=1e-10).check()
-    assert res.iterations <= 6 and res.settled < 5e-6
+    assert res.evaluations <= 6 and res.settled < 5e-6
     for name in c.prim:
         dev = np.abs(res.kernel(name) - stationary_on_strip(stat, g, name)).max() / np.abs(stat.kernel(name)).max()
         assert dev < 5e-6, (name, dev)
@@ -330,7 +330,7 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
     assert json.loads(json.dumps(res.to_dict()))["agents"]["player2"]["signals"]["y2"]["delay"] == d
     if full:
         r0 = solver.solve(tol=1e-10).check()
-        assert np.abs(r0.Z - res.Z).max() < 1e-8 and r0.settled < 5e-6
+        assert np.abs(r0.world - res.world).max() < 1e-8 and r0.settled < 5e-6
 
 
 def test_solve_routes_past_and_continuation_and_the_result_rebuilds_them():
@@ -342,7 +342,7 @@ def test_solve_routes_past_and_continuation_and_the_result_rebuilds_them():
     stat = stationary(m, 8)
     res = ns.solve(m.with_horizon(kind="finite", window=6.0, nodes=8), past=stat, continuation="stationary", tol=1e-8).check()
     assert res.solver_kw["past"] is res.past and res.solver_kw["continuation"] is res.continuation
-    assert res.continuation is not stat and np.array_equal(res.continuation.Z, stat.Z)      # solved on the fly at horizon.nodes
+    assert res.continuation is not stat and np.array_equal(res.continuation.world, stat.world)      # solved on the fly at horizon.nodes
     fine = res._make_solver(res.model.with_horizon(nodes=12))
     assert fine.c.past is res.past and fine.c.cont is res.continuation and fine.c.Tg == 9.0
     d = json.loads(json.dumps(res.to_dict()))

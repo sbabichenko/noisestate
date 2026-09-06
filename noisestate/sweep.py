@@ -51,7 +51,7 @@ def warm_start(prev) -> Optional[dict]:
         return None
     if isinstance(prev, TriangleResult):
         c = prev.compiled
-        return {a.name: np.stack([prev.Z[c.block(u)] for u in a.controls]) for a in prev.model.agents}
+        return {a.name: np.stack([prev.world[c.block(u)] for u in a.controls]) for a in prev.model.agents}
     return prev.maps
 
 

@@ -5,6 +5,7 @@ import json
 import numpy as np, pytest
 from scipy.integrate import solve_ivp
 import noisestate as ns
+from noisestate.results import TransitionResult
 from helpers import EX, IVP, A1 as a, H1 as h, T1, P0, prior_model, slow, example, stationary
 
 
@@ -17,7 +18,7 @@ def test_same_model_loss_path_is_the_stationary_flow():
     m = example("ch3_two_player")
     stat = stationary(m, 16)
     res = ns.solve(m.with_horizon(kind="finite", window=6.0, nodes=16), past=stat, continuation=stat, start="stationary", tol=1e-10).check()
-    assert isinstance(res, ns.TransitionResult) and res.kind == "transition" and res.iterations <= 4
+    assert isinstance(res, TransitionResult) and res.kind == "transition" and res.evaluations <= 4
     assert res.times.shape == (res.compiled.Nt,) and res.times[0] == 0.0 and res.times[-1] == 9.0 and res.stationary is stat
     assert res.old_flows == stat.costs and res.new_flows == stat.costs
     for ag in ("player1", "player2"):
@@ -73,7 +74,7 @@ def test_belief_error_is_the_kalman_variance(P0=P0):
     for informed in (False, True):
         shock = {"name": "xi", "loads": {"X": np.sqrt(P0)}, **({"rows": {"a.y": 1.0}} if informed else {})}
         res = ns.solve(prior_model(0.5, 16), past=[shock]).check()
-        assert isinstance(res, ns.TransitionResult) and res.excess_costs == {} and res.new_flows == {} and res.old_flows == {}
+        assert isinstance(res, TransitionResult) and res.excess_costs == {} and res.new_flows == {} and res.old_flows == {}
         be = res.belief_error("a", "X"); P = Pf[informed].sol(res.times)[0]
         assert np.abs(be - P).max() < 1e-5, np.abs(be - P).max()
         assert abs(be[0] - (0.0 if informed else P0)) < 1e-12
@@ -94,7 +95,7 @@ def test_sweeps_over_the_horizon_and_over_the_change_size():
     assert [r["value"] for r in rows] == [6.0, 9.0] and all(r["converged"] for r in rows) and rows[1]["change"] is None
     assert rows[0]["result"].past is rows[1]["result"].past and rows[1]["result"].model.horizon.window == 9.0
     alone = ns.solve({**d, "horizon": {**d["horizon"], "window": 9.0}}, start="stationary")
-    assert rows[1]["evaluations"] < alone.iterations // 2 and np.abs(alone.Z - rows[1]["result"].Z).max() < 1e-6
+    assert rows[1]["evaluations"] < alone.evaluations // 2 and np.abs(alone.world - rows[1]["result"].world).max() < 1e-6
     rows = ns.sweep(d, "p1", [7.0, 10.0])
     assert rows[0]["result"].past is rows[1]["result"].past and rows[1]["change"] is not None and all(r["converged"] for r in rows)
     assert rows[0]["result"].continuation is not rows[1]["result"].continuation

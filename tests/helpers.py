@@ -144,10 +144,10 @@ def solve_record(res):
     the evaluation count, the residual, `settled` for a transition, the means where they are scalars, Z's
     shape and the SHA of its raw bytes (information; Z itself goes to the record's .npz)."""
     means = {k: float(v) for k, v in res.means.items() if np.ndim(v) == 0}
-    rec = {"engine": type(res).__name__, "converged": bool(res.converged), "evaluations": int(res.iterations),
+    rec = {"engine": type(res).__name__, "converged": bool(res.converged), "evaluations": int(res.evaluations),
            "residual": float(res.residual), "costs": {k: float(v) for k, v in res.costs.items()},
            "cost_parts": {k: {p: float(x) for p, x in v.items()} for k, v in res.cost_parts.items()},
-           "means": means, "Z_shape": list(np.shape(res.Z)), "Z_bits": sha_bits(res.Z)}
+           "means": means, "Z_shape": list(np.shape(res.world)), "Z_bits": sha_bits(res.world)}
     if getattr(res, "settled", None) is not None:
         rec["settled"] = float(res.settled)
     return rec

@@ -37,17 +37,17 @@
    "converged": true,
    "cost_parts": {
     "player1": {
-     "mean": 2.22243942736941,
+     "mean": 2.2224394273694097,
      "variance": 0.32483135617439035
     },
     "player2": {
-     "mean": 2.222439427369412,
+     "mean": 2.222439427369411,
      "variance": 0.32483135617439035
     }
    },
    "costs": {
-    "player1": 2.5472707835438007,
-    "player2": 2.5472707835438024
+    "player1": 2.5472707835438,
+    "player2": 2.5472707835438015
    },
    "engine": "TriangleResult",
    "evaluations": 15,
@@ -80,7 +80,37 @@
    "evaluations": 15,
    "means": {},
    "residual": 5.901114133166483e-09,
-   "seconds": 0.54
+   "seconds": 0.48
+  },
+  "ch3_precision_change": {
+   "Z_bits": "b8ad3c51e64d44d9af310ff24b0ef8628b151c4bfbd1f21064f90cf234992f7a",
+   "Z_shape": [
+    2160,
+    3
+   ],
+   "converged": true,
+   "cost_parts": {
+    "player1": {
+     "continuation": 1.2652308079596062,
+     "mean": 0.0,
+     "variance": 2.554488725509091
+    },
+    "player2": {
+     "continuation": 1.2652308079435597,
+     "mean": 0.0,
+     "variance": 2.559082502568793
+    }
+   },
+   "costs": {
+    "player1": 2.554488725509091,
+    "player2": 2.559082502568793
+   },
+   "engine": "TransitionResult",
+   "evaluations": 20,
+   "means": {},
+   "residual": 9.927515259816984e-09,
+   "seconds": 7.29,
+   "settled": 0.0004830689659904385
   },
   "ch3_same_model_T6_n6": {
    "Z_bits": "03efc7b608413d90ab0a602b6ba940db2198551d5b19a7698fadafbf0fbb75f1",
@@ -143,7 +173,7 @@
     "player2.y2": 0.0
    },
    "residual": 5.188467161776373e-11,
-   "seconds": 0.04
+   "seconds": 0.05
   },
   "ch4_kyle_back": {
    "Z_bits": "ba825183063b7396eb733b3faabca9cffd61681d3110c66448b2890b723735b3",
@@ -264,7 +294,7 @@
     "yH2": 0.2740216433923257
    },
    "residual": 8.62637334428049e-11,
-   "seconds": 5.7
+   "seconds": 5.66
   },
   "kyle_back_prior": {
    "Z_bits": "b303fcb16b57916d772361596790e77cdc02c033c56a45c2bbe1ecb3293ff319",
@@ -291,10 +321,10 @@
    "evaluations": 67,
    "means": {},
    "residual": 5.913230726105629e-09,
-   "seconds": 0.95
+   "seconds": 0.93
   }
  },
- "commit": "ec1b533",
+ "commit": "b73226f",
  "cost_tol": 1e-12,
  "date": "2026-09-06",
  "noisestate": "0.4.0",
