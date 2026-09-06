@@ -2,7 +2,7 @@
  "Z_tol": 1e-12,
  "cases": {
   "ch1_delayed_finite": {
-   "Z_bits": "95561c9c50f188913fc72323abb3ee07a8a6450750adf0da82928be14360fd4e",
+   "Z_bits": "f2d797b49b79becaedc6e3950a19d2fa063ecb8b512321bd71c60a35953b5fad",
    "Z_shape": [
     1920,
     3
@@ -11,25 +11,25 @@
    "cost_parts": {
     "player1": {
      "mean": 0.0,
-     "variance": 0.4838242662682089
+     "variance": 0.48382426626820924
     },
     "player2": {
      "mean": 0.0,
-     "variance": 0.476678011994978
+     "variance": 0.47667801199497833
     }
    },
    "costs": {
-    "player1": 0.4838242662682089,
-    "player2": 0.476678011994978
+    "player1": 0.48382426626820924,
+    "player2": 0.47667801199497833
    },
    "engine": "TriangleResult",
    "evaluations": 13,
    "means": {},
-   "residual": 6.2107098348901675e-09,
-   "seconds": 2.93
+   "residual": 6.210709836492557e-09,
+   "seconds": 2.51
   },
   "ch1_mean_sweep_p10": {
-   "Z_bits": "29eea62029746fdac23d9a8456657ec0e3c5d5ad61359ac7e6aeaa2b3ea6103b",
+   "Z_bits": "a8f1a62fbb6f1eed3be78dbb8c1263290da56d3e90d3779e8c41aa72259d534d",
    "Z_shape": [
     432,
     3
@@ -38,25 +38,25 @@
    "cost_parts": {
     "player1": {
      "mean": 2.22243942736941,
-     "variance": 0.3248313561743904
+     "variance": 0.32483135617439035
     },
     "player2": {
-     "mean": 2.222439427369411,
-     "variance": 0.3248313561743904
+     "mean": 2.222439427369412,
+     "variance": 0.32483135617439035
     }
    },
    "costs": {
     "player1": 2.5472707835438007,
-    "player2": 2.5472707835438015
+    "player2": 2.5472707835438024
    },
    "engine": "TriangleResult",
    "evaluations": 15,
    "means": {},
-   "residual": 6.04397936284505e-09,
-   "seconds": 0.32
+   "residual": 6.04397933753032e-09,
+   "seconds": 0.37
   },
   "ch1_two_player_finite": {
-   "Z_bits": "6d0a3a7d4aa5d921b6c9d32fe8bf88b2bba98ef11d131e22b281683b345efe0e",
+   "Z_bits": "0d285ddc34f6efb3d34b17986b63c079b6a80e1870d6bb908f02104d5d5903e4",
    "Z_shape": [
     432,
     3
@@ -65,25 +65,25 @@
    "cost_parts": {
     "player1": {
      "mean": 0.0,
-     "variance": 0.396905768985999
+     "variance": 0.3969057689859987
     },
     "player2": {
      "mean": 0.0,
-     "variance": 0.396905768985999
+     "variance": 0.3969057689859987
     }
    },
    "costs": {
-    "player1": 0.396905768985999,
-    "player2": 0.396905768985999
+    "player1": 0.3969057689859987,
+    "player2": 0.3969057689859987
    },
    "engine": "TriangleResult",
    "evaluations": 15,
    "means": {},
-   "residual": 5.901114118353453e-09,
-   "seconds": 0.5
+   "residual": 5.901114133166483e-09,
+   "seconds": 0.54
   },
   "ch3_same_model_T6_n6": {
-   "Z_bits": "4d15998beee87b0a1b8eb730af82558edfa7ac54af50cc2ae4060b6d223949b3",
+   "Z_bits": "03efc7b608413d90ab0a602b6ba940db2198551d5b19a7698fadafbf0fbb75f1",
    "Z_shape": [
     540,
     3
@@ -93,24 +93,24 @@
     "player1": {
      "continuation": 1.288899988768057,
      "mean": 0.0,
-     "variance": 2.5769823851804903
+     "variance": 2.576982385180492
     },
     "player2": {
      "continuation": 1.4966663422666593,
      "mean": 0.0,
-     "variance": 2.9933277473867372
+     "variance": 2.993327747386741
     }
    },
    "costs": {
-    "player1": 2.5769823851804903,
-    "player2": 2.9933277473867372
+    "player1": 2.576982385180492,
+    "player2": 2.993327747386741
    },
    "engine": "TransitionResult",
    "evaluations": 19,
    "means": {},
-   "residual": 5.012884258256671e-09,
-   "seconds": 0.42,
-   "settled": 0.004536898545055173
+   "residual": 5.012884201528273e-09,
+   "seconds": 0.4,
+   "settled": 0.004536898545055094
   },
   "ch3_two_player": {
    "Z_bits": "b3cf529570a073713fcbb9624b646a9d78b71293475b98176ad22f6afcd28dff",
@@ -264,10 +264,10 @@
     "yH2": 0.2740216433923257
    },
    "residual": 8.62637334428049e-11,
-   "seconds": 5.74
+   "seconds": 5.7
   },
   "kyle_back_prior": {
-   "Z_bits": "c9f877398ca2462f7972584a52a1e50b7de54e7b1a3e5931e623a12119d0083f",
+   "Z_bits": "b303fcb16b57916d772361596790e77cdc02c033c56a45c2bbe1ecb3293ff319",
    "Z_shape": [
     432,
     2
@@ -280,21 +280,21 @@
     },
     "trader1": {
      "mean": 0.0,
-     "variance": -1.115078225386477
+     "variance": -1.1150782253864768
     }
    },
    "costs": {
     "market_maker": -0.8682256615768675,
-    "trader1": -1.115078225386477
+    "trader1": -1.1150782253864768
    },
    "engine": "TransitionResult",
    "evaluations": 67,
    "means": {},
-   "residual": 5.913230828893849e-09,
-   "seconds": 0.82
+   "residual": 5.913230726105629e-09,
+   "seconds": 0.95
   }
  },
- "commit": "e845c3f",
+ "commit": "ec1b533",
  "cost_tol": 1e-12,
  "date": "2026-09-06",
  "noisestate": "0.4.0",
