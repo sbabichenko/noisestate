@@ -73,6 +73,12 @@ class SpectralCompiled(CompiledBase):
         self.past = past
         if past is not None:
             past.validate(model, (hz.unit or min(lags)) if lags else None)
+        # with a past a row observed with delay d keeps its map in raw age (the weight the control at t puts on the
+        # raw increment of age a, zero for a < d, whole pieces since d is a breakpoint) and is an undelayed row to
+        # every operator, the band's included; without a past the map is stored at the shifted time (map_shift)
+        self.row_delays: Dict[str, List[float]] = {a: [float(r[3]) for r in rr] for a, rr in self.rows.items()}
+        if past is not None:
+            self.rows = {a: [(n, drift, E, 0.0) for (n, drift, E, d) in rr] for a, rr in self.rows.items()}
         L = past.window if past is not None and past.window > 0 else None
         self.cont = continuation                      # the StationaryResult the buffer is frozen at (None: the game ends at T)
         self.continuation_info: Optional[dict] = None
@@ -114,10 +120,6 @@ class SpectralCompiled(CompiledBase):
         else:
             # the strip: one breakpoint sequence for time and age, the past grid's panels and L among them
             # (the old kernels kink on the past's panels, which then lie on piece edges), closed under the lags
-            if any(r[3] > 0 for rr in self.rows.values() for r in rr):
-                raise NotImplementedError("a past with a window is supported for rows without observation delays: the map "
-                                          "of a delayed row on the increments observed before zero has no place in the "
-                                          "shifted-time storage; drift and loss lags are fine")
             bp = sorted(set(bp) | {b for b in past.breakpoints if b < L - 1e-12} | {float(L)})
             if not lags and not hz.breakpoints:                     # no lags: time panels of width L (the shocks' lifetime), then T
                 bp = sorted(set(bp) | {float(b) for b in np.arange(0.0, self.T - 1e-12, L)})
@@ -189,7 +191,7 @@ class SpectralCompiled(CompiledBase):
         self.Nd = len(self.diag)                          # time nodes on which the line s = 0 exists
         self.mean_embed = np.zeros((self.N, self.Nt))
         for pc in g.pieces:
-            if pc.upper:
+            if pc.band:
                 continue                                  # a path is carried on the new-shock region only
             for it in range(pc.nt):
                 self.mean_embed[pc.offset + it * pc.na + np.arange(pc.na), pc.p * g.nt + it] = 1.0
@@ -231,14 +233,31 @@ class SpectralCompiled(CompiledBase):
         """agent -> (nU, nR, N): the continuation's stationary map at every node's age (used on the buffer; on
         [T - L, T] it is what `settled` compares the solved maps with)."""
         res = self.cont; gs = res.compiled.grid; g = self.g
-        I = gs.interp(g.a)
+        top = np.abs(g.a - g.a1) < 1e-9 * max(1.0, self.Tg)      # a node on its piece's top age edge carries the left limit
+
+        def at_ages(ages):
+            I = gs.interp(ages, side=+1)
+            I[top] = gs.interp(ages[top], side=-1)
+            return I
+        I0 = at_ages(g.a)
         m = res.model
         self.continuation_info = {"kind": "stationary", "name": m.name, "params": {k: float(v) for k, v in m.params.items()},
                                   "window": float(gs.L), "nodes": int(gs.n), "breakpoints": [float(b) for b in gs.breakpoints],
                                   "converged": bool(res.converged), "residual": float(res.residual),
                                   "window_tail": float(res.window_tail), "costs": {k: float(v) for k, v in res.costs.items()},
                                   "means": {k: float(v) for k, v in res.means.items() if v}}
-        return {a.name: np.einsum("fn,urn->urf", I, res.maps[a.name]) for a in self.model.agents}
+        out = {}
+        eps = 1e-9 * max(1.0, self.Tg)
+        for a in self.model.agents:
+            fm = np.zeros((len(a.controls), len(a.signals), self.N))
+            for r in range(len(a.signals)):
+                d = self.row_delays[a.name][r]                  # the stationary map is stored at the seen age a - d
+                I = at_ages(g.a - d) if d > 0 else I0
+                fm[:, r, :] = np.einsum("fn,un->uf", I, res.maps[a.name][:, r, :])
+                if d > 0:
+                    fm[:, r, g.a1 <= d + eps] = 0.0
+            out[a.name] = fm
+        return out
 
     def with_frozen(self, agent: str, ui: int, r: int, gker: np.ndarray) -> np.ndarray:
         """The map kernel (N,) with the buffer's nodes at the frozen stationary map (the input elsewhere)."""
@@ -291,6 +310,17 @@ class SpectralCompiled(CompiledBase):
         eps = 1e-12 * max(1.0, self.Tg)
         return g.upper & ((g.t - lag < -eps) | ((np.abs(g.t - lag) <= eps) & (g.side_t < 0)))
 
+    def past_at(self, name: str, nodes: np.ndarray, ages: np.ndarray) -> np.ndarray:
+        """(len, nW): the past's kernel of `name` at the given ages for the given nodes, a node on its piece's top
+        age edge reading the left limit (the old kernels jump at the delays: a control's kernel on its row's
+        own noise starts at the delay), every other node the right one."""
+        g = self.g
+        top = np.abs(g.a[nodes] - g.a1[nodes]) < 1e-9 * max(1.0, self.Tg)
+        out = self.past.read(name, ages, side=+1)
+        if top.any():
+            out[top] = self.past.read(name, ages[top], side=-1)
+        return out
+
     def past_read(self, name: str, lag: float) -> np.ndarray:
         """(N, nW): the past's kernel of `name` at age a - lag on the band nodes whose read `lag` earlier is before
         zero (zero elsewhere, and on pieces whose ages start below the lag, where the shock had not arrived)."""
@@ -300,7 +330,8 @@ class SpectralCompiled(CompiledBase):
             if g.L is not None and lag > 0 and name in self.past.kernels:
                 sel = self._before(lag) & (g.a0 >= lag - 1e-12)
                 if sel.any():
-                    out[sel] = self.past.read(name, g.a[sel] - lag)
+                    idx = np.where(sel)[0]
+                    out[idx] = self.past_at(name, idx, g.a[idx] - lag)
             self._past_reads[key] = out
         return self._past_reads[key]
 
@@ -344,9 +375,9 @@ class SpectralCompiled(CompiledBase):
             for pc in g.pieces:
                 if pc.p - k < 0 or pc.q - k < 0:
                     continue
-                if pc.origin and pc.p - k < g.P_T:
+                if pc.p >= g.P_T and pc.p - k < g.P_T:
                     # a buffer piece shifted back into [0, T]: a rectangle lands on the rectangle (p - k, q - k) node to
-                    # node; a triangle (cut by the buffer's diagonal) lands inside that rectangle and is interpolated
+                    # node; a triangle (cut by a diagonal of the buffer) lands inside that rectangle and is interpolated
                     if pc.triangle:
                         idx = pc.offset + np.arange(pc.n)
                         S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx], side_d=g.side_d[idx])
@@ -576,7 +607,7 @@ class SpectralCompiled(CompiledBase):
             g = self.g; k = self.panel_shift(delay) if delay > 0 else 0
             E = np.zeros((self.N, self.Nt))
             for pc in g.pieces:
-                if pc.upper or pc.p - k < 0:
+                if pc.band or pc.p - k < 0:
                     continue
                 for it in range(pc.nt):
                     E[pc.offset + it * pc.na + np.arange(pc.na), (pc.p - k) * g.nt + it] = 1.0
@@ -869,7 +900,8 @@ class SpectralCompiled(CompiledBase):
                 B0[self.block(self.prim[i]), k] += lower * (EA[:, i, :] @ v)
         if up.any():
             EAt = self.expA(g.t[up])                                     # (n_up, nX, nX)
-            K0 = np.stack([self.past.read(self.prim[j], g.a[up] - g.t[up]) for j in range(self.nX)], axis=1)   # (n_up, nX, nW)
+            iu = np.where(up)[0]
+            K0 = np.stack([self.past_at(self.prim[j], iu, g.a[iu] - g.t[iu]) for j in range(self.nX)], axis=1)   # (n_up, nX, nW)
             for i in range(self.nX):
                 B0[self.block(self.prim[i]), :nW][up] += np.einsum("nj,njk->nk", EAt[:, i, :], K0)
         for col in range(self.n_init):
@@ -1011,14 +1043,16 @@ class SpectralFiniteSolver(EngineBase):
                 if d > 0:
                     keep[r * N:(r + 1) * N] = c.panel_of_node + c.panel_shift(d) < g.P
             return keep
-        # with a past: the band's map nodes of a row whose old regime carried nothing are masked (nothing to
-        # read), and a row's discrete weights are kept only where it sees an initial shock
+        # with a past: the map is in raw age and the pieces below a row's delay read nothing (whole pieces: the
+        # delay is a breakpoint), the band's map nodes of a row whose old regime carried nothing are masked
+        # (nothing to read), the buffer's are frozen, and a row's discrete weights are kept where it sees an
+        # initial shock, from the delay on
         Nm = self.Nm; nR = len(agent.signals)
         keep = np.zeros(nR * Nm, dtype=bool)
+        eps = 1e-9 * max(1.0, c.Tg)
         for r in range(nR):
-            d = c.rows[agent.name][r][3]
-            k = c.panel_shift(d) if d > 0 else 0
-            flow = c.panel_of_node + k < g.P
+            d = c.row_delays[agent.name][r]
+            flow = (g.a1 > d + eps) if d > 0 else np.ones(N, dtype=bool)
             if g.L is not None:
                 empty = not np.any(c.past_row_kernel(agent.name, r)) and not np.any(c.E_old[agent.name][r])
                 if empty:
@@ -1026,7 +1060,7 @@ class SpectralFiniteSolver(EngineBase):
             keep[r * Nm:r * Nm + N] = flow & ~c.buffer                     # the buffer's map is frozen, not solved
             if c.n_init and np.any(c.init_rows[agent.name][r]):
                 tpanel = np.repeat(np.arange(g.P), g.nt)
-                keep[r * Nm + N:(r + 1) * Nm] = tpanel + k < c.P_T
+                keep[r * Nm + N:(r + 1) * Nm] = (tpanel < c.P_T) & (g.bp[tpanel] >= d - eps)
         return keep
 
     def _response_operators(self, agent: Agent, R: np.ndarray):
@@ -1146,7 +1180,7 @@ class SpectralFiniteSolver(EngineBase):
         for pc in g.pieces:
             if pc.triangle:                                                     # lower: the row at t_p; upper: the row at t_{p+1}
                 for node in pc.offset + (0 if not pc.upper else (pc.nt - 1) * pc.na) + np.arange(pc.na):
-                    corner_of[int(node)] = (pc.p, pc.upper)
+                    corner_of[int(node)] = (pc.p, pc.q, pc.upper)
         for (p, it), idx in sorted(c.trow_by_pit.items()):
             if p >= c.P_T:
                 continue                                                        # the buffer's rows are frozen
@@ -1180,13 +1214,16 @@ class SpectralFiniteSolver(EngineBase):
             Bsub = Bk[:, idx][:, :, cols] @ Rm
             G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
             rhs = [sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW)) for ui in range(nU)]
-            jc = [j for j, node in enumerate(idx) if int(node) in corner_of]        # the time row's own degenerate corner
-            if groups and jc:
-                jc = jc[0]
-                for k in range(nW):
-                    G = G + np.outer(Bsub[k][jc], Bsub[k][jc])
-                    for ui in range(nU):
-                        rhs[ui] = rhs[ui] + Bsub[k][jc] * cact[ui, idx[jc], k]
+            corners = {}                                                            # the time row's degenerate corners, one per triangle
+            for j, node in enumerate(idx):
+                if int(node) in corner_of:
+                    corners.setdefault(corner_of[int(node)], j)
+            if groups:
+                for jc in corners.values():                                         # a point condition at each corner's action node
+                    for k in range(nW):
+                        G = G + np.outer(Bsub[k][jc], Bsub[k][jc])
+                        for ui in range(nU):
+                            rhs[ui] = rhs[ui] + Bsub[k][jc] * cact[ui, idx[jc], k]
             jd = [j for j, node in enumerate(idx) if int(node) in diag_of]          # the time row's node on s = 0, if any
             if c.n_init and jd:
                 jd = jd[0]

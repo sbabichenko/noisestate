@@ -460,7 +460,9 @@ class TriangleResult(BaseResult):
                       "is the weight the control at time agents[agent].signals[row].map_time[n] = grid.t[n] + delay puts "
                       "on the increment of the row as the agent sees it at age grid.age[n]; that increment entered the raw "
                       "row at time grid.s[n] (age map_age[n] = grid.age[n] + delay before the control), and the map is zero "
-                      "where map_time is beyond the horizon; with a past, nodes with grid.s[n] < 0 weigh the increments "
+                      "where map_time is beyond the horizon; with a past the map is stored in raw age instead: "
+                      "maps[agent][u][row][n] is the weight the control at map_time[n] = grid.t[n] puts on the raw increment "
+                      "of age map_age[n] = grid.age[n] (zero below the delay), nodes with grid.s[n] < 0 weigh the increments "
                       "observed before zero, and the entries after the grid's nodes (map_init_time) are the weights on the "
                       "row's point observation of the initial shocks")
 
@@ -475,6 +477,8 @@ class TriangleResult(BaseResult):
 
     def map_axes(self, delay: float) -> dict:
         g = self.grid; c = self.compiled
+        if self.past is not None:
+            delay = 0.0                                       # raw-age storage (MAP_CONVENTION)
         out = {"map_time": (g.t + delay).tolist(), "map_age": (g.a + delay).tolist()}
         if getattr(c, "n_init", 0):
             out["map_init_time"] = (c.tm + delay).tolist()

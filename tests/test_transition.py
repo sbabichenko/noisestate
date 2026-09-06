@@ -9,7 +9,8 @@ stationary continuation (the maps frozen at the stationary ones on a buffer [T, 
 identity is exact on the whole region; (6) a precision change on Chapter 3 starts from the old kernels and
 is continued by its new stationary equilibrium, with its costs and `settled` pinned; (7) an old row's noise
 loading on a channel the new row drops is kept on the band; (8) the mean paths start from the past's means,
-`initial: 0` overriding; (9) the validation errors.
+`initial: 0` overriding; (9) a model with a control lag and a delayed row (the map in raw age) as its own past and
+continuation is exact on every node; (10) the validation errors.
 """
 import json
 import os
@@ -296,6 +297,55 @@ def test_mean_paths_start_from_the_past_means_and_initial_overrides():
     assert np.array_equal(r0.Z, res.Z)                             # the kernels do not depend on the means
 
 
+def stationary_on_strip(stat, g, name):
+    """The stationary kernel at the strip's nodes, a node on its piece's top age edge taking the left limit (the
+    kernels jump at a delayed row's delay and at the window edge)."""
+    gs = stat.compiled.grid; K = stat.kernel(name); top = np.abs(g.a - g.a1) < 1e-9
+    out = gs.interp(g.a, side=+1) @ K
+    out[top] = gs.interp(g.a[top], side=-1) @ K
+    return out
+
+
+def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
+    """examples/ch1_delayed_finite.yaml (the controls act after tau = 0.25, player2 sees its row with delay tau)
+    with its own stationary equilibrium at window L = 1 as past and continuation, T = 1.25: with a past a delayed
+    row's map is stored in raw age, masked below the delay, and the squares above each diagonal are split
+    (56 pieces), so the identity is exact: at 8 nodes one best response from the stationary maps returns them
+    on every node to 1.4e-9 (player1) and 1.8e-9 (player2, the delayed row), the band and the last window
+    included; at 6 nodes (the floor 1.2e-6) the fixed point started from them stays in 4 evaluations, every
+    kernel K_stat(t - s) to that floor, and res.settled is 1.1e-6.  Under NOISESTATE_SLOW the fixed point from
+    zero reaches the same maps (20 evaluations, 66 s)."""
+    m = ns.load(EX + "ch1_delayed_finite.yaml"); L, T, d = 1.0, 1.25, 0.25
+    stat8 = ns.solve(m.with_horizon(kind="stationary", window=L, nodes=8)).check()
+    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=8), past=stat8, continuation=stat8)
+    c = solver.c; g = c.g
+    assert len(g.pieces) == 56 and c.N == 3584 and c.row_delays == {"player1": [0.0], "player2": [d]} and c.rows["player2"][0][3] == 0.0
+    assert g.upper[g.s < -1e-12].all() and not g.upper[g.s > 1e-12].any() and not g.above[g.upper].all()   # split squares
+    keep2 = solver._identified(m.agents[1]).reshape(1, -1)[0, :c.N]
+    assert not keep2[g.a1 <= d + 1e-9].any() and keep2[(g.a0 >= d - 1e-9) & ~c.buffer].all()   # whole pieces below the delay
+    assert np.abs(c.frozen["player2"][0, 0][g.a1 <= d + 1e-9]).max() == 0.0
+    for a in m.agents:
+        gm, out = solver.best_response(a, c.frozen)
+        keep = solver._identified(a).reshape(len(a.signals), -1)[:, :c.N]
+        dev = (np.abs(gm - c.frozen[a.name])[0] * keep / np.abs(c.frozen[a.name]).max())[0]
+        assert dev.max() < 1e-8, (a.name, dev.max(), dev[g.upper].max())
+    stat = ns.solve(m.with_horizon(kind="stationary", window=L, nodes=6)).check()
+    solver = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=6), past=stat, continuation=stat)
+    c = solver.c; g = c.g
+    res = solver.solve(init=c.frozen, tol=1e-10).check()
+    assert res.iterations <= 6 and res.settled < 5e-6
+    for name in c.prim:
+        dev = np.abs(res.kernel(name) - stationary_on_strip(stat, g, name)).max() / np.abs(stat.kernel(name)).max()
+        assert dev < 5e-6, (name, dev)
+    assert np.abs(res.maps["player2"][0, 0][g.a1 <= d + 1e-9]).max() == 0.0
+    ax = res.map_axes(d)
+    assert ax["map_time"] == g.t.tolist() and ax["map_age"] == g.a.tolist() and "raw age" in res.MAP_CONVENTION
+    assert json.loads(json.dumps(res.to_dict()))["agents"]["player2"]["signals"]["y2"]["delay"] == d
+    if os.environ.get("NOISESTATE_SLOW"):
+        r0 = solver.solve(tol=1e-10).check()
+        assert np.abs(r0.Z - res.Z).max() < 1e-8 and r0.settled < 5e-6
+
+
 def test_past_validation():
     """A finite result is a TypeError, an unconverged stationary one a ValueError, other channels a ValueError,
     an initial shock on an unknown state a ValueError, and a past with a window on a model whose rows are
@@ -314,8 +364,9 @@ def test_past_validation():
         ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=3.0, nodes=6), past=[{"name": "v", "loads": {"V": 1.0}}])
     delayed = ns.load(EX + "ch1_delayed_finite.yaml")
     dpast = ns.solve(delayed.with_horizon(kind="stationary", window=1.0, nodes=6)).check()
-    with pytest.raises(NotImplementedError, match="delay"):
-        ns.SpectralFiniteSolver(delayed, past=dpast)
+    with pytest.raises(ValueError, match="differ from the model's .* \\(agent, row, delay\\)"):
+        ns.SpectralFiniteSolver(delayed, past=dpast, continuation=ns.solve(ns.Model.from_dict({**delayed.to_dict(), "agents": {
+            **delayed.to_dict()["agents"], "player2": {**delayed.to_dict()["agents"]["player2"], "signals": {"y2": {"drift": {"X": "sqrt(p2)"}, "noise": {"w2": 1.0}}}}}}).with_horizon(kind="stationary", window=1.0, nodes=6)).check())
     fin = m.with_horizon(kind="finite", window=3.0, nodes=6)
     with pytest.raises(TypeError, match="StationaryResult"):
         ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(fin))
@@ -329,3 +380,6 @@ def test_past_validation():
         ns.SpectralFiniteSolver(fin, past=stat, continuation="tail")
     with pytest.raises(ValueError, match="channels"):
         ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(ns.Model.from_dict(other).with_horizon(nodes=6)).check())
+    from noisestate.triangle import TriangleGrid
+    with pytest.raises(ValueError, match="age panels shifted"):
+        TriangleGrid([0.0, 1.0, 2.0, 3.5], 4, 4, T=3.5, window=1.0, buffer=2.0)

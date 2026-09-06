@@ -504,9 +504,9 @@ a settled transition solves the infinite problem exactly (the same-model identit
 on every node), `res.settled` measures how far the maps on [T - L, T] are from the
 stationary ones (the `settled` row, threshold `settled_tol` 1e-6), and
 `res.cost_parts[agent]["continuation"]` reports the buffer's cost apart from
-`res.costs`, which stays the integral over [0, T].  A past with a window needs rows
-without observation delays, and mean paths need the past's window to cover T and no
-continuation.  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
+`res.costs`, which stays the integral over [0, T].  With a past the map on a row observed
+with a delay is stored in raw age (zero below the delay; `map_convention` in the payload),
+and mean paths need the past's window to cover T and no continuation.  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
 outside the grammar; a state with an empty `drift` and `noise` validates and is carried
 as its initial value.  The Chapter 4 example is the stationary variant, where V is a
 random walk on the window and the agents keep receiving V shocks.

@@ -62,6 +62,30 @@
   continuation beyond T (`settled`), a `transition` horizon kind in model files, plots and helpers,
   a past with a window on rows observed with a delay (`NotImplementedError`), and the second-order
   check ignores the initial-shock columns.  The shipped examples are unchanged to every digit.
+- Transition from a known past, stage 2b: rows observed with a delay, and a switch's lagged kinks.  With
+  a past the map on a row observed with delay d is stored in raw age (`MAP_CONVENTION`, `map_axes`:
+  maps[agent][u][row][n] weighs the raw increment of age grid.age[n] at time grid.t[n], zero below the
+  delay, whole pieces since d is a breakpoint) and the row is undelayed to every operator, the band's
+  included (`SpectralCompiled.row_delays` keeps the delays; `rows` carry 0); the row's own noise is
+  the identity restricted to ages >= d, the discrete weights on an initial shock start at t = d, and
+  the continuation's stationary map (stored at the seen age) is read at a - d, a node on its piece's
+  top age edge taking the left limit (the map jumps where it is masked).  The past's kernels are read
+  the same way (`past_at`: the old kernels jump at the delays).  Without a past nothing changes.  A
+  switch of the maps at t0 (the regime change at 0, the passive world's at T) reaches a state through
+  a lag tau only at t0 + tau, so the kernels kink, more weakly at each step, along every line
+  s = t0 - k tau: above each region's diagonal every square piece is now split along its own diagonal
+  into two Duffy triangles (`Piece.origin = t0 - a0`, `grid.above`, `grid.origins`; `grid.upper` stays
+  the band), a piece's top corner reads from below on a strip, and every degenerate corner of a time
+  row gets its point condition.  `examples/ch1_delayed_finite.yaml` (a control lag and a delayed row,
+  tau = 0.25) with its stationary equilibrium at window 1 as past and continuation (T = 1.25, 56
+  pieces) is exact: one best response from the stationary maps returns them on every node to 1.4e-9
+  and 1.8e-9 at 8 nodes (without the split, 8e-5 and not converging; with the buffer's own reactions
+  in the FOC, 1e-4), the 6-node fixed point stays at the 6-node floor (1.2e-6) and is reached from
+  zero.  The two-firm Chapter 5 market (make_ch5_cycle_market.build(N=2), ties dropped) is NOT
+  validated: at the sizes asked (L = 6, tau = 0.5, T = 6) the strip has 11 000 nodes x 9 primaries,
+  beyond the dense closed loop, and at tau = 1, L = T = 2, 5 nodes the first-order condition at its
+  own stationary maps has a residual of 3e-2 in the interior (rows and losses that read lagged
+  controls across the band; cause not found), so no number is pinned.
 - Transition from a known past, stage 2a: the stationary continuation.  `SpectralFiniteSolver(model,
   past=..., continuation=...)` and `solve(model, past=..., continuation=...)`: `continuation` is a
   converged `StationaryResult` of the new model at the past's window, `"stationary"` (that result

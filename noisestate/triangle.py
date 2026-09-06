@@ -35,8 +35,14 @@ the maps are frozen) the time panels from T_b on are the age panels shifted by T
 and their pieces are the strip's on [0, L] with the origin at T_b: below the second
 diagonal a = t - T_b the shocks born after T_b, above it those born before, which
 the excluded agent's passive world (its own strategy off before T_b, frozen after)
-kinks along.  Piece.origin is 0 or T_b; `upper` marks the band (s < 0) only, `above`
-every piece above its own diagonal.
+kinks along.  A switch of the maps at a time t0 (the regime change at 0, the passive
+world's at T_b) reaches a state through a lag tau only at t0 + tau, so the kernels
+kink, more weakly at each step, along every line s = t0 - k tau as well: above a
+region's diagonal each square piece is therefore split along its own diagonal
+a - a0 = t - t0 into two Duffy triangles (Piece.origin = t0 - a0), rectangles
+remaining only where the panels are not square.  `upper` on a piece means above
+its own diagonal; on the grid, `upper` marks the band (s < 0), `above` the nodes
+above their piece's diagonal.
 """
 from __future__ import annotations
 
@@ -52,12 +58,13 @@ from .grid import bary_rows as _bary_rows, bary_weights, cheb_lobatto, clenshaw_
 
 class Piece:
     def __init__(self, p: int, q: int, t0: float, t1: float, a0: float, a1: float, nt: int, na: int, offset: int,
-                 upper: bool = False, origin: float = 0.0, triangle: Optional[bool] = None):
+                 upper: bool = False, origin: float = 0.0, triangle: Optional[bool] = None, band: Optional[bool] = None):
         self.p, self.q = p, q
         self.t0, self.t1, self.a0, self.a1 = t0, t1, a0, a1
-        self.origin = origin                 # the diagonal's origin: 0, or the buffer's start T_b (a = t - origin)
+        self.origin = origin                 # the piece's diagonal is a = t - origin (0 today; t0 - a0 on a split square)
         self.triangle = (p == q) if triangle is None else triangle
-        self.upper = upper                   # above the diagonal (old shocks); the upper triangle is a = t + theta (t1 - t)
+        self.upper = upper                   # above the piece's diagonal; the upper triangle is a = t + theta (t1 - t) at origin 0
+        self.band = upper if band is None else band      # holds shocks born before zero (s < 0)
         self.nt, self.na = nt, na
         self.offset = offset
         self.tn = cheb_lobatto(nt, t0, t1)
@@ -131,34 +138,49 @@ class TriangleGrid:
                                  f"{[float(b) for b in bp]}, window {self.L:g}")
         self.nt, self.na = nt, na
         self.pieces: List[Piece] = []
+        eps = 1e-9 * max(1.0, bp[-1])
+        self._split = np.zeros((self.P, max(self.PL, 1)), dtype=bool)        # (p, q) is a square above its region's diagonal, split
         off = 0
         for p in range(self.P):
-            if self.Tb is not None and p >= self.P_T:            # the buffer: the strip's pieces with the origin at T_b
-                pr = p - self.P_T
-                for q in range(min(pr, self.PL - 1) + 1):
-                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, origin=self.Tb, triangle=(q == pr))
-                    self.pieces.append(pc); off += pc.n
-                for q in range(pr, self.PL):
-                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=True, origin=self.Tb, triangle=(q == pr))
+            if self.L is None:
+                for q in range(p + 1):
+                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off)
                     self.pieces.append(pc); off += pc.n
                 continue
-            for q in range(min(p, self.PL - 1) + 1):
-                pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off)
+            buf = self.Tb is not None and p >= self.P_T
+            pr, org = (p - self.P_T, self.Tb) if buf else (p, 0.0)
+            for q in range(min(pr, self.PL - 1) + 1):                      # below the region's diagonal
+                pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, origin=org, triangle=(q == pr), band=False)
                 self.pieces.append(pc); off += pc.n
-            if self.L is not None:
-                for q in range(p, self.PL):
-                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=True)
+            for q in range(pr, self.PL):                                    # above it: the old shocks (band) or those born before T_b
+                if q == pr:
+                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=True, origin=org, triangle=True, band=not buf)
+                    self.pieces.append(pc); off += pc.n
+                elif abs((bp[p + 1] - bp[p]) - (bp[q + 1] - bp[q])) < eps:   # a square: split along its diagonal
+                    self._split[p, q] = True
+                    for up in (False, True):
+                        pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=up, origin=bp[p] - bp[q],
+                                   triangle=True, band=not buf)
+                        self.pieces.append(pc); off += pc.n
+                else:
+                    pc = Piece(p, q, bp[p], bp[p + 1], bp[q], bp[q + 1], nt, na, off, upper=True, origin=org, triangle=False, band=not buf)
                     self.pieces.append(pc); off += pc.n
         self.N = off
         self.t = np.concatenate([pc.t for pc in self.pieces])
         self.a = np.concatenate([pc.a for pc in self.pieces])
         self.s = self.t - self.a
         self.a0 = np.concatenate([np.full(pc.n, pc.a0) for pc in self.pieces])      # age-panel start of each node's piece
+        self.a1 = np.concatenate([np.full(pc.n, pc.a1) for pc in self.pieces])      # age-panel end of each node's piece
         self.above = np.concatenate([np.full(pc.n, pc.upper) for pc in self.pieces])   # nodes above their piece's diagonal
         self.origin = np.concatenate([np.full(pc.n, pc.origin) for pc in self.pieces])
-        self.upper = self.above & (self.origin == 0.0)                                # the band: nodes with s < 0
+        self.upper = np.concatenate([np.full(pc.n, pc.band) for pc in self.pieces])    # the band: nodes with s < 0
+        self.origins = sorted({float(pc.origin) for pc in self.pieces if pc.triangle})   # the diagonals' origins, cut by paths
         self.side_d = np.where(self.above, 1, -1)                                     # side of the diagonal a node reads
-        self.side_a = np.concatenate([np.where(np.abs(pc.a - pc.a1) < 1e-13, -1, 1) if not pc.triangle or pc.upper
+        # a node on its piece's top age edge reads from below.  Without a window a lower triangle's nodes read from
+        # above (its top corner (t1, t1) is on the diagonal; kept for bit identity); with one every piece's top
+        # corner is at an age breakpoint where kernels may jump (the lower sub-triangle of a split square), and
+        # its value is the limit from within the piece
+        self.side_a = np.concatenate([np.where(np.abs(pc.a - pc.a1) < 1e-13, -1, 1) if not pc.triangle or pc.upper or self.L is not None
                                       else np.ones(pc.n, dtype=int) for pc in self.pieces])
         self.side_t = np.concatenate([np.where(np.abs(pc.t - pc.t1) < 1e-13, -1, 1) for pc in self.pieces])
         self._piece_by_pq = {(pc.p, pc.q): pc for pc in self.pieces if not pc.upper}
@@ -207,6 +229,12 @@ class TriangleGrid:
         ac = np.where(up, ac, np.minimum(ac, tr))
         q = np.where(sa > 0, self.panel_of(ac, +1), self.panel_of(ac, -1))
         q = np.where(up, np.maximum(q, pr), np.minimum(q, pr))
+        # a square above the region's diagonal is two triangles along its own diagonal a - a0 = t - t0
+        qc = np.minimum(q, self._split.shape[1] - 1)
+        split = up & (q > pr) & self._split[p, qc]
+        if split.any():
+            d2 = (ac - self.bp[qc]) - (tc - self.bp[p])
+            up = np.where(split, (d2 > 1e-12) | ((np.abs(d2) <= 1e-12) & (sd > 0)), up)
         return inside, p, q, up, tc, ac
 
     def interp(self, t, a, side_t=+1, side_a=+1, side_d=-1) -> np.ndarray:
@@ -437,7 +465,7 @@ class TriangleGrid:
                     if lo + 1e-12 < r < hi - 1e-12:
                         cuts.add(round(r, 13))
         if self.L is not None:
-            for org in ((0.0,) if self.Tb is None else (0.0, self.Tb)):     # the diagonal(s) a = t - origin
+            for org in self.origins:                                       # the diagonals a = t - origin of the triangles
                 v0, v1 = a0[0] - (t0[0] - org), a1[0] - (t1[0] - org)
                 if abs(v1 - v0) > 1e-14:
                     r = lo + (0.0 - v0) / (v1 - v0) * (hi - lo)
