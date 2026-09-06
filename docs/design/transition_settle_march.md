@@ -58,12 +58,20 @@ one backward pass.  Their distance from the stationary adjoints is the first-ord
 residual at date zero: how far the stationary rules are from optimal given the inheritance.  Within
 tolerance means the stationary equilibrium is the transition; stop before solving anything.
 
+The strip is valid for any T > 0 that is a multiple of the unit, including T shorter than the past's
+window: below the diagonal the new shocks are then never truncated, above it the old shocks are all
+still alive at T, and the frozen region closes the problem as before.  (The first implementation
+refused T < L; that was an artefact of its construction, not a property of the problem, and the march
+needs sub-window steps.)
+
 Otherwise grow T.  Each extension adds a stretch of unknown strategies and moves the frozen region
 forward.  Warm-start the fixed point at the new T from the old one, with the stationary rules on the
 new stretch; because the end effect is local, it converges in a few evaluations that do their work on
-the last window.  The monitor is the adjoint gap one window before the new T (the gap at T itself is
-the handover and is never zero): it falls at the closed-loop rate as T grows, so it is also the step
-control: small steps while it is large, a whole window at a time once it falls steadily, stop when it
+the last window.  The monitor is the best-response gap on the last window [T - L, T]: it falls at the closed-loop rate as T
+grows, so it is also the step control.  (The first draft measured one window before T on the
+belief that the handover at T is never small; the first march showed otherwise: at the T where the
+explicit solve settles, the last window's gap is already under tolerance, and measuring a window
+earlier overshoots T by one window.)  Continue: it is the step control: small steps while it is large, a whole window at a time once it falls steadily, stop when it
 is under tolerance.  Steps are multiples of the unit so the new panels align with the delay cuts and
 the buffer.  Nothing is predicted; the rate shows up in the sequence of gaps.
 
