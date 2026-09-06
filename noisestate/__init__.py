@@ -23,10 +23,15 @@ from .sweep import sweep, make_solver
 from .grid_cache import clear as clear_grid_cache
 from .transition import transition
 from .schema import schema
+from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition, SweepPoint, settings
+from .expr import sqrt, exp, log, sin, cos, tanh
+from .kernel import Kernel
 
 __all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "Result", "BaseResult", "StationaryResult", "TriangleResult",
            "TransitionResult", "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "engines", "load", "solve",
-           "sweep", "transition", "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache", "schema"]
+           "sweep", "transition", "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache", "schema",
+           "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
+           "settings", "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh"]
 
 def _read_version() -> str:
     """The version pyproject.toml declares when the package is imported from a source tree (a checkout on

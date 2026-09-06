@@ -47,6 +47,7 @@ import numpy as np
 
 from .accel import ConvergenceError
 from .settings import DEFAULT, Settings, tunable
+from .kernel import Kernel, AttrDict
 from .spec import Model
 
 
@@ -146,10 +147,11 @@ class Result:
     @property
     def status(self) -> dict:
         """{"ok": converged and no check failed, "flags": the flags of the failing checks (and of the checks
-        without a verdict, when they carry one), "rows": diagnose()'s rows}."""
+        without a verdict, when they carry one), "rows": diagnose()'s rows}; a dict whose keys are also
+        attributes (res.status.ok)."""
         rows = self.diagnose()
         failed = [d["flag"] for d in rows if d["ok"] is False and d["flag"]]
-        return {"ok": bool(self.converged) and not failed, "flags": failed, "rows": rows}
+        return AttrDict({"ok": bool(self.converged) and not failed, "flags": failed, "rows": rows})
 
     @property
     def extra(self) -> dict:
@@ -201,7 +203,13 @@ class Result:
     def channels(self) -> List[str]:
         return list(self.compiled.channels)
 
-    def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
+    def kernel(self, name: str, channel: Optional[str] = None) -> "Kernel":
+        """The closed-loop kernel of a state, control or definition (every channel, or one), as a Kernel: an
+        ndarray in the engine's layout (the subclass's _kernel documents it) carrying .axes (res.axes' node
+        coordinates), .at(*coords) (the engine's own interpolant) and .plot(path=None)."""
+        return Kernel.of(self._kernel(name, channel), self, name, channel)
+
+    def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         raise NotImplementedError
 
     def action_kernel(self, control: str, channel: Optional[str] = None) -> np.ndarray:
@@ -499,7 +507,7 @@ class StationaryResult(Result):
             worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
         return worst
 
-    def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
+    def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         """Closed-loop kernel of a quantity at the shock ages: (N, nW), or (N,) for one channel."""
         c = self.compiled
         K = self.Z[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.Z
@@ -601,7 +609,7 @@ class TriangleResult(Result):
             out["map_init_time"] = (c.tm + delay).tolist()
         return out
 
-    def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
+    def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         """Closed-loop kernel at the triangle nodes (res.grid.t, res.grid.s): (N, nW) or (N,); the band's
         nodes (s < 0) are the old shocks.  channel may also name an initial shock of the past (its kernel
         is meaningful on the nodes with s = 0)."""
@@ -803,7 +811,7 @@ class CellResult(Result):
                 worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
         return worst
 
-    def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
+    def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         """K[i, j]: response of `name` at cell i to a unit increment of `channel` in cell j (channel required)."""
         c = self.compiled
         if channel is None:

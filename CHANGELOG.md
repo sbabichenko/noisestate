@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Models as equations.**  `noisestate.expr`: `Param` (arithmetic renders to the file's coefficient expressions,
+  `p1**0.5` to `"sqrt(p1)"`), `shocks()`, `State` (`X.drift = D + sigma * w.w0`), `Control`, `define()`, `.lag()` /
+  `.lead()`, `Signal(name, expr, delay)`, `Agent(name, controls, signals, loss, myopic, naive_observers)` with a
+  quadratic loss compiled to the term list (`(X - theta)**2` is `[1, X, X], [-2*theta, X]`, the constant noted in
+  `model.notes`), and `ns.Stationary`, `ns.Finite`, `ns.Transition`.  `ns.Model(name, states=, agents=, ...)` accepts
+  the expression form beside the field form (one class; the expression form is compiled through `from_dict`, so
+  `to_dict()` is the file) and gains `solve`, `sweep(param=values)`, `finite`, `stationary`, `save`, `load`.
+  `res.kernel()` returns a `Kernel` (an ndarray with `.axes`, `.values`, `.at()` on the engine's interpolant,
+  `.plot()`); `res.status` and sweep rows are dicts with attribute access; `ns.settings(**overrides)` is a context
+  manager over the default `Settings`.  `examples/expr_examples.py` writes the seven shipped models as equations
+  and `tests/test_expr.py` checks each against its YAML file's dict and the baseline's costs; README gains
+  "Models as equations".  No number moves (baseline at 0).
 - **The kernel algebra as an explicit interface.**  `noisestate.algebra.KernelAlgebra` declares every operator
   the base engine calls on a compiled model (the closed loop, `block`, `atom_op`, `expr_op`, `expr_kernel`,
   `row_blocks` / `row`, `conv_rows`, `instant`, `instant_adjoint`, `response`, `continuation`, `own_lag_read`,

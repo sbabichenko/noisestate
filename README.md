@@ -104,6 +104,48 @@ states move the means only.  `ties` make agents share one strategy; `horizon` is
 full reference, every key with its type and default and the deprecated keys marked, is
 [docs/model_file.md](docs/model_file.md); `noisestate schema model` prints the JSON Schema.
 
+## Models as equations
+
+The same model written as its equations, with `Param`, `State`, `Control`, `Signal`, `Agent` and `shocks`:
+a state's drift is assigned (its quantity terms are the drift, its shock terms the noise loading, a constant
+becomes `const`), a signal is one linear expression with at least one shock, a loss is quadratic in the
+quantities (`(X - 1)**2` is `X^2 - 2X` with the constant dropped and noted in `model.notes`; `x.lag(tau)` is
+`x@tau`).  `ns.Model(...)` compiles it to the model file's structure, so `to_dict()` is the file and
+`save()` writes it: `examples/expr_examples.py` writes every shipped example this way and
+`tests/test_expr.py` checks that each equals its YAML file.
+
+```python
+import noisestate as ns
+from noisestate import Param, State, Control, Signal, Agent, shocks
+r1, r2, p1, p2, sigma = Param.many(r1=0.1, r2=0.1, p1=3.0, p2=3.0, sigma=1.0)
+w = shocks("w0", "w1", "w2")
+X = State("X"); D1, D2 = Control("D1"), Control("D2")
+X.drift = D1 + D2 + sigma * w.w0
+player1 = Agent("player1", controls=[D1], signals=[Signal("y1", p1**0.5 * X + w.w1)], loss=X**2 + r1 * D1**2)
+player2 = Agent("player2", controls=[D2], signals=[Signal("y2", p2**0.5 * X + w.w2, delay=0.5)], loss=(X - 1)**2 + r2 * D2**2)
+game = ns.Model("ch1", states=[X], agents=[player1, player2], horizon=ns.Stationary(window=3.0))
+eq = game.solve()
+eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
+eq.status.ok; eq.costs["player1"]; eq.cost_parts["player1"]; eq.means["X"]
+k = eq.kernel("X", "w0"); k.values; k.axes; k.at(0.7)
+for point in game.sweep(p1=[0.3, 1, 3, 10]): point.value, point.result, point.jump
+old = game.solve(); new = game.with_params(p1=10.0).finite(T=6.0); path = new.solve(past=old)
+game.save("ch1.yaml"); ns.Model.load("ch1.yaml")
+with ns.settings(second_order_tol=1e-3): game.solve()
+```
+
+The channels are the shocks used, in `shocks()` order; the parameters are the `Param`s used, with the
+values given (`Param.many` returns them in order; a coefficient may use `+ - * / **` and `sqrt exp log sin
+cos tanh abs min max`, and renders to the file's expression: `p1**0.5` is `"sqrt(p1)"`); `define(name, expr)`
+is a definition, `ns.Finite(T)` and `ns.Transition(T, past=..., continuation=...)` the other horizons,
+`numerics=` the file's block.  `res.kernel()` returns a `Kernel`, an ndarray carrying `.axes` and `.at()`
+(the engine's own interpolant: an age on the stationary engine, `(t, s)` on the finite triangle, the nearest
+cell on the cell engine) and `.plot()`; `sweep()` rows carry `.value`, `.result`, `.jump` (they are still
+dicts); `ns.settings(...)` replaces the default `Settings` inside the block for every engine constructed
+there (process-wide, not thread-safe).  One caution on the script above: the transition on `[0, 6]` with
+player 2's delayed row cuts the strip into pieces half a unit wide, 20k nodes at 16 nodes per piece; solve
+it at `ns.Numerics(nodes=4)` or drop the delay.  The YAML form stays the persistence format.
+
 ## Transitions
 
 A regime change: the game runs in one stationary equilibrium until time zero, its coefficients change,

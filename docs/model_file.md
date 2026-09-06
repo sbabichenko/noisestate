@@ -97,7 +97,9 @@ The fields of `numerics.settings` are those of `noisestate.Settings`: [settings.
   a deprecation note in `model.notes`, until 0.6.
 * Coefficients may be numbers or expressions in the parameters (`"sqrt(p1)"`).
 
-The same structure is available from Python through `ModelBuilder` (see
+The same structure can be written as equations (`Param`, `State`, `Control`, `Signal`, `Agent`, `shocks`,
+`define`; README, "Models as equations"; `examples/expr_examples.py` writes every shipped example that way), which
+compile to this file: `model.to_dict()` is the file, `model.save(path)` writes it.  The same structure is available from Python through `ModelBuilder` (see
 `examples/make_ch5_cycle_market.py`, which builds an N-firm cycle in a loop); `stationary()`,
 `finite()` and `transition()` take the horizon and `nodes`, and `numerics(**fields)` sets the rest
 of the block.

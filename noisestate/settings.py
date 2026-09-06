@@ -77,11 +77,13 @@ class Settings:
         raise TypeError(f"settings must be a Settings, a dict of its fields or None, not {type(value).__name__}")
 
     def changed(self) -> dict:
-        """The fields that differ from the defaults, as a dict (what solver_kw records)."""
-        return {f.name: getattr(self, f.name) for f in fields(self) if getattr(self, f.name) != getattr(DEFAULT, f.name)}
+        """The fields that differ from the defaults (the class's own, not a `noisestate.settings()` block's), as a
+        dict (what solver_kw records)."""
+        return {f.name: getattr(self, f.name) for f in fields(self) if getattr(self, f.name) != getattr(PRISTINE, f.name)}
 
 
-DEFAULT = Settings()
+DEFAULT = Settings()        # what an engine given no settings reads; `noisestate.settings(...)` replaces it for a block
+PRISTINE = Settings()       # the class's defaults, the reference of changed()
 
 
 class tunable:

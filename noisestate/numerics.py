@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from typing import List, Optional, Union
 
-from .settings import DEFAULT, Settings
+from .settings import DEFAULT, PRISTINE, Settings
 
 ENGINES_OF_KIND = {"stationary": "stationary", "finite": "spectral", "transition": "spectral"}
 ENGINE_NAMES = ("stationary", "spectral", "cells")
@@ -101,7 +101,7 @@ class Numerics:
         """This object with `other`'s given fields laid over it (None keeps this one's; settings when other's
         differ from the defaults)."""
         changes = {f.name: getattr(other, f.name) for f in fields(self) if f.name != "settings" and getattr(other, f.name) is not None}
-        if other.settings != DEFAULT:
+        if other.settings != PRISTINE:
             changes["settings"] = other.settings
         return replace(self, **changes)
 

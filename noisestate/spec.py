@@ -201,8 +201,13 @@ class Horizon:
     _NUMERICS_KEYS = ("breakpoints", "unit", "unit_range", "nodes")     # the keys once nested here, now under numerics:
 
 
-@dataclass
+@dataclass(init=False)
 class Model:
+    """The game as data, in one of two spellings.  The field form is the file's structure (from_dict builds it:
+    channels, states, agents, horizon, definitions, ties, params); the expression form (noisestate.expr) is the
+    equations, `Model("ch1", states=[X], agents=[player1, player2], horizon=Stationary(window=3.0))` with
+    State, Control, Signal, Agent and Param objects, compiled to the same structure through from_dict, so the
+    two are one class and one model (`to_dict()` is the file in both cases)."""
     name: str
     channels: List[str]
     states: List[State]
@@ -213,6 +218,70 @@ class Model:
     params: Dict[str, float] = field(default_factory=dict)
     source: Optional[dict] = field(default=None, repr=False)  # the file structure with its expressions, if built from one
     deprecations: List[str] = field(default_factory=list, repr=False)   # the old spellings the file used (one note each, in notes)
+    remarks: List[str] = field(default_factory=list, repr=False, compare=False)   # the expression compiler's notes (a dropped loss constant)
+
+    def __init__(self, name: str = "model", channels=None, states=None, agents=None, horizon=None, definitions=None,
+                 ties=None, params=None, source=None, deprecations=None, remarks=None, *, numerics=None):
+        from . import expr
+        if expr.is_expression_form(states, agents, horizon, definitions):
+            if channels is not None:
+                raise ValueError("Model(): the channels of an expression model are the shocks it uses; do not give channels=")
+            d, notes = expr.compile_model(name, states, agents, definitions=definitions, ties=ties, horizon=horizon,
+                                          numerics=numerics, params=params)
+            built = Model.from_dict(d)
+            self.__dict__.update(built.__dict__)
+            self.source = built.to_dict()                 # the normalised file (as load(save()) reads it back)
+            self.remarks = list(notes)
+            self.naive_observers = {a.name: a.naive_observers for a in agents if a.naive_observers} or None
+            return
+        if numerics is not None:
+            raise TypeError("Model(): numerics= belongs to the expression form; the field form carries them in its Horizon")
+        self.name = name; self.channels = list(channels or []); self.states = list(states or []); self.agents = list(agents or [])
+        self.horizon = horizon if horizon is not None else Horizon()
+        self.definitions = list(definitions or []); self.ties = list(ties or [])
+        self.params = params if params is not None else {}
+        self.source = source; self.deprecations = list(deprecations or []); self.remarks = list(remarks or [])
+
+    # ------------------------------------------------------------ the expression form's conveniences
+    def solve(self, numerics=None, **solve_kw):
+        """noisestate.solve(self, numerics, **solve_kw); an expression model's naive_observers are passed along."""
+        from . import solve
+        if self.naive_observers and solve_kw.get("naive_observers") is None:
+            solve_kw["naive_observers"] = dict(self.naive_observers)
+        return solve(self, numerics, **solve_kw)
+
+    def sweep(self, numerics=None, solver_kw=None, solve_kw=None, verbose: bool = False, **values):
+        """noisestate.sweep over one parameter given by keyword, `model.sweep(p1=[0.3, 1, 3])`: the rows, each
+        with .value, .result, .jump (a SweepPoint, a dict)."""
+        from . import sweep
+        if len(values) != 1:
+            raise ValueError(f"sweep() takes exactly one parameter by keyword, e.g. sweep(p1=[...]); got {sorted(values)}")
+        (param, vals), = values.items()
+        if self.naive_observers:
+            solver_kw = {"naive_observers": dict(self.naive_observers), **(solver_kw or {})}
+        return sweep(self, param, list(vals), numerics=numerics, solver_kw=solver_kw, solve_kw=solve_kw, verbose=verbose)
+
+    def finite(self, T: float, **fields) -> "Model":
+        """The same model on the finite horizon [0, T] (with_horizon(kind="finite", window=T, ...))."""
+        return self.with_horizon(kind="finite", window=T, **fields)
+
+    def stationary(self, window: float, **fields) -> "Model":
+        """The same model on a stationary horizon with lag window `window`."""
+        return self.with_horizon(kind="stationary", window=window, **fields)
+
+    def save(self, path: str) -> None:
+        """Write the model file (to_dict() as YAML, the parameter expressions intact)."""
+        import yaml
+        with open(path, "w") as fh:
+            yaml.safe_dump(self.to_dict(), fh, sort_keys=False)
+
+    @classmethod
+    def load(cls, path: str) -> "Model":
+        """The model of a YAML file (noisestate.load)."""
+        from . import load
+        return load(path)
+
+    naive_observers = None           # {agent: [observers]} the expression form's Agents asked for (not part of the file)
 
     # ------------------------------------------------------------ numerics
     @property
@@ -396,7 +465,7 @@ class Model:
             out.append("costs are stationary flow losses per unit time" + (" (the discount rate enters the best responses, not the reported cost)" if self.horizon.discount else ""))
         else:
             out.append("costs are discounted integrals over [0, T]")
-        return out + list(self.deprecations)
+        return out + list(self.deprecations) + list(self.remarks or [])
 
     def _means_note(self) -> str:
         if self.horizon.kind == "stationary":
