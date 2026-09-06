@@ -1,0 +1,102 @@
+# Guards against misleading results
+
+A converged solve is a solution of the discretised, truncated model.  `res.diagnose()` lists every check as a
+row `{name, value, threshold, ok, flag, advice}` (ok is None where a check gives no verdict); `res.status` is
+`{"ok", "flags", "rows"}`, `summary()` prints the rows that fail and `to_dict()["diagnostics"]` carries them
+all.  The thresholds are fields of `noisestate.Settings` ([settings.md](settings.md)).
+
+## The rows and their flags
+
+| row | value | threshold | flag the user sees | advice |
+|---|---|---|---|---|
+| `converged` | the fixed point's residual | `tol` | `NOT converged` | `res.message` |
+| `diagnostics` | none | none | `diagnostics skipped (solve(diagnostics=False): no second-order check, first-order-condition decomposition or representation error)` | solve again with diagnostics=True |
+| `resolution` | the largest representation error | `resolution_tol` 1e-6 | `UNDER-RESOLVED (representation error 1.3e-05: raise horizon.nodes)`; a transition adds the error by region and `an error only on the band tip or the last window is the geometry there, not the interior's resolution` | raise horizon.nodes |
+| `window` (stationary) | `res.window_tail` | `window_tail_tol` 0.02 | `WINDOW TOO SHORT (a kernel still moves by 4.1% of its peak over the last tenth of the window: raise horizon.window)`, adding `the means' continuation integrals are truncated there as well` when the means are driven | raise horizon.window |
+| `second_order:<agent>` | the smallest curvature relative to the largest | `-second_order_tol` (-1e-4) | `NOT A MINIMUM (the best response of 'trader1' is a saddle: its loss is not convex in its own strategy, smallest curvature -1.8e-03 of the largest)`; `second-order check did not converge for 'trader1'` when Lanczos did not settle | the loss is not convex in the agent's own strategy |
+| `second_order_edge:<agent>` | the same curvature | the same | `window edge: the curvature of 'firm0' is negative (-3.0e-05) on this window but positive (1.2e-04) on a window longer by two lags: a truncation of the lagged loss terms at the edge, not a saddle` (no verdict) | a wider window moves it, a quadratic term in the control's current value removes it |
+| `refinement` | the cost and kernel changes and the finer node count | `refine_cost_tol` 1e-6, `refine_kernel_tol` 1e-5 | `refinement to 36 nodes moves costs by 2.1e-07 and kernels by 3.4e-06`, with ` (NOT RESOLVED)` when either is above its tolerance | raise horizon.nodes |
+| `stability` | the spectral radius of the best-response map | 1.0 | `best-response dynamics stable (spectral radius 0.412)` or `best-response dynamics UNSTABLE (spectral radius 1.400, by power)` | naive best-response adjustment would not find this equilibrium |
+| `past window` (transition) | the past's window tail | `window_tail_tol` | `PAST WINDOW TOO SHORT (a kernel of the past still moves by 2.5% of its peak over the last tenth of its window 8: solve the past with a longer window)` | solve the past with a longer window |
+| `settled` (transition) | `res.settled` | `settled_tol` 1e-4 | `TRANSITION NOT SETTLED by T - L: raise horizon.window (a map on [T - L, T] is 4.8e-04 of its peak from the stationary map the buffer is frozen at, against settled_tol 0.0001: the closed-loop decay over a unit of t, not the grid's floor)` | raise horizon.window |
+| `continuation window` (transition) | the continuation's window tail | `window_tail_tol` | `CONTINUATION WINDOW TOO SHORT (a kernel of the continuation still moves by 2.5% of its peak over the last tenth of its window 8: solve it with a longer window)` | solve the continuation with a longer window |
+
+The numbers in the flags are examples; each flag prints the value it measured.  `summary()` prints one line:
+the outcome (`converged`, or `NOT converged` with `res.message`), then every row that failed or has no
+verdict, then the informational rows (refinement, stability, a skipped diagnostics pass) whenever they were
+computed.
+
+## The checks
+
+* `solve(..., start="coarse")` solves first at half the nodes and starts the fine iteration from
+  that equilibrium interpolated onto the grid: fine-grid evaluations fall by a factor of 1.5 to 8
+  across the examples (the delayed Chapter 3 game: 25 to 3), the equilibrium is the same to the
+  tolerance, and the coarse solve itself costs a few fine evaluations.  The default start is zero
+  so recorded evaluation counts stay reproducible.  `refine()` always starts the finer solve from the
+  result it is refining.
+* `noisestate solve model.yaml --refine` (or `solve(..., refine=True)`, `res.refine()`) re-solves
+  on a grid with 1.5 times the nodes (twice the cells for the cell engine) and reports the change
+  of every cost, relative to the largest cost, and of the kernels; `res.refinement["resolved"]`
+  is the verdict for the spectral engines, and the summary says `NOT RESOLVED`.  The cell engine
+  is first order, so it reports the changes without a verdict.  On the finite engine with delays
+  the refinement rebuilds the delay-cut triangle's quadrature and can take far longer than the
+  solve; the delayed Chapter 1 example refines from 8 to 12 nodes per side in about a minute.
+* Stationary results carry `res.window_tail`, the largest change of a kernel over the last tenth
+  of the window relative to that kernel's peak; above 2% the summary says `WINDOW TOO SHORT`,
+  because the equilibrium solved is that of the model truncated at `horizon.window`.  A kernel that
+  has decayed or reached a constant limit (a random-walk state, a price that tracks it) is not
+  flagged.  The means' continuation integrals (the DC gains of the impulse responses) are truncated
+  at the window as well, so the same guard covers them, and the flag says so when the means are
+  nonzero.  The Kyle-Back example with `rho: 0` is flagged: with no discounting the trader's
+  stationary problem has no solution and the kernels are window artefacts (profit 0.93 on a window
+  of 8, 0.38 on 16); the example ships with `rho: 0.5`, where the profit is 0.8208 on both.
+* Stationary results with `discount: 0`, and finite-horizon results at any discount, carry
+  `res.second_order[agent]`: the agent's objective is a quadratic form in its strategy, computed
+  exactly on the feasible strategies from the cost's own Gram matrix, and its smallest eigenvalue
+  relative to the largest says whether the first-order condition is a minimum.  The
+  summary says `NOT A MINIMUM` when it is not (a loss that is not convex in the agent's own
+  strategy, for instance a negative weight on its own control, or a cross term with no own
+  quadratic term).  Curvatures within 1e-4 of zero are not flagged: the objective is truncated
+  at the window, and on coarse panels the discrete strategies find a little curvature of either
+  sign there (the Chapter 5 example sits at -3e-5 with 6 nodes per panel); the value is reported
+  in `res.second_order` and `to_dict()` either way.
+  A windowed stationary objective omits the flows past the edge that read the strategy within the
+  last lag, so a cross term between a control and lagged quantities can look indefinite there.  When
+  the check finds a negative direction it re-evaluates that direction, zero-extended, on a window
+  longer by two lags with the same maps (one operator build, no new fixed point): positive there
+  means truncation, reported as `embedded` and a `window edge` note rather than a saddle.
+  Discounted stationary models are not checked (their objective is not a quadratic form in the
+  stationary kernel).  Up to a strategy dimension of 1000 the form is built densely and always
+  settles; above that a Lanczos iteration is used, and when it does not settle the report says so
+  (`converged: False`) instead of staying silent.  The undiscounted Kyle-Back model at a
+  trading cost of 0.01 crosses the threshold (-1.6e-4) on the window of 8: the truncation
+  effect grows as the trading cost shrinks, and a positive discount removes it.
+* `stability()` reports the spectral radius of the best-response map (tatonnement stability) and
+  the method that produced it.  This is a different question from whether the fixed-point
+  solver converged: the Kyle-Back example converges under Anderson mixing while its radius is
+  1.4, so naive best-response adjustment would not find that equilibrium.  It makes at most
+  `STABILITY_MAX_EVALUATIONS` (200) rounds of best responses: the Arnoldi iteration is stopped at 170
+  and a power iteration gets the remaining 30, with `method` saying so.
+* Every sweep row has `change` (relative change of the strategy from the previous point on the
+  same grid: the raw maps, or the action kernels on the finite spectral engine) and `jump` (that
+  change is more than five times the sweep's median), so a branch jump between neighbouring points
+  is visible instead of silently plotted as a curve.  The change is per point, not per unit of the
+  parameter, so a geometric sweep is not flagged.
+* `res.cost_kind` and `model.notes` name what the numbers are: stationary costs are flow losses
+  per unit time, finite-horizon costs are discounted integrals; a row that observes a control
+  directly sees only its predictable part; a myopic agent ignores its effect on future flows; a
+  linear loss term, a constant drift or an initial state moves only the means, which every engine
+  solves, and has no effect on the kernels; a random walk with no inputs has no stationary mean
+  and is pinned at 0.  `noisestate validate` prints the notes.  A parameter that nothing references is an
+  error, the usual sign of a misspelled name elsewhere in the file; so are a drift that depends on
+  a future value, a zero noise loading, `breakpoints` that do not end at the window, a
+  `myopic` that is not a boolean, a lag, delay or lead that is not below the window, a
+  `unit_range` above the window, and a misspelled agent in `naive_observers`.
+* `refine()` and `stability()` rebuild the engine that produced the result, with the same options
+  (naive observers, tolerances, iteration variable).  A built model is single-sourced: its
+  coefficients are numbers, so `model.params` is read-only and `model.with_params(p=4.0)` returns a
+  new model, while the horizon fields (`nodes`, `window`, ...) may be changed on the object or
+  through `model.with_horizon(nodes=32)`; `solve`, `sweep`, `refine` and `stability` all see the
+  same model.
+* `ties` are checked structurally: rows, losses, delays and coefficients up to relabelling, the
+  dynamics of each agent's private states, and whether a row's noise channel also drives a state.

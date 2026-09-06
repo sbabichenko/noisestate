@@ -1,0 +1,196 @@
+% Design record, copied verbatim from the transition stage's working directory (transition/dissertation_refs.tex): the dissertation passages the transition engine implements.
+
+% Chapter 6 (monitored_deviations_chapter.tex), the seed-dependent system: forward equations for an impulse with the state displaced and the noise-states informed (privy) or not (naive). Lines 212-330.
+\section{The seed-dependent system}
+\label{sec:fb_system}
+
+Fix a deviating player $i$ and a seed time $t$, with privy set $\mathcal P_i$ and naive set $\mathcal N_i$ as in \eqref{eq:PiNi_def}.  The state dynamics are \eqref{eq:baseline_dynamics}, with player $m$'s control entering through $B^X_m$.  The forward equations come first, then how a privy player responds to the seed, the backward system in operator form and in coefficient blocks, and last the case in which the deviating player responds to its own seed.
+
+\subsection{Forward deviation equations}
+
+The initial condition for a state impulse by player $i$ at time $t$ is
+\begin{equation}\label{eq:seed_initial}
+    \delta_i X_t=v,
+    \qquad
+    \delta_i w^k_t(u)=0\quad(k\in \mathcal N_i,\ 0\le u\le t).
+\end{equation}
+For $s\ge t$, the displaced state is
+\begin{equation}
+    \left(\delta_i X_s,\ \{\delta_i w^k_s(u):k\in \mathcal N_i,\ 0\le u\le s\}\right).
+\end{equation}
+The state equation is
+\begin{equation}\label{eq:full_forward_state}
+\boxed{
+\frac{d}{ds}\delta_i X_s
+=B^X_X(s)\delta_i X_s
++\sum_{k\in \mathcal N_i}\int_0^s B^X_k(s)\,D^k_s(u)\,\delta_i w^k_s(u)\,du
++\sum_{j\in \mathcal P_i}B^X_j(s)\,\delta_i D^j_s .
+}
+\end{equation}
+For each naive player $k\in \mathcal N_i$, define the naive error variation
+\begin{equation}\label{eq:error_variation_full}
+    \delta_i\widetilde X^k_s
+    :=\delta_i X_s-\int_0^s X(s,r)\,\delta_i w^k_s(r)\,dr .
+\end{equation}
+The kernel $X(s,r)$ is the impulse response of the state at $s$ to a primitive shock at $r$.  It carries no player index, since the dynamics are common; integrating it against the truth gives the state, and against a player's estimates gives that player's estimate of the state.  Player $k$'s unresolved-state kernel $\widetilde X^k_s(u)$ of Chapter~\ref{ch:forecasting} is the part of that response player $k$ has not yet resolved, and its innovation kernel is
+\begin{equation}\label{eq:CY_def_full}
+    \widetilde C^{k,Y}_s(u):=B^{Y,k}_X(s)\widetilde X^k_s(u).
+\end{equation}
+The naive filter variation has an interior revision equation
+\begin{equation}\label{eq:full_forward_filter_revision}
+\boxed{
+    \partial_s\delta_i w^k_s(u)
+    =\big(\widetilde C^{k,Y}_s(u)\big)^\top B^{Y,k}_X(s)\,\delta_i\widetilde X^k_s,
+    \qquad 0\le u<s,
+}
+\end{equation}
+and a birth term
+\begin{equation}\label{eq:full_forward_filter_birth}
+\boxed{
+    \delta_i w^k_s(s)
+    =E^{k\top}B^{Y,k}_X(s)\,\delta_i\widetilde X^k_s .
+}
+\end{equation}
+Substituting \eqref{eq:error_variation_full} into \eqref{eq:full_forward_filter_revision}, the coefficient of $\delta_iw^k_s(r)$ in $\partial_s\delta_iw^k_s(u)$ is
+\[
+-\widetilde C^{k,Y}_s(u)^\top B^{Y,k}_X(s)X(s,r).
+\]
+This is the belief--belief block of the generator, and it is not symmetric in $(u,r)$: the lag $u$ being revised enters through the error kernel, the lag $r$ of the shock being estimated through the state kernel.  That asymmetry makes the generator non-self-adjoint.
+
+\subsection{A privy player's response}
+
+Fix a privy player $j\in \mathcal P_i$.  To compute player $j$'s response to the origin-$i$ seed, one tests whether $j$ would profitably deviate from its proposed response.  This introduces a second, hypothetical, $j$-origin spike.  The $i$-seed and this test $j$-seed are distinct labels.  In the gain defined below, the rows are indexed by $\mathcal N_j$, the players naive to $j$, because they come from player $j$'s own deviation problem; the columns by $\mathcal N_i$, the players naive to $i$, because they come from the already-realized $i$-origin displacement.
+
+Let the closed-loop coefficients for an $a$-origin deviation be
+\begin{equation}\label{eq:effective_coefficients_general}
+\begin{aligned}
+    A^{XX}_a(s)
+    &:=B^X_X(s)+\sum_{q\in \mathcal P_a}B^X_q(s)\,D^{q\leftarrow a,X}_s,\\
+    A^{XW^p}_a(s,u)
+    &:=B^X_p(s)\,D^p_s(u)+\sum_{q\in \mathcal P_a}B^X_q(s)\,D^{q\leftarrow a,W^p}_s(u),
+    \qquad p\in \mathcal N_a.
+\end{aligned}
+\end{equation}
+These coefficients use the response kernels appropriate to the origin label $a$.  When $a=i$ they propagate the observed $i$-seed; when $a=j$ they are the row-side coefficients that price a hypothetical deviation by $j$.
+
+The $i$-variation of player $j$'s closed-loop adjoint has rows $\delta_i H^{X,j}_s$ and $\delta_i H^{W^{k'},j}_s(u)$ for $k'\in \mathcal N_j$, dual to the row state $S^j$.  The next two subsections write it as one rectangular gain, first in operator form and then in coefficient blocks, with source $G_{\mathrm{eff}}^{j\leftarrow i}$.
+
+Player $j$'s first-order condition, conditioned on its own information $\mathcal F^j_s$, gives its response.  Player $j$'s strategies are measurable in the factor $\mathcal Z_i$ (Remark~\ref{rem:zero_variance}), so the origin-$i$ seed is a known input to $j$.  Subtracting the condition player $j$ satisfies on the equilibrium path from the one it satisfies after the $i$-seed gives
+\begin{equation}\label{eq:privy_projected_response_foc}
+    0
+    =G^{DD,j}(s)\,\delta_iD^j_s
+     +G^{DX,j}(s)\,\delta_iX_s
+     +\E\!\left[
+        (B^X_j(s))^\top\delta_iH^{X,j}_s
+        \mid \mathcal F^{j}_s
+      \right].
+\end{equation}
+Player $j$ observes the $i$-seed, and the forward and adjoint systems are linear with deterministic coefficients, so the conditional expectation collapses:
+\begin{equation}\label{eq:full_privy_response}
+\boxed{
+    \delta_iD^j_s=-\big(G^{DD,j}(s)\big)^{-1}\big[G^{DX,j}(s)\,\delta_iX_s+(B^X_j(s))^\top\delta_iH^{X,j}_s\big] .
+}
+\end{equation}
+
+\begin{remark}[Two labels, no cross term]\label{rem:fixed_kernel}
+The forward system is affine in the seeds, so the $i$- and $j$-labeled forward effects add, and the test uses the same gains as the ordinary $j$-origin deviation problem.  The $i$-seed shifts the value of player $j$'s adjoint while leaving that gain system intact.
+\end{remark}
+
+\subsection{Operator form and source}
+\label{sec:filtered_operator}
+
+
+The operator notation compresses the seed-dependent physical and noise-state equations above.  Stacked symbols collect Chapter~\ref{ch:forecasting} coordinates, and the rectangular gain $H^{j\leftarrow i}$ collects their adjoint responses into one backward solve.
+
+An $i$-origin seed moves the noise-states of $\mathcal N_i$, while a hypothetical deviation by $j$ moves those of $\mathcal N_j$.  There is then no single displaced state, so the origin label indexes it.  For any origin label $a$, define the state attached to that origin by
+\begin{equation}\label{eq:filtered_state_Sa}
+    S^a_s
+    :=
+    \left(
+        X_s,\,
+        \{\widehat W^p_s(u):p\in \mathcal N_a,\ 0\le u<s\}
+    \right).
+\end{equation}
+The superscript $a$ is the origin label, and the noise-state fields are those of the players naive to origin $a$.
+
+For an $a$-origin deviation, write
+\begin{equation}\label{eq:delta_Sa_def}
+    \delta_a S^a_s
+    :=
+    \left(
+        \delta_a X_s,\,
+        \{\delta_a w^p_s(u):p\in \mathcal N_a\}
+
+% Chapter 1 appendices (finite_horizon_appendices.tex): the forward state-filter system, lines 60-100 and 330-360.
+responds at first order through~$\delta F^i$, changing which part of the fixed policy kernel the player's own information resolves.
+
+\looseness=-1 The variation of the unresolved adjoint decomposes as
+\begin{equation}\label{eq:delta_Htilde_channels}
+\delta\widetilde H^{X,i}_t(s)
+=
+\underbrace{
+-\int_s^t H^{X,i}_t(u)\,\delta F^i_t(u,s)\,du
+\vphantom{\int_{t_0}^T}
+}_{\text{(a) filtering channel}}
+\;+\;
+\underbrace{
+\int_{t_0}^T\Phi^{HD,i}(t,\tau)\,
+\widetilde{\delta D}^i_{W,t}(\tau,s)\,d\tau
+}_{\text{(b) equilibrium channel}},
+\end{equation}
+where $\Phi^{HD,i}$ is the deterministic kernel through which
+a control variation at time $\tau$ enters the time-$t$ adjoint,
+and $\widetilde{\delta D}^i_W$ is the unresolved
+component of the control variation induced by $\delta F^i$.
+
+Through channel~(a) the player resolves more of the fixed adjoint from the perturbed signal, the standard value-of-information effect present in single-agent problems.
+Channel~(b) arises because the same $\delta F^i$ changes the
+projection, leaving part of $D^i_{W,\tau}$
+unresolved by the player's current information.
+The equilibrium channel operates through the information wedge and vanishes when
+$\mathcal{V}^i_t = 0$ (exogenous signals,
+Corollary~\ref{cor:exogenous_signal}).
+Multi-player rational inattention couples the
+filtering and control problems that separate in single-agent
+settings: the marginal value of precision depends on the
+equilibrium through the wedge.
+Optimizing attention requires solving for the equilibrium first.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\paragraph{Local profile-space notation.} In the remainder of this appendix, bold symbols denote stacked policy profiles, and calligraphic and sans-serif symbols denote maps on the profile space.  These are local functional-analytic abbreviations and do not carry into the substantive chapters.
+
+\section{Well-posedness of the deterministic impulse-response fixed point}
+\label{sec:wellposedness}
+
+\mathcal S_T:=\prod_{i=1}^n\mathcal S_T^i
+\]
+be such a realization, using a profile-independent observation or reference-
+innovation coordinate system.  If profile-dependent noise-state coordinates
+are used computationally, the coordinate-change terms are included when the
+best-response derivative is formed.  Proposition~\ref{prop:global_best_response}
+defines the exact best-response map
+\[
+\mathcal B(\mathbf s)
+:=\bigl(\mathcal B_i(\mathbf s^{-i})\bigr)_{i=1}^n,
+\qquad \mathbf s\in\mathcal S_T,
+\]
+and the equilibrium residual
+\begin{equation}
+\label{eq:exact_br_residual}
+\mathcal R(\mathbf s):=\mathbf s-\mathcal B(\mathbf s).
+\end{equation}
+A zero of $\mathcal R$ is a fixed point of the exact linear-strategy
+best-response map, and so a Nash equilibrium (Corollary~\ref{cor:nsl-br}).
+
+The forward estimates below follow by Gr\"onwall arguments on the
+forward system~\eqref{eq:Xbar_dyn}--\eqref{eq:F_dyn}, using the a priori
+bounds of Lemmas~\ref{lem:F_bounded}--\ref{lem:Xtilde_dissipation} to
+control the quadratic nonlinearity in~\eqref{eq:F_dyn}.
+The adjoint estimates follow by backward Gr\"onwall on the linear adjoint
+system
+\eqref{eq:HX_process_backward_revised}--\eqref{eq:Hk_process_backward_revised},
+using Cauchy--Schwarz on the belief-price coupling terms, including the birth term $B^{Y,k}_X(t)^\top E^k\bar H^{k,i}_t(t)$ and the drift-inference integral
+$\int_0^t P^k(t)\widetilde X_t^k(r)\,\bar H_t^{k,i}(r)\,dr$.
+
+\begin{prop}[Bounds and Lipschitz continuity]\label{prop:bounds_lip}

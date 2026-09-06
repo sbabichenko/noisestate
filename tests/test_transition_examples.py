@@ -31,9 +31,9 @@ def test_kyle_back_prior_example():
     the market maker's belief error of V falls monotonically from Sigma0 = 1 to 0.132 Sigma0 at T, the trader's
     profit is 1.11508; the initial shock's loading sqrt(Sigma0) is a parameter expression that survives
     with_params().  Back's price impact at eps = 0 is sqrt(Sigma0/T)/sigma_Z = 0.7071 at T = 2 (the identity
-    test below; the README records the eps sweep toward it).  The trader's second-order check flags NOT A
+    test below; docs/transitions.md records the eps sweep toward it).  The trader's second-order check flags NOT A
     MINIMUM (-0.0102 relative to the form's largest curvature, the prior column's): the strip quadrature's
-    error on the D P cross term at a small trading cost, with or without the prior (README, Limits)."""
+    error on the D P cross term at a small trading cost, with or without the prior (docs/limits.md)."""
     m = example("kyle_back_prior")
     assert m.horizon.past["initial"][0]["loads"] == {"V": 1.0} and m.with_params(eps=0.2).horizon.past["initial"][0]["loads"] == {"V": 1.0}
     assert m.with_params(Sigma0=4.0).horizon.past["initial"][0]["loads"] == {"V": 2.0}
@@ -53,7 +53,7 @@ def test_kyle_back_prior_martingale_identity():
     node of the strip), so lambda^2 sigma_Z^2 T = Sigma0 - Sigma_T with Sigma_T the market maker's belief error
     of V at T: at 12 nodes lambda = 0.614143 against sqrt((1 - Sigma_T)/2) = 0.614142 at eps 0.2 and 0.658872
     against 0.658865 at 0.1, pinned to 1e-4 (two solves, 2 s).  Back's eps = 0 limit is sqrt(Sigma0/T)/sigma_Z
-    = 0.7071, which the README's eps sweep approaches from below."""
+    = 0.7071, which the eps sweep of docs/transitions.md approaches from below."""
     m = example("kyle_back_prior").with_horizon(nodes=12)
     for eps, lam_ref in ((0.2, 0.614143), (0.1, 0.658872)):
         res = ns.solve(m.with_params(eps=eps))

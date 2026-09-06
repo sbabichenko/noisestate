@@ -157,7 +157,7 @@ def test_lead_term_under_a_discount_neither_overflows_nor_is_silent():
     v within the lead: taken on every node of the window it overflowed at rho * window > 709 (inf times
     the mask's zero is NaN in every first-order condition).  It is now taken within the lead only, so the
     model compiles and solves cleanly; and a discount that makes exp(rho tau) large is announced at
-    compile, since those weights dominate the best-response system (README, Limits)."""
+    compile, since those weights dominate the best-response system (docs/limits.md)."""
     d = ns.read_yaml(CH3); d["agents"]["player1"]["loss"].append([0.1, "D1", "X@-0.5"]); d["numerics"].update(unit=0.5, nodes=8)
     d["horizon"]["discount"] = 0.5                                        # exp(0.25) = 1.3: nothing to say
     with warnings.catch_warnings():
