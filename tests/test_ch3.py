@@ -28,7 +28,7 @@ REF10 = REF.replace("ch3_p3_p10_r1_r1.json", "ch3_L10.json")
 def test_ch3_wide_window_agrees_to_machine_precision():
     ref = ns.read_json(REF10)
     d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml"))
-    d["horizon"]["nodes"] = 64; d["horizon"]["window"] = 10.0
+    d.setdefault("numerics", {})["nodes"] = 64; d["horizon"]["window"] = 10.0
     res = ns.solve(ns.Model.from_dict(d))
     col = lambda dd: np.stack([np.array(dd[f"ch{k}"]) for k in range(3)], axis=1)
     assert res.converged

@@ -9,20 +9,20 @@ def test_refinement_check_on_a_resolved_and_an_unresolved_model():
     res = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), refine=True)
     assert res.refinement["resolved"] and res.refinement["cost_change"] < 1e-8
     assert "refinement to" in res.summary() and res.to_dict()["refinement"]["nodes"] > 24
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["horizon"]["nodes"] = 4
+    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d.setdefault("numerics", {})["nodes"] = 4
     coarse = ns.solve(ns.Model.from_dict(d), refine=True)
     assert not coarse.refinement["resolved"] and "NOT RESOLVED" in coarse.summary()
     df = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
     rf = ns.solve(ns.Model.from_dict(df), refine=True)                 # 12 nodes: resolved to 1e-5 in the kernels
     assert rf.refinement["resolved"] and rf.refinement["kernel_change"] < 1e-4
-    df["horizon"]["nodes"] = 8
+    df.setdefault("numerics", {})["nodes"] = 8
     assert not ns.solve(ns.Model.from_dict(df), refine=True).refinement["resolved"]
 
 
 def test_window_tail_flag():
     short = ns.solve(os.path.join(EX, "ch3_two_player.yaml"))        # L = 3: the state kernel still moves 2.4% over the last tenth
     assert short.window_tail > 0.02 and "WINDOW TOO SHORT" in short.summary()
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["horizon"]["window"] = 10.0; d["horizon"]["nodes"] = 48
+    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["horizon"]["window"] = 10.0; d.setdefault("numerics", {})["nodes"] = 48
     long = ns.solve(ns.Model.from_dict(d))
     assert long.window_tail < 1e-3 and "WINDOW TOO SHORT" not in long.summary()
 

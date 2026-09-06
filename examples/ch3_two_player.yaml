@@ -19,4 +19,5 @@ agents:
     loss: [[0.5, X, X], ["0.5*r2", D2, D2]]
 # window 3.0 is the dissertation's; the state kernel is still 7% of its peak at the edge, so the
 # summary flags WINDOW TOO SHORT (window: 10.0 with 48 nodes clears it; the costs move by about 0.4%)
-horizon: {kind: stationary, discount: 0.0, window: 3.0, nodes: 24}
+horizon: {kind: stationary, discount: 0.0, window: 3.0}
+numerics: {nodes: 24}

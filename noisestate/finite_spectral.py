@@ -72,9 +72,10 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
     @staticmethod
     def _continuation_of(model: Model, past, continuation, stationary: Optional[dict] = None):
         """None / "end" -> None; "stationary" -> this model's stationary equilibrium at the past's window, solved
-        here (horizon.nodes per panel, the finite horizon's breakpoints, initial values and transition blocks
-        dropped; `stationary` = {"window", "nodes"}, a transition file's sizing block, overrides the nodes and
-        must agree with the past's window); a StationaryResult -> itself (checked by the compile)."""
+        here (numerics.nodes per panel, or numerics.continuation_nodes when given; the finite horizon's
+        breakpoints, initial values and transition blocks dropped; `stationary` = {"window", "nodes"}, the
+        horizon's sizing block, must agree with the past's window); a StationaryResult -> itself (checked by
+        the compile)."""
         if continuation is None or continuation == "end":
             return None
         if isinstance(continuation, str):
@@ -86,15 +87,18 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             d = model.to_dict()
             for s in d["states"].values():
                 s.pop("initial", None)
-            hz = d.setdefault("horizon", {}); hz.update(kind="stationary", window=float(past.window)); hz.pop("breakpoints", None)
+            hz = d.setdefault("horizon", {}); hz.update(kind="stationary", window=float(past.window))
             for k in ("past", "continuation", "stationary"):
                 hz.pop(k, None)
+            nm = d.setdefault("numerics", {})
+            for k in ("breakpoints", "engine", "continuation_nodes"):
+                nm.pop(k, None)
             if stationary:
                 if stationary.get("window") is not None and abs(float(stationary["window"]) - past.window) > 1e-9 * max(1.0, past.window):
                     raise ValueError(f"horizon.stationary.window ({stationary['window']:g}) must equal the past's window ({past.window:g}): "
                                      "the buffer after T is one window of the past, on which the stationary maps are read at the node's age")
                 if stationary.get("nodes") is not None:
-                    hz["nodes"] = int(stationary["nodes"])
+                    nm["nodes"] = int(stationary["nodes"])
             return solve(Model.from_dict(d)).check()
         return continuation
 

@@ -63,7 +63,7 @@ def test_ch1_p10_path_against_the_dissertation_and_the_cell_engine():
     tq = np.array([0.0, 0.05, 0.1, 0.2, 0.5, 0.75, 0.9]); d1sp = sp.mean("D1", tq); Jsp = sp.cost_parts["player1"]["mean"]
     got = {}
     for N in (40, 80, 160):
-        d = ch1_targets(10.0, nodes=12).to_dict(); d["horizon"] = {"kind": "finite_cells", "window": 1.0, "nodes": N}
+        d = ch1_targets(10.0, nodes=12).to_dict(); d["horizon"] = {"kind": "finite", "window": 1.0}; d["numerics"] = {"engine": "cells", "nodes": N}
         res = ns.solve(d).check(); idx = np.round(tq / res.compiled.h).astype(int)
         got[N] = (res.means["D1"][idx], res.cost_parts["player1"]["mean"])
         assert res.means_t.shape == (N,) and np.abs(res.means["D2"] + res.means["D1"]).max() < 1e-12
@@ -160,7 +160,7 @@ def test_targets_scale_the_means_and_leave_the_kernels_and_the_examples():
         assert all(np.array_equal(v, np.zeros(len(res.means_t))) for v in res.means.values()) and set(res.model.control_names) <= set(res.means)
         assert all(p["mean"] == 0.0 and p["variance"] == res.costs[k] for k, p in res.cost_parts.items())
         assert "mean" not in res.summary().split("\n")[1] and "means at" not in res.summary()
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite_cells", "window": 1.0, "nodes": 20}
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite", "window": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 20}
     rc = ns.solve(d).check()
     assert all(np.array_equal(v, np.zeros(20)) for v in rc.means.values()) and rc.cost_parts["player1"]["mean"] == 0.0
 
@@ -209,7 +209,7 @@ def test_delayed_rows_and_lags_keep_the_formulation():
 
 
 def test_ties_share_the_means_and_opposite_targets_cannot_be_tied():
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"]["nodes"] = 8
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 8
     d["agents"]["player1"]["loss"].append([-2.0, "X"]); d["agents"]["player2"]["loss"].append([-2.0, "X"]); d["ties"] = [["player1", "player2"]]
     tied = ns.solve(d).check(); assert np.abs(tied.means["D1"] - tied.means["D2"]).max() < 1e-13 and tied.means["D1"][0] > 1
     d["ties"] = []; free = ns.solve(d).check(); assert np.abs(free.means["D1"] - tied.means["D1"]).max() < 1e-6

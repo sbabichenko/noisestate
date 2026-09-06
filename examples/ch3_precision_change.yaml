@@ -31,8 +31,9 @@ agents:
 horizon:
   kind: transition
   window: 6.0                         # the horizon T of the transition (the past's window L = 3 is the band's depth)
-  nodes: 12                           # per side of each piece of the strip
   discount: 0.0
   past: {model: ch3_two_player.yaml}  # the old regime, solved on the fly (a path relative to this file)
   continuation: stationary            # the new model's stationary equilibrium closes the game after T
-  stationary: {nodes: 12}             # the continuation's stationary solve (its window is the past's)
+numerics:
+  nodes: 12                           # per side of each piece of the strip
+  continuation_nodes: 12              # the continuation's stationary solve (its window is the past's)

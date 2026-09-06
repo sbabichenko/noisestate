@@ -43,7 +43,9 @@ that cannot be written) or an error the package raises, a model or solver proble
 ```python
 import noisestate as ns
 res = ns.solve("examples/ch3_two_player.yaml")
+res = ns.solve("examples/ch3_two_player.yaml", ns.Numerics(nodes=32, tol=1e-12))   # a change of resolution, not of model
 print(res.summary())
+res.numerics                 # the resolved Numerics: engine, nodes, unit, unit_range, breakpoints, tol, damping, ..., settings
 res.ages                     # shock ages (Chebyshev nodes on the panels)
 res.kernel("X")              # closed-loop kernel of X, one column per channel
 res.action_kernel("D1")      # closed-loop kernel of a control
@@ -77,7 +79,8 @@ agents:
       y1: {drift: {V: gamma1, P: "-gamma1"}, noise: {w1: 1.0}}
       flow: {drift: {}, noise: {wZ: sigma_Z}}   # sees the flow net of its own orders
     loss: [[-1.0, D1, V], [1.0, D1, P], [eps, D1, D1]]
-horizon: {kind: stationary, discount: rho, window: 8.0, nodes: 24}
+horizon: {kind: stationary, discount: rho, window: 8.0}
+numerics: {nodes: 24}                           # how it is solved: engine, nodes, unit, unit_range, breakpoints, tol, settings
 ```
 
 * **Atoms.** `name` is a state, a control, or a definition; `name@tau` is its value
@@ -100,20 +103,25 @@ horizon: {kind: stationary, discount: rho, window: 8.0, nodes: 24}
   `[-2*theta, X]`.  Linear terms move only the means (below).
 * **Ties.** `ties: [[firm0, firm1, firm2]]` makes the listed agents share one
   strategy (a symmetric equilibrium): only the first is solved for.
-* **Horizon.** `stationary` with `discount`, `window` (lag window L), `nodes` per
-  panel and optional `unit`/`unit_range`/`breakpoints` (panels are aligned to the
-  delays automatically); or `finite` with `window` = T and `nodes` per side of
-  each piece of the triangle (12 is usually converged; 6-8 when delays cut the
-  domain into small pieces; the panels are the lags' multiples closed under every
-  lag, see Limits for a window that is not a multiple of them); `finite_cells`
-  selects the first-order cell scheme.
+* **Horizon.** The economics of time: `stationary` with `discount` and `window` (lag window L);
+  `finite` with `window` = T; `transition` with its `past` and `continuation` (Transitions).
+* **Numerics.** How it is solved, an optional block with the fields of `noisestate.Numerics`:
+  `engine` (`stationary`, `spectral`, or `cells` for the first-order cell scheme on a finite
+  horizon; default from the kind), `nodes` per panel (stationary) or per side of each piece of
+  the triangle (12 is usually converged; 6-8 when delays cut the domain into small pieces; the
+  panels are the lags' multiples closed under every lag, see Limits for a window that is not a
+  multiple of them), `unit`/`unit_range`/`breakpoints` (panels are aligned to the delays
+  automatically), a transition's `continuation_nodes`, `tol`, `damping`, `max_newton`,
+  `variable`, and `settings` (Settings).  `solve(model, numerics)` lays a `Numerics` (or a dict
+  of its fields) over the file's block.  The keys once nested under `horizon:` (`nodes`, `unit`,
+  `unit_range`, `breakpoints`, `stationary: {nodes}`, `kind: finite_cells`) are still read, with
+  a deprecation note in `model.notes`, until 0.6.
 * Coefficients may be numbers or expressions in the parameters (`"sqrt(p1)"`).
 
 The same structure is available from Python through `ModelBuilder` (see
-`examples/make_ch5_cycle_market.py`, which builds an N-firm cycle in a loop); its `finite()`
-takes `T`, `nodes` and `discount` only, so a finite horizon's `breakpoints` or `unit` and the
-`finite_cells` kind are set on the dict (`ModelBuilder.to_dict()`, then `Model.from_dict`) or
-in YAML.
+`examples/make_ch5_cycle_market.py`, which builds an N-firm cycle in a loop); `stationary()`,
+`finite()` and `transition()` take the horizon and `nodes`, and `numerics(**fields)` sets the rest
+of the block.
 
 ## Means
 
@@ -179,16 +187,15 @@ name; every coefficient, delay, loss and discount may change.
 horizon:
   kind: transition
   window: 6.0                          # the horizon T (at least the past's window L)
-  nodes: 12
   past: {model: ch3_two_player.yaml}   # or an inline model, or initial: [{name, loads, rows}, ...]
   continuation: stationary             # the new model's stationary equilibrium closes the game (or: end)
-  stationary: {nodes: 12}              # sizes that solve (its window is the past's)
+numerics: {nodes: 12, continuation_nodes: 12}   # per side of each piece; the continuation's solve (its window is the past's)
 ```
 
 ```python
 res = ns.solve("examples/ch3_precision_change.yaml")        # the file form
 res = ns.solve(new_model, past=old_result, continuation="stationary")   # the keywords override the file's blocks
-res = ns.transition(old, new_model, T=6.0, nodes=12)        # solves old, new's stationary equilibrium and the transition
+res = ns.transition(old, new_model, T=6.0, numerics={"nodes": 12})   # solves old, new's stationary equilibrium and the transition
 res.past, res.stationary, res.settled, res.loss_path, res.excess_costs, res.belief_error("player2", "X")
 ```
 
@@ -290,7 +297,7 @@ what carries the Kyle-Back sweep down to a trading cost of 0.01 where a plain re
 warm-started point costs a handful of best responses, which is what a slider in a front end needs;
 `to_dict()` is the payload such a front end would render, and it carries its own provenance: the
 package `version`, the `params`, the `model` spec (`Model.from_dict` rebuilds it), the `horizon`,
-the engine and solve `options`, then the grid, kernels per quantity and channel, raw maps, costs
+the `options` (the resolved `numerics`, the engine's `solver` options and the `solve` options), then the grid, kernels per quantity and channel, raw maps, costs
 with their variance and mean parts (`cost_parts`), the `means`, and the first-order-condition
 decomposition.  `agents` lists each agent's controls and signal rows
 with their `delay` and the axes of the row's map (`map_time`, `map_age` or `map_shock_time`, per
@@ -312,7 +319,8 @@ warm-started re-solve of the Chapter 3 game at 96 nodes takes half the time.  Wi
 deadline bounds the iterations only, not the compile, the interpolation or the checks at the end:
 a hard bound for a front end also passes `diagnostics=False`.  The bounds and
 `diagnostics=False` are recorded in `res.solve_kw` and are not inherited by `refine()`;
-`sweep(..., solve_kw={...})` forwards all four to every point, and the CLI has `--max-evaluations`
+`sweep(..., solve_kw={...})` forwards all four to every point, `sweep(..., numerics=...)` lays a
+Numerics over every point's model, and the CLI has `--max-evaluations`
 and `--deadline` on `solve` and `sweep` (a bounded point exits 1 like any unconverged solve).
 
 On panels of equal width the convolution and correlation tensors are block-Toeplitz in the panel
@@ -340,14 +348,16 @@ preconditioned by its time-row blocks), the second-order check
 result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `settled_tol` 1e-4 for a transition's maps and means
 on [T - L, T] against the stationary ones, `mean_zero` 1e-12, `refine_cost_tol`
 1e-6, `refine_kernel_tol` 1e-5, `stability_k` 2, `stability_eps` 1e-6, `stability_tol` 1e-3,
-`stability_max_evaluations` 200, `stability_fallback` 30).  Pass `settings=Settings(second_order_tol=1e-3)`
-(or a dict of the fields to change) to `solve()`, `sweep(solver_kw=...)` or an engine's constructor;
-the fields that differ from the defaults are recorded in `res.solver_kw` and the payload's
-`options.solver`, so `refine()`, `stability()` and a re-solve from the payload keep them.  The older
-class-attribute names (`EngineBase.FOC_RCOND`, `BaseResult.STABILITY_MAX_EVALUATIONS`,
-`SpectralFiniteSolver.MAP_RIDGE`, ...) remain as aliases of the same fields.  The defaults of
-`solve()`'s own arguments (`tol`, `damping`, `max_newton`) stay per engine (`TOL`, `DAMPING`,
-`MAX_NEWTON`), since they differ by engine and are recorded in `res.solve_kw`.
+`stability_max_evaluations` 200, `stability_fallback` 30).  They are the `settings` field of
+`Numerics`: pass `ns.Numerics(settings=Settings(second_order_tol=1e-3))` (or `{"settings": {...}}`, a
+dict of the fields to change) to `solve()` or `sweep()`, or `settings=` to an engine's constructor
+(`solve(settings=...)` is accepted as an alias until 0.6); the fields that differ from the defaults
+are recorded in `res.numerics`, `res.solver_kw` and the payload's `options`, so `refine()`,
+`stability()` and a re-solve from the payload keep them.  The older class-attribute names
+(`EngineBase.FOC_RCOND`, `BaseResult.STABILITY_MAX_EVALUATIONS`, `SpectralFiniteSolver.MAP_RIDGE`,
+...) remain as aliases of the same fields.  The defaults of the fixed point's own options (`tol`,
+`damping`, `max_newton`) stay per engine (`TOL`, `DAMPING`, `MAX_NEWTON`), since they differ by
+engine; a `Numerics` overrides them and `res.numerics` reports the resolved values.
 
 ## How it works
 

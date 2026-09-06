@@ -15,6 +15,7 @@ import yaml
 
 from . import __version__, solve as _solve
 from .spec import Model
+from .numerics import Numerics
 from .sweep import sweep
 
 
@@ -34,7 +35,7 @@ def transition_lines(m: Model) -> list:
         st = hz.stationary or {}
         out.append(f"continuation: the new model's stationary equilibrium on a buffer of one window after T = {hz.window:g}"
                    + (f" (window {st['window']:g})" if st.get("window") is not None else " (the past's window)")
-                   + f", {st.get('nodes', hz.nodes)} nodes per panel")
+                   + f", {st.get('nodes', hz.nodes)} nodes per panel (numerics.continuation_nodes)")
     return out
 
 
@@ -53,7 +54,8 @@ def main(argv=None) -> int:
     s.add_argument("model")
     s.add_argument("-o", "--out", help="write the result as JSON")
     s.add_argument("--plot", help="write a kernel plot (.pdf/.png)")
-    s.add_argument("--nodes", type=int, help="override nodes per panel (stationary) or per side of each piece (finite)")
+    s.add_argument("--nodes", type=int, help="override numerics.nodes: per panel (stationary) or per side of each piece (finite)")
+    s.add_argument("--engine", choices=("stationary", "spectral", "cells"), help="override numerics.engine")
     s.add_argument("--window", type=float, help="override the lag window L")
     s.add_argument("--param", action="append", default=[], help="override a parameter, k=v (repeatable)")
     s.add_argument("--tol", type=float, default=None, help="fixed-point tolerance (default: the engine's own, 1e-10 stationary, 1e-8 finite)")
@@ -114,17 +116,15 @@ def _run(p, args) -> int:
             d.setdefault("params", {})[k] = float(v_)
         except ValueError:
             p.error(f"--param {k}: {v_!r} is not a number")
-    if args.nodes is not None:
-        if args.nodes < 2:
-            p.error("--nodes must be at least 2")
-        d.setdefault("horizon", {})["nodes"] = args.nodes
+    if args.nodes is not None and args.nodes < 2:
+        p.error("--nodes must be at least 2")
     if args.window is not None:
         if not args.window > 0:
             p.error("--window must be positive")
         d.setdefault("horizon", {})["window"] = args.window
     m = Model.from_dict(d, base_dir=base_dir)
-    kw = dict(bounds) if args.tol is None else {"tol": args.tol, **bounds}
-    res = _solve(m, verbose=args.verbose, refine=args.refine, stability=args.stability, **kw)
+    numerics = Numerics(nodes=args.nodes, engine=args.engine, tol=args.tol)
+    res = _solve(m, numerics, verbose=args.verbose, refine=args.refine, stability=args.stability, **bounds)
     print(res.summary())
     if args.out:
         save_result(res, args.out)

@@ -4,14 +4,14 @@ from noisestate.finite_spectral import SpectralCompiled, SpectralFiniteSolver
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def _finite(name, **hz):
-    d = ns.read_yaml(os.path.join(HERE, "..", "examples", name)); d["horizon"].update(hz); return d
+    d = ns.read_yaml(os.path.join(HERE, "..", "examples", name)); d["numerics"] = {**d.get("numerics", {}), **{k: hz.pop(k) for k in list(hz) if k in ("nodes", "unit", "unit_range", "breakpoints")}}; d["horizon"].update(hz); return d
 
 def test_delayed_finite_spectral_converges_and_matches_cells():
     """Control lag 0.25 in the state and a delayed observation for player 2 (Chapter 2 style).
     Reference: the first-order cell scheme, Richardson-extrapolated from 60 and 120 cells
     (cost 0.4839003 / 0.4767628, computed 2026-09-03)."""
     d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_delayed_finite.yaml"))
-    d["horizon"]["nodes"] = 6
+    d.setdefault("numerics", {})["nodes"] = 6
     S = SpectralFiniteSolver(ns.Model.from_dict(d)); res = S.solve()
     assert res.converged and res.residual < 1e-7
     assert len(S.c.g.pieces) == 10                         # 4 time panels of width 0.25

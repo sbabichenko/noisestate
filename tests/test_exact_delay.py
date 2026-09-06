@@ -95,8 +95,8 @@ def test_finite_engine_on_the_delayed_problem_converges_spectrally():
     model = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
              "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": h}, "noise": {"w1": 1.0}, "delay": delta}},
                               "loss": [[1.0, "X", "X"], [r, "D", "D"]]}},
-             "horizon": {"kind": "finite", "window": 3.0, "nodes": 5}}
-    r5 = ns.solve(model).check(); model["horizon"]["nodes"] = 6; r6 = ns.solve(model).check()
+             "horizon": {"kind": "finite", "window": 3.0}, "numerics": {"nodes": 5}}
+    r5 = ns.solve(model).check(); model["numerics"]["nodes"] = 6; r6 = ns.solve(model).check()
     assert r5.representation_error["a"] < 1e-5 and r6.representation_error["a"] < 1e-6
     assert abs(r5.costs["a"] - r6.costs["a"]) < 2e-6 and r6.second_order["a"]["ok"]
     assert np.abs(r6.kernel("D", "w1")[r6.grid.a < delta - 1e-12]).max() == 0.0
@@ -118,6 +118,6 @@ def test_lagged_undelayed_finite_model_is_resolved_at_six_nodes():
     for a in d["agents"].values():
         for row in a["signals"].values():
             row["delay"] = 0.0
-    d["horizon"]["nodes"] = 6; r6 = ns.solve(d).check(); d["horizon"]["nodes"] = 10; r10 = ns.solve(d).check()
+    d.setdefault("numerics", {})["nodes"] = 6; r6 = ns.solve(d).check(); d.setdefault("numerics", {})["nodes"] = 10; r10 = ns.solve(d).check()
     assert max(r6.representation_error.values()) < 1e-6
     assert abs(r6.costs["player1"] - r10.costs["player1"]) < 1e-6

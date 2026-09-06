@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **API stage, A and B: the numerics apart from the model, and an explicit `solve()`.**  `noisestate.Numerics`
+  (`numerics.py`) holds how a model is solved: `engine` ("stationary" | "spectral" | "cells", default from
+  the horizon kind), `nodes`, `unit`, `unit_range`, `breakpoints`, `continuation_nodes`, `tol`, `damping`,
+  `max_newton`, `variable` and `settings`.  The model file keeps the economics under `horizon:` (kind,
+  discount, window, past, continuation, `stationary: {window}`) and gains an optional top-level `numerics:`
+  block; the keys once nested under `horizon:` (`nodes`, `unit`, `unit_range`, `breakpoints`,
+  `stationary.nodes`, `kind: finite_cells`) are still read and mapped, with one deprecation note each in
+  `model.notes`, until 0.6 (a nested key that disagrees with the block is an error).  `solve(model,
+  numerics=None, *, init, start, tol, max_evaluations, deadline, progress, diagnostics, refine, stability,
+  verbose, naive_observers, past, continuation)`: no introspection; `nodes=` and `settings=` are accepted
+  as aliases of the Numerics fields until 0.6, every other former engine keyword is a TypeError naming the
+  field.  `noisestate.engines` (`stationary`, `spectral`, `cells`, `ENGINES` by engine name, `build`) is
+  the power user's namespace; the engine classes stay importable.  `sweep(..., numerics=)`,
+  `transition(old, new, T, numerics=)` (`nodes=` and `stationary={"nodes"}` aliases until 0.6),
+  `make_solver(model, numerics=)`, `Model.numerics`, `Model.with_numerics()`, `ModelBuilder.numerics()`;
+  `res.numerics` is the resolved object and the payload's `options.numerics` carries it.  The shipped
+  examples and the README use the block.  No number moved: every shipped case at distance 0 from ec1b533.
+
 - `docs/architecture.md` (step C4): the modules and what each holds, the data flow of one best response
   (compiled model, closed loop, passive rows, operators, FOC solve, projection, checks) and of one transition
   (past, band, buffer, continuation), and where the three engines share the base; linked from README's

@@ -10,7 +10,7 @@ CH3 = os.path.join(EX, "ch3_two_player.yaml")
 
 
 def _ch3(**horizon):
-    d = ns.read_yaml(CH3); d["horizon"].update(horizon)
+    d = ns.read_yaml(CH3); d["numerics"] = {**d.get("numerics", {}), **{k: horizon.pop(k) for k in list(horizon) if k in ("nodes", "unit", "unit_range", "breakpoints")}}; d["horizon"].update(horizon)
     return ns.Model.from_dict(d)
 
 
@@ -84,7 +84,7 @@ def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
     r = S.solve(init=w, diagnostics=False); assert len(calls) == 2 * r.iterations and not any(calls)
     calls.clear(); r = S.solve(init=w); assert len(calls) == 2 * r.iterations + 2 and calls[-2:] == [True, True]
     # the cell engine (no checks of its own) accepts the option as well
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite_cells", "window": 1.0, "nodes": 12}
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite", "window": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 12}
     assert ns.solve(ns.Model.from_dict(d), diagnostics=False).converged
 
 
@@ -158,7 +158,7 @@ def test_lead_term_under_a_discount_neither_overflows_nor_is_silent():
     the mask's zero is NaN in every first-order condition).  It is now taken within the lead only, so the
     model compiles and solves cleanly; and a discount that makes exp(rho tau) large is announced at
     compile, since those weights dominate the best-response system (README, Limits)."""
-    d = ns.read_yaml(CH3); d["agents"]["player1"]["loss"].append([0.1, "D1", "X@-0.5"]); d["horizon"].update(unit=0.5, nodes=8)
+    d = ns.read_yaml(CH3); d["agents"]["player1"]["loss"].append([0.1, "D1", "X@-0.5"]); d["numerics"].update(unit=0.5, nodes=8)
     d["horizon"]["discount"] = 0.5                                        # exp(0.25) = 1.3: nothing to say
     with warnings.catch_warnings():
         warnings.simplefilter("error")

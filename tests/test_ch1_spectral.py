@@ -5,7 +5,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def load(nodes):
     d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_two_player_finite.yaml"))
-    d["horizon"]["nodes"] = nodes
+    d.setdefault("numerics", {})["nodes"] = nodes
     return ns.Model.from_dict(d)
 
 def test_ch1_spectral_converges_exponentially():

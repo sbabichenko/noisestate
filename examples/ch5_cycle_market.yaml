@@ -340,7 +340,7 @@ horizon:
   kind: stationary
   discount: 0.0
   window: 24.0
+numerics:
   nodes: 8
-  breakpoints: null
   unit: 0.5
   unit_range: 8.0

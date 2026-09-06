@@ -1,20 +1,31 @@
-"""noisestate: equilibrium solver for linear-quadratic-Gaussian games with private information."""
-import inspect
+"""noisestate: equilibrium solver for linear-quadratic-Gaussian games with private information.
 
+    import noisestate as ns
+    res = ns.solve("examples/ch4_kyle_back.yaml")                    # the model file's own numerics
+    res = ns.solve(model, ns.Numerics(nodes=32, tol=1e-12))          # a change of resolution, not of model
+    res.summary(); res.kernel("P", "w"); res.costs; res.to_dict()
+
+The model (Model, ModelBuilder, a dict or a path) is the problem; a Numerics (or a dict of its fields) is how it
+is solved: the engine, the grid, the tolerances, the settings.  solve() lays the given numerics over the
+model's own, builds the engine (noisestate.engines) and returns one Result.
+"""
 from .spec import Model, ModelBuilder
+from .numerics import Numerics
 from .accel import ConvergenceError
 from .settings import Settings
 from .results import BaseResult, StationaryResult, TriangleResult, TransitionResult, CellResult
 from .stationary import StationarySolver
 from .finite import FiniteSolver
 from .finite_spectral import SpectralFiniteSolver
-from .sweep import sweep, make_solver, ENGINES
+from . import engines
+from .engines import ENGINES
+from .sweep import sweep, make_solver
 from .grid_cache import clear as clear_grid_cache
 from .transition import transition
 
-__all__ = ["Model", "ModelBuilder", "ConvergenceError", "Settings", "BaseResult", "StationaryResult", "TriangleResult", "TransitionResult",
-           "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "load", "solve", "sweep",
-           "transition", "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache"]
+__all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "BaseResult", "StationaryResult", "TriangleResult",
+           "TransitionResult", "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "engines", "load", "solve",
+           "sweep", "transition", "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache"]
 
 def _read_version() -> str:
     """The version pyproject.toml declares when the package is imported from a source tree (a checkout on
@@ -55,35 +66,53 @@ def load(path: str) -> Model:
     return Model.from_dict(read_yaml(path), base_dir=os.path.dirname(os.path.abspath(path)))
 
 
-def solve(model, refine: bool = False, stability: bool = False, **kw) -> BaseResult:
-    """Solve a model (a Model, a dict, or a path to a YAML file) with the engine its horizon selects.
-    Keyword arguments go to the engine's constructor (e.g. verbose, naive_observers, settings; on the
-    spectral finite engine past=, the known past of a transition, and continuation=, how it goes on
-    after T: "end", "stationary" or a stationary result of the model; on a model of kind "transition"
-    each overrides the file's block) or to its solve() (e.g. tol, init, start, variable); unknown ones
-    are an error.  The constructor options are recorded in
-    res.solver_kw, so refine() and stability() rebuild the same engine.  refine=True re-solves on a
-    finer grid and reports the change (res.refinement); stability=True adds res.stability()."""
+def as_model(model) -> Model:
+    """A Model from what solve() accepts: a Model, a ModelBuilder, a dict or a path to a YAML file."""
     if isinstance(model, str):
-        model = load(model)
-    elif isinstance(model, dict):
-        model = Model.from_dict(model)
-    elif isinstance(model, ModelBuilder):
-        model = model.build()
-    elif not isinstance(model, Model):
-        raise TypeError(f"solve() takes a Model, a ModelBuilder, a dict or a path, not {type(model).__name__}")
-    engine = ENGINES[model.horizon.kind]
-    init_params = inspect.signature(engine.__init__).parameters
-    solve_params = inspect.signature(engine.solve).parameters
-    ctor_kw = {k: v for k, v in kw.items() if k in init_params}
-    solve_kw = {k: v for k, v in kw.items() if k in solve_params and k not in init_params}
-    unknown = sorted(set(kw) - set(ctor_kw) - set(solve_kw))
-    if unknown:
-        valid = sorted((set(init_params) | set(solve_params)) - {"self", "model", "init"})
-        raise TypeError(f"unknown option(s) {unknown} for the {model.horizon.kind!r} engine; valid: {valid}")
-    res = engine(model, **ctor_kw).solve(**solve_kw)
+        return load(model)
+    if isinstance(model, dict):
+        return Model.from_dict(model)
+    if isinstance(model, ModelBuilder):
+        return model.build()
+    if isinstance(model, Model):
+        return model
+    raise TypeError(f"expected a Model, a ModelBuilder, a dict or a path, not {type(model).__name__}")
+
+
+_ALIASES = {"nodes": "numerics.nodes", "settings": "numerics.settings"}      # accepted until 0.6 (CHANGELOG)
+
+
+def solve(model, numerics=None, *, init=None, start: str = "zero", tol=None, max_evaluations=None, deadline=None,
+          progress=None, diagnostics: bool = True, refine: bool = False, stability: bool = False, verbose: bool = False,
+          naive_observers=None, past=None, continuation=None, **deprecated) -> BaseResult:
+    """Solve a model (a Model, a ModelBuilder, a dict, or a path to a YAML file) under `numerics` (a Numerics or
+    a dict of its fields, laid over the model's own: engine, nodes, unit, unit_range, breakpoints,
+    continuation_nodes, tol, damping, max_newton, variable, settings).  The other options are the solve's:
+    init (action kernels or raw maps per agent to start from), start ("zero", "coarse", or "stationary" on a
+    transition with a continuation), tol (over the numerics'), max_evaluations and deadline (the bounds; past
+    either the best iterate is returned not converged), progress (a callable on {"evaluation", "residual",
+    "phase", "seconds"} after every evaluation), diagnostics (False skips the checks at the end), refine (re-solve
+    on a finer grid and report the change, res.refinement), stability (add res.stability()), verbose;
+    naive_observers ({agent: [observers]}, the stationary engine); past and continuation (a transition's, on the
+    spectral engine; on a model of kind "transition" each overrides the file's block).  Unknown options are a
+    TypeError naming the Numerics field they belong to.  res.numerics is the resolved Numerics."""
+    model = as_model(model)
+    for k in list(deprecated):
+        if k in _ALIASES:
+            numerics = Numerics.of(numerics).merged(Numerics.of({k: deprecated.pop(k)}))
+    if deprecated:
+        bad = sorted(deprecated)
+        fields = [k for k in bad if k in Numerics.field_names()]
+        raise TypeError(f"unknown option(s) {bad} for solve()" + (f"; {fields} are fields of Numerics: solve(model, Numerics({fields[0]}=...))"
+                                                                  if fields else "; see help(noisestate.solve)"))
+    S, num = engines.build(model, numerics, verbose=verbose, naive_observers=naive_observers, past=past, continuation=continuation)
+    kw = num.solve_kw()
+    if tol is not None:
+        kw["tol"] = tol
+    res = S.solve(init=init, start=start, max_evaluations=max_evaluations, deadline=deadline, progress=progress,
+                  diagnostics=diagnostics, **kw)
     if refine:
-        res.refine(**{k: v for k, v in solve_kw.items() if k != "init"})
+        res.refine()
     if stability:
         res.stability()
     return res

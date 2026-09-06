@@ -18,11 +18,10 @@ import numpy as np
 import yaml
 
 from .spec import Model, ModelBuilder
+from .numerics import Numerics
 from .past import Past
 from .results import TriangleResult
-from .stationary import StationarySolver
-from .finite import FiniteSolver
-from .finite_spectral import SpectralFiniteSolver
+from .engines import build
 
 
 def _load_dict(model: Union[str, dict, Model]) -> dict:
@@ -38,16 +37,12 @@ def _load_dict(model: Union[str, dict, Model]) -> dict:
     return copy.deepcopy(model)
 
 
-ENGINES = {"stationary": StationarySolver, "finite": SpectralFiniteSolver, "finite_cells": FiniteSolver,
-           "transition": SpectralFiniteSolver}
-
-
-def make_solver(model: Model, **kw):
-    """The engine `model.horizon.kind` selects, constructed with `kw`."""
-    try:
-        return ENGINES[model.horizon.kind](model, **kw)
-    except KeyError:
-        raise ValueError(f"unknown horizon.kind {model.horizon.kind!r}; one of {sorted(ENGINES)}") from None
+def make_solver(model: Model, numerics=None, **kw):
+    """The engine the model's numerics select (noisestate.engines.build), constructed with `kw` (verbose,
+    naive_observers, past, continuation; `settings` is accepted as an alias of numerics.settings)."""
+    if "settings" in kw:
+        numerics = Numerics.of(numerics).merged(Numerics(settings=kw.pop("settings")))
+    return build(model, numerics, **kw)[0]
 
 
 def warm_start(prev) -> Optional[dict]:
@@ -60,15 +55,16 @@ def warm_start(prev) -> Optional[dict]:
     return prev.maps
 
 
-def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iterable[float], solver_kw: Optional[dict] = None,
-          solve_kw: Optional[dict] = None, verbose: bool = False) -> List[dict]:
+def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iterable[float], numerics=None,
+          solver_kw: Optional[dict] = None, solve_kw: Optional[dict] = None, verbose: bool = False) -> List[dict]:
     """Solve the model at each value of `param` (a key of `params`, or "horizon.window": the window L of a
     stationary model, the horizon T of a finite one or of a transition, which then warm-starts each point from
     the previous maps read on the new grid, the stationary maps beyond it), warm-starting each point from
     the linear extrapolation of the last two equilibria in the parameter (a secant predictor;
-    markedly more robust at hard points such as a small trading cost).  solver_kw goes to each point's
-    engine, solve_kw to each point's solve() (tol, variable, max_evaluations, deadline, progress,
-    diagnostics, ...); a point stopped at a bound is a row with converged False, and the sweep goes on.
+    markedly more robust at hard points such as a small trading cost).  numerics (a Numerics or a dict of
+    its fields) is laid over the model's own at every point; solver_kw goes to each point's engine (verbose,
+    naive_observers, past, continuation), solve_kw to each point's solve() (tol, max_evaluations, deadline,
+    progress, diagnostics, start); a point stopped at a bound is a row with converged False, and the sweep goes on.
     Returns [{"param", "value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the
     given order; "change" is the relative change of the strategy from the previous point on the same grid
     (the raw maps; the action kernels on the finite spectral engine)
@@ -91,7 +87,7 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
         else:
             d.setdefault("params", {})[param] = float(v)
         m = Model.from_dict(d)
-        S = make_solver(m, **solver_kw)
+        S = make_solver(m, numerics, **solver_kw)
         t0 = time.time()
         init = None
         if prev is not None and not S.same_grid(prev.compiled) and hasattr(S, "warm_maps_from"):

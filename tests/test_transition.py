@@ -360,7 +360,7 @@ def chapter3_with_lag(kind, nodes, L=1.5, lag=0.5):
         d["agents"]["player1"]["loss"].append([0.3, f"D1@{lag}", "X"])
     else:
         d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["0.5*r1", f"D1@{lag}", f"D1@{lag}"], [0.01, "D1", "D1"]]
-    d["horizon"] = {"kind": "stationary", "discount": 0.0, "window": L, "nodes": nodes, "unit": lag, "unit_range": L}
+    d["horizon"] = {"kind": "stationary", "discount": 0.0, "window": L}; d["numerics"] = {"nodes": nodes, "unit": lag, "unit_range": L}
     return ns.Model.from_dict(d)
 
 

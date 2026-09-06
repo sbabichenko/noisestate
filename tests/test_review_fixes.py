@@ -49,7 +49,7 @@ def test_failed_solve_is_reported_and_check_raises():
 
 def test_defective_state_matrix_is_handled():
     """A double integrator (defective A) must propagate exactly: x2' = x1, x1' = 0 -> x2(a) = a."""
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"]["nodes"] = 8
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 8
     d["channels"].append("w3")
     d["states"]["X2"] = {"drift": {"X": 1.0}, "noise": {"w3": 1e-6}}
     d["agents"]["player1"]["loss"].append([0.0, "X2", "X2"])

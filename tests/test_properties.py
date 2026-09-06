@@ -36,7 +36,7 @@ def test_stationary_best_response_is_optimal_kyle_back():
 
 
 def test_spectral_finite_best_response_is_optimal():
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"]["nodes"] = 8
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 8
     S = SpectralFiniteSolver(ns.Model.from_dict(d)); res = S.solve().check()
     a = S.model.agents[0]; c = S.c; nW = c.nW
     maps = res.maps; g, out = S.best_response(a, maps)

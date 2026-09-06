@@ -25,4 +25,5 @@ agents:
       y1: {drift: {V: gamma1, P: "-gamma1"}, noise: {w1: 1.0}}
       flow: {drift: {}, noise: {wZ: sigma_Z}}      # the trader also sees the order flow (net of its own orders)
     loss: [[-1.0, D1, V], [1.0, D1, P], [eps, D1, D1]]
-horizon: {kind: stationary, discount: rho, window: 8.0, nodes: 24}
+horizon: {kind: stationary, discount: rho, window: 8.0}
+numerics: {nodes: 24}

@@ -89,7 +89,7 @@ def test_sweeps_over_the_horizon_and_over_the_change_size():
     to 2e-8, one past shared; sweep over p1 solves the past once and warm-starts each point on the same grid."""
     m = example("ch3_two_player")
     d = m.with_params(p1=10.0).to_dict()
-    d["horizon"] = {"kind": "transition", "window": 6.0, "nodes": 8, "past": {"model": EX + "ch3_two_player.yaml"}}
+    d["horizon"] = {"kind": "transition", "window": 6.0, "past": {"model": EX + "ch3_two_player.yaml"}}; d["numerics"] = {"nodes": 8}
     rows = ns.sweep(d, "horizon.window", [6.0, 9.0], solve_kw={"start": "stationary"})
     assert [r["value"] for r in rows] == [6.0, 9.0] and all(r["converged"] for r in rows) and rows[1]["change"] is None
     assert rows[0]["result"].past is rows[1]["result"].past and rows[1]["result"].model.horizon.window == 9.0

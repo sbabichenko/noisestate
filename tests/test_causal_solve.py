@@ -25,7 +25,7 @@ def stacked_solve(c, **kw):
 def test_block_forward_substitution_matches_the_stacked_dense_solve():
     """ch1_delayed at 5 nodes (player2's row delayed): the closed loop under random maps, plain and with an agent
     excluded and its impulse column, is the dense solve of the stacked rows to 1e-10."""
-    d = example_dict("ch1_delayed_finite"); d["horizon"]["nodes"] = 5
+    d = example_dict("ch1_delayed_finite"); d.setdefault("numerics", {})["nodes"] = 5
     S = SpectralFiniteSolver(ns.Model.from_dict(d)); c = S.c
     rng = np.random.default_rng(3)
     acts = {a.name: rng.standard_normal((len(a.controls), c.N, c.nW)) * 0.1 for a in S.model.agents}

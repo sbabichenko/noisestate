@@ -15,4 +15,5 @@ agents:
     controls: [D2]
     signals: {y2: {drift: {X: "sqrt(p2)"}, noise: {w2: 1.0}, delay: tau}}
     loss: [[1.0, X, X], [r2, D2, D2]]
-horizon: {kind: finite, window: 1.0, nodes: 8}    # per side of each of the 10 pieces cut by the delay
+horizon: {kind: finite, window: 1.0}
+numerics: {nodes: 8}                             # per side of each of the 10 pieces cut by the delay

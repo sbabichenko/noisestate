@@ -111,6 +111,15 @@ class BaseResult:
             return make_solver(model)
         return self.solver_class(model, **self.solver_kw)
 
+    @property
+    def numerics(self):
+        """The resolved Numerics this result was solved with: the model's grid and engine, the solve's
+        tolerance, damping, Newton steps and iterate, the engine's settings."""
+        from dataclasses import replace
+        num = self.model.numerics.resolved(self.model.horizon.kind)
+        return replace(num, settings=self.settings, **{k: v for k, v in self.solve_kw.items()
+                                                       if k in ("tol", "damping", "max_newton", "variable") and v is not None})
+
     # ----------------------------------------------------------- common
     def check(self):
         """Return self, or raise ConvergenceError if the solve did not reach its tolerance."""
@@ -142,14 +151,12 @@ class BaseResult:
         cost and of the kernels, the honest test of resolution (window, corner and product errors alike).
         Stored in self.refinement and shown by summary()."""
         import math
-        d = self.model.to_dict(); hz = d.setdefault("horizon", {})
-        n0 = int(hz.get("nodes", 16))
+        n0 = int(self.model.horizon.nodes)
         n1 = 2 * n0 if self.kind == "finite_cells" else max(n0 + 2, int(math.ceil(n0 * factor)))   # cells: keep lags aligned
-        hz["nodes"] = n1
         # this solve's bounds and a skipped diagnostics pass are not the refinement's
         kw = {k: v for k, v in self.solve_kw.items() if k not in ("init", "start", "max_evaluations", "deadline", "diagnostics")}
         kw.update(solve_kw)
-        solver = self._make_solver(Model.from_dict(d))
+        solver = self._make_solver(self.model.with_numerics(nodes=n1))
         try:                                                  # start the fine solve from this equilibrium, interpolated
             kw.setdefault("init", solver.interpolate_maps(self))
         except NotImplementedError:
@@ -323,7 +330,8 @@ class BaseResult:
                "residual": float(self.residual), "evaluations": int(self.iterations), "seconds": float(self.seconds),
                "message": self.message, "params": {k: float(v) for k, v in m.params.items()}, "model": m.to_dict(),
                "horizon": {k: v for k, v in asdict(m.horizon).items() if v is not None},
-               "options": {"solver": {k: (v.to_dict() if hasattr(v, "to_dict") else v) for k, v in self.solver_kw.items()},
+               "options": {"numerics": self.numerics.to_dict(),
+                           "solver": {k: (v.to_dict() if hasattr(v, "to_dict") else v) for k, v in self.solver_kw.items()},
                            "solve": dict(self.solve_kw)},
                "grid": self.grid_info(), "discount": float(c.rho), "channels": self.channels,
                "agents": {a.name: {"controls": list(a.controls),

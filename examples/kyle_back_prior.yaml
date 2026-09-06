@@ -31,10 +31,10 @@ agents:
     signals:
       flow: {drift: {}, noise: {wZ: sigma_Z}}     # the order flow net of its own orders; V(0) is seen on it at once
     loss: [[-1.0, D1, V], [1.0, D1, P], [eps, D1, D1]]
+numerics: {nodes: 12}
 horizon:
   kind: transition
   window: 2.0
-  nodes: 12
   discount: 0.0
   past:
     initial:

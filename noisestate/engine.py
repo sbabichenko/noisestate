@@ -737,7 +737,7 @@ class EngineBase:
         n0 = max(4, int(round(hz.nodes * factor)))
         if n0 >= hz.nodes:
             return None
-        coarse = type(self)(self.model.with_horizon(nodes=n0), **self.solver_kw)
+        coarse = type(self)(self.model.with_numerics(nodes=n0), **self.solver_kw)
         res = coarse.solve(**{k: v for k, v in solve_kw.items() if k not in ("init", "start")})
         self._coarse_evals, self._coarse_nodes = res.iterations, n0
         return self.interpolate_maps(res)

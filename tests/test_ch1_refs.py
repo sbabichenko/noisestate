@@ -14,7 +14,7 @@ CHANNELS = ["w0", "w1", "w2"]
 
 @pytest.fixture(scope="module")
 def res():
-    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_two_player_finite.yaml")); d["horizon"]["nodes"] = 12
+    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_two_player_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 12
     return SpectralFiniteSolver(ns.Model.from_dict(d)).solve().check()
 
 

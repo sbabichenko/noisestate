@@ -24,7 +24,7 @@ def test_file_form_equals_the_keyword_form_bit_for_bit(regime):
     """horizon: {kind: transition, past: {model: ch3_two_player.yaml}} solves the past on the fly and the
     continuation at horizon.nodes, exactly as solve(new, past=old, continuation="stationary")."""
     d = regime["m"].with_params(p1=10.0).to_dict()
-    d["horizon"] = {"kind": "transition", "window": 6.0, "nodes": 8, "past": {"model": EX + "ch3_two_player.yaml"}}
+    d["horizon"] = {"kind": "transition", "window": 6.0, "past": {"model": EX + "ch3_two_player.yaml"}}; d["numerics"] = {"nodes": 8}
     m = ns.Model.from_dict(d)
     assert m.horizon.kind == "transition" and m.horizon.past == {"model": EX + "ch3_two_player.yaml"} and m.horizon.continuation is None
     assert m.to_dict()["horizon"]["past"] == {"model": EX + "ch3_two_player.yaml"}
@@ -108,7 +108,7 @@ def test_transition_validation():
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"result": 1}}})
     with pytest.raises(ValueError, match="'stationary' or 'end'"):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "x.yaml"}, "continuation": "tail"}})
-    with pytest.raises(ValueError, match="stationary.nodes"):
+    with pytest.raises(ValueError, match="continuation_nodes"):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "x.yaml"}, "stationary": {"nodes": 1}}})
     with pytest.raises(ValueError, match="unknown key"):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "x.yaml"}, "stationary": {"L": 3}}})
@@ -131,8 +131,8 @@ def test_cli_round_trip(tmp_path, capsys):
     directory whatever the working directory."""
     shutil.copy(EX + "ch3_two_player.yaml", tmp_path / "old.yaml")
     d = example("ch3_two_player").with_params(p1=10.0).to_dict()
-    d["horizon"] = {"kind": "transition", "window": 6.0, "nodes": 8, "past": {"model": "old.yaml"}, "continuation": "stationary",
-                    "stationary": {"nodes": 8}}
+    d["horizon"] = {"kind": "transition", "window": 6.0, "past": {"model": "old.yaml"}, "continuation": "stationary"}
+    d["numerics"] = {"nodes": 8, "continuation_nodes": 8}
     with open(tmp_path / "change.yaml", "w") as fh:
         yaml.safe_dump(d, fh)
     m = ns.load(str(tmp_path / "change.yaml"))

@@ -169,23 +169,36 @@ class Agent:
 
 @dataclass
 class Horizon:
-    kind: str = "stationary"          # "stationary" | "finite" (spectral triangle) | "finite_cells" | "transition"
+    """The horizon block (the economics: kind, discount, window, a transition's past and continuation) and,
+    after it, the resolved numerics the engines read (the file's `numerics:` block, or a Numerics laid over it
+    by solve(); `Model.numerics` presents them, `Model.with_numerics` changes them)."""
+    kind: str = "stationary"          # "stationary" | "finite" (a finite horizon) | "transition"
     discount: float = 0.0
     window: float = 8.0               # L for stationary; T for finite and transition
+    # kind "transition" only: the past ({"model": a path or an inline stationary model dict, "initial": [shocks]}),
+    # the continuation ("stationary", the default, or "end") and the sizing of the new model's stationary solve
+    # for the continuation ({"window": the past's, "nodes": numerics.continuation_nodes})
+    past: Optional[dict] = None
+    continuation: Optional[str] = None
+    stationary: Optional[dict] = None
+    # ---- the resolved numerics (numerics.py): the grid
     breakpoints: Optional[List[float]] = None
     unit: Optional[float] = None
     unit_range: Optional[float] = None
     nodes: int = 16
-    # kind "transition" only: the past ({"model": a path or an inline stationary model dict, "initial": [shocks]}),
-    # the continuation ("stationary", the default, or "end") and the sizing of the new model's stationary solve
-    # for the continuation ({"window", "nodes"}; default the past's window and horizon.nodes)
-    past: Optional[dict] = None
-    continuation: Optional[str] = None
-    stationary: Optional[dict] = None
+    engine: Optional[str] = None      # "stationary" | "spectral" | "cells"; None: the kind's default
+    # ---- the resolved numerics: the fixed point's options and the tuning constants
+    tol: Optional[float] = None
+    damping: Optional[float] = None
+    max_newton: Optional[int] = None
+    variable: Optional[str] = None
+    settings: object = None           # a Settings; None: the defaults
 
     @property
     def is_transition(self) -> bool:
         return self.kind == "transition"
+
+    _NUMERICS_KEYS = ("breakpoints", "unit", "unit_range", "nodes")     # the keys once nested here, now under numerics:
 
 
 @dataclass
@@ -199,6 +212,29 @@ class Model:
     ties: List[List[str]] = field(default_factory=list)      # groups of agents sharing one strategy
     params: Dict[str, float] = field(default_factory=dict)
     source: Optional[dict] = field(default=None, repr=False)  # the file structure with its expressions, if built from one
+    deprecations: List[str] = field(default_factory=list, repr=False)   # the old spellings the file used (one note each, in notes)
+
+    # ------------------------------------------------------------ numerics
+    @property
+    def numerics(self):
+        """The numerics this model carries (its file's block, or what solve() laid over it), as a Numerics; the
+        engine is None until a solve resolves it from the horizon kind (res.numerics is resolved)."""
+        from .numerics import Numerics
+        hz = self.horizon
+        st = hz.stationary or {}
+        return Numerics(engine=hz.engine, nodes=hz.nodes, unit=hz.unit, unit_range=hz.unit_range,
+                        breakpoints=None if hz.breakpoints is None else list(hz.breakpoints),
+                        continuation_nodes=st.get("nodes"), tol=hz.tol, damping=hz.damping, max_newton=hz.max_newton,
+                        variable=hz.variable, settings=hz.settings)
+
+    def with_numerics(self, numerics=None, **fields) -> "Model":
+        """A new model with these numerics fields (a Numerics or dict, and/or keywords) laid over its own:
+        the model's problem is unchanged, its resolution, engine or tolerances are not."""
+        from .numerics import Numerics
+        num = Numerics.of(numerics).merged(Numerics.of(fields)) if fields else Numerics.of(numerics)
+        d = self.to_dict()
+        d["numerics"] = self.numerics.merged(num).to_dict()
+        return Model.from_dict(d)
 
     # ------------------------------------------------------------ lookups
     @property
@@ -360,7 +396,7 @@ class Model:
             out.append("costs are stationary flow losses per unit time" + (" (the discount rate enters the best responses, not the reported cost)" if self.horizon.discount else ""))
         else:
             out.append("costs are discounted integrals over [0, T]")
-        return out
+        return out + list(self.deprecations)
 
     def _means_note(self) -> str:
         if self.horizon.kind == "stationary":
@@ -544,7 +580,7 @@ class Model:
         discount non-negative, kind one of the three engines."""
         hz = self.horizon
         if hz.nodes != int(hz.nodes):
-            raise ValueError(f"horizon.nodes must be an integer, got {hz.nodes!r}")
+            raise ValueError(f"numerics.nodes must be an integer, got {hz.nodes!r}")
         far = [l for l in self.all_lags() if l >= hz.window - 1e-12]
         if far:
             raise ValueError(f"lag(s)/delay(s) {far} are not below the window {hz.window}: a quantity read that far back, or "
@@ -556,21 +592,27 @@ class Model:
         if any(l >= hz.window - 1e-12 for l in leads):
             raise ValueError(f"lead(s) {sorted(set(l for l in leads if l >= hz.window - 1e-12))} are not below the window {hz.window}")
         if hz.unit_range is not None and hz.unit_range > hz.window + 1e-12:
-            raise ValueError(f"horizon.unit_range ({hz.unit_range}) must not exceed the window ({hz.window})")
+            raise ValueError(f"numerics.unit_range ({hz.unit_range}) must not exceed the window ({hz.window})")
         if hz.unit is not None and not hz.unit > 0:
-            raise ValueError("horizon.unit must be positive")
+            raise ValueError("numerics.unit must be positive")
         if hz.breakpoints is not None:
             bp = list(hz.breakpoints)
             if len(bp) < 2 or abs(bp[0]) > 1e-12 or abs(bp[-1] - hz.window) > 1e-9 * max(1.0, hz.window) or any(b2 <= b1 for b1, b2 in zip(bp, bp[1:])):
-                raise ValueError(f"horizon.breakpoints {bp} must increase from 0 to horizon.window ({hz.window})")
+                raise ValueError(f"numerics.breakpoints {bp} must increase from 0 to horizon.window ({hz.window})")
         if hz.nodes < 2:
-            raise ValueError("horizon.nodes must be at least 2")
+            raise ValueError("numerics.nodes must be at least 2")
         if not hz.window > 0:
             raise ValueError("horizon.window must be positive")
         if hz.discount < 0:
             raise ValueError("horizon.discount must be non-negative")
-        if self.horizon.kind not in ("stationary", "finite", "finite_cells", "transition"):
-            raise ValueError("horizon.kind must be 'stationary', 'finite' (spectral triangle), 'finite_cells' or 'transition'")
+        if self.horizon.kind not in ("stationary", "finite", "transition"):
+            raise ValueError("horizon.kind must be 'stationary', 'finite' or 'transition' (the engine, spectral or cells, is numerics.engine)")
+        if hz.engine == "cells" and hz.kind != "finite":
+            raise ValueError(f"numerics.engine 'cells' solves a finite horizon only, not horizon.kind {hz.kind!r}")
+        if hz.engine == "stationary" and hz.kind != "stationary":
+            raise ValueError(f"numerics.engine 'stationary' solves horizon.kind 'stationary' only, not {hz.kind!r}")
+        if hz.engine == "spectral" and hz.kind == "stationary":
+            raise ValueError("numerics.engine 'spectral' solves a finite horizon or a transition, not horizon.kind 'stationary'")
 
     def _check_transition(self) -> None:
         """The transition blocks: kind 'transition' requires a past block (a `model`, a list of `initial` shocks,
@@ -601,12 +643,15 @@ class Model:
                 raise ValueError("horizon.stationary.window must be positive")
             n = hz.stationary.get("nodes")
             if n is not None and (n != int(n) or n < 2):
-                raise ValueError("horizon.stationary.nodes must be an integer of at least 2")
+                raise ValueError("numerics.continuation_nodes must be an integer of at least 2")
 
     # ------------------------------------------------------- construction
     _KEYS = {
-        "model": {"name", "params", "channels", "states", "definitions", "agents", "ties", "horizon"},
-        "horizon": {"kind", "discount", "window", "breakpoints", "unit", "unit_range", "nodes", "past", "continuation", "stationary"},
+        "model": {"name", "params", "channels", "states", "definitions", "agents", "ties", "horizon", "numerics"},
+        "horizon": {"kind", "discount", "window", "past", "continuation", "stationary",
+                    "breakpoints", "unit", "unit_range", "nodes"},         # the last four: the old nesting, deprecated
+        "numerics": {"engine", "nodes", "unit", "unit_range", "breakpoints", "continuation_nodes", "tol", "damping", "max_newton",
+                     "variable", "settings"},
         "state": {"drift", "noise", "initial"},
         "agent": {"controls", "signals", "loss", "myopic"},
         "signal": {"drift", "noise", "delay"},
@@ -625,29 +670,53 @@ class Model:
         source (with its parameter expressions) is returned, so re-parametrising it works; with
         numeric=True, or when there is no source, coefficients are returned as numbers."""
         hz = self.horizon
-        horizon = {"kind": hz.kind, "discount": hz.discount, "window": hz.window, "nodes": hz.nodes}
-        for k in ("breakpoints", "unit", "unit_range", "past", "continuation", "stationary"):
+        horizon = {"kind": hz.kind, "discount": hz.discount, "window": hz.window}
+        for k in ("past", "continuation"):
             if getattr(hz, k) is not None:
                 horizon[k] = copy.deepcopy(getattr(hz, k))
+        if hz.stationary and hz.stationary.get("window") is not None:
+            horizon["stationary"] = {"window": hz.stationary["window"]}
+        numerics = self.numerics.to_dict()
         if self.source is not None and not numeric:
             # the source (parameter expressions intact) with the live horizon: horizon fields may be changed
             # on the object (the engines read them at compile time); parameters may not (coefficients are
             # numbers once built), so params come from the source and with_params() makes a new model
             d = copy.deepcopy(self.source)
             hsrc = d.get("horizon") or {}
+            nsrc = dict(d.get("numerics") or {})
+            for k in Horizon._NUMERICS_KEYS:              # the old nesting: the same spelling, under numerics
+                if k in hsrc and k not in nsrc:
+                    nsrc[k] = hsrc[k]
             seen: Dict[str, float] = {}
             for k, v in (d.get("params") or {}).items():
                 seen[k] = eval_coef(v, seen)
+
+            def same(src, v) -> bool:
+                """Whether the source's spelling `src` (a number, an expression, a list, a block) evaluates to v."""
+                if src == v:
+                    return True
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    if isinstance(src, str):
+                        try:
+                            return abs(eval_coef(src, seen) - v) <= 1e-12 * max(1.0, abs(v))
+                        except ValueError:
+                            return False
+                    return not isinstance(src, (list, str, bool, dict)) and src is not None and abs(float(src) - v) <= 1e-12 * max(1.0, abs(v))
+                if isinstance(v, list) and isinstance(src, list) and len(src) == len(v):
+                    return all(same(a, b) for a, b in zip(src, v))
+                return False
             hout = {}
             for k, v in horizon.items():
                 if k == "past" and k in hsrc and _eval_past_block(copy.deepcopy(hsrc[k]), seen) == v:
                     hout[k] = hsrc[k]; continue           # the past block with its expressions (the loadings evaluated agree)
-                if k in hsrc and (hsrc[k] == v or (isinstance(hsrc[k], str) and abs(eval_coef(hsrc[k], seen) - v) <= 1e-12 * max(1.0, abs(v)))
-                                  or (isinstance(v, float) and not isinstance(hsrc[k], (list, str, bool)) and abs(float(hsrc[k]) - v) <= 1e-12 * max(1.0, abs(v)))):
-                    hout[k] = hsrc[k]                     # unchanged: keep the source's spelling (an expression)
-                else:
-                    hout[k] = v
+                if k == "stationary" and isinstance(hsrc.get(k), dict) and same(hsrc[k].get("window"), v["window"]):
+                    hout[k] = {"window": hsrc[k]["window"]}; continue
+                hout[k] = hsrc[k] if k in hsrc and same(hsrc[k], v) else v      # unchanged: keep the source's spelling (an expression)
+            nout = {}
+            for k, v in numerics.items():
+                nout[k] = nsrc[k] if k in nsrc and same(nsrc[k], v) else v
             d["horizon"] = hout
+            d["numerics"] = nout
             return d
         # numeric form: parameter values are inlined, including the lags written as name@param
         p = self.params
@@ -662,7 +731,7 @@ class Model:
              "states": {s.name: {"drift": ex(s.drift), "noise": ex(s.noise), **({"initial": float(s.initial)} if s.initial is not None else {})}
                         for s in self.states},
              "definitions": {x.name: ex(x.expr) for x in self.definitions},
-             "agents": {}, "ties": [list(g) for g in self.ties], "horizon": horizon}
+             "agents": {}, "ties": [list(g) for g in self.ties], "horizon": horizon, "numerics": numerics}
         for a in self.agents:
             d["agents"][a.name] = {"controls": list(a.controls), "myopic": a.myopic,
                                    "signals": {r.name: {"drift": ex(r.drift), "noise": ex(r.noise), "delay": r.delay} for r in a.signals},
@@ -681,17 +750,27 @@ class Model:
         return Model.from_dict(d)
 
     def with_horizon(self, **fields) -> "Model":
-        """A new model with these horizon fields (nodes, window, discount, kind, breakpoints, unit, unit_range).
-        A change of kind drops the panel sizing of the old kind (breakpoints, unit_range) unless given, as
-        transition() does: a stationary grid's unit_range is not a finite grid's."""
-        d = self.to_dict(); d.setdefault("horizon", {})
+        """A new model with these horizon fields (kind, window, discount, past, continuation, stationary).  A
+        change of kind drops the panel sizing of the old kind (numerics.breakpoints, numerics.unit_range) unless
+        given, as transition() does: a stationary grid's unit_range is not a finite grid's.  The numerics keys
+        once nested here (nodes, breakpoints, unit, unit_range; kind="finite_cells") are still accepted and go
+        to with_numerics(); they are deprecated."""
+        d = self.to_dict(); d.setdefault("horizon", {}); d.setdefault("numerics", {})
         bad = sorted(set(fields) - self._KEYS["horizon"])
         if bad:
-            raise ValueError(f"unknown horizon field(s) {bad}")
+            raise ValueError(f"unknown horizon field(s) {bad}; the numerics fields go to with_numerics()")
+        fields = dict(fields)
+        if fields.get("kind") == "finite_cells":
+            fields["kind"] = "finite"; d["numerics"]["engine"] = "cells"
+        elif fields.get("kind") is not None and fields["kind"] != self.horizon.kind:
+            d["numerics"].pop("engine", None)             # the old kind's engine is not the new kind's
         if fields.get("kind") is not None and fields["kind"] != self.horizon.kind:
             for k in ("breakpoints", "unit_range"):
                 if k not in fields:
-                    d["horizon"].pop(k, None)
+                    d["numerics"].pop(k, None)
+        for k in Horizon._NUMERICS_KEYS:
+            if k in fields:
+                d["numerics"][k] = fields.pop(k)
         d["horizon"].update(fields)
         return Model.from_dict(d)
 
@@ -730,17 +809,34 @@ class Model:
                 raise
         params = _Recording(params)                            # records which parameters the model references
         hz = d.get("horizon") or {}
-        horizon = Horizon(kind=hz.get("kind", "stationary"),
+        nm, kind, deprecations = _numerics_block(d)
+        from .settings import Settings
+        cls._check_keys("numerics", nm, cls._KEYS["numerics"])
+        stationary = hz.get("stationary")
+        if isinstance(stationary, dict):
+            stationary = {k: eval_coef(v, params) if k == "window" else v for k, v in stationary.items()}
+            if nm.get("continuation_nodes") is not None:
+                stationary["nodes"] = nm["continuation_nodes"]
+        elif stationary is None and nm.get("continuation_nodes") is not None:
+            stationary = {"nodes": nm["continuation_nodes"]}
+        try:
+            settings = Settings.of(nm.get("settings"))
+        except TypeError as exc:
+            raise ValueError(f"numerics.settings: {exc}") from None
+        horizon = Horizon(kind=kind,
                           discount=eval_coef(hz.get("discount", 0.0), params),
                           window=eval_coef(hz.get("window", 8.0), params),
-                          breakpoints=[eval_coef(b, params) for b in hz["breakpoints"]] if hz.get("breakpoints") else None,
-                          unit=eval_coef(hz["unit"], params) if hz.get("unit") is not None else None,
-                          unit_range=eval_coef(hz["unit_range"], params) if hz.get("unit_range") is not None else None,
-                          nodes=hz.get("nodes", 16),
                           past=copy.deepcopy(hz["past"]) if hz.get("past") is not None else None,
                           continuation=hz.get("continuation"),
-                          stationary={k: eval_coef(v, params) if k == "window" else v for k, v in hz["stationary"].items()}
-                          if isinstance(hz.get("stationary"), dict) else hz.get("stationary"))
+                          stationary=stationary,
+                          breakpoints=[eval_coef(b, params) for b in nm["breakpoints"]] if nm.get("breakpoints") else None,
+                          unit=eval_coef(nm["unit"], params) if nm.get("unit") is not None else None,
+                          unit_range=eval_coef(nm["unit_range"], params) if nm.get("unit_range") is not None else None,
+                          nodes=nm.get("nodes", 16), engine=nm.get("engine"),
+                          tol=None if nm.get("tol") is None else float(eval_coef(nm["tol"], params)),
+                          damping=None if nm.get("damping") is None else float(eval_coef(nm["damping"], params)),
+                          max_newton=nm.get("max_newton"), variable=nm.get("variable"),
+                          settings=None if settings == Settings() else settings)
         if base_dir and isinstance(horizon.past, dict) and isinstance(horizon.past.get("model"), str) \
                 and not os.path.isabs(horizon.past["model"]):
             horizon.past["model"] = os.path.normpath(os.path.join(base_dir, horizon.past["model"]))
@@ -764,9 +860,13 @@ class Model:
         from types import MappingProxyType
         m = cls(name=d.get("name", "model"), channels=list(d.get("channels") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
-                params=MappingProxyType(params), source=copy.deepcopy(d))     # read-only: see with_params()
+                params=MappingProxyType(params), source=copy.deepcopy(d), deprecations=deprecations)     # read-only: see with_params()
         m.validate()                                           # structural errors first (its expansions also record
         m.horizon.nodes = int(m.horizon.nodes)                 # the lag parameters, 'P@tau'); then the parameter check
+        if m.horizon.engine is not None and m.horizon.engine not in ("stationary", "spectral", "cells"):
+            raise ValueError(f"numerics.engine must be 'stationary', 'spectral' or 'cells', not {m.horizon.engine!r}")
+        if m.horizon.variable is not None and m.horizon.variable not in ("actions", "maps"):
+            raise ValueError(f"numerics.variable must be 'actions' or 'maps', not {m.horizon.variable!r}")
         for k, v in pdict.items():
             if isinstance(v, str):
                 safe_eval(v, params)                           # a parameter used inside another one counts as used
@@ -774,6 +874,36 @@ class Model:
         if unused:
             raise ValueError(f"parameter(s) {unused} are defined but never used in the model (misspelled somewhere?)")
         return m
+
+
+def _numerics_block(d: dict):
+    """The numerics of a model dict: its `numerics:` block, with the keys the old files nested under horizon
+    (nodes, unit, unit_range, breakpoints; `stationary.nodes`; `kind: finite_cells`) mapped in when the block
+    does not give them.  Returns (block, kind, the deprecation notes)."""
+    hz = d.get("horizon") or {}
+    nm = dict(d.get("numerics") or {}) if isinstance(d.get("numerics"), dict) or d.get("numerics") is None else d["numerics"]
+    if not isinstance(nm, dict):
+        raise ValueError(f"numerics must be a mapping of its fields, got {type(nm).__name__}")
+    notes = []
+    moved = [k for k in Horizon._NUMERICS_KEYS if k in hz]
+    for k in moved:
+        if k in nm and nm[k] != hz[k]:
+            raise ValueError(f"numerics.{k} ({nm[k]!r}) and the deprecated horizon.{k} ({hz[k]!r}) disagree; give numerics.{k} only")
+        nm[k] = hz[k]
+    if moved:
+        notes.append(f"deprecated: {', '.join('horizon.' + k for k in moved)} now live under numerics: (accepted until 0.6)")
+    kind = hz.get("kind", "stationary")
+    if kind == "finite_cells":
+        kind = "finite"; nm.setdefault("engine", "cells")
+        notes.append("deprecated: horizon.kind 'finite_cells' is horizon.kind 'finite' with numerics.engine 'cells' (accepted until 0.6)")
+    st = hz.get("stationary")
+    if isinstance(st, dict) and st.get("nodes") is not None:
+        if nm.get("continuation_nodes") not in (None, st["nodes"]):
+            raise ValueError(f"numerics.continuation_nodes ({nm['continuation_nodes']!r}) and the deprecated horizon.stationary.nodes "
+                             f"({st['nodes']!r}) disagree; give numerics.continuation_nodes only")
+        nm["continuation_nodes"] = st["nodes"]
+        notes.append("deprecated: horizon.stationary.nodes is numerics.continuation_nodes (accepted until 0.6)")
+    return nm, kind, notes
 
 
 def _eval_past_block(block, params):
@@ -820,12 +950,22 @@ class ModelBuilder:
         self.d["ties"].append(list(agents)); return self
 
     def stationary(self, discount=0.0, window=8.0, nodes=16, breakpoints=None, unit=None, unit_range=None):
-        self.d["horizon"] = {"kind": "stationary", "discount": discount, "window": window, "nodes": nodes,
-                             "breakpoints": breakpoints, "unit": unit, "unit_range": unit_range}
+        self.d["horizon"] = {"kind": "stationary", "discount": discount, "window": window}
+        self.numerics(nodes=nodes, breakpoints=breakpoints, unit=unit, unit_range=unit_range)
         return self
 
     def finite(self, T=1.0, nodes=16, discount=0.0):
-        self.d["horizon"] = {"kind": "finite", "window": T, "nodes": nodes, "discount": discount}; return self
+        self.d["horizon"] = {"kind": "finite", "window": T, "discount": discount}; return self.numerics(nodes=nodes)
+
+    def numerics(self, **fields):
+        """The numerics block (the fields of noisestate.Numerics); a field given None is dropped."""
+        nm = self.d.setdefault("numerics", {})
+        for k, v in fields.items():
+            if v is None:
+                nm.pop(k, None)
+            else:
+                nm[k] = v
+        return self
 
     def transition(self, T=1.0, nodes=12, past=None, continuation="stationary", discount=0.0, stationary=None, unit=None):
         """A transition on [0, T] from `past` (a path to the old stationary model file, its dict, a Model or
@@ -836,10 +976,10 @@ class ModelBuilder:
         elif isinstance(past, Model):
             past = past.to_dict()
         block = {"initial": list(past)} if isinstance(past, (list, tuple)) else {"model": past}
-        self.d["horizon"] = {"kind": "transition", "window": T, "nodes": nodes, "discount": discount, "past": block,
-                             "continuation": continuation, **({"stationary": dict(stationary)} if stationary else {}),
-                             **({"unit": unit} if unit is not None else {})}
-        return self
+        st = dict(stationary or {})
+        self.d["horizon"] = {"kind": "transition", "window": T, "discount": discount, "past": block, "continuation": continuation,
+                             **({"stationary": {"window": st["window"]}} if st.get("window") is not None else {})}
+        return self.numerics(nodes=nodes, unit=unit, continuation_nodes=st.get("nodes"))
 
     def build(self) -> Model:
         return Model.from_dict(self.d)

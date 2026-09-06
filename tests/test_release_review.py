@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..",
 
 
 def _ch3(**hz):
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["horizon"].update(hz); return d
+    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["numerics"] = {**d.get("numerics", {}), **{k: hz.pop(k) for k in list(hz) if k in ("nodes", "unit", "unit_range", "breakpoints")}}; d["horizon"].update(hz); return d
 
 
 # ---------------------------------------------------------------- delayed rows in the stationary engine
@@ -35,7 +35,7 @@ def test_one_agent_delayed_observation_costs_more_and_passes_second_order():
 
 
 def test_cell_engine_dense_branch_with_delays():
-    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d["horizon"]["kind"] = "finite_cells"; d["horizon"]["nodes"] = 16
+    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d["horizon"]["kind"] = "finite_cells"; d.setdefault("numerics", {})["nodes"] = 16
     r = ns.solve(d).check()
     assert r.resolution_ok is None and r.to_dict()["resolution_ok"] is None
     r.refine(); assert r.refinement["nodes"] == 32                             # doubled: lags stay aligned
@@ -59,7 +59,7 @@ def test_model_is_single_sourced():
     assert abs(r4.costs["player1"] - ns.solve(fresh).costs["player1"]) < 1e-12   # the same model as from a file
     r4.refine(); assert r4.refinement["cost_change"] < 1e-8                    # refine compares like with like
     m.horizon.nodes = 30                                                       # horizon fields are read live
-    r = ns.solve(m); assert r.compiled.N == 30 and m.to_dict()["horizon"]["nodes"] == 30
+    r = ns.solve(m); assert r.compiled.N == 30 and m.to_dict()["numerics"]["nodes"] == 30
     r.refine(); assert r.refinement["nodes"] == 45
     assert ns.solve(m.with_horizon(nodes=12)).compiled.N == 12
     with pytest.raises(ValueError, match="not parameters"):
@@ -167,7 +167,7 @@ def test_cli_reports_model_errors_as_messages(tmp_path, capsys):
         main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--nodes", "0"])
     with pytest.raises(SystemExit):
         main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--param", "p1=abc"])
-    d = _ch3(); d["horizon"]["kind"] = "finite"; d["horizon"]["window"] = 1.0; d["horizon"]["nodes"] = 8
+    d = _ch3(); d["horizon"]["kind"] = "finite"; d["horizon"]["window"] = 1.0; d.setdefault("numerics", {})["nodes"] = 8
     good = tmp_path / "good.yaml"; yaml.safe_dump(d, open(good, "w"))
     assert main(["solve", str(good)]) == 0 and "discounted cost" in capsys.readouterr().out
 
@@ -185,8 +185,8 @@ def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.5}, "noise": {"w1": 1.0}, "delay": 0.5}},
                              "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}}}
     import copy
-    st = copy.deepcopy(base); st["horizon"] = {"kind": "stationary", "window": 6.0, "nodes": 16}; rs = ns.solve(st).check()
-    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 7.0, "nodes": 5}     # pieces of 0.5: 105 pieces
+    st = copy.deepcopy(base); st["horizon"] = {"kind": "stationary", "window": 6.0}; st["numerics"] = {"nodes": 16}; rs = ns.solve(st).check()
+    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 7.0}; fi["numerics"] = {"nodes": 5}     # pieces of 0.5: 105 pieces
     rf = ns.solve(fi).check()
     g = rs.compiled.grid; sides = np.where((np.arange(g.N) % g.n) == g.n - 1, -1, 1)
     t_eval = 4.0                    # three units before the end and, for ages up to 1, three after the start (transients ~1e-4)
@@ -243,7 +243,7 @@ def test_delayed_row_equilibrium_is_insensitive_to_the_least_squares_cutoff():
 # ---------------------------------------------------------------- second round: validation and guards
 @pytest.mark.parametrize("edit, match", [
     (lambda d: d["horizon"].update(unit=0.5, unit_range=8.0), "unit_range"),
-    (lambda d: d["horizon"].update(nodes=12.7), "must be an integer"),
+    (lambda d: d["numerics"].update(nodes=12.7), "must be an integer"),
     (lambda d: d["agents"]["player1"]["signals"]["y1"].update(delay=3.0), "not below the window"),
     (lambda d: d["states"]["X"]["drift"].update({"D1@3.5": 0.1}), "not below the window"),
     (lambda d: d["agents"]["player1"]["loss"].append([0.1, "D1", "X@-9.0"]), "not below the window"),
@@ -272,11 +272,11 @@ def test_naive_observers_are_validated():
 
 
 def test_wrong_grid_warm_start_is_an_error_on_every_engine():
-    d = _ch3(nodes=12); r = ns.solve(d); d["horizon"]["nodes"] = 16
+    d = _ch3(nodes=12); r = ns.solve(d); d.setdefault("numerics", {})["nodes"] = 16
     with pytest.raises(ValueError, match="different grid"):
         ns.StationarySolver(ns.Model.from_dict(d)).solve(init=r.maps)
-    dc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); dc["horizon"]["kind"] = "finite_cells"; dc["horizon"]["nodes"] = 8
-    rc = ns.solve(dc); dc["horizon"]["nodes"] = 16
+    dc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); dc["horizon"]["kind"] = "finite_cells"; dc.setdefault("numerics", {})["nodes"] = 8
+    rc = ns.solve(dc); dc.setdefault("numerics", {})["nodes"] = 16
     with pytest.raises(ValueError, match="different grid"):
         ns.FiniteSolver(ns.Model.from_dict(dc)).solve(init=rc.maps)
 
@@ -287,7 +287,7 @@ def test_jump_flag_is_quiet_on_a_geometric_sweep():
 
 
 def test_refine_on_cells_reports_without_a_verdict():
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"]["kind"] = "finite_cells"; d["horizon"]["nodes"] = 12
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"]["kind"] = "finite_cells"; d.setdefault("numerics", {})["nodes"] = 12
     r = ns.solve(d); r.refine()
     assert r.refinement["resolved"] is None and "NOT RESOLVED" not in r.summary() and r.refinement["nodes"] == 24
 

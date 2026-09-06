@@ -45,7 +45,7 @@ def test_matrix_free_best_response_matches_the_dense_one_without_a_past():
     projected map, the second-order check, the decomposition, the cost and the representation error), and
     the fixed point on the action kernels reaches the same equilibrium in the same 13 evaluations, the costs
     to 1e-15.  The default threshold (8192) keeps this system, like every shipped one, on the dense path."""
-    d = example_dict("ch1_delayed_finite"); d["horizon"]["nodes"] = 8
+    d = example_dict("ch1_delayed_finite"); d.setdefault("numerics", {})["nodes"] = 8
     m = ns.Model.from_dict(d)
     dense = SpectralFiniteSolver(m); free = SpectralFiniteSolver(m, settings=FREE)
     assert not dense.foc_free and free.foc_free and free.settings.foc_dense_max == 0 and dense.settings.foc_dense_max == 8192
@@ -80,7 +80,7 @@ def test_matrix_free_path_reports_a_singular_system():
     singular: the matrix-free path raises the singular-system ValueError the dense path raises on its
     condition estimate, naming the block."""
     import pytest
-    d = example_dict("ch1_two_player_finite"); d["horizon"]["nodes"] = 4
+    d = example_dict("ch1_two_player_finite"); d.setdefault("numerics", {})["nodes"] = 4
     m = ns.Model.from_dict(d)
     with pytest.raises(ValueError, match="singular"):
         SpectralFiniteSolver(m, settings={"foc_dense_max": 0, "foc_rcond": 1.0}).solve()
