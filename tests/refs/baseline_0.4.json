@@ -1,9 +1,8 @@
 {
- "Z_digits": 12,
+ "Z_tol": 1e-12,
  "cases": {
   "ch1_delayed_finite": {
    "Z_bits": "95561c9c50f188913fc72323abb3ee07a8a6450750adf0da82928be14360fd4e",
-   "Z_sha12": "5aacabf071a2e30a304e151356b353737c8240bfa11f787f7e0178cf901161f4",
    "Z_shape": [
     1920,
     3
@@ -27,11 +26,10 @@
    "evaluations": 13,
    "means": {},
    "residual": 6.2107098348901675e-09,
-   "seconds": 2.99
+   "seconds": 2.93
   },
   "ch1_mean_sweep_p10": {
    "Z_bits": "29eea62029746fdac23d9a8456657ec0e3c5d5ad61359ac7e6aeaa2b3ea6103b",
-   "Z_sha12": "375cfa8a784796332bdf35033c6960dbcd3dea2f4b70d63ff4c201a990e4573e",
    "Z_shape": [
     432,
     3
@@ -55,11 +53,10 @@
    "evaluations": 15,
    "means": {},
    "residual": 6.04397936284505e-09,
-   "seconds": 0.31
+   "seconds": 0.32
   },
   "ch1_two_player_finite": {
    "Z_bits": "6d0a3a7d4aa5d921b6c9d32fe8bf88b2bba98ef11d131e22b281683b345efe0e",
-   "Z_sha12": "4bfdb2452dad42e44dd86fa7ea4539e5aaafd6a71aa035cb10256460327ab2d4",
    "Z_shape": [
     432,
     3
@@ -83,11 +80,10 @@
    "evaluations": 15,
    "means": {},
    "residual": 5.901114118353453e-09,
-   "seconds": 0.49
+   "seconds": 0.5
   },
   "ch3_same_model_T6_n6": {
    "Z_bits": "4d15998beee87b0a1b8eb730af82558edfa7ac54af50cc2ae4060b6d223949b3",
-   "Z_sha12": "b64c9e313749c6efc0ac7a0cdd86c7c649ee9ecdedaba3afbd3411340c7773d0",
    "Z_shape": [
     540,
     3
@@ -118,7 +114,6 @@
   },
   "ch3_two_player": {
    "Z_bits": "b3cf529570a073713fcbb9624b646a9d78b71293475b98176ad22f6afcd28dff",
-   "Z_sha12": "10b9c44e2bdb228ddf36ab3cdef5d87967b8f2f71559808091ad647d1f116e39",
    "Z_shape": [
     72,
     3
@@ -152,7 +147,6 @@
   },
   "ch4_kyle_back": {
    "Z_bits": "ba825183063b7396eb733b3faabca9cffd61681d3110c66448b2890b723735b3",
-   "Z_sha12": "3b0799c1702caae5ddebb3f5f1b935e8cf1ccb88eb2120cba9cd89e32070923b",
    "Z_shape": [
     72,
     3
@@ -187,7 +181,6 @@
   },
   "ch5_cycle_market": {
    "Z_bits": "65fb5a31d277d387be7624e3b86e1016e6c00d316416ead47742ef404b633081",
-   "Z_sha12": "c85303a66081def7130c5d5dd6871889137c35e91145425af439c5c13a243ddc",
    "Z_shape": [
     2080,
     19
@@ -271,11 +264,10 @@
     "yH2": 0.2740216433923257
    },
    "residual": 8.62637334428049e-11,
-   "seconds": 5.79
+   "seconds": 5.74
   },
   "kyle_back_prior": {
    "Z_bits": "c9f877398ca2462f7972584a52a1e50b7de54e7b1a3e5931e623a12119d0083f",
-   "Z_sha12": "17df0905869a04743825a755ac8f988d861b7dea74bcf9b5c68bc3e30524e24c",
    "Z_shape": [
     432,
     2
@@ -302,7 +294,7 @@
    "seconds": 0.82
   }
  },
- "commit": "ab9d506",
+ "commit": "e845c3f",
  "cost_tol": 1e-12,
  "date": "2026-09-06",
  "noisestate": "0.4.0",

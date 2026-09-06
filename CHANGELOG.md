@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The baseline record compares Z itself.  `extras/compare_baseline.py write` stores every case's Z as float64
+  in tests/refs/baseline_0.4.npz next to the JSON (the costs, evaluation counts, residuals and means stay
+  there), and `check` compares Z by max |dZ| / max |Z| against 1e-12, the value reported per case, instead
+  of the SHA at 12 significant digits (which a rounding boundary could move without any change of the
+  numbers); the raw-bytes SHA stays as information.  tests/test_baseline.py follows; the record is
+  re-written at this commit (every case at distance 0).
 - One closed-loop assembly (the consolidation pass, step C2).  `SpectralCompiled.closed_loop` builds the rows
   of the system (I - M) Z = B one time panel at a time from the line paths and the sparse reads and solves them
   by block forward substitution at every size (`finite_spectral.ClosedLoopRows`, whose docstring states the

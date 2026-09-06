@@ -10,7 +10,6 @@ gate (tests/SLOW.md lists the gated tests and what each pins); it also carries t
 `-m slow` selects them.
 """
 import hashlib
-import io
 import os
 
 import numpy as np
@@ -135,13 +134,6 @@ def prior_model(rho=0.5, nodes=12):
 
 
 # ------------------------------------------------ the record of a solve
-def sha_rounded(Z, digits=12):
-    """SHA-256 of Z written to `digits` significant digits (a last-bit change leaves it alone; -0 is 0)."""
-    buf = io.StringIO()
-    np.savetxt(buf, np.asarray(Z, dtype=float).ravel() + 0.0, fmt=f"%.{digits - 1}e")
-    return hashlib.sha256(buf.getvalue().encode()).hexdigest()
-
-
 def sha_bits(Z):
     """SHA-256 of Z's raw float64 bytes, row major."""
     return hashlib.sha256(np.ascontiguousarray(Z, dtype=np.float64).tobytes()).hexdigest()
@@ -150,12 +142,12 @@ def sha_bits(Z):
 def solve_record(res):
     """A solved result reduced to what a re-baseline compares: the costs (full repr through JSON), their parts,
     the evaluation count, the residual, `settled` for a transition, the means where they are scalars, Z's
-    shape, its SHA at 12 significant digits and the SHA of its raw bytes."""
+    shape and the SHA of its raw bytes (information; Z itself goes to the record's .npz)."""
     means = {k: float(v) for k, v in res.means.items() if np.ndim(v) == 0}
     rec = {"engine": type(res).__name__, "converged": bool(res.converged), "evaluations": int(res.iterations),
            "residual": float(res.residual), "costs": {k: float(v) for k, v in res.costs.items()},
            "cost_parts": {k: {p: float(x) for p, x in v.items()} for k, v in res.cost_parts.items()},
-           "means": means, "Z_shape": list(np.shape(res.Z)), "Z_sha12": sha_rounded(res.Z), "Z_bits": sha_bits(res.Z)}
+           "means": means, "Z_shape": list(np.shape(res.Z)), "Z_bits": sha_bits(res.Z)}
     if getattr(res, "settled", None) is not None:
         rec["settled"] = float(res.settled)
     return rec
