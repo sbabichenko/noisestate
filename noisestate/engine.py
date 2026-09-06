@@ -56,34 +56,12 @@ class EngineBase(MeanLayer):
     closed loop is closed_loop.py's and whose means are spectral_means.py's), so of the kernel algebra
     below it supplies closed_loop, block and atom_op only.  docs/architecture.md draws the modules.
 
-    Kernel algebra of the compiled model self.c (see each engine's Compiled class):
-
-        closed_loop(maps, excluded=None, impulse_controls=())
-                                 Z (n_prim N, nW + len(impulse_controls)) under `maps`, with the agent
-                                 `excluded` switched off and a unit impulse of each listed control
-        block(name)              slice of the primary's N rows in Z
-        atom_op((name, lag))     (N, n_prim N): the kernel of name@lag from the primary vector
-        conv_rows(Y, delay)      (N, m) row kernels, as seen (shifted by the delay) -> (m, N, N): the
-                                 map gamma on such a row -> the action kernel on that channel
-        instant(age, delay)      (N, N): the action's instantaneous read, at `age`, of the map on a row
-                                 observed with `delay` (a row's own noise at age = delay; an observed
-                                 control's impulse at delay + lag)
-        instant_adjoint(age, delay)  (N, N): its adjoint on the FOC kernel phi
-        response(Ru, own)        (n_prim, N) impulse responses of the primaries to control `own` ->
-                                 (n_prim N, N): action kernel -> world; the base then sets the own
-                                 block to the identity
-        continuation(Rj)         (N, m) impulse responses of m loss atoms -> (m, N, N): the discounted
-                                 continuation of each atom's kernel through its response
-        own_lag_read(lag)        (N, N): the FOC term of a delayed read of the control itself
-        projection_rows(Y, d)    (N, m) row kernels -> (N, m N), columns (channel, node): E[phi_t dY_r(t - b)]
-        cost_mass()              (N, N) Gram matrix under which expected_cost integrates products of kernels
-        causal_chunks()          optional: [(lo, hi)] node ranges in increasing age such that projection_rows
-                                 is zero from a chunk's ages to nodes of an earlier one (_causal_chunks)
-        row_blocks(agent, r, excluded)  optional: ({primary: (N, N)}, {source: [(age, weight)]}), the seen row's
-                                 regular part per primary it reads and its instantaneous entries;
-                                 else row(agent, r, excluded) -> ((N, n_prim N), the same deltas)
-    and its attributes N, nW, prim, index, channels, rows (agent -> [(name, drift, E, delay)]),
-    loss (agent -> (atoms, Q, q)), rep, reps, rho, model, and grid / g / h (same_grid).
+    Kernel algebra of the compiled model self.c: the interface algebra.KernelAlgebra (closed_loop, block,
+    atom_op, expr_op, expr_kernel, row_blocks / row, conv_rows, instant, instant_adjoint, response, continuation,
+    own_lag_read, projection_rows, cost_mass, causal_chunks) with the shapes in its docstrings, and its
+    attributes N, nW, prim, index, channels, rows (agent -> [(name, drift, E, delay)]), loss (agent -> (atoms,
+    Q, q)), rep, reps, rho, model, and grid / g / h (same_grid).  Each engine's compiled model implements
+    what its engine calls and raises NotImplementedError, naming the member, for the rest.
 
     Hooks: what an engine overrides (the base's default in brackets) and which engines do:
 

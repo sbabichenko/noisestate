@@ -14,6 +14,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
+from .algebra import KernelAlgebra
 from .spec import Atom, Model
 
 
@@ -40,9 +41,10 @@ class Structure:
         return len(self.channels)
 
 
-class CompiledBase:
+class CompiledBase(KernelAlgebra):
     """What every engine's compiled model starts from: the validated model and its Structure, whose
-    fields are adopted as attributes (c.rows, c.loss, c.rep, ...)."""
+    fields are adopted as attributes (c.rows, c.loss, c.rep, ...); the kernel algebra (algebra.KernelAlgebra)
+    each engine's compiled model implements on top."""
     FIELDS = ("channels", "nW", "prim", "index", "nX", "nU", "A", "state_inputs", "sigma", "const", "x0", "rows", "loss", "rep", "reps")
 
     def __init__(self, model: Model):

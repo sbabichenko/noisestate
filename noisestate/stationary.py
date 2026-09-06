@@ -134,7 +134,7 @@ class Compiled(CompiledBase):
 
     row = row_seen                                        # the engines' common name
 
-    # ------------------------------------------------ kernel algebra (see EngineBase)
+    # ------------------------------------------------ kernel algebra (algebra.KernelAlgebra)
     def conv_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
         """(m, N, N) convolution operators of the m seen row kernels Y (N, m): map on the row -> action kernel.
         The seen row is already shifted by the delay, so `delay` is not used here."""

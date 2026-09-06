@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The kernel algebra as an explicit interface.**  `noisestate.algebra.KernelAlgebra` declares every operator
+  the base engine calls on a compiled model (the closed loop, `block`, `atom_op`, `expr_op`, `expr_kernel`,
+  `row_blocks` / `row`, `conv_rows`, `instant`, `instant_adjoint`, `response`, `continuation`, `own_lag_read`,
+  `projection_rows`, `cost_mass`, `causal_chunks`) with its shapes and the attributes every compiled model
+  has; `CompiledBase` derives from it, so the stationary `Compiled`, `SpectralCompiled` and `FiniteCompiled`
+  implement it, a member an engine lacks raising `NotImplementedError` naming it.  `results.py` and `past.py`
+  read compiled models through the interface's members and documented attributes only.  Bit identity: every
+  shipped case at distance 0, function bodies unchanged.
 - **One mean layer.**  `mean_system`, `solve_means`, `mean_cost` and `_mean_part` are written once, in
   `noisestate.means.MeanLayer` (a base of `EngineBase`), over seven mean hooks each engine fills in: the time
   nodes of the mean paths, the mean state at time zero, whether anything drives the means, the mean dynamics

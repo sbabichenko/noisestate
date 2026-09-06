@@ -10,14 +10,15 @@ page says which module holds what, and follows one best response and one transit
 | module | lines | holds |
 |---|---|---|
 | `spec.py` | 849 | the model as data: states, controls, definitions, agents with signal rows and losses, the horizon block; `Model.from_dict`, `expand`, `all_lags` |
-| `compile.py` | 143 | `CompiledBase`, what every engine reads off a model: the primaries and their index, the state inputs, the rows (name, drift, noise loading, delay), the losses (atoms, Q, q), the ties; `close_under_delays`, `reject_leads` |
+| `algebra.py` | 152 | `KernelAlgebra`, the interface of a compiled model: the operators the base engine calls (the closed loop, the blocks and atom operators, the seen rows, the best-response pieces, the cost mass) with their shapes, and the attributes every engine has; a member an engine lacks raises `NotImplementedError` naming it |
+| `compile.py` | 145 | `CompiledBase` (a `KernelAlgebra`), what every engine reads off a model: the primaries and their index, the state inputs, the rows (name, drift, noise loading, delay), the losses (atoms, Q, q), the ties; `close_under_delays`, `reject_leads` |
 | `grid.py` | 522 | the piecewise-Chebyshev age grid of the stationary engine (`Grid`), barycentric interpolation, Gauss quadrature |
 | `triangle.py` | 717 | the piecewise-spectral triangle `TriangleGrid` in (time, age), its strip and buffer for a transition, the interpolation (dense and sparse), the masses, and `LinePath`: the quadrature structure of a family of line integrals, cut at every piece edge, applied to a known kernel |
 | `grid_cache.py` | 100 | grids shared between compiles (a sweep, a slider) |
 | `past.py` | 256 | `Past`: what the time before zero leaves behind (a stationary result's kernels on the past's age grid, or initial shocks) |
 | `settings.py` | 102 | `Settings`, the tuning constants; `tunable` binds a class attribute to one of them |
 | `accel.py` | 156 | the Anderson-accelerated fixed point and the Newton-Krylov polish on the best-response map |
-| `engine.py` | 887 | `EngineBase`: the packing of the tie representatives, the passive world and passive rows, the base best response on the kernel algebra (the stationary engine's), the fixed point (`solve`), `_finish`, the second-order check's Lanczos, the hooks; its class docstring lists the kernel algebra and which engine overrides which hook |
+| `engine.py` | 865 | `EngineBase`: the packing of the tie representatives, the passive world and passive rows, the base best response on the kernel algebra (`algebra.py`; the stationary engine's), the fixed point (`solve`), `_finish`, the second-order check's Lanczos, the hooks; its class docstring lists which engine overrides which hook |
 | `means.py` | 162 | `MeanLayer`, a base of `EngineBase`: the mean system assembled from the engines' mean hooks, its solve with the rcond guard, the mean cost quadrature and the result's mean fields |
 | `stationary.py` | 774 | the stationary engine: `Compiled` (the kernel algebra on the age grid, the closed loop, its cyclic-symmetric reduction) and `StationarySolver` |
 | `finite.py` | 406 | the uniform-cell finite-horizon engine `FiniteSolver`, first order in the cell, kept as a cross-check |
@@ -92,8 +93,8 @@ The means (`spectral_means.py`, the hooks of `EngineBase`'s mean layer) are solv
 ## Where the engines share the base
 
 `EngineBase` (engine.py) holds the packing of the tie representatives, the fixed point and its polish, `_finish`,
-the passive world and passive rows, the base best response written on the kernel algebra its class docstring
-lists, the second-order check's Lanczos, the singular-system message and the hooks table.  The stationary
+the passive world and passive rows, the base best response written on the kernel algebra `algebra.KernelAlgebra`
+declares (every compiled model derives from it through `CompiledBase`), the second-order check's Lanczos, the singular-system message and the hooks table.  The stationary
 engine uses the base best response on its `Compiled`'s kernel algebra; the spectral finite engine overrides
 `best_response`, `_seen_rows`, `_representation_error` and `expected_cost` with the operator form and supplies
 `closed_loop`, `block` and `atom_op` only; the cell engine overrides `best_response` wholesale and uses the
