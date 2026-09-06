@@ -150,7 +150,7 @@ def test_targets_scale_the_means_and_leave_the_kernels_and_the_examples():
     release before the means to every digit, the cell engine included)."""
     r1 = ns.solve(ch1_targets(3.0, nodes=8)).check(); r2 = ns.solve(ch1_targets(3.0, nodes=8, b=(2.0, -2.0))).check()
     assert np.abs(r2.means["D1"] - 2 * r1.means["D1"]).max() < 1e-12 and abs(r2.cost_parts["player1"]["mean"] - 4 * r1.cost_parts["player1"]["mean"]) < 1e-12
-    assert np.array_equal(r1.Z, r2.Z) and r1.cost_parts["player1"]["variance"] == r2.cost_parts["player1"]["variance"]
+    assert np.array_equal(r1.world, r2.world) and r1.cost_parts["player1"]["variance"] == r2.cost_parts["player1"]["variance"]
     off = ns.make_solver(ch1_targets(3.0, nodes=8)).solve(diagnostics=False)
     assert np.array_equal(off.means["D1"], r1.means["D1"]) and off.costs == r1.costs and off.means_t.shape == (8,)
     for f, costs in (("ch1_two_player_finite.yaml", {"player1": 0.396905768985999, "player2": 0.396905768985999}),

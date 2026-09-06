@@ -16,7 +16,7 @@ def _ch3(**horizon):
 
 def test_evaluation_budget_returns_the_best_iterate_unconverged():
     res = ns.solve(_ch3(), max_evaluations=3)
-    assert not res.converged and res.iterations == 3 and "evaluation budget" in res.message and "max_evaluations=3" in res.message
+    assert not res.converged and res.evaluations == 3 and "evaluation budget" in res.message and "max_evaluations=3" in res.message
     assert "NOT converged" in res.summary() and "evaluation budget" in res.summary()
     row = [d for d in res.diagnose() if d["name"] == "converged"][0]; assert row["ok"] is False and "evaluation budget" in row["advice"]
     assert res.solve_kw["max_evaluations"] == 3 and np.isfinite(res.costs["player1"])
@@ -28,7 +28,7 @@ def test_evaluation_budget_returns_the_best_iterate_unconverged():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         log = []; r = ns.solve(ns.Model.from_dict(d), max_evaluations=100, progress=log.append)
-    assert not r.converged and r.iterations == len(log) == 100 and "newton polish" in r.message and "evaluation budget" in r.message
+    assert not r.converged and r.evaluations == len(log) == 100 and "newton polish" in r.message and "evaluation budget" in r.message
     assert {x["phase"] for x in log} == {"anderson", "newton"} and r.residual == min(x["residual"] for x in log)
     with pytest.raises(ValueError, match="at least 1"):
         ns.solve(_ch3(), max_evaluations=0)
@@ -36,14 +36,14 @@ def test_evaluation_budget_returns_the_best_iterate_unconverged():
 
 def test_deadline_zero_returns_after_one_evaluation():
     res = ns.solve(_ch3(), deadline=0)
-    assert not res.converged and res.iterations == 1 and "deadline" in res.message and np.isfinite(res.residual)
+    assert not res.converged and res.evaluations == 1 and "deadline" in res.message and np.isfinite(res.residual)
     with pytest.raises(ValueError, match="deadline"):
         ns.solve(_ch3(), deadline=-1)
 
 
 def test_progress_is_called_per_evaluation_and_can_cancel():
     log = []; res = ns.solve(_ch3(), progress=log.append)
-    assert res.converged and len(log) == res.iterations and [x["evaluation"] for x in log] == list(range(1, res.iterations + 1))
+    assert res.converged and len(log) == res.evaluations and [x["evaluation"] for x in log] == list(range(1, res.evaluations + 1))
     assert all(set(x) == {"evaluation", "residual", "phase", "seconds"} for x in log)
     assert all(x["phase"] == "anderson" for x in log) and np.isclose(log[-1]["residual"], res.residual, rtol=1e-12)
     assert all(log[i]["seconds"] <= log[i + 1]["seconds"] for i in range(len(log) - 1)) and log[-1]["seconds"] <= res.seconds
@@ -61,7 +61,7 @@ def test_progress_is_called_per_evaluation_and_can_cancel():
     assert phases[0] == "coarse anderson" and phases[-1] == "anderson" and res.converged and "coarse start" in res.message
     assert all(log[i]["seconds"] <= log[i + 1]["seconds"] for i in range(len(log) - 1))
     res = ns.solve(_ch3(), start="coarse", max_evaluations=2)                # both solves bounded
-    assert not res.converged and res.iterations == 2 and res.message.startswith("coarse start: 2 evaluations")
+    assert not res.converged and res.evaluations == 2 and res.message.startswith("coarse start: 2 evaluations")
 
 
 def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
@@ -81,8 +81,8 @@ def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
         calls.append(want_decomp)
         return best_response(self, agent, maps, want_decomp)
     monkeypatch.setattr(type(S), "best_response", counted)
-    r = S.solve(init=w, diagnostics=False); assert len(calls) == 2 * r.iterations and not any(calls)
-    calls.clear(); r = S.solve(init=w); assert len(calls) == 2 * r.iterations + 2 and calls[-2:] == [True, True]
+    r = S.solve(init=w, diagnostics=False); assert len(calls) == 2 * r.evaluations and not any(calls)
+    calls.clear(); r = S.solve(init=w); assert len(calls) == 2 * r.evaluations + 2 and calls[-2:] == [True, True]
     # the cell engine (no checks of its own) accepts the option as well
     d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite", "window": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 12}
     assert ns.solve(ns.Model.from_dict(d), diagnostics=False).converged

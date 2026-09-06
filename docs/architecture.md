@@ -9,8 +9,8 @@ page says which module holds what, and follows one best response and one transit
 
 | module | lines | holds |
 |---|---|---|
-| `spec.py` | 849 | the model as data: states, controls, definitions, agents with signal rows and losses, the horizon block; `Model.from_dict`, `expand`, `all_lags` |
-| `algebra.py` | 152 | `KernelAlgebra`, the interface of a compiled model: the operators the base engine calls (the closed loop, the blocks and atom operators, the seen rows, the best-response pieces, the cost mass) with their shapes, and the attributes every engine has; a member an engine lacks raises `NotImplementedError` naming it |
+| `spec.py` | 989 | the model as data: states, controls, definitions, agents with signal rows and losses, the horizon block (the economics) and the numerics block; `Model.from_dict`, `expand`, `all_lags`, `with_numerics` |
+| `algebra.py` | 147 | `KernelAlgebra`, the interface of a compiled model: the operators the base engine calls (the closed loop, the blocks and atom operators, the seen rows, the best-response pieces, the cost mass) with their shapes, and the attributes every engine has; a member an engine lacks raises `NotImplementedError` naming it |
 | `compile.py` | 145 | `CompiledBase` (a `KernelAlgebra`), what every engine reads off a model: the primaries and their index, the state inputs, the rows (name, drift, noise loading, delay), the losses (atoms, Q, q), the ties; `close_under_delays`, `reject_leads` |
 | `grid.py` | 522 | the piecewise-Chebyshev age grid of the stationary engine (`Grid`), barycentric interpolation, Gauss quadrature |
 | `triangle.py` | 717 | the piecewise-spectral triangle `TriangleGrid` in (time, age), its strip and buffer for a transition, the interpolation (dense and sparse), the masses, and `LinePath`: the quadrature structure of a family of line integrals, cut at every piece edge, applied to a known kernel |
@@ -18,7 +18,7 @@ page says which module holds what, and follows one best response and one transit
 | `past.py` | 256 | `Past`: what the time before zero leaves behind (a stationary result's kernels on the past's age grid, or initial shocks) |
 | `settings.py` | 102 | `Settings`, the tuning constants; `tunable` binds a class attribute to one of them |
 | `accel.py` | 156 | the Anderson-accelerated fixed point and the Newton-Krylov polish on the best-response map |
-| `engine.py` | 865 | `EngineBase`: the packing of the tie representatives, the passive world and passive rows, the base best response on the kernel algebra (`algebra.py`; the stationary engine's), the fixed point (`solve`), `_finish`, the second-order check's Lanczos, the hooks; its class docstring lists which engine overrides which hook |
+| `engine.py` | 858 | `EngineBase`: the packing of the tie representatives, the passive world and passive rows, the base best response on the kernel algebra (`algebra.py`; the stationary engine's), the fixed point (`solve`), `_finish`, the second-order check's Lanczos, the hooks; its class docstring lists which engine overrides which hook |
 | `means.py` | 162 | `MeanLayer`, a base of `EngineBase`: the mean system assembled from the engines' mean hooks, its solve with the rcond guard, the mean cost quadrature and the result's mean fields |
 | `stationary.py` | 774 | the stationary engine: `Compiled` (the kernel algebra on the age grid, the closed loop, its cyclic-symmetric reduction) and `StationarySolver` |
 | `finite.py` | 406 | the uniform-cell finite-horizon engine `FiniteSolver`, first order in the cell, kept as a cross-check |
@@ -27,14 +27,28 @@ page says which module holds what, and follows one best response and one transit
 | `spectral_operators.py` | 479 | the best-response operators as applications of the line paths and the sparse reads: `PathOp`, `RowOps` (G_k), `ProjOps` (H_k), `RespOps` (Resp_u), `FocOps` (Fu_u), `PanelRows` (the rows of G_k one time panel at a time); each with `dense()` |
 | `finite_free.py` | 463 | `FocSystem` (the first-order conditions on the kept unknowns: assembled and factored within `foc_dense_max`, GMRES with the time-row preconditioner beyond), `best_response`, the decomposition and the second-order form, `reconstruction`, `panel_rows` |
 | `spectral_means.py` | 262 | the means on the time line: `TimeLineOps` (the compiled model's time-node operators) and `SpectralMeans` (the spectral engine's mean hooks: the mean dynamics and conditions on the line s = 0 or on the time line, the atoms' mean paths), both mixins |
-| `finite_spectral.py` | 552 | `SpectralFiniteSolver`: the options (a past, a continuation), the shapes, the identified unknowns and corner ties, `maps_from_world` (the projection, one system per time row), the costs, `loss_path`, `belief_error`, `settled`, the warm starts, the diagnostics hooks |
-| `results.py` | 795 | `StationaryResult`, `TriangleResult`, `TransitionResult`: one interface over three grids, `check`, `refine`, `stability`, the plots |
+| `finite_spectral.py` | 556 | `SpectralFiniteSolver`: the options (a past, a continuation), the shapes, the identified unknowns and corner ties, `maps_from_world` (the projection, one system per time row), the costs, `loss_path`, `belief_error`, `settled`, the warm starts, the diagnostics hooks |
+| `results.py` | 933 | `Result`, the one type every engine returns (axes, times, paths, status, extra, numerics), and its internal subclasses `StationaryResult`, `TriangleResult`, `TransitionResult`, `CellResult` over the three grids; `check`, `refine`, `stability`, `diagnose`, `to_dict`, the plots |
 | `symmetry.py` | 154 | the cyclic symmetry of a tied model, found from the ties and verified on the expanded model |
-| `sweep.py`, `transition.py` | 127, 78 | parameter sweeps with warm starts; `transition(old, new, T)` |
-| `cli.py`, `__init__.py` | 139, 89 | the command line; `solve`, `load`, the exports |
+| `sweep.py`, `transition.py` | 126, 100 | parameter sweeps with warm starts; `transition(old, new, T)` |
+| `numerics.py` | 124 | `Numerics`: how a model is solved (engine, nodes, unit, unit_range, breakpoints, continuation_nodes, tol, damping, max_newton, variable, settings), laid over the model's own block |
+| `engines.py` | 64 | `stationary`, `spectral`, `cells`, `ENGINES` by engine name and `build`: the power user's namespace, and where `solve()` builds the engine and the default start |
+| `schema.py` | 263 | JSON Schema (draft 2020-12) for the model file and the payload; `validate` lists the violations with their paths, through `jsonschema` when importable, else the module's own validator |
+| `cli.py`, `__init__.py` | 192, 141 | the command line (solve, validate, schema, transition, plot); `solve`, `load`, the exports, the deprecated names |
 
 The engines never import each other: `finite_spectral` reaches the stationary engine through `noisestate.solve`
 for a `continuation="stationary"` only.
+
+## Metrics
+
+The consolidation plan's limits are a function under 80 lines and a file under 900 (`wc -l`).  The spectral
+modules meet both: no function of `spectral_compiled.py`, `closed_loop.py`, `spectral_operators.py`,
+`finite_free.py`, `spectral_means.py`, `finite_spectral.py` or `triangle.py`'s paths is over 80 lines, and none
+of those files is over 900.  Two files exceed 900 lines, `spec.py` (989) and `results.py` (933), and eight
+functions elsewhere exceed 80: `finite.best_response` (127), `symmetry.find_cyclic_symmetry` (122),
+`engine._second_order` (109), `spec.from_dict` (99), `stationary.closed_loop_symmetric` (97),
+`triangle.TriangleGrid.__init__` (87), `engine.solve` (83) and `cli._run` (81).  Those ten are the next
+pass's targets.
 
 ## One best response (spectral finite engine)
 

@@ -3,6 +3,7 @@ fly) and the Kyle-Back market started from a prior (initial shocks, the game end
 convergence."""
 import numpy as np
 import noisestate as ns
+from noisestate.results import TransitionResult
 from helpers import example, example_path, slow
 
 
@@ -13,7 +14,7 @@ def test_ch3_precision_change_example():
     does not depend on where the closure sits once it has settled), settled 4.8e-4 with the guard firing
     (T = 6 is short for a 1e-2 closed-loop decay; T = 9 gives 2.7e-6)."""
     res = ns.solve(example_path("ch3_precision_change"))
-    assert res.converged and isinstance(res, ns.TransitionResult) and res.model.horizon.kind == "transition"
+    assert res.converged and isinstance(res, TransitionResult) and res.model.horizon.kind == "transition"
     assert res.past.provenance["name"] == "ch3_two_player" and res.continuation.compiled.grid.n == 12
     assert abs(res.excess_costs["player1"] - 0.024027) < 2e-6 and abs(res.excess_costs["player2"] - 0.028619) < 2e-6
     assert 4e-4 < res.settled < 6e-4 and "TRANSITION NOT SETTLED" in res.summary()

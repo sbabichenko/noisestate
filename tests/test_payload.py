@@ -42,7 +42,7 @@ def test_solve_kw_records_the_start_option_and_repeats_the_solve():
     res = S.solve(start="coarse")
     assert res.solve_kw["start"] == "coarse" and json.dumps(res.solve_kw) and "coarse start" in res.message
     again = S.solve(**res.solve_kw)
-    assert again.iterations == res.iterations and again.message == res.message
+    assert again.evaluations == res.evaluations and again.message == res.message
     assert S.solve().solve_kw["start"] == "zero"
 
 

@@ -1,7 +1,7 @@
 """Results returned by the engines: one Result, three grids.
 
     res.converged, res.residual, res.message     outcome of the outer solve
-    res.evaluations                              best-response evaluations made (res.iterations is an alias)
+    res.evaluations                              best-response evaluations made (res.iterations, deprecated, warns)
     res.status                                   {"ok", "flags", "rows"}: the verdict, the failing checks' flags, diagnose()'s rows
     res.check()                                  raise ConvergenceError unless converged
     res.axes                                     the coordinate arrays of kernel(): {"age": ages} (stationary), {"time", "age",
@@ -11,7 +11,7 @@
     res.times                                    the time nodes of the paths (None on the stationary engine)
     res.paths                                    {"means": {name: path}} over res.times on a finite horizon; a transition adds
                                                  "loss" ({agent: E[loss(t)]}) and "belief_error" (a callable (agent, name) -> path)
-    res.world                                    the closed-loop kernels of every primary on the shocks (res.Z is an alias)
+    res.world                                    the closed-loop kernels of every primary on the shocks (res.Z, deprecated, warns)
     res.extra                                    engine-specific extras: window_tail (stationary); past, continuation, settled
                                                  (a transition), old_flows, new_flows, excess_costs, representation_parts
     res.numerics                                 the resolved Numerics the result was solved with
@@ -40,6 +40,7 @@ Kernel layout by engine:
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -63,7 +64,7 @@ class Result:
     model: Model
     compiled: object
     maps: Dict[str, np.ndarray]
-    Z: np.ndarray
+    world: np.ndarray                          # the closed-loop kernels of every primary on the shocks, stacked
     converged: bool
     residual: float
     evaluations: int
@@ -106,17 +107,25 @@ class Result:
     # ----------------------------------------------------------- the common surface (C and E of the API design)
     @property
     def iterations(self) -> int:
-        """Alias of evaluations (until 0.6)."""
+        """Deprecated name of evaluations (removed in 0.6): a DeprecationWarning on every read."""
+        warnings.warn("res.iterations is deprecated, read res.evaluations (res.iterations goes in 0.6)", DeprecationWarning, stacklevel=2)
         return self.evaluations
 
     @iterations.setter
     def iterations(self, value: int) -> None:
+        warnings.warn("res.iterations is deprecated, set res.evaluations (res.iterations goes in 0.6)", DeprecationWarning, stacklevel=2)
         self.evaluations = int(value)
 
     @property
-    def world(self) -> np.ndarray:
-        """The closed-loop kernels of every primary on the shocks, stacked (res.Z)."""
-        return self.Z
+    def Z(self) -> np.ndarray:
+        """Deprecated name of world (removed in 0.6): a DeprecationWarning on every read."""
+        warnings.warn("res.Z is deprecated, read res.world (res.Z goes in 0.6)", DeprecationWarning, stacklevel=2)
+        return self.world
+
+    @Z.setter
+    def Z(self, value: np.ndarray) -> None:
+        warnings.warn("res.Z is deprecated, set res.world (res.Z goes in 0.6)", DeprecationWarning, stacklevel=2)
+        self.world = value
 
     @property
     def times(self) -> Optional[np.ndarray]:
@@ -510,7 +519,7 @@ class StationaryResult(Result):
     def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         """Closed-loop kernel of a quantity at the shock ages: (N, nW), or (N,) for one channel."""
         c = self.compiled
-        K = self.Z[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.Z
+        K = self.world[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.world
         return K if channel is None else K[:, self.channels.index(channel)]
 
     def plot(self, path: str) -> None:
@@ -614,7 +623,7 @@ class TriangleResult(Result):
         nodes (s < 0) are the old shocks.  channel may also name an initial shock of the past (its kernel
         is meaningful on the nodes with s = 0)."""
         c = self.compiled
-        K = self.Z[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.Z
+        K = self.world[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.world
         return K if channel is None else K[:, self.shocks.index(channel)]
 
     def plot(self, path: str) -> None:
@@ -756,7 +765,7 @@ class TransitionResult(TriangleResult):
         a = next((x for x in self.model.agents if x.name == agent), None)
         if a is None:
             raise KeyError(f"no agent {agent!r}; the agents are {[x.name for x in self.model.agents]}")
-        return self._make_solver(self.model).belief_error(a, name, self.Z)
+        return self._make_solver(self.model).belief_error(a, name, self.world)
 
     def grid_info(self) -> dict:
         out = super().grid_info(); out["kind"] = "transition"
@@ -812,12 +821,14 @@ class CellResult(Result):
         return worst
 
     def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
-        """K[i, j]: response of `name` at cell i to a unit increment of `channel` in cell j (channel required)."""
+        """K[i, j]: response of `name` at cell i to a unit increment of `channel` in cell j, (N, N); without a
+        channel the stack over the channels, (N, N, nW): kernel(name)[..., k] is kernel(name, channels[k]), the
+        last axis one column per channel as on the other engines."""
         c = self.compiled
+        K = c.expr_kernel(self.world, c.model.expand({name: 1.0}))
         if channel is None:
-            raise ValueError("the cell engine stores kernels per channel: kernel(name, channel)")
+            return np.stack([K[:, k * c.N:(k + 1) * c.N] for k in range(len(c.channels))], axis=-1)
         k = c.channels.index(channel)
-        K = c.expr_kernel(self.Z, c.model.expand({name: 1.0}))
         return K[:, k * c.N:(k + 1) * c.N]
 
     def grid_info(self) -> dict:

@@ -14,93 +14,17 @@
   manager over the default `Settings`.  `examples/expr_examples.py` writes the seven shipped models as equations
   and `tests/test_expr.py` checks each against its YAML file's dict and the baseline's costs; README gains
   "Models as equations".  No number moves (baseline at 0).
-- **The kernel algebra as an explicit interface.**  `noisestate.algebra.KernelAlgebra` declares every operator
-  the base engine calls on a compiled model (the closed loop, `block`, `atom_op`, `expr_op`, `expr_kernel`,
-  `row_blocks` / `row`, `conv_rows`, `instant`, `instant_adjoint`, `response`, `continuation`, `own_lag_read`,
-  `projection_rows`, `cost_mass`, `causal_chunks`) with its shapes and the attributes every compiled model
-  has; `CompiledBase` derives from it, so the stationary `Compiled`, `SpectralCompiled` and `FiniteCompiled`
-  implement it, a member an engine lacks raising `NotImplementedError` naming it.  `results.py` and `past.py`
-  read compiled models through the interface's members and documented attributes only.  Bit identity: every
-  shipped case at distance 0, function bodies unchanged.
-- **One mean layer.**  `mean_system`, `solve_means`, `mean_cost` and `_mean_part` are written once, in
-  `noisestate.means.MeanLayer` (a base of `EngineBase`), over seven mean hooks each engine fills in: the time
-  nodes of the mean paths, the mean state at time zero, whether anything drives the means, the mean dynamics
-  operator (the states' rows), the mean first-order-condition operator (each agent's rows), the loss atoms'
-  mean paths and the discounted quadrature weights.  The three engine copies are gone; the cell engine's mean
-  solve gains the rcond guard the other two had.  Means bit-identical on every shipped case; the finite mean
-  costs move by a summation order (4e-16 relative); the kernels untouched (baseline distance 0).
-- **API stage, D, F and G: the schema, one transition default, the CLI.**  `noisestate.schema("model" |
-  "payload")` returns JSON Schema (draft 2020-12) for the model file (the `numerics:` block; the deprecated
-  nested keys and `kind: finite_cells` marked `deprecated`) and for the payload (`payload_version` 1);
-  `noisestate.schema.validate(doc, which)` lists the violations with their paths, through the `jsonschema`
-  package when it is importable (not a dependency) and otherwise through `schema.py`'s validator of the
-  keywords the schemas use.  The CLI gains `schema {model|payload}`, `transition old.yaml new.yaml --window T
-  [-o] [--plot] [--nodes]` and `plot result.json out.pdf` (re-solves the payload's model under its recorded
-  options), and `validate` checks the file against the schema first, reporting each error with its path.
-  `start` defaults to `"stationary"` wherever a continuation is given (`solve(past=, continuation=)`, the
-  file form, `sweep()`'s first point, `transition()`), else `"zero"`; `solve(start="zero")` asks for the zero
-  start explicitly (`solve()`'s `start` default is None).
 
-- **API stage, C and E: one `Result`.**  `noisestate.Result` is the type every engine returns
-  (`isinstance(res, ns.Result)`; `StationaryResult`, `TriangleResult`, `TransitionResult` and `CellResult` are
-  its internal subclasses, importable until 0.6, `BaseResult` an alias of `Result`).  A consumer reads a kernel
-  without knowing the engine: `res.axes` gives the coordinates of `kernel(name, channel)` ({"age"} on the
-  stationary engine; {"time", "age", "shock_time"} node-wise on the spectral triangle, shock_time < 0 on a
-  transition's band; {"time", "shock_time"} for the cell engine's matrices) and, under "maps", where every
-  row's map values belong (the former `map_axes`); `res.times` and `res.paths` ({"means"}; a transition adds
-  "loss" and "belief_error") hold the paths; `res.status` = {"ok", "flags", "rows"}; `res.extra` the
-  engine's extras (window_tail; past, continuation, settled, old_flows, new_flows, excess_costs,
-  representation_parts).  Names: `res.evaluations` (`iterations` kept as an alias until 0.6), `res.world`
-  (`Z` kept).  The payload carries `payload_version` 1, `engine` (the Numerics engine) beside `kind`, the
-  `horizon` as the file's economics and `numerics` beside it, `axes`, `times` and `status`.
+## 0.5.0 (2026-09-06) — consolidation and the explicit API
 
-- **API stage, A and B: the numerics apart from the model, and an explicit `solve()`.**  `noisestate.Numerics`
-  (`numerics.py`) holds how a model is solved: `engine` ("stationary" | "spectral" | "cells", default from
-  the horizon kind), `nodes`, `unit`, `unit_range`, `breakpoints`, `continuation_nodes`, `tol`, `damping`,
-  `max_newton`, `variable` and `settings`.  The model file keeps the economics under `horizon:` (kind,
-  discount, window, past, continuation, `stationary: {window}`) and gains an optional top-level `numerics:`
-  block; the keys once nested under `horizon:` (`nodes`, `unit`, `unit_range`, `breakpoints`,
-  `stationary.nodes`, `kind: finite_cells`) are still read and mapped, with one deprecation note each in
-  `model.notes`, until 0.6 (a nested key that disagrees with the block is an error).  `solve(model,
-  numerics=None, *, init, start, tol, max_evaluations, deadline, progress, diagnostics, refine, stability,
-  verbose, naive_observers, past, continuation)`: no introspection; `nodes=` and `settings=` are accepted
-  as aliases of the Numerics fields until 0.6, every other former engine keyword is a TypeError naming the
-  field.  `noisestate.engines` (`stationary`, `spectral`, `cells`, `ENGINES` by engine name, `build`) is
-  the power user's namespace; the engine classes stay importable.  `sweep(..., numerics=)`,
-  `transition(old, new, T, numerics=)` (`nodes=` and `stationary={"nodes"}` aliases until 0.6),
-  `make_solver(model, numerics=)`, `Model.numerics`, `Model.with_numerics()`, `ModelBuilder.numerics()`;
-  `res.numerics` is the resolved object and the payload's `options.numerics` carries it.  The shipped
-  examples and the README use the block.  No number moved: every shipped case at distance 0 from ec1b533.
+The consolidation pass (the spectral finite engine's operators, assembly, modules and mean layer, one kernel
+algebra) and the API stage (Numerics apart from the model, an explicit solve(), one Result, the schema, the
+CLI), with the review's fixes; every shipped case at distance 0 from the record taken at ec1b533, the newer
+spectral steps within 4e-15 of the record before it.  The bullets are grouped by theme, newest first within
+each.
 
-- The baseline record re-taken at ec1b533 (`tests/refs/baseline_0.4.json` and `.npz`): the operator step (C3) had
-  moved the spectral cases by up to 4e-15 in the last bits, and the API stage that follows must move no number,
-  so the record is the state at its starting point; every case at distance exactly 0 from there on.
-- `docs/architecture.md` (step C4): the modules and what each holds, the data flow of one best response
-  (compiled model, closed loop, passive rows, operators, FOC solve, projection, checks) and of one transition
-  (past, band, buffer, continuation), and where the three engines share the base; linked from README's
-  "How it works".
-- The three long functions of the spectral finite engine in named parts, the same statements in the same order
-  (step C4, bit for bit): `SpectralCompiled.__init__` (168 lines) calls `_regimes` (the past and the
-  continuation, T, Tg), `_breakpoints` (the sequence and its closure under the lags, or the unit panels
-  within unit_range), `_grid` (the strip's sequence and the triangle grid), `_wire_buffer`, `_wire_past`,
-  `_wire_time` (the Volterra path, the time rows, the time nodes and mean_embed) and `_caches`, each
-  docstring naming its invariant; `maps_from_world` (86) builds each time row's weighted least-squares
-  system in `_time_row_system` (the shared masks and corner maps of a past in `_projection_context`) and
-  keeps the batched solve; `FocSystem.preconditioner` (80) takes the lag forms from `_lag_forms` and each
-  time row's block kron(Q_l, sum_k H_k D_l G_k) from `_time_row_block`, and keeps the reduction to the kept
-  unknowns and the factorisation.  `_vol_rows`, `_state_columns` and `conv_left_rows`, the map-independent
-  blocks and forcing only the assembly reads, are the ClosedLoopSources mixin in `closed_loop.py`.  No
-  function of the spectral modules is over 80 lines; no spectral module over 900.
-- The spectral finite engine in six modules, one responsibility each (the consolidation pass, step C4; pure
-  moves, every shipped case's Z bit for bit): `spectral_compiled.py` (SpectralCompiled: the breakpoints and
-  their closure, the grid, the past's and the buffer's wiring, the reads and sparse reads, the line paths,
-  the masses), `closed_loop.py` (ClosedLoopRows), `spectral_operators.py` (PathOp, RowOps, ProjOps,
-  RespOps, FocOps, PanelRows), `finite_free.py` (FocSystem and its preconditioner, best_response, the
-  decomposition and the second-order form; it re-exports the operators), `spectral_means.py` (the means on
-  the time line: TimeLineOps, the compiled model's time-node operators, and SpectralMeans, the solver's
-  mean system, both mixed in) and `finite_spectral.py` (SpectralFiniteSolver with maps_from_world and the
-  diagnostics hooks; `from noisestate.finite_spectral import SpectralCompiled, ClosedLoopRows` still
-  works).  No function body changed; the module docstrings and EngineBase's say where each neighbour is.
+### Numbers: the best response, the closed loop and the grid
+
 - `TriangleGrid.path` cuts and quadratures every output node at once (the consolidation pass, step C3): the
   read point's breakpoint crossings in t and in a, the triangles' diagonals, the known's age grid and the
   extra cuts are computed as arrays over the nodes (`_crossings`, `_crossings_1d`, `_cut_values`), the edges
@@ -142,12 +66,6 @@
   shipped case's costs to 1e-12 with the same evaluation counts and Z within 4e-15 of its peak (the
   baseline record is not re-written); the fast suite 183 in 107 s, the slow set 18 in 240 s (was 285 s), the
   fast suite with GMRES forced 183 in 167 s; `finite_spectral.py` 2117 -> 1750 lines.
-- The baseline record compares Z itself.  `extras/compare_baseline.py write` stores every case's Z as float64
-  in tests/refs/baseline_0.4.npz next to the JSON (the costs, evaluation counts, residuals and means stay
-  there), and `check` compares Z by max |dZ| / max |Z| against 1e-12, the value reported per case, instead
-  of the SHA at 12 significant digits (which a rounding boundary could move without any change of the
-  numbers); the raw-bytes SHA stays as information.  tests/test_baseline.py follows; the record is
-  re-written at this commit (every case at distance 0).
 - One closed-loop assembly (the consolidation pass, step C2).  `SpectralCompiled.closed_loop` builds the rows
   of the system (I - M) Z = B one time panel at a time from the line paths and the sparse reads and solves them
   by block forward substitution at every size (`finite_spectral.ClosedLoopRows`, whose docstring states the
@@ -172,26 +90,6 @@
   20.1 s and 3.72 GB, the first best response 103.6 s and 7.77 GB to 106.5 s and 7.77 GB (timing noise).
   tests/test_causal_solve.py checks the forward substitution against the dense solve of the stacked rows
   (plain, an agent excluded with its impulse column, the actions given; with a past and a continuation).
-- Tests and tooling only (the package is untouched).  `tests/helpers.py` holds the builders the transition
-  and means tests repeated: the example loaders (`example`, `example_dict`, `example_path`), a model solved
-  stationary at a number of nodes (`stationary`, `delayed_stationary` for the delayed Chapter 1 game), the
-  same-model past-and-continuation setup on a strip (`same_model_solver`, `same_model_setup`), the two-firm
-  Chapter 5 market with its ties and linear terms dropped (`two_firm_market`), the one-shot best-response
-  identity (`one_shot_deviation`, `one_shot_from_the_stationary_maps`), the stationary maps and kernels carried
-  onto a strip, the discounted one-agent prior model, and `solve_record` (costs, evaluations, residual, scalar
-  means, SHA-256 of Z at 12 digits and of its bytes).  The fast suite runs in 111 s (183 tests) against 256 s
-  (197): fourteen solves above five seconds whose pin is repeated at a smaller size or by another test are
-  gated behind NOISESTATE_SLOW=1 (`helpers.slow`, `helpers.slow_param`, which also mark them `slow`);
-  `tests/SLOW.md` lists every gated test with what it pins, and the weekly CI job selects them with `-m slow`
-  (its `-k` expression would have missed the moved tests).  No assertion or tolerance changed.
-- The re-baselining instrument.  `extras/compare_baseline.py` solves the five shipped examples, the Chapter 1
-  target sweep's p = 10 point, Chapter 3 as its own past and continuation at 6 nodes and the Kyle-Back prior,
-  and writes a record per case (costs and their parts to full repr, the evaluation count, the residual,
-  `settled`, the scalar means, Z's shape, Z's SHA-256 at 12 significant digits and the SHA-256 of its raw
-  bytes; `write` and `check` modes).  `tests/refs/baseline_0.4.json` is the record of master 222eb96 and
-  `tests/test_baseline.py` (under NOISESTATE_SLOW=1, 11 s) holds the package to it: costs to 1e-12, the
-  evaluation counts equal, Z equal at 12 digits; a change of Z's bytes with the 12-digit SHA intact (BLAS
-  rounding) is reported as a warning, not asserted.
 - The spectral finite engine's best response matrix-free.  Beyond `settings.foc_dense_max` unknowns nU nR N
   (the largest agent's; default 8192, above every shipped example and test, whose numbers are unchanged to
   the bit) `SpectralFiniteSolver.best_response` no longer builds the row, response, first-order-condition and
@@ -260,6 +158,153 @@
   operator `Vol` is built on first use (the mean system's line s = 0); the best response still
   holds about thirty N x N dense operators (`conv_rows`, `response`, `continuation`, `projection_rows`, the
   row and projection operators), 20 GB at N = 9408, which is now the size ceiling.
+
+### Structure: the modules, the mean layer and the kernel algebra
+
+- **The kernel algebra as an explicit interface.**  `noisestate.algebra.KernelAlgebra` declares every operator
+  the base engine calls on a compiled model (the closed loop, `block`, `atom_op`, `expr_op`, `expr_kernel`,
+  `row_blocks` / `row`, `conv_rows`, `instant`, `instant_adjoint`, `response`, `continuation`, `own_lag_read`,
+  `projection_rows`, `cost_mass`, `causal_chunks`) with its shapes and the attributes every compiled model
+  has; `CompiledBase` derives from it, so the stationary `Compiled`, `SpectralCompiled` and `FiniteCompiled`
+  implement it, a member an engine lacks raising `NotImplementedError` naming it.  `results.py` and `past.py`
+  read compiled models through the interface's members and documented attributes only.  Bit identity: every
+  shipped case at distance 0, function bodies unchanged.
+- **One mean layer.**  `mean_system`, `solve_means`, `mean_cost` and `_mean_part` are written once, in
+  `noisestate.means.MeanLayer` (a base of `EngineBase`), over seven mean hooks each engine fills in: the time
+  nodes of the mean paths, the mean state at time zero, whether anything drives the means, the mean dynamics
+  operator (the states' rows), the mean first-order-condition operator (each agent's rows), the loss atoms'
+  mean paths and the discounted quadrature weights.  The three engine copies are gone; the cell engine's mean
+  solve gains the rcond guard the other two had.  Means bit-identical on every shipped case; the finite mean
+  costs move by a summation order (4e-16 relative); the kernels untouched (baseline distance 0).
+- The three long functions of the spectral finite engine in named parts, the same statements in the same order
+  (step C4, bit for bit): `SpectralCompiled.__init__` (168 lines) calls `_regimes` (the past and the
+  continuation, T, Tg), `_breakpoints` (the sequence and its closure under the lags, or the unit panels
+  within unit_range), `_grid` (the strip's sequence and the triangle grid), `_wire_buffer`, `_wire_past`,
+  `_wire_time` (the Volterra path, the time rows, the time nodes and mean_embed) and `_caches`, each
+  docstring naming its invariant; `maps_from_world` (86) builds each time row's weighted least-squares
+  system in `_time_row_system` (the shared masks and corner maps of a past in `_projection_context`) and
+  keeps the batched solve; `FocSystem.preconditioner` (80) takes the lag forms from `_lag_forms` and each
+  time row's block kron(Q_l, sum_k H_k D_l G_k) from `_time_row_block`, and keeps the reduction to the kept
+  unknowns and the factorisation.  `_vol_rows`, `_state_columns` and `conv_left_rows`, the map-independent
+  blocks and forcing only the assembly reads, are the ClosedLoopSources mixin in `closed_loop.py`.  No
+  function of the spectral modules is over 80 lines; no spectral module over 900.
+- The spectral finite engine in six modules, one responsibility each (the consolidation pass, step C4; pure
+  moves, every shipped case's Z bit for bit): `spectral_compiled.py` (SpectralCompiled: the breakpoints and
+  their closure, the grid, the past's and the buffer's wiring, the reads and sparse reads, the line paths,
+  the masses), `closed_loop.py` (ClosedLoopRows), `spectral_operators.py` (PathOp, RowOps, ProjOps,
+  RespOps, FocOps, PanelRows), `finite_free.py` (FocSystem and its preconditioner, best_response, the
+  decomposition and the second-order form; it re-exports the operators), `spectral_means.py` (the means on
+  the time line: TimeLineOps, the compiled model's time-node operators, and SpectralMeans, the solver's
+  mean system, both mixed in) and `finite_spectral.py` (SpectralFiniteSolver with maps_from_world and the
+  diagnostics hooks; `from noisestate.finite_spectral import SpectralCompiled, ClosedLoopRows` still
+  works).  No function body changed; the module docstrings and EngineBase's say where each neighbour is.
+
+### API: Numerics, solve(), Result, the schema, the CLI and the deprecations
+
+- **Review fixes (the consolidation branch's review).**  The names kept from before one `Result` warn: a
+  `DeprecationWarning` on `res.iterations` and `res.Z` (read `res.evaluations`, `res.world`), on
+  `solve(nodes=)`, `solve(settings=)`, `transition(nodes=)` and `transition(stationary=)` (pass a `Numerics`),
+  and on `noisestate.StationaryResult`, `TriangleResult`, `TransitionResult`, `CellResult` by name (every
+  engine returns `noisestate.Result`; the classes stay in `noisestate.results`); all go in 0.6.  The cell
+  engine's `res.kernel(name)` without a channel returns the stack over the channels, (N, N, nW), the last axis
+  one column per channel as on the other engines, instead of raising.  A `Settings` field passed to `solve()`
+  is a `TypeError` naming the `Numerics(settings={...})` route.  README's error contract: a past on the cell
+  engine is a `ValueError` from the numerics, not a `NotImplementedError`.  `engine.py` drops the dead
+  fallbacks to `c.row` and to a compiled model without `causal_chunks` (`KernelAlgebra` declares
+  `row_blocks` and `causal_chunks`; `row` leaves the interface).  `docs/architecture.md`'s module table
+  refreshed (`numerics.py`, `engines.py`, `schema.py`, `means.py`, `algebra.py` listed) with a "Metrics"
+  paragraph naming the files and functions over the plan's limits.  Tests: each deprecated name warns once
+  and the suite reads the new names; the cell engine's kernel stack; its mean solve's rcond guard.
+- **API stage, D, F and G: the schema, one transition default, the CLI.**  `noisestate.schema("model" |
+  "payload")` returns JSON Schema (draft 2020-12) for the model file (the `numerics:` block; the deprecated
+  nested keys and `kind: finite_cells` marked `deprecated`) and for the payload (`payload_version` 1);
+  `noisestate.schema.validate(doc, which)` lists the violations with their paths, through the `jsonschema`
+  package when it is importable (not a dependency) and otherwise through `schema.py`'s validator of the
+  keywords the schemas use.  The CLI gains `schema {model|payload}`, `transition old.yaml new.yaml --window T
+  [-o] [--plot] [--nodes]` and `plot result.json out.pdf` (re-solves the payload's model under its recorded
+  options), and `validate` checks the file against the schema first, reporting each error with its path.
+  `start` defaults to `"stationary"` wherever a continuation is given (`solve(past=, continuation=)`, the
+  file form, `sweep()`'s first point, `transition()`), else `"zero"`; `solve(start="zero")` asks for the zero
+  start explicitly (`solve()`'s `start` default is None).  The file form of a transition therefore starts from
+  the stationary maps too: `examples/ch3_precision_change.yaml` goes from 23 to 20 evaluations and its costs
+  and excess costs move by 4e-8 (both fixed points within tol 1e-8).  The example is now a case of the baseline
+  record, re-taken with it (the eight earlier cases bit-identical in Z; ch1_mean_sweep_p10's mean costs carry the
+  mean layer's 4e-16 summation-order move).
+
+- **API stage, C and E: one `Result`.**  `noisestate.Result` is the type every engine returns
+  (`isinstance(res, ns.Result)`; `StationaryResult`, `TriangleResult`, `TransitionResult` and `CellResult` are
+  its internal subclasses, importable until 0.6, `BaseResult` an alias of `Result`).  A consumer reads a kernel
+  without knowing the engine: `res.axes` gives the coordinates of `kernel(name, channel)` ({"age"} on the
+  stationary engine; {"time", "age", "shock_time"} node-wise on the spectral triangle, shock_time < 0 on a
+  transition's band; {"time", "shock_time"} for the cell engine's matrices) and, under "maps", where every
+  row's map values belong (the former `map_axes`); `res.times` and `res.paths` ({"means"}; a transition adds
+  "loss" and "belief_error") hold the paths; `res.status` = {"ok", "flags", "rows"}; `res.extra` the
+  engine's extras (window_tail; past, continuation, settled, old_flows, new_flows, excess_costs,
+  representation_parts).  Names: `res.evaluations` (`iterations` kept as an alias until 0.6), `res.world`
+  (`Z` kept).  The payload carries `payload_version` 1, `engine` (the Numerics engine) beside `kind`, the
+  `horizon` as the file's economics and `numerics` beside it, `axes`, `times` and `status`.
+
+- **API stage, A and B: the numerics apart from the model, and an explicit `solve()`.**  `noisestate.Numerics`
+  (`numerics.py`) holds how a model is solved: `engine` ("stationary" | "spectral" | "cells", default from
+  the horizon kind), `nodes`, `unit`, `unit_range`, `breakpoints`, `continuation_nodes`, `tol`, `damping`,
+  `max_newton`, `variable` and `settings`.  The model file keeps the economics under `horizon:` (kind,
+  discount, window, past, continuation, `stationary: {window}`) and gains an optional top-level `numerics:`
+  block; the keys once nested under `horizon:` (`nodes`, `unit`, `unit_range`, `breakpoints`,
+  `stationary.nodes`, `kind: finite_cells`) are still read and mapped, with one deprecation note each in
+  `model.notes`, until 0.6 (a nested key that disagrees with the block is an error).  `solve(model,
+  numerics=None, *, init, start, tol, max_evaluations, deadline, progress, diagnostics, refine, stability,
+  verbose, naive_observers, past, continuation)`: no introspection; `nodes=` and `settings=` are accepted
+  as aliases of the Numerics fields until 0.6, every other former engine keyword is a TypeError naming the
+  field.  `noisestate.engines` (`stationary`, `spectral`, `cells`, `ENGINES` by engine name, `build`) is
+  the power user's namespace; the engine classes stay importable.  `sweep(..., numerics=)`,
+  `transition(old, new, T, numerics=)` (`nodes=` and `stationary={"nodes"}` aliases until 0.6),
+  `make_solver(model, numerics=)`, `Model.numerics`, `Model.with_numerics()`, `ModelBuilder.numerics()`;
+  `res.numerics` is the resolved object and the payload's `options.numerics` carries it.  The shipped
+  examples and the README use the block.  No number moved: every shipped case at distance 0 from ec1b533.
+
+
+### Docs, tests and tooling
+
+- **README as the user's document; the reference material in `docs/`.**  README (259 lines) is what it is,
+  install, a first solve on Model / Numerics / Result, the model file in brief, transitions and sweeps in
+  brief, the guards with the flag text each prints, settings, the error contract, the command line and where
+  things are, every snippet executed.  `docs/` holds `model_file.md` (every key of the schema with type,
+  default and the deprecated keys marked), `payload.md` (every `to_dict` key), `guards.md`, `settings.md`,
+  `validation.md`, `method.md`, `limits.md`, `transitions.md` and `design/` (the transition, size and
+  consolidation records); `docs/README.md` indexes them.
+- The baseline record re-taken at ec1b533 (`tests/refs/baseline_0.4.json` and `.npz`): the operator step (C3) had
+  moved the spectral cases by up to 4e-15 in the last bits, and the API stage that follows must move no number,
+  so the record is the state at its starting point; every case at distance exactly 0 from there on.
+- `docs/architecture.md` (step C4): the modules and what each holds, the data flow of one best response
+  (compiled model, closed loop, passive rows, operators, FOC solve, projection, checks) and of one transition
+  (past, band, buffer, continuation), and where the three engines share the base; linked from README's
+  "How it works".
+- The baseline record compares Z itself.  `extras/compare_baseline.py write` stores every case's Z as float64
+  in tests/refs/baseline_0.4.npz next to the JSON (the costs, evaluation counts, residuals and means stay
+  there), and `check` compares Z by max |dZ| / max |Z| against 1e-12, the value reported per case, instead
+  of the SHA at 12 significant digits (which a rounding boundary could move without any change of the
+  numbers); the raw-bytes SHA stays as information.  tests/test_baseline.py follows; the record is
+  re-written at this commit (every case at distance 0).
+- Tests and tooling only (the package is untouched).  `tests/helpers.py` holds the builders the transition
+  and means tests repeated: the example loaders (`example`, `example_dict`, `example_path`), a model solved
+  stationary at a number of nodes (`stationary`, `delayed_stationary` for the delayed Chapter 1 game), the
+  same-model past-and-continuation setup on a strip (`same_model_solver`, `same_model_setup`), the two-firm
+  Chapter 5 market with its ties and linear terms dropped (`two_firm_market`), the one-shot best-response
+  identity (`one_shot_deviation`, `one_shot_from_the_stationary_maps`), the stationary maps and kernels carried
+  onto a strip, the discounted one-agent prior model, and `solve_record` (costs, evaluations, residual, scalar
+  means, SHA-256 of Z at 12 digits and of its bytes).  The fast suite runs in 111 s (183 tests) against 256 s
+  (197): fourteen solves above five seconds whose pin is repeated at a smaller size or by another test are
+  gated behind NOISESTATE_SLOW=1 (`helpers.slow`, `helpers.slow_param`, which also mark them `slow`);
+  `tests/SLOW.md` lists every gated test with what it pins, and the weekly CI job selects them with `-m slow`
+  (its `-k` expression would have missed the moved tests).  No assertion or tolerance changed.
+- The re-baselining instrument.  `extras/compare_baseline.py` solves the five shipped examples, the Chapter 1
+  target sweep's p = 10 point, Chapter 3 as its own past and continuation at 6 nodes and the Kyle-Back prior,
+  and writes a record per case (costs and their parts to full repr, the evaluation count, the residual,
+  `settled`, the scalar means, Z's shape, Z's SHA-256 at 12 significant digits and the SHA-256 of its raw
+  bytes; `write` and `check` modes).  `tests/refs/baseline_0.4.json` is the record of master 222eb96 and
+  `tests/test_baseline.py` (under NOISESTATE_SLOW=1, 11 s) holds the package to it: costs to 1e-12, the
+  evaluation counts equal, Z equal at 12 digits; a change of Z's bytes with the 12-digit SHA intact (BLAS
+  rounding) is reported as a warning, not asserted.
 
 ## 0.4.0 (2026-09-06) — transitions from a stationary past
 

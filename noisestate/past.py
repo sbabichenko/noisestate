@@ -113,11 +113,11 @@ class Past:
             raise ValueError(f"the past {res.model.name!r} did not converge (residual {res.residual:.2e}, {res.message}); "
                              "a transition starts from an equilibrium")
         c = res.compiled; m = res.model
-        kernels = {name: np.array(res.Z[c.block(name)]) for name in c.prim}
+        kernels = {name: np.array(res.world[c.block(name)]) for name in c.prim}
         rows = {}
         for a in m.agents:
             for r, (rname, drift, E, delay) in zip(a.signals, c.rows[a.name]):
-                rows[f"{a.name}.{rname}"] = (c.expr_op(drift) @ res.Z, np.array(E, dtype=float), float(delay))
+                rows[f"{a.name}.{rname}"] = (c.expr_op(drift) @ res.world, np.array(E, dtype=float), float(delay))
         means = {k: float(v) for k, v in res.means.items()}
         prov = {"kind": "stationary", "name": m.name, "params": {k: float(v) for k, v in m.params.items()},
                 "window": float(c.grid.L), "nodes": int(c.grid.n), "breakpoints": [float(b) for b in c.grid.breakpoints],

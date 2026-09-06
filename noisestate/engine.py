@@ -57,7 +57,7 @@ class EngineBase(MeanLayer):
     below it supplies closed_loop, block and atom_op only.  docs/architecture.md draws the modules.
 
     Kernel algebra of the compiled model self.c: the interface algebra.KernelAlgebra (closed_loop, block,
-    atom_op, expr_op, expr_kernel, row_blocks / row, conv_rows, instant, instant_adjoint, response, continuation,
+    atom_op, expr_op, expr_kernel, row_blocks, conv_rows, instant, instant_adjoint, response, continuation,
     own_lag_read, projection_rows, cost_mass, causal_chunks) with the shapes in its docstrings, and its
     attributes N, nW, prim, index, channels, rows (agent -> [(name, drift, E, delay)]), loss (agent -> (atoms,
     Q, q)), rep, reps, rho, model, and grid / g / h (same_grid).  Each engine's compiled model implements
@@ -215,20 +215,15 @@ class EngineBase(MeanLayer):
         [(channel index, age, weight)] per row.  Controls in `excluded` are switched off (their
         impulses come through impulse channels instead), and only Brownian sources keep an
         instantaneous entry here: an excluded control's own impulse in a row is dropped (in the
-        passive world the agent's own control is off).  Reads c.row_blocks when the compiled model
-        has it (the nonzero primary blocks only), else c.row."""
+        passive world the agent's own control is off).  Reads c.row_blocks (the nonzero primary blocks
+        only)."""
         c = self.c; rows, inst = [], []
-        blockwise = hasattr(c, "row_blocks")
         for r in range(len(agent.signals)):
-            if blockwise:
-                blocks, deltas = c.row_blocks(agent.name, r, excluded)
-                y = np.zeros((c.N, Z.shape[1]))
-                for nm, op in blocks.items():                            # only the primaries the row reads
-                    y += op @ Z[c.block(nm)]
-                rows.append(y)
-            else:
-                regular, deltas = c.row(agent.name, r, excluded)
-                rows.append(regular @ Z)
+            blocks, deltas = c.row_blocks(agent.name, r, excluded)
+            y = np.zeros((c.N, Z.shape[1]))
+            for nm, op in blocks.items():                            # only the primaries the row reads
+                y += op @ Z[c.block(nm)]
+            rows.append(y)
             inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
         return rows, inst
 
@@ -588,10 +583,8 @@ class EngineBase(MeanLayer):
     def _causal_chunks(self):
         """Node ranges [(lo, hi)] in increasing age such that the regular projection operator of any row is
         zero from ages in one chunk to nodes in an earlier one (a correlation reads only older ages); the
-        products over those blocks are skipped.  One chunk when the compiled model declares none
-        (c.causal_chunks is optional: the stationary Compiled has it, the triangle does not)."""
-        ch = getattr(self.c, "causal_chunks", None)
-        return ch() if ch is not None else [(0, self.c.N)]
+        products over those blocks are skipped (c.causal_chunks; the stationary Compiled declares them)."""
+        return self.c.causal_chunks()
 
     def _foc_system(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu):
         """The first-order-condition system Amat gamma = -bvec on the passive rows,
@@ -807,7 +800,7 @@ class EngineBase(MeanLayer):
         Z = self.c.closed_loop(maps)
         if coarse_evals:
             message = f"coarse start: {coarse_evals} evaluations at {self._coarse_nodes} nodes; " + message
-        res = self.RESULT(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
+        res = self.RESULT(model=self.model, compiled=self.c, maps=maps, world=Z, converged=converged, residual=resid,
                           evaluations=evals[0], seconds=0.0, message=message, solver_class=type(self),
                           solver_kw=self.solver_kw, settings=self.settings,
                           solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start": start,
@@ -823,7 +816,7 @@ class EngineBase(MeanLayer):
         the equilibrium.  The order is the contract: expected_cost first, _mean_part reads res.costs as the
         variance part and adds the mean part, _diagnostics last."""
         for a in self.model.agents:
-            res.costs[a.name] = self.expected_cost(a, res.Z)
+            res.costs[a.name] = self.expected_cost(a, res.world)
         self._mean_part(res)
         if res.solve_kw.get("diagnostics", True) is not False:
             self._diagnostics(res)

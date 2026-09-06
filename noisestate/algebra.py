@@ -103,11 +103,6 @@ class KernelAlgebra:
         noise at the delay, an `excluded` control's impulse at delay + lag)."""
         raise missing(self, "row_blocks")
 
-    def row(self, agent: str, r: int, excluded: set) -> Tuple[np.ndarray, Dict[str, List[Tuple[float, float]]]]:
-        """((N, n_prim N), the same deltas): row_blocks assembled as one operator on the primary vector; the
-        base engine reads row_blocks when the compiled model has it, else row."""
-        raise missing(self, "row")
-
     # ---------------------------------------------------------------- the best-response pieces
     def conv_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
         """(N, m) row kernels, as seen (shifted by the delay) -> (m, N, N): the map gamma on such a row -> the

@@ -140,7 +140,7 @@ class MeanLayer:
 
     def _mean_part(self, res) -> None:
         """The means (targets, constant drifts, initial states) and the mean part of every cost, on the result
-        with res.maps, res.Z and res.costs already holding the variance part of every agent's cost: res.means
+        with res.maps, res.world and res.costs already holding the variance part of every agent's cost: res.means
         (name -> a float on the stationary engine, a path over res.means_t on the finite engines) for every
         primary, definition and "agent.row" drift rate (at the time of the observation, its delay not applied),
         res.cost_parts[agent] = {"variance", "mean"}, and the mean part added to res.costs[agent].  Part of the
