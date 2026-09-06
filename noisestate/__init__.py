@@ -54,9 +54,12 @@ def load(path: str) -> Model:
 
 def solve(model, refine: bool = False, stability: bool = False, **kw) -> BaseResult:
     """Solve a model (a Model, a dict, or a path to a YAML file) with the engine its horizon selects.
-    Keyword arguments go to the engine's constructor (e.g. verbose, naive_observers, settings) or to its
-    solve() (e.g. tol, init, start, variable); unknown ones are an error.  refine=True re-solves
-    on a finer grid and reports the change (res.refinement); stability=True adds res.stability()."""
+    Keyword arguments go to the engine's constructor (e.g. verbose, naive_observers, settings; on the
+    spectral finite engine past=, the known past of a transition, and continuation=, how it goes on
+    after T: "end", "stationary" or a stationary result of the model) or to its solve() (e.g. tol,
+    init, start, variable); unknown ones are an error.  The constructor options are recorded in
+    res.solver_kw, so refine() and stability() rebuild the same engine.  refine=True re-solves on a
+    finer grid and reports the change (res.refinement); stability=True adds res.stability()."""
     if isinstance(model, str):
         model = load(model)
     elif isinstance(model, dict):

@@ -62,6 +62,12 @@
   continuation beyond T (`settled`), a `transition` horizon kind in model files, plots and helpers,
   a past with a window on rows observed with a delay (`NotImplementedError`), and the second-order
   check ignores the initial-shock columns.  The shipped examples are unchanged to every digit.
+- Transition from a known past, stage 2c: `noisestate.solve(model, past=..., continuation=...)` routes
+  both keywords to the spectral finite engine (by its constructor's signature, as every constructor
+  option), which records them in `res.solver_kw`, so `refine()` and `stability()` rebuild the engine
+  with the same Past and the same StationaryResult; the payload's `options.solver.continuation` and
+  its top-level `continuation` carry the continuation's provenance (kind, name, params, window, nodes,
+  breakpoints, convergence, window tail, costs, means), not its kernels.
 - Transition from a known past, stage 2b: rows observed with a delay, and a switch's lagged kinks.  With
   a past the map on a row observed with delay d is stored in raw age (`MAP_CONVENTION`, `map_axes`:
   maps[agent][u][row][n] weighs the raw increment of age grid.age[n] at time grid.t[n], zero below the

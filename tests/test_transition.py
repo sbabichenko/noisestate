@@ -346,6 +346,25 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
         assert np.abs(r0.Z - res.Z).max() < 1e-8 and r0.settled < 5e-6
 
 
+def test_solve_routes_past_and_continuation_and_the_result_rebuilds_them():
+    """noisestate.solve(model, past=, continuation=) hands both to the spectral finite engine, which records them
+    in solver_kw: a solver rebuilt from the result (refine(), stability()) carries the same Past and the same
+    StationaryResult; the payload's options.solver and its top level carry the continuation's provenance
+    (kind, window, nodes, costs, window_tail), not its kernels, and it serialises."""
+    m = ns.load(EX + "ch3_two_player.yaml")
+    stat = ns.solve(m.with_horizon(nodes=8)).check()
+    res = ns.solve(m.with_horizon(kind="finite", window=6.0, nodes=8), past=stat, continuation="stationary", tol=1e-8).check()
+    assert res.solver_kw["past"] is res.past and res.solver_kw["continuation"] is res.continuation
+    assert res.continuation is not stat and np.array_equal(res.continuation.Z, stat.Z)      # solved on the fly at horizon.nodes
+    fine = res._make_solver(res.model.with_horizon(nodes=12))
+    assert fine.c.past is res.past and fine.c.cont is res.continuation and fine.c.Tg == 9.0
+    d = json.loads(json.dumps(res.to_dict()))
+    for prov in (d["continuation"], d["options"]["solver"]["continuation"]):
+        assert prov["kind"] == "stationary" and prov["window"] == 3.0 and prov["nodes"] == 8 and "kernels" not in prov
+        assert abs(prov["window_tail"] - res.continuation.window_tail) < 1e-12 and set(prov["costs"]) == {"player1", "player2"}
+    assert d["settled"] == res.settled and d["options"]["solver"]["past"]["kind"] == "stationary"
+
+
 def test_past_validation():
     """A finite result is a TypeError, an unconverged stationary one a ValueError, other channels a ValueError,
     an initial shock on an unknown state a ValueError, and a past with a window on a model whose rows are

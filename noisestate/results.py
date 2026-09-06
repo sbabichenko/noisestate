@@ -564,8 +564,9 @@ class TriangleResult(BaseResult):
         if self.past is not None:
             out["past"] = self.past.to_dict()
             out["settled"] = self.settled
-            if self.continuation is not None:
+            if self.continuation is not None:                # its provenance, in the result and in the solver options
                 out["continuation"] = dict(self.compiled.continuation_info)
+                out["options"]["solver"]["continuation"] = dict(self.compiled.continuation_info)
             for name in self.compiled.prim:
                 for ch in self.shocks[len(self.channels):]:
                     out["kernels"][name][ch] = self.kernel(name, ch).tolist()
