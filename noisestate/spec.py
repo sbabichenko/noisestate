@@ -359,6 +359,21 @@ class Model:
 
     # --------------------------------------------------------- validation
     def validate(self) -> None:
+        """Every structural rule of a model, checked in a fixed order, each by one named check below (the
+        first failing rule raises its ValueError; the one warning is a control with no positive own quadratic
+        term).  Compile calls this on every engine; from_dict calls it before the unused-parameter check."""
+        self._check_names()
+        self._check_states()
+        self._check_definitions()
+        self._check_agents()
+        self._check_ties()
+        self._check_channels_used()
+        self._check_control_terms()
+        self._check_horizon()
+
+    def _check_names(self) -> None:
+        """Quantity names (states, controls, definitions) are distinct and none is the reserved `const`;
+        channel names and agent names are distinct."""
         names = self.state_names + self.control_names + self.def_names
         if len(set(names)) != len(names):
             dup = sorted({n for n in names if names.count(n) > 1})
@@ -370,6 +385,10 @@ class Model:
         agent_names = [a.name for a in self.agents]
         if len(set(agent_names)) != len(agent_names):
             raise ValueError("duplicate agent names")
+
+    def _check_states(self) -> None:
+        """Each state loads known channels only, its drift is causal (no lead), its initial value is a finite
+        number, and an initial value appears only on a finite horizon."""
         for s in self.states:
             for ch in s.noise:
                 if ch not in self.channels:
@@ -382,11 +401,18 @@ class Model:
             if s.initial != 0 and self.horizon.kind == "stationary":
                 raise ValueError(f"state {s.name}: an initial value ({s.initial:g}) has no meaning in a stationary model, which "
                                  "has no initial time; drop it, or solve a finite horizon")
+
+    def _check_definitions(self) -> None:
+        """Each definition expands (known quantities, no cycle) and carries no constant."""
         for d in self.definitions:
             self.expand({d.name: 1.0})
             if self.constant(d.expr) != 0:
                 raise ValueError(f"definition {d.name}: a constant ({CONST}) is allowed in a state's drift only; a target is a "
                                  "linear loss term, [-2*theta, X] beside [1, X, X]")
+
+    def _check_agents(self) -> None:
+        """Each agent, in order: its controls are a non-empty list of names and myopic is a bool, then its
+        signal rows (_check_signals) and its loss terms (_check_losses)."""
         for a in self.agents:
             if not isinstance(a.controls, list) or not all(isinstance(u, str) for u in a.controls):
                 raise ValueError(f"agent {a.name}: controls must be a list of names, got {a.controls!r}")
@@ -394,42 +420,56 @@ class Model:
                 raise ValueError(f"agent {a.name} has no controls")
             if not isinstance(a.myopic, bool):
                 raise ValueError(f"agent {a.name}: myopic must be true or false, got {a.myopic!r}")
-            for r in a.signals:
-                for ch in r.noise:
-                    if ch not in self.channels:
-                        raise ValueError(f"row {a.name}.{r.name}: unknown channel {ch}")
-                if not r.noise:
-                    raise ValueError(f"row {a.name}.{r.name} needs a noise loading (exact rows are not supported)")
-                if all(v == 0 for v in r.noise.values()):
-                    raise ValueError(f"row {a.name}.{r.name} has a zero noise loading (exact rows are not supported)")
-                if r.delay < 0:
-                    raise ValueError(f"row {a.name}.{r.name}: delay must be non-negative")
-                # own controls may appear in own rows (the agent knows them; they drop out of its passive rows)
-                for (n, l) in self.expand(r.drift):
-                    if l < 0:
-                        raise ValueError(f"row {a.name}.{r.name} observes a future quantity {n}@{l}")
-                if self.constant(r.drift) != 0:
-                    raise ValueError(f"row {a.name}.{r.name}: a constant in a signal row carries no information (the agent "
-                                     "knows it); leave it out")
-            for term in a.loss:
-                if len(term) not in (2, 3):
-                    raise ValueError(f"agent {a.name}: loss term {term} must be [coef, a] or [coef, a, b]")
-                if any(parse_atom(str(atom), self.params)[0] == CONST for atom in term[1:]):
-                    raise ValueError(f"agent {a.name}: loss term {term} reads the constant; a linear term is [coef, X] and a "
-                                     "constant in the loss moves nothing")
-                ex = [self.expand({atom: 1.0}) for atom in term[1:]]
-                led = [i for i, e in enumerate(ex) if any(l < 0 for (n, l) in e)]
-                if led:
-                    # a value tau ahead also loads on shocks that arrive after t, which the age grid does not
-                    # carry; only its covariance with the agent's own current action is computed exactly
-                    other = [e for i, e in enumerate(ex) if i not in led]
-                    ok = (len(term) == 3 and len(led) == 1
-                          and all(n in a.controls and l == 0 for (n, l) in other[0]))
-                    if not ok:
-                        raise ValueError(f"agent {a.name}: loss term {term} uses a lead (name@-tau) outside a cross term with "
-                                         "the agent's own current control; a led quantity squared, or a lead on a control, "
-                                         "is not supported: write the flow with lags instead (at discount 0 the time "
-                                         "average of X(t+tau)^2 equals that of X(t)^2)")
+            self._check_signals(a)
+            self._check_losses(a)
+
+    def _check_signals(self, a: "Agent") -> None:
+        """Each signal row of the agent loads known channels, has a nonzero noise loading (exact rows are not
+        supported), a non-negative delay, a causal drift and no constant."""
+        for r in a.signals:
+            for ch in r.noise:
+                if ch not in self.channels:
+                    raise ValueError(f"row {a.name}.{r.name}: unknown channel {ch}")
+            if not r.noise:
+                raise ValueError(f"row {a.name}.{r.name} needs a noise loading (exact rows are not supported)")
+            if all(v == 0 for v in r.noise.values()):
+                raise ValueError(f"row {a.name}.{r.name} has a zero noise loading (exact rows are not supported)")
+            if r.delay < 0:
+                raise ValueError(f"row {a.name}.{r.name}: delay must be non-negative")
+            # own controls may appear in own rows (the agent knows them; they drop out of its passive rows)
+            for (n, l) in self.expand(r.drift):
+                if l < 0:
+                    raise ValueError(f"row {a.name}.{r.name} observes a future quantity {n}@{l}")
+            if self.constant(r.drift) != 0:
+                raise ValueError(f"row {a.name}.{r.name}: a constant in a signal row carries no information (the agent "
+                                 "knows it); leave it out")
+
+    def _check_losses(self, a: "Agent") -> None:
+        """Each loss term of the agent is [coef, a] or [coef, a, b], reads no constant, and a lead appears only
+        in a cross term with the agent's own current control."""
+        for term in a.loss:
+            if len(term) not in (2, 3):
+                raise ValueError(f"agent {a.name}: loss term {term} must be [coef, a] or [coef, a, b]")
+            if any(parse_atom(str(atom), self.params)[0] == CONST for atom in term[1:]):
+                raise ValueError(f"agent {a.name}: loss term {term} reads the constant; a linear term is [coef, X] and a "
+                                 "constant in the loss moves nothing")
+            ex = [self.expand({atom: 1.0}) for atom in term[1:]]
+            led = [i for i, e in enumerate(ex) if any(l < 0 for (n, l) in e)]
+            if led:
+                # a value tau ahead also loads on shocks that arrive after t, which the age grid does not
+                # carry; only its covariance with the agent's own current action is computed exactly
+                other = [e for i, e in enumerate(ex) if i not in led]
+                ok = (len(term) == 3 and len(led) == 1
+                      and all(n in a.controls and l == 0 for (n, l) in other[0]))
+                if not ok:
+                    raise ValueError(f"agent {a.name}: loss term {term} uses a lead (name@-tau) outside a cross term with "
+                                     "the agent's own current control; a led quantity squared, or a lead on a control, "
+                                     "is not supported: write the flow with lags instead (at discount 0 the time "
+                                     "average of X(t+tau)^2 equals that of X(t)^2)")
+
+    def _check_ties(self) -> None:
+        """Each tie group names known agents that are structurally identical up to relabelling."""
+        agent_names = [a.name for a in self.agents]
         for group in self.ties:
             for n in group:
                 if n not in agent_names:
@@ -440,10 +480,18 @@ class Model:
                 if sig != sigs[0]:
                     raise ValueError(f"tied agents {group[0]} and {a.name} are not structurally identical "
                                      f"(same rows, losses and coefficients up to relabelling); untie them or fix the model")
+
+    def _check_channels_used(self) -> None:
+        """Every channel is loaded by a state or a signal row."""
         used = {ch for s in self.states for ch in s.noise} | {ch for a in self.agents for r in a.signals for ch in r.noise}
         unused = [ch for ch in self.channels if ch not in used]
         if unused:
             raise ValueError(f"channel(s) {unused} are never loaded by a state or a signal row (misspelled?)")
+
+    def _check_control_terms(self) -> None:
+        """Every control of an agent enters its loss (else the best response is undetermined), and a control with
+        no strictly positive quadratic term in its own current value (nor, for a non-myopic agent, in a lagged
+        read) gets a UserWarning: its best-response system is usually singular."""
         for a in self.agents:
             atoms = {n for term in a.loss for atom in term[1:] for (n, l) in self.expand({atom: 1.0})}
             missing = [u for u in a.controls if u not in atoms]
@@ -474,6 +522,11 @@ class Model:
                               "condition then has no term in the control itself and determines it only through the "
                               "quantities it moves, so the best-response system is usually singular (every engine "
                               "refuses it) or the problem ill-posed", UserWarning)
+
+    def _check_horizon(self) -> None:
+        """The horizon: nodes an integer of at least 2, every lag, delay and lead below the window, unit_range
+        within the window, unit positive, breakpoints increasing from 0 to the window, window positive,
+        discount non-negative, kind one of the three engines."""
         hz = self.horizon
         if hz.nodes != int(hz.nodes):
             raise ValueError(f"horizon.nodes must be an integer, got {hz.nodes!r}")
