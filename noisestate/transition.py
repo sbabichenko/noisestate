@@ -92,7 +92,4 @@ def transition(old, new, T: float, numerics=None, continuation="stationary", nod
         hz["stationary"] = {"window": stationary["window"]}
     model = Model.from_dict(d)
     from . import solve
-    kw = dict(solve_kw)
-    if "start" not in kw and continuation != "end":
-        kw["start"] = "stationary"
-    return solve(model, past=past, continuation=continuation, **kw)
+    return solve(model, past=past, continuation=continuation, **solve_kw)      # start: solve()'s default, "stationary" with a continuation

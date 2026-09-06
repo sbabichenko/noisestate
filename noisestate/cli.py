@@ -1,5 +1,8 @@
-"""Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--param k=v ...] [--max-evaluations N]
-[--deadline S]`; `--version`.
+"""Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--engine E] [--param k=v ...]
+[--max-evaluations N] [--deadline S]`; `validate model.yaml` (the schema, then the model's own checks);
+`sweep model.yaml param v1,v2,... -o out.json`; `transition old.yaml new.yaml --window T [-o out] [--nodes N]`;
+`schema {model|payload}`; `plot result.json out.pdf` (re-solves the payload's model under its recorded options and
+plots); `--version`.
 Exit status: 0 converged (a sweep: every point), 1 solved but not converged, 2 a usage error (a bad option, a
 missing or unreadable model file, bad YAML, an output path that cannot be written) or an error the package
 raises (a model or solver problem), printed as `error: ...` on stderr."""
@@ -17,6 +20,7 @@ from . import __version__, solve as _solve
 from .spec import Model
 from .numerics import Numerics
 from .sweep import sweep
+from .schema import schema, validate as schema_errors
 
 
 def transition_lines(m: Model) -> list:
@@ -64,8 +68,21 @@ def main(argv=None) -> int:
     s.add_argument("--stability", action="store_true", help="also report the stability of the equilibrium under best-response dynamics")
     s.add_argument("--refine", action="store_true", help="re-solve on a finer grid and report how much costs and kernels move")
     s.add_argument("-v", "--verbose", action="store_true")
-    v = sub.add_parser("validate", help="parse and validate a model file, print its structure")
+    v = sub.add_parser("validate", help="check a model file against the schema and the model's own checks, print its structure")
     v.add_argument("model")
+    t = sub.add_parser("transition", help="the transition from the stationary regime of old.yaml to the model of new.yaml on [0, T]")
+    t.add_argument("old"); t.add_argument("new")
+    t.add_argument("--window", type=float, required=True, metavar="T", help="the horizon T of the transition")
+    t.add_argument("--nodes", type=int, help="numerics.nodes per side of each piece (default 12)")
+    t.add_argument("-o", "--out", help="write the result as JSON")
+    t.add_argument("--plot", help="write the transition plot (.pdf/.png)")
+    t.add_argument("--max-evaluations", type=int, metavar="N", help="as for solve")
+    t.add_argument("--deadline", type=float, metavar="S", help="as for solve")
+    t.add_argument("-v", "--verbose", action="store_true")
+    sc = sub.add_parser("schema", help="print the JSON Schema (draft 2020-12) of the model file or of the result payload")
+    sc.add_argument("which", choices=("model", "payload"))
+    pl = sub.add_parser("plot", help="plot a result payload written by solve -o (re-solves its model under the recorded options)")
+    pl.add_argument("result"); pl.add_argument("out", help="the figure (.pdf/.png)")
     w = sub.add_parser("sweep", help="solve along one parameter with warm starts; write a JSON list")
     w.add_argument("model"); w.add_argument("param"); w.add_argument("values", help="comma-separated values")
     w.add_argument("-o", "--out", required=True, help="output .json")
@@ -81,12 +98,48 @@ def main(argv=None) -> int:
         return 2
 
 
+def _schema_check(d, path: str) -> None:
+    """Raise ValueError naming every schema violation of the model file `d` with its path."""
+    errs = schema_errors(d, "model")
+    if errs:
+        raise ValueError(f"{path} does not match the model schema:\n  " + "\n  ".join(errs))
+
+
 def _run(p, args) -> int:
-    with open(args.model) as fh:
-        d = yaml.safe_load(fh)
-    base_dir = os.path.dirname(os.path.abspath(args.model))     # a relative horizon.past.model is taken from the file's directory
+    if args.cmd == "schema":
+        print(json.dumps(schema(args.which), indent=1))
+        return 0
+    if args.cmd == "plot":
+        with open(args.result) as fh:
+            payload = json.load(fh)
+        errs = schema_errors(payload, "payload")
+        if errs:
+            raise ValueError(f"{args.result} does not match the payload schema:\n  " + "\n  ".join(errs))
+        opts = payload["options"]
+        solver_kw = {k: v for k, v in opts["solver"].items() if k in ("verbose", "naive_observers")}
+        res = _solve(Model.from_dict(payload["model"]), opts["numerics"], **solver_kw,
+                     **{k: v for k, v in opts["solve"].items() if k in ("start", "max_evaluations", "deadline", "diagnostics")})
+        res.plot(args.out)
+        print("wrote", args.out)
+        return 0 if res.converged else 1
     bounds = {k: v for k, v in (("max_evaluations", getattr(args, "max_evaluations", None)), ("deadline", getattr(args, "deadline", None)))
               if v is not None}
+    if args.cmd == "transition":
+        from .transition import transition
+        for path in (args.old, args.new):
+            with open(path) as fh:
+                _schema_check(yaml.safe_load(fh), path)
+        res = transition(args.old, args.new, T=args.window, numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
+        print(res.summary())
+        if args.out:
+            save_result(res, args.out); print("wrote", args.out)
+        if args.plot:
+            res.plot(args.plot); print("wrote", args.plot)
+        return 0 if res.converged else 1
+    with open(args.model) as fh:
+        d = yaml.safe_load(fh)
+    _schema_check(d, args.model)
+    base_dir = os.path.dirname(os.path.abspath(args.model))     # a relative horizon.past.model is taken from the file's directory
     if args.cmd == "sweep":
         rows = sweep(d, args.param, [float(x) for x in args.values.split(",")], solve_kw=bounds, verbose=args.verbose)
         with open(args.out, "w") as fh:

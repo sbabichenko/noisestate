@@ -1,0 +1,263 @@
+"""JSON Schema (draft 2020-12) for the model file and for the result payload, and a validator.
+
+    import noisestate as ns
+    ns.schema("model")                     # the model file's schema (the numerics block; the deprecated nested keys marked)
+    ns.schema("payload")                   # res.to_dict()'s schema
+    ns.schema.validate(doc, "model")       # [] or the errors as "path: message"
+
+`validate` uses the `jsonschema` package when it is importable (a full draft 2020-12 validator); otherwise the
+small validator here covers exactly the keywords these two schemas use (type, enum, const, properties,
+required, additionalProperties, items, minItems, minimum, exclusiveMinimum, anyOf, $ref into $defs,
+deprecated) and reports every violation with its path.  The CLI's `validate` runs it before the model's own
+checks, and `noisestate schema {model|payload}` prints the schema.
+"""
+from __future__ import annotations
+
+from dataclasses import fields
+from typing import List
+
+from .numerics import ENGINE_NAMES
+from .settings import Settings
+
+DRAFT = "https://json-schema.org/draft/2020-12/schema"
+
+_NUMBER_OR_EXPR = {"anyOf": [{"type": "number"}, {"type": "string"}],
+                   "description": "a number, or an expression in the parameters"}
+_EXPR = {"anyOf": [{"type": "object", "additionalProperties": _NUMBER_OR_EXPR},
+                   {"type": "array", "items": {"type": "array", "minItems": 2}}],
+         "description": "a linear expression: {atom: coef} (an atom is name or name@lag; const for a constant), or [[coef, atom], ...]"}
+_LOSS_TERM = {"type": "array", "minItems": 2, "items": {"anyOf": [{"type": "number"}, {"type": "string"}]},
+              "description": "[coef, a, b] (quadratic) or [coef, a] (linear)"}
+_SHOCK = {"type": "object", "additionalProperties": False, "required": ["name"],
+          "properties": {"name": {"type": "string"},
+                         "loads": {"type": "object", "additionalProperties": _NUMBER_OR_EXPR},
+                         "rows": {"type": "object", "additionalProperties": _NUMBER_OR_EXPR}}}
+
+
+def _settings_schema() -> dict:
+    props = {}
+    for f in fields(Settings):
+        props[f.name] = {"type": "integer" if f.type == "int" else "number"}
+    return {"type": "object", "additionalProperties": False, "properties": props,
+            "description": "the tuning constants (noisestate.Settings): the fields that differ from the defaults"}
+
+
+def numerics_schema() -> dict:
+    """The numerics block (noisestate.Numerics)."""
+    return {"type": "object", "additionalProperties": False,
+            "description": "how the model is solved: the engine, the grid, the fixed point's options, the settings",
+            "properties": {
+                "engine": {"enum": list(ENGINE_NAMES), "description": "default from horizon.kind: stationary -> stationary, else spectral"},
+                "nodes": {"type": "integer", "minimum": 2, "description": "nodes per panel (stationary) or per side of each piece (spectral); cells on the cell engine; default 16"},
+                "unit": {**_NUMBER_OR_EXPR, "description": "the panel unit: every lag and delay must be a multiple of it"},
+                "unit_range": {**_NUMBER_OR_EXPR, "description": "the age (stationary) or time (spectral) up to which the panels are unit panels"},
+                "breakpoints": {"type": "array", "minItems": 2, "items": _NUMBER_OR_EXPR, "description": "an explicit panel sequence from 0 to the window"},
+                "continuation_nodes": {"type": "integer", "minimum": 2, "description": "a transition's stationary continuation solved at this many nodes"},
+                "tol": {**_NUMBER_OR_EXPR, "description": "the fixed point's tolerance (default 1e-10 stationary, 1e-8 finite)"},
+                "damping": {**_NUMBER_OR_EXPR, "description": "the Anderson mixing weight"},
+                "max_newton": {"type": "integer", "minimum": 0, "description": "Newton-Krylov polish steps at most"},
+                "variable": {"enum": ["actions", "maps"], "description": "the fixed point's iterate"},
+                "settings": _settings_schema()}}
+
+
+def model_schema() -> dict:
+    """The model file (a Model.to_dict() / Model.from_dict() document)."""
+    deprecated = "deprecated: this key now lives under numerics: (read until 0.6)"
+    horizon = {"type": "object", "additionalProperties": False,
+               "description": "the economics of time: the kind, the discount, the window, a transition's past and continuation",
+               "properties": {
+                   "kind": {"enum": ["stationary", "finite", "transition", "finite_cells"],
+                            "description": "finite_cells is deprecated: kind finite with numerics.engine cells (read until 0.6)"},
+                   "discount": _NUMBER_OR_EXPR,
+                   "window": {**_NUMBER_OR_EXPR, "description": "the lag window L (stationary) or the horizon T (finite, transition)"},
+                   "past": {"type": "object", "additionalProperties": False,
+                            "properties": {"model": {"anyOf": [{"type": "string"}, {"type": "object"}],
+                                                     "description": "the old stationary model: a path (relative to the file) or an inline model"},
+                                           "initial": {"type": "array", "items": _SHOCK, "description": "initial shocks {name, loads, rows}"}},
+                            "description": "kind transition only"},
+                   "continuation": {"enum": ["stationary", "end"], "description": "kind transition only; default stationary"},
+                   "stationary": {"type": "object", "additionalProperties": False,
+                                  "properties": {"window": {**_NUMBER_OR_EXPR, "description": "must equal the past's window"},
+                                                 "nodes": {"type": "integer", "minimum": 2, "deprecated": True,
+                                                           "description": "deprecated: numerics.continuation_nodes (read until 0.6)"}},
+                                  "description": "kind transition only: the continuation's stationary solve"},
+                   "nodes": {"type": "integer", "minimum": 2, "deprecated": True, "description": deprecated},
+                   "unit": {**_NUMBER_OR_EXPR, "deprecated": True, "description": deprecated},
+                   "unit_range": {**_NUMBER_OR_EXPR, "deprecated": True, "description": deprecated},
+                   "breakpoints": {"anyOf": [{"type": "array", "items": _NUMBER_OR_EXPR}, {"type": "null"}], "deprecated": True, "description": deprecated}}}
+    state = {"type": "object", "additionalProperties": False,
+             "properties": {"drift": _EXPR, "noise": _EXPR, "initial": {**_NUMBER_OR_EXPR, "description": "finite horizon only; moves the means"}}}
+    signal = {"type": "object", "additionalProperties": False,
+              "properties": {"drift": _EXPR, "noise": _EXPR, "delay": {**_NUMBER_OR_EXPR, "description": "observation delay"}}}
+    agent = {"type": "object", "additionalProperties": False, "required": ["controls"],
+             "properties": {"controls": {"type": "array", "items": {"type": "string"}},
+                            "signals": {"type": "object", "additionalProperties": signal},
+                            "loss": {"type": "array", "items": _LOSS_TERM},
+                            "myopic": {"type": "boolean"}}}
+    return {"$schema": DRAFT, "$id": "https://noisestate/schema/model", "title": "noisestate model file",
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "name": {"type": "string"},
+                "params": {"type": "object", "additionalProperties": _NUMBER_OR_EXPR,
+                           "description": "parameters, evaluated in order (a later one may use an earlier one)"},
+                "channels": {"type": "array", "items": {"type": "string"}, "description": "the Brownian channels"},
+                "states": {"type": "object", "additionalProperties": state},
+                "definitions": {"type": "object", "additionalProperties": _EXPR},
+                "agents": {"type": "object", "additionalProperties": agent},
+                "ties": {"type": "array", "items": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+                         "description": "groups of agents sharing one strategy"},
+                "horizon": horizon,
+                "numerics": numerics_schema()}}
+
+
+def payload_schema() -> dict:
+    """The result payload (Result.to_dict()), payload_version 1."""
+    numbers = {"type": "array", "items": {"type": "number"}}
+    by_name = lambda inner: {"type": "object", "additionalProperties": inner}   # noqa: E731
+    row = {"type": "object", "required": ["name", "value", "threshold", "ok", "flag", "advice"],
+           "properties": {"name": {"type": "string"}, "ok": {"type": ["boolean", "null"]}, "flag": {"type": "string"}, "advice": {"type": "string"}}}
+    return {"$schema": DRAFT, "$id": "https://noisestate/schema/payload", "title": "noisestate result payload",
+            "type": "object",
+            "required": ["payload_version", "version", "name", "engine", "kind", "converged", "residual", "evaluations", "seconds",
+                         "message", "params", "model", "horizon", "numerics", "axes", "times", "options", "grid", "discount", "channels",
+                         "agents", "map_convention", "kernels", "maps", "foc", "costs", "cost_parts", "means", "means_t",
+                         "representation_error", "diagnostics", "resolution_ok", "status", "cost_kind", "second_order", "notes"],
+            "properties": {
+                "payload_version": {"const": 1},
+                "version": {"type": "string", "description": "the package version that wrote it"},
+                "name": {"type": "string"},
+                "engine": {"enum": list(ENGINE_NAMES)},
+                "kind": {"enum": ["stationary", "finite", "transition", "finite_cells"], "description": "the result kind"},
+                "converged": {"type": "boolean"}, "residual": {"type": "number"}, "evaluations": {"type": "integer"},
+                "seconds": {"type": "number"}, "message": {"type": "string"},
+                "params": by_name({"type": "number"}),
+                "model": {"$ref": "#/$defs/model"},
+                "horizon": {"type": "object", "description": "the model's horizon block (the economics)"},
+                "numerics": {"$ref": "#/$defs/numerics", "description": "the resolved numerics"},
+                "axes": by_name(numbers),
+                "times": {"anyOf": [numbers, {"type": "null"}], "description": "the time nodes of the paths; null on the stationary engine"},
+                "options": {"type": "object", "required": ["numerics", "solver", "solve"],
+                            "properties": {"numerics": {"$ref": "#/$defs/numerics"}, "solver": {"type": "object"}, "solve": {"type": "object"}}},
+                "grid": {"type": "object", "required": ["kind"]},
+                "discount": {"type": "number"},
+                "channels": {"type": "array", "items": {"type": "string"}},
+                "agents": by_name({"type": "object", "required": ["controls", "signals"],
+                                   "properties": {"controls": {"type": "array", "items": {"type": "string"}},
+                                                  "signals": by_name({"type": "object", "required": ["delay"],
+                                                                      "properties": {"delay": {"type": "number"}},
+                                                                      "additionalProperties": numbers})}}),
+                "map_convention": {"type": "string"},
+                "kernels": by_name(by_name({"type": "array"})),
+                "maps": by_name(by_name(by_name({"type": "array"}))),
+                "foc": by_name(by_name(by_name(by_name(numbers)))),
+                "costs": by_name({"type": "number"}),
+                "cost_parts": by_name(by_name({"type": "number"})),
+                "means": by_name({"anyOf": [{"type": "number"}, numbers]}),
+                "means_t": {"anyOf": [numbers, {"type": "null"}]},
+                "representation_error": by_name({"type": "number"}),
+                "representation_parts": by_name(by_name({"type": "number"})),
+                "diagnostics": {"type": "array", "items": row},
+                "resolution_ok": {"type": ["boolean", "null"]},
+                "status": {"type": "object", "required": ["ok", "flags"],
+                           "properties": {"ok": {"type": "boolean"}, "flags": {"type": "array", "items": {"type": "string"}}}},
+                "cost_kind": {"type": "string"},
+                "second_order": by_name({"type": "object"}),
+                "notes": {"type": "array", "items": {"type": "string"}},
+                "refinement": {"type": "object"}, "window_tail": {"type": "number"},
+                "stability": {"type": "object", "required": ["radius", "stable"]},
+                "past": {"type": "object"}, "settled": {"type": ["number", "null"]}, "continuation": {"type": "object"},
+                "loss_path": by_name(numbers), "excess_costs": by_name({"type": "number"}),
+                "old_flows": by_name({"type": "number"}), "new_flows": by_name({"type": "number"})},
+            "$defs": {"model": {k: v for k, v in model_schema().items() if k not in ("$schema", "$id")},
+                      "numerics": numerics_schema()}}
+
+
+def schema(which: str = "model") -> dict:
+    """The JSON Schema (draft 2020-12) of the model file ("model") or of the result payload ("payload")."""
+    if which == "model":
+        return model_schema()
+    if which == "payload":
+        return payload_schema()
+    raise ValueError(f"schema() takes 'model' or 'payload', not {which!r}")
+
+
+# ------------------------------------------------------------------ validation
+_TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null": type(None)}
+
+
+def _is_type(v, t: str) -> bool:
+    if t == "number":
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+    if t == "integer":
+        return (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and v == int(v))
+    return isinstance(v, _TYPES[t])
+
+
+def _validate(v, sch: dict, root: dict, path: str, errors: List[str]) -> None:
+    if "$ref" in sch:
+        node = root
+        for part in sch["$ref"].split("/")[1:]:
+            node = node[part]
+        sch = {**node, **{k: x for k, x in sch.items() if k != "$ref"}}
+    t = sch.get("type")
+    if t is not None:
+        ts = t if isinstance(t, list) else [t]
+        if not any(_is_type(v, x) for x in ts):
+            errors.append(f"{path or '(root)'}: expected {' or '.join(ts)}, got {type(v).__name__}"); return
+    if "enum" in sch and v not in sch["enum"]:
+        errors.append(f"{path or '(root)'}: {v!r} is not one of {sch['enum']}"); return
+    if "const" in sch and v != sch["const"]:
+        errors.append(f"{path or '(root)'}: expected {sch['const']!r}, got {v!r}"); return
+    if "anyOf" in sch:
+        for alt in sch["anyOf"]:
+            sub: List[str] = []
+            _validate(v, alt, root, path, sub)
+            if not sub:
+                break
+        else:
+            errors.append(f"{path or '(root)'}: {v!r} matches none of the allowed forms"); return
+    if isinstance(v, dict):
+        props = sch.get("properties", {})
+        for k in sch.get("required", []):
+            if k not in v:
+                errors.append(f"{path or '(root)'}: missing required key {k!r}")
+        extra = sch.get("additionalProperties", True)
+        for k, x in v.items():
+            here = f"{path}.{k}" if path else str(k)
+            if k in props:
+                _validate(x, props[k], root, here, errors)
+            elif extra is False:
+                errors.append(f"{here}: unknown key (allowed: {sorted(props)})")
+            elif isinstance(extra, dict):
+                _validate(x, extra, root, here, errors)
+    if isinstance(v, list):
+        if "minItems" in sch and len(v) < sch["minItems"]:
+            errors.append(f"{path or '(root)'}: at least {sch['minItems']} items expected, got {len(v)}")
+        if "items" in sch:
+            for i, x in enumerate(v):
+                _validate(x, sch["items"], root, f"{path}[{i}]", errors)
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        if "minimum" in sch and v < sch["minimum"]:
+            errors.append(f"{path or '(root)'}: {v!r} is below the minimum {sch['minimum']}")
+        if "exclusiveMinimum" in sch and v <= sch["exclusiveMinimum"]:
+            errors.append(f"{path or '(root)'}: {v!r} must exceed {sch['exclusiveMinimum']}")
+
+
+def validate(instance, which: str = "model") -> List[str]:
+    """The schema errors of `instance` against schema(which), each "path: message"; [] when it validates.
+    Uses the jsonschema package when importable, else the validator of this module."""
+    sch = schema(which)
+    try:
+        import jsonschema
+    except ImportError:
+        errors: List[str] = []
+        _validate(instance, sch, sch, "", errors)
+        return errors
+    out = []
+    for e in sorted(jsonschema.Draft202012Validator(sch).iter_errors(instance), key=lambda e: list(e.absolute_path)):
+        p = ".".join(str(x) for x in e.absolute_path)
+        out.append(f"{p or '(root)'}: {e.message}")
+    return out
+
+
+schema.validate = validate                 # ns.schema.validate(doc, "model")

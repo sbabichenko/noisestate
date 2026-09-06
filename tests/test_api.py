@@ -90,3 +90,59 @@ def test_the_stationary_result_and_a_transition_read_the_same_way():
     assert t.paths["loss"]["player1"].shape == t.times.shape and t.paths["belief_error"]("player2", "X").shape == t.times.shape
     assert {"past", "continuation", "settled", "old_flows", "new_flows", "excess_costs"} <= set(t.extra) and t.extra["settled"] == t.settled
     assert t.to_dict()["kind"] == "transition" and t.to_dict()["engine"] == "spectral"
+
+
+def test_schema_accepts_the_shipped_files_and_names_the_path_of_an_error():
+    import glob, json
+    from noisestate.cli import main
+    for f in sorted(glob.glob(os.path.join(EX, "*.yaml"))):
+        assert ns.schema.validate(ns.read_yaml(f), "model") == [], f
+    s = ns.schema("model"); assert s["$schema"].endswith("2020-12/schema") and s["properties"]["horizon"]["properties"]["nodes"]["deprecated"] is True
+    bad = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); bad["numerics"]["nodes"] = 1; bad["agents"]["player1"]["extra"] = 1
+    errs = ns.schema.validate(bad, "model")
+    assert any(e.startswith("numerics.nodes:") for e in errs) and any(e.startswith("agents.player1.extra:") for e in errs)
+    r = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8})
+    assert ns.schema.validate(json.loads(json.dumps(r.to_dict())), "payload") == []
+    p = r.to_dict(); del p["costs"]; p["engine"] = "abacus"
+    errs = ns.schema.validate(json.loads(json.dumps(p)), "payload")
+    assert any("missing required key 'costs'" in e for e in errs) and any(e.startswith("engine:") for e in errs)
+    with pytest.raises(ValueError, match="'model' or 'payload'"):
+        ns.schema("grid")
+    assert main(["schema", "payload"]) == 0
+
+
+def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
+    import json, yaml
+    from noisestate.cli import main
+    bad = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); bad["numerics"]["nodes"] = 1
+    with open(tmp_path / "bad.yaml", "w") as fh:
+        yaml.safe_dump(bad, fh)
+    assert main(["validate", str(tmp_path / "bad.yaml")]) == 2 and "numerics.nodes: 1 is below the minimum 2" in capsys.readouterr().err
+    assert main(["validate", os.path.join(EX, "ch3_precision_change.yaml")]) == 0
+    new = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); new["params"]["p1"] = 10.0
+    with open(tmp_path / "new.yaml", "w") as fh:
+        yaml.safe_dump(new, fh)
+    out = tmp_path / "change.json"
+    code = main(["transition", os.path.join(EX, "ch3_two_player.yaml"), str(tmp_path / "new.yaml"), "--window", "6", "--nodes", "5",
+                 "-o", str(out), "--max-evaluations", "2"])
+    p = json.load(open(out))
+    assert code == 1 and p["kind"] == "transition" and p["options"]["solve"]["start"] == "stationary" and p["numerics"]["nodes"] == 5
+    assert ns.schema.validate(p, "payload") == []
+    pytest.importorskip("matplotlib")
+    r = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8}, max_evaluations=3)
+    with open(tmp_path / "res.json", "w") as fh:
+        json.dump(r.to_dict(), fh)
+    assert main(["plot", str(tmp_path / "res.json"), str(tmp_path / "res.png")]) == 1 and (tmp_path / "res.png").exists()
+
+
+def test_the_zero_start_is_explicit_with_a_continuation():
+    old = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8}).check()
+    new = old.model.with_params(p1=10.0).with_horizon(kind="finite", window=6.0).with_numerics(nodes=5)
+    d = ns.solve(new, past=old, continuation="stationary", max_evaluations=1)
+    z = ns.solve(new, past=old, continuation="stationary", max_evaluations=1, start="zero")
+    e = ns.solve(new, past=old, continuation="end", max_evaluations=1)
+    assert d.solve_kw["start"] == "stationary" and z.solve_kw["start"] == "zero" and e.solve_kw["start"] == "zero"
+    assert d.residual != z.residual
+    rows = ns.sweep(new.with_horizon(kind="transition", past={"model": old.model.to_dict()}, continuation="stationary"), "p1",
+                    [10.0], solve_kw={"max_evaluations": 1})
+    assert rows[0]["result"].solve_kw["start"] == "stationary"

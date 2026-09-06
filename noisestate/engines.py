@@ -21,7 +21,15 @@ from .finite import FiniteSolver as cells
 
 ENGINES = {"stationary": stationary, "spectral": spectral, "cells": cells}
 
-__all__ = ["stationary", "spectral", "cells", "ENGINES", "build"]
+__all__ = ["stationary", "spectral", "cells", "ENGINES", "build", "default_start"]
+
+
+def default_start(S, start=None) -> str:
+    """The start of a solve when none is given: "stationary" on an engine with a stationary continuation (a
+    transition continued after T: its maps are where a settled transition ends), else "zero"."""
+    if start is not None:
+        return start
+    return "stationary" if getattr(getattr(S, "c", None), "cont", None) is not None else "zero"
 
 
 def build(model: Model, numerics=None, *, verbose: bool = False, naive_observers: Optional[dict] = None,

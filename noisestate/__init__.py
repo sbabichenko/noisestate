@@ -22,10 +22,11 @@ from .engines import ENGINES
 from .sweep import sweep, make_solver
 from .grid_cache import clear as clear_grid_cache
 from .transition import transition
+from .schema import schema
 
 __all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "Result", "BaseResult", "StationaryResult", "TriangleResult",
            "TransitionResult", "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "engines", "load", "solve",
-           "sweep", "transition", "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache"]
+           "sweep", "transition", "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache", "schema"]
 
 def _read_version() -> str:
     """The version pyproject.toml declares when the package is imported from a source tree (a checkout on
@@ -82,14 +83,15 @@ def as_model(model) -> Model:
 _ALIASES = {"nodes": "numerics.nodes", "settings": "numerics.settings"}      # accepted until 0.6 (CHANGELOG)
 
 
-def solve(model, numerics=None, *, init=None, start: str = "zero", tol=None, max_evaluations=None, deadline=None,
+def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluations=None, deadline=None,
           progress=None, diagnostics: bool = True, refine: bool = False, stability: bool = False, verbose: bool = False,
           naive_observers=None, past=None, continuation=None, **deprecated) -> Result:
     """Solve a model (a Model, a ModelBuilder, a dict, or a path to a YAML file) under `numerics` (a Numerics or
     a dict of its fields, laid over the model's own: engine, nodes, unit, unit_range, breakpoints,
     continuation_nodes, tol, damping, max_newton, variable, settings).  The other options are the solve's:
-    init (action kernels or raw maps per agent to start from), start ("zero", "coarse", or "stationary" on a
-    transition with a continuation), tol (over the numerics'), max_evaluations and deadline (the bounds; past
+    init (action kernels or raw maps per agent to start from), start ("zero", "coarse", or "stationary": the
+    continuation's stationary maps; the default is "stationary" wherever a continuation is given, on the file
+    form and the keyword form alike, else "zero"), tol (over the numerics'), max_evaluations and deadline (the bounds; past
     either the best iterate is returned not converged), progress (a callable on {"evaluation", "residual",
     "phase", "seconds"} after every evaluation), diagnostics (False skips the checks at the end), refine (re-solve
     on a finer grid and report the change, res.refinement), stability (add res.stability()), verbose;
@@ -109,7 +111,7 @@ def solve(model, numerics=None, *, init=None, start: str = "zero", tol=None, max
     kw = num.solve_kw()
     if tol is not None:
         kw["tol"] = tol
-    res = S.solve(init=init, start=start, max_evaluations=max_evaluations, deadline=deadline, progress=progress,
+    res = S.solve(init=init, start=engines.default_start(S, start), max_evaluations=max_evaluations, deadline=deadline, progress=progress,
                   diagnostics=diagnostics, **kw)
     if refine:
         res.refine()

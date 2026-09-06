@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **API stage, D, F and G: the schema, one transition default, the CLI.**  `noisestate.schema("model" |
+  "payload")` returns JSON Schema (draft 2020-12) for the model file (the `numerics:` block; the deprecated
+  nested keys and `kind: finite_cells` marked `deprecated`) and for the payload (`payload_version` 1);
+  `noisestate.schema.validate(doc, which)` lists the violations with their paths, through the `jsonschema`
+  package when it is importable (not a dependency) and otherwise through `schema.py`'s validator of the
+  keywords the schemas use.  The CLI gains `schema {model|payload}`, `transition old.yaml new.yaml --window T
+  [-o] [--plot] [--nodes]` and `plot result.json out.pdf` (re-solves the payload's model under its recorded
+  options), and `validate` checks the file against the schema first, reporting each error with its path.
+  `start` defaults to `"stationary"` wherever a continuation is given (`solve(past=, continuation=)`, the
+  file form, `sweep()`'s first point, `transition()`), else `"zero"`; `solve(start="zero")` asks for the zero
+  start explicitly (`solve()`'s `start` default is None).
+
 - **API stage, C and E: one `Result`.**  `noisestate.Result` is the type every engine returns
   (`isinstance(res, ns.Result)`; `StationaryResult`, `TriangleResult`, `TransitionResult` and `CellResult` are
   its internal subclasses, importable until 0.6, `BaseResult` an alias of `Result`).  A consumer reads a kernel

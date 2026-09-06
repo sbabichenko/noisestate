@@ -21,7 +21,7 @@ from .spec import Model, ModelBuilder
 from .numerics import Numerics
 from .past import Past
 from .results import TriangleResult
-from .engines import build
+from .engines import build, default_start
 
 
 def _load_dict(model: Union[str, dict, Model]) -> dict:
@@ -100,7 +100,10 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
                     init = {k: w1[k] + (w1[k] - w0[k]) * (float(v) - e1) / (e1 - e0) for k in w1}
             if init is None:
                 init = w1
-        res = S.solve(init=init, **(solve_kw or {}))
+        kw = dict(solve_kw or {})
+        if init is None:
+            kw["start"] = default_start(S, kw.get("start"))
+        res = S.solve(init=init, **kw)
         change = None
         if prev is not None and S.same_grid(prev.compiled):
             a1, a0 = warm_start(res), warm_start(prev)

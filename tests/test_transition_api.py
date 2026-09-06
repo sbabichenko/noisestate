@@ -17,7 +17,7 @@ def regime():
     m = example("ch3_two_player")
     old = ns.solve(m).check()
     new = m.with_params(p1=10.0).with_horizon(kind="finite", window=6.0, nodes=8)
-    return {"m": m, "old": old, "new": new, "zero": ns.solve(new, past=old, continuation="stationary")}
+    return {"m": m, "old": old, "new": new, "zero": ns.solve(new, past=old, continuation="stationary", start="zero")}
 
 
 def test_file_form_equals_the_keyword_form_bit_for_bit(regime):
@@ -28,12 +28,12 @@ def test_file_form_equals_the_keyword_form_bit_for_bit(regime):
     m = ns.Model.from_dict(d)
     assert m.horizon.kind == "transition" and m.horizon.past == {"model": EX + "ch3_two_player.yaml"} and m.horizon.continuation is None
     assert m.to_dict()["horizon"]["past"] == {"model": EX + "ch3_two_player.yaml"}
-    res = ns.solve(m); z = regime["zero"]
+    res = ns.solve(m, start="zero"); z = regime["zero"]                # the file form, from zero like z
     assert np.array_equal(res.Z, z.Z) and res.costs == z.costs and res.iterations == z.iterations and res.settled == z.settled
     assert res.past.provenance["name"] == "ch3_two_player" and res.continuation.compiled.grid.n == 8
     assert np.array_equal(res.continuation.Z, z.continuation.Z)
     # the keyword overrides the file block: another past changes the answer, the same one repeats it
-    same = ns.solve(m, past=regime["old"])
+    same = ns.solve(m, past=regime["old"], start="zero")
     assert np.array_equal(same.Z, z.Z)
     other = ns.solve(m, past=regime["m"].with_params(p1=5.0), max_evaluations=2)
     assert not np.array_equal(other.Z[:, :1], z.Z[:, :1])
@@ -69,8 +69,7 @@ def test_transition_helper_starts_from_the_new_stationary_maps(regime):
         ns.solve(regime["new"], past=regime["old"], start="stationary")
     with pytest.raises(ValueError, match="start must be"):
         ns.solve(regime["new"], past=regime["old"], start="warm")
-    # solve() keeps start="zero"
-    assert z.solve_kw["start"] == "zero"
+    assert z.solve_kw["start"] == "zero"                        # asked for; the default with a continuation is "stationary"
 
 
 def test_builder_and_initial_shocks_in_the_file_form():
@@ -157,4 +156,4 @@ def test_cli_round_trip(tmp_path, capsys):
     with open(tmp_path / "bad.yaml", "w") as fh:
         yaml.safe_dump({**d, "horizon": {**d["horizon"], "continuation": "tail"}}, fh)
     assert main(["solve", str(tmp_path / "bad.yaml")]) == 2
-    assert "horizon.continuation must be" in capsys.readouterr().err
+    assert "horizon.continuation" in capsys.readouterr().err          # the schema reports it first, with its path

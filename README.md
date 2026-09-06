@@ -29,10 +29,19 @@ repository (`examples/`, `tests/refs/`), not in the wheel.  MIT licence.
 ## Use
 
 ```bash
-noisestate validate examples/ch4_kyle_back.yaml
-noisestate solve examples/ch4_kyle_back.yaml -o kb.json --plot kb.pdf --param rho=0.5
+noisestate validate examples/ch4_kyle_back.yaml               # the schema, then the model's own checks
+noisestate solve examples/ch4_kyle_back.yaml -o kb.json --plot kb.pdf --param rho=0.5 --nodes 32
+noisestate sweep examples/ch4_kyle_back.yaml eps 0.2,0.1,0.05 -o sweep.json
+noisestate transition examples/ch3_two_player.yaml new.yaml --window 6 -o change.json
+noisestate schema model > model.schema.json               # JSON Schema (draft 2020-12); also: schema payload
+noisestate plot kb.json kb.pdf                            # re-solves the payload's model under its recorded options
 noisestate --version
 ```
+
+`noisestate.schema("model")` and `noisestate.schema("payload")` return the same schemas, and
+`noisestate.schema.validate(doc, "model" | "payload")` the violations with their paths (the
+`jsonschema` package when it is installed, else a small validator covering the keywords the
+schemas use).
 
 The exit status is 0 for a converged solve (a sweep: every point converged), 1 for a solve
 that ran but did not converge (the summary is still printed and `-o` still written), and 2
@@ -206,7 +215,9 @@ res = ns.transition(old, new_model, T=6.0, numerics={"nodes": 12})   # solves ol
 res.past, res.stationary, res.settled, res.loss_path, res.excess_costs, res.belief_error("player2", "X")
 ```
 
-The old shocks stay alive on a band of nodes with shock time s < 0 until age L, where every
+Every transition with a continuation starts from the continuation's stationary maps (`start="stationary"`,
+the default of `solve()`, `transition()`, `sweep()` and the file form alike, where a settled transition ends;
+`start="zero"` asks for the zero start).  The old shocks stay alive on a band of nodes with shock time s < 0 until age L, where every
 shock is forgotten (on both families: this is what makes the same-model identity exact); the
 new shocks live on today's triangle, whose nodes and order are untouched, so a solve with no
 past is the finite engine bit for bit.  With `continuation: stationary` (the default of kind
@@ -298,7 +309,8 @@ rows = sweep("examples/ch4_kyle_back.yaml", "eps", [0.2, 0.1, 0.05, 0.02])   # e
 rows[-1]["result"].summary(); rows[-1]["result"].to_dict()                   # JSON-ready
 ```
 
-`noisestate sweep model.yaml eps 0.2,0.1,0.05 -o sweep.json` does the same from the shell.  Each
+`noisestate sweep model.yaml eps 0.2,0.1,0.05 -o sweep.json` does the same from the shell.  The payload
+validates against `noisestate.schema("payload")` (`payload_version` 1).  Each
 point starts from a secant extrapolation of the previous two equilibria in the parameter, which is
 what carries the Kyle-Back sweep down to a trading cost of 0.01 where a plain restart fails.  A
 warm-started point costs a handful of best responses, which is what a slider in a front end needs;
