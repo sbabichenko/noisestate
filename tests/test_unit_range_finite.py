@@ -50,9 +50,8 @@ def test_unit_range_on_a_transition_keeps_the_identity_within_the_measured_floor
     2.0e-5; at 4 nodes 1.0e-6 against 1e-7, its Gram matrix too slow for the suite), and one best response
     returns the stationary maps to 9.2e-3 / 1.6e-2 (the full grid's floor at 3 nodes 7.6e-3 / 6.7e-3)."""
     stat = delayed_stationary(3, window=3.0); m = stat.model
-    kw = dict(settings={"closed_loop_dense_max": 0})
-    full = same_model_solver(m, stat, 6.0, 3, **kw)
-    coarse = same_model_solver(m, stat, 6.0, 3, unit_range=1.5, **kw)
+    full = same_model_solver(m, stat, 6.0, 3)
+    coarse = same_model_solver(m, stat, 6.0, 3, unit_range=1.5)
     c = coarse.c
     assert [float(b) for b in c.g.bp] == [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 3.5, 4.5, 6.0, 6.25, 6.5, 6.75, 7.0, 7.25, 7.5, 8.0, 9.0]
     assert len(c.g.pieces) == 198 and len(full.c.g.pieces) == 588 and c.N == 1782

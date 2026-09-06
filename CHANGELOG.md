@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- One closed-loop assembly (the consolidation pass, step C2).  `SpectralCompiled.closed_loop` builds the rows
+  of the system (I - M) Z = B one time panel at a time from the line paths and the sparse reads and solves them
+  by block forward substitution at every size (`finite_spectral.ClosedLoopRows`, whose docstring states the
+  assembly: the state rows from the Volterra path times the state inputs' atom operators, a control's rows
+  from the map convolutions times its seen rows' blocks, the band's old shocks, the buffer's frozen rows, the
+  initial-shock and impulse columns as the forcing); `world_from_actions` is the same assembly with the
+  controls' rows given.  The dense (n_prim N)^2 system, `_closed_loop_past`, `_closed_loop_panels`,
+  `_state_part`, `_solve_causal` and the two dense `world_from_actions` bodies are gone, and with them
+  `settings.closed_loop_dense_max` (the per-panel forward substitution is the block solve the dense path did;
+  `foc_dense_max` keeps its meaning).  Closed loop numbers change in the last bits; costs and evaluation counts
+  unchanged: every shipped case's costs agree with master 222eb96 to 1e-12 with the same evaluation counts and
+  the fixed points' Z to 2e-15 of their peak, and tests/refs/baseline_0.4.json is re-recorded (at 12
+  significant digits a few dozen entries of thousands sit on a rounding boundary, so the 12-digit SHA moved on
+  four cases and the raw bytes on five; ch3_two_player, ch4_kyle_back and ch5_cycle_market are bit for bit).
+  One convention settled: the dense `world_from_actions` read a lagged control input through the interpolation
+  `read(lag, lag)`, the closed loop and the per-panel path through the node shift `map_shift(lag)`; the two
+  agreed to 1e-15 on continuous action kernels (every equilibrium) and differed by 3e-3 at the piece
+  boundaries of a random one, and the shift is now the one reading.  Per-panel Volterra rows are computed,
+  not cached: caching them saved nothing measurable (2.0 against 2.2 s per repeated closed loop at N = 14700)
+  and cost 0.9 GB.  One closed loop of ch1_delayed at 16 nodes (N = 2560): 3.2 s and 4.60 GB peak to 2.9 s and
+  4.14 GB; ch1_delayed as its own transition (window 3, T = 6, 5 nodes, N = 14700): 19.7 s and 3.72 GB to
+  20.1 s and 3.72 GB, the first best response 103.6 s and 7.77 GB to 106.5 s and 7.77 GB (timing noise).
+  tests/test_causal_solve.py checks the forward substitution against the dense solve of the stacked rows
+  (plain, an agent excluded with its impulse column, the actions given; with a past and a continuation).
 - Tests and tooling only (the package is untouched).  `tests/helpers.py` holds the builders the transition
   and means tests repeated: the example loaders (`example`, `example_dict`, `example_path`), a model solved
   stationary at a number of nodes (`stationary`, `delayed_stationary` for the delayed Chapter 1 game), the
@@ -82,11 +106,12 @@
   n_prim^2 N N_panel: ch1_delayed as its own transition at window 3, T = 6 (36 panels) goes from 13.0 GB and
   44 s to 1.3 GB and 7 s per closed loop at 4 nodes (N = 9408), from 31.9 GB and 157 s to 3.6 GB and 20 s
   at 5 nodes (N = 14700), and runs at 7 nodes (N = 28812, 86k unknowns, a 56 GB dense system) in 18 GB and
-  123 s.  Within the limit the dense path is kept and every shipped example and transition case is the
-  0.4.0 result bit for bit; the per-panel world agrees with it to BLAS rounding (2e-16 to 3e-13 relative on
+  123 s.  Within the limit the dense path was kept at first and every shipped example and transition case was
+  the 0.4.0 result bit for bit; the per-panel world agrees with it to BLAS rounding (2e-16 to 3e-13 relative on
   the examples), not to the bit, because OpenBLAS rounds the product of a row block differently from the
-  rows of the full product (one entry in a thousand differs in the last bit on this machine).  The Volterra
-  operator `Vol` is built on first use (the dense path and `world_from_actions`); the best response still
+  rows of the full product (one entry in a thousand differs in the last bit on this machine); the per-panel
+  assembly is now the only one (the entry above).  The Volterra
+  operator `Vol` is built on first use (the mean system's line s = 0); the best response still
   holds about thirty N x N dense operators (`conv_rows`, `response`, `continuation`, `projection_rows`, the
   row and projection operators), 20 GB at N = 9408, which is now the size ceiling.
 

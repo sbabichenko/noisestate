@@ -1,58 +1,54 @@
-import numpy as np, os
+"""The spectral finite engine's closed loop (noisestate.finite_spectral.ClosedLoopRows): the one assembly, its rows
+built one time panel at a time and solved by block forward substitution, against the dense system those rows stack
+into."""
+import numpy as np
 import noisestate as ns
-from noisestate.finite_spectral import SpectralFiniteSolver
-HERE = os.path.dirname(os.path.abspath(__file__))
+from noisestate.finite_spectral import SpectralFiniteSolver, ClosedLoopRows
+from helpers import example, example_dict, stationary
 
-def test_block_forward_substitution_matches_dense_solve():
-    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_delayed_finite.yaml")); d["horizon"]["nodes"] = 5
+
+def stacked_solve(c, **kw):
+    """The rows of every panel stacked into the dense (I - M) Z = B and solved at once; the block layout is
+    checked on the way: a panel's rows read the nodes before the panel's end only."""
+    L = ClosedLoopRows(c, **kw); nP = len(c.prim); N = c.N; n = nP * N
+    M = np.zeros((nP, N, nP, N)); B = L.B.copy()
+    for p, (lo, hi) in enumerate(c._panel_ranges):
+        blk, forcing = L.panel(p)
+        for (i, j), X in blk.items():
+            assert X.shape == (hi - lo, hi)
+            M[i, lo:hi, j, :hi] += X
+        for bi, f in forcing.items():
+            B[bi, lo:hi, :c.nW] += f
+    return np.linalg.solve(np.eye(n) - M.reshape(n, n), B.reshape(n, -1))
+
+
+def test_block_forward_substitution_matches_the_stacked_dense_solve():
+    """ch1_delayed at 5 nodes (player2's row delayed): the closed loop under random maps, plain and with an agent
+    excluded and its impulse column, is the dense solve of the stacked rows to 1e-10."""
+    d = example_dict("ch1_delayed_finite"); d["horizon"]["nodes"] = 5
     S = SpectralFiniteSolver(ns.Model.from_dict(d)); c = S.c
-    n = len(c.prim) * c.N
     rng = np.random.default_rng(3)
-    # a random operator that respects causality: panel p only reads panels <= p
-    panel = np.concatenate([np.full(pc.n, pc.p) for pc in c.g.pieces]); panel = np.tile(panel, len(c.prim))
-    M = rng.standard_normal((n, n)) * 0.02
-    M[panel[:, None] < panel[None, :]] = 0.0
-    B = rng.standard_normal((n, 4))
-    Z = c._solve_causal(M, B)
-    assert np.allclose(Z, np.linalg.solve(np.eye(n) - M, B), atol=1e-10)
-    # and the real closed loop agrees with a dense solve
     acts = {a.name: rng.standard_normal((len(a.controls), c.N, c.nW)) * 0.1 for a in S.model.agents}
     maps = S.maps_from_actions(acts)
-    Zb = c.closed_loop(maps)
-    c._solve_causal = lambda M_, B_: np.linalg.solve(np.eye(n) - M_, B_)
-    Zd = c.closed_loop(maps)
-    assert np.abs(Zb - Zd).max() < 1e-9 * max(1.0, np.abs(Zd).max())
-
-
-def test_per_panel_closed_loop_matches_the_dense_one():
-    """The closed loop assembled one time panel at a time (settings.closed_loop_dense_max below n_prim N: the
-    rows of each panel from the line paths and the sparse reads, the (n_prim N)^2 system never built) is the
-    dense one to BLAS rounding: without a past (ch1_delayed, 5 nodes; an agent excluded with its impulse
-    column) and with a past and a continuation (Chapter 3 as its own, T = 6, L = 3, 6 nodes: the band, the
-    buffer, the excluded agent frozen or off on the buffer) the worlds agree to 1e-13 of their peak, while
-    the dense path within the limit is the default (measured 2e-16 to 3e-13 on the shipped examples; the
-    two are not bit-identical since a BLAS product of a row block rounds differently from the full one)."""
-    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_delayed_finite.yaml")); d["horizon"]["nodes"] = 5
-    m = ns.Model.from_dict(d)
-    dense = SpectralFiniteSolver(m); panel = SpectralFiniteSolver(m, settings={"closed_loop_dense_max": 0})
-    assert not dense.c.per_panel and panel.c.per_panel and panel.c.N == dense.c.N
-    c = dense.c; rng = np.random.default_rng(5)
-    acts = {a.name: rng.standard_normal((len(a.controls), c.N, c.nW)) * 0.1 for a in m.agents}
-    maps = dense.maps_from_actions(acts)
     for excl, imp in ((None, ()), ("player2", ("D2",))):
-        Zd = dense.c.closed_loop(maps, excluded=excl, impulse_controls=imp)
-        Zp = panel.c.closed_loop(maps, excluded=excl, impulse_controls=imp)
-        assert Zd.shape == Zp.shape and np.abs(Zp - Zd).max() < 1e-13 * np.abs(Zd).max()
-    m3 = ns.load(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml"))
-    stat = ns.solve(m3.with_horizon(nodes=6)).check()
-    hz = m3.with_horizon(kind="finite", window=6.0, nodes=6)
-    dense = SpectralFiniteSolver(hz, past=stat, continuation=stat)
-    panel = SpectralFiniteSolver(hz, past=stat, continuation=stat, settings={"closed_loop_dense_max": 0})
-    assert panel.c.per_panel and panel.c.buffer.any() and panel.c.g.upper.any()
+        Zb = c.closed_loop(maps, excluded=excl, impulse_controls=imp)
+        Zd = stacked_solve(c, maps=maps, excluded=excl, impulse_controls=imp)
+        assert Zb.shape == Zd.shape and np.abs(Zb - Zd).max() < 1e-10 * max(1.0, np.abs(Zd).max())
+    Zw = S.world_from_actions(acts)
+    assert np.abs(Zw - stacked_solve(c, maps=None, actions=acts)).max() < 1e-10 * np.abs(Zw).max()
+
+
+def test_closed_loop_with_a_past_and_a_continuation_matches_the_stacked_dense_solve():
+    """Chapter 3 as its own past and continuation (T = 6, L = 3, 6 nodes): the band's forcing (the old shocks),
+    the buffer's frozen rows, the excluded agent frozen or off on the buffer, the plain closed loop, each the
+    dense solve of the stacked rows to 1e-12 of the world's peak."""
+    m3 = example("ch3_two_player"); stat = stationary(m3, 6)
+    S = SpectralFiniteSolver(m3.with_horizon(kind="finite", window=6.0, nodes=6), past=stat, continuation=stat); c = S.c
+    assert c.buffer.any() and c.g.upper.any()
+    cases = [dict(maps=c.frozen)]
     for a in m3.agents:
         for own_frozen in (True, False):
-            Zd = dense.c.closed_loop(dense.c.frozen, excluded=a.name, impulse_controls=a.controls, own_frozen=own_frozen)
-            Zp = panel.c.closed_loop(panel.c.frozen, excluded=a.name, impulse_controls=a.controls, own_frozen=own_frozen)
-            assert np.abs(Zp - Zd).max() < 1e-13 * np.abs(Zd).max()
-    Zd = dense.c.closed_loop(dense.c.frozen); Zp = panel.c.closed_loop(panel.c.frozen)
-    assert np.abs(Zp - Zd).max() < 1e-13 * np.abs(Zd).max()
+            cases.append(dict(maps=c.frozen, excluded=a.name, impulse_controls=a.controls, own_frozen=own_frozen))
+    for kw in cases:
+        Zb = c.closed_loop(**kw); Zd = stacked_solve(c, **kw)
+        assert np.abs(Zb - Zd).max() < 1e-12 * np.abs(Zd).max(), kw

@@ -2,8 +2,8 @@
  "Z_digits": 12,
  "cases": {
   "ch1_delayed_finite": {
-   "Z_bits": "b8eebb1918978d27ed2322c9921d14092b14137623f8259461b3c234951c7642",
-   "Z_sha12": "15d5df81f82e4c913aa0864f8017712f27e0f14e2dc9595a4f4832878376b060",
+   "Z_bits": "95561c9c50f188913fc72323abb3ee07a8a6450750adf0da82928be14360fd4e",
+   "Z_sha12": "5aacabf071a2e30a304e151356b353737c8240bfa11f787f7e0178cf901161f4",
    "Z_shape": [
     1920,
     3
@@ -26,12 +26,12 @@
    "engine": "TriangleResult",
    "evaluations": 13,
    "means": {},
-   "residual": 6.21070983461022e-09,
-   "seconds": 2.92
+   "residual": 6.2107098348901675e-09,
+   "seconds": 2.99
   },
   "ch1_mean_sweep_p10": {
-   "Z_bits": "68b141efe85062cb3f8a80a09f17528433963217d28b5c1c58d2ffd84da0e9de",
-   "Z_sha12": "da2990e4a75c82a85ba23f0a6569093581940823a515b010a46c82598a1308d4",
+   "Z_bits": "29eea62029746fdac23d9a8456657ec0e3c5d5ad61359ac7e6aeaa2b3ea6103b",
+   "Z_sha12": "375cfa8a784796332bdf35033c6960dbcd3dea2f4b70d63ff4c201a990e4573e",
    "Z_shape": [
     432,
     3
@@ -54,12 +54,12 @@
    "engine": "TriangleResult",
    "evaluations": 15,
    "means": {},
-   "residual": 6.0439793515286466e-09,
-   "seconds": 0.29
+   "residual": 6.04397936284505e-09,
+   "seconds": 0.31
   },
   "ch1_two_player_finite": {
-   "Z_bits": "e3027d76fe8559e5b1f907d43f26966de502a7f0589ce83f54a8dde3cb5ba7f3",
-   "Z_sha12": "60b131aabef1e4f8eabd64af85ed1d605cccede131a53750143583632f594922",
+   "Z_bits": "6d0a3a7d4aa5d921b6c9d32fe8bf88b2bba98ef11d131e22b281683b345efe0e",
+   "Z_sha12": "4bfdb2452dad42e44dd86fa7ea4539e5aaafd6a71aa035cb10256460327ab2d4",
    "Z_shape": [
     432,
     3
@@ -82,12 +82,12 @@
    "engine": "TriangleResult",
    "evaluations": 15,
    "means": {},
-   "residual": 5.901114120978749e-09,
-   "seconds": 0.47
+   "residual": 5.901114118353453e-09,
+   "seconds": 0.49
   },
   "ch3_same_model_T6_n6": {
-   "Z_bits": "d9f742493ed74a8e74054f2bc5e65d9e74771c3938bf68d62255443d720c8de1",
-   "Z_sha12": "5344b4457f95599ed61465e008bd76f8f2ccff7c02f384d8fae1968edcbd2706",
+   "Z_bits": "4d15998beee87b0a1b8eb730af82558edfa7ac54af50cc2ae4060b6d223949b3",
+   "Z_sha12": "b64c9e313749c6efc0ac7a0cdd86c7c649ee9ecdedaba3afbd3411340c7773d0",
    "Z_shape": [
     540,
     3
@@ -100,7 +100,7 @@
      "variance": 2.5769823851804903
     },
     "player2": {
-     "continuation": 1.4966663422666595,
+     "continuation": 1.4966663422666593,
      "mean": 0.0,
      "variance": 2.9933277473867372
     }
@@ -112,9 +112,9 @@
    "engine": "TransitionResult",
    "evaluations": 19,
    "means": {},
-   "residual": 5.012884176848907e-09,
-   "seconds": 0.36,
-   "settled": 0.004536898545055321
+   "residual": 5.012884258256671e-09,
+   "seconds": 0.42,
+   "settled": 0.004536898545055173
   },
   "ch3_two_player": {
    "Z_bits": "b3cf529570a073713fcbb9624b646a9d78b71293475b98176ad22f6afcd28dff",
@@ -271,10 +271,10 @@
     "yH2": 0.2740216433923257
    },
    "residual": 8.62637334428049e-11,
-   "seconds": 5.76
+   "seconds": 5.79
   },
   "kyle_back_prior": {
-   "Z_bits": "7cb710c928d8dbe36efb2e9949bcd61b6b2a4d3bde78b1c61df839af73082263",
+   "Z_bits": "c9f877398ca2462f7972584a52a1e50b7de54e7b1a3e5931e623a12119d0083f",
    "Z_sha12": "17df0905869a04743825a755ac8f988d861b7dea74bcf9b5c68bc3e30524e24c",
    "Z_shape": [
     432,
@@ -284,7 +284,7 @@
    "cost_parts": {
     "market_maker": {
      "mean": 0.0,
-     "variance": -0.8682256615768676
+     "variance": -0.8682256615768675
     },
     "trader1": {
      "mean": 0.0,
@@ -292,17 +292,17 @@
     }
    },
    "costs": {
-    "market_maker": -0.8682256615768676,
+    "market_maker": -0.8682256615768675,
     "trader1": -1.115078225386477
    },
    "engine": "TransitionResult",
    "evaluations": 67,
    "means": {},
    "residual": 5.913230828893849e-09,
-   "seconds": 0.76
+   "seconds": 0.82
   }
  },
- "commit": "222eb96",
+ "commit": "ab9d506",
  "cost_tol": 1e-12,
  "date": "2026-09-06",
  "noisestate": "0.4.0",

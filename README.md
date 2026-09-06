@@ -331,8 +331,7 @@ each with its default and a one-line meaning: the outer fixed point (`anderson_m
 `anderson_iters` 150, `anderson_reg` 1e-8, `newton_inner_m` 15), the best response (`foc_rcond`
 1e-10, `stationary_map_ridge` 1e-14, `map_ridge` 1e-13, and the cell engine's `cell_dense_max` 200,
 `cell_krylov_rtol` 1e-12, `cell_krylov_maxiter` 400, `cell_krylov_retry` 1000, and the spectral finite engine's
-`closed_loop_dense_max` 16384, the unknowns n_prim N up to which the closed loop is one dense system, beyond
-which it is assembled and solved one time panel at a time, `foc_dense_max` 8192, the unknowns nU nR N up to
+`foc_dense_max` 8192, the unknowns nU nR N up to
 which the best response builds its operators and its first-order-condition system densely, beyond which the
 operators are applied from the line paths and the system is solved by GMRES to `foc_krylov_tol` 1e-12 within
 `foc_krylov_maxiter` 400, preconditioned by its time-row blocks), the second-order check
