@@ -39,6 +39,16 @@ and the stationary ones (`settled`), is the diagnostic.  A short T gives the exa
 slightly different problem, wrong only near T: the end effect leaks back at the closed-loop rate, so
 the early part of a short-T solution is already right.
 
+## The monitor is a best-response pass
+
+The assumption past T is that every player keeps the stationary rules.  The check is one best-response
+pass: given that assumption and the transition solved on [0, T], compute each player's optimal rule
+from its first-order condition, continuation values included, and measure its distance from the
+stationary rule on the last window.  Once the transient has passed the two coincide.  This is the
+same object as the adjoint gap (the first-order condition is the adjoint applied to the responses),
+and it is what the same-model identity tests already compute as the one-shot deviation: at T = 0 the
+diagnostic is a single best response from the stationary rules with the inheritance attached.
+
 ## The march
 
 Start at T = 0.  There is no unknown: the strategies are the stationary ones from date zero, the
