@@ -130,7 +130,7 @@ class EngineBase:
         self._qa: Dict[str, np.ndarray] = {}                # agent -> (Q zeta) as an operator on the primary kernels
         self._rphys: Dict[str, np.ndarray] = {}             # agent -> physical impulse responses (all reactions off)
         self._second_order_cache: Dict[str, dict] = {}       # representative -> its second-order check, shared with tied agents
-        self._loss_forms: Dict[str, np.ndarray] = {}         # agent -> the loss form on the world (map-independent; built for the
+        self._loss_forms: Dict[tuple, np.ndarray] = {}       # (agent, init) -> the loss form on the world (map-independent; built for the
                                                             # tie representatives' second-order check in _finish and released there)
 
     # ------------------------------------------------------------ ties
@@ -442,7 +442,9 @@ class EngineBase:
         feasible strategies (those its rows can express).  The form is computed exactly from the
         cost's own Gram matrix: J(delta) = 1/2 delta' M delta with M = T' G T, T the map from a
         strategy to the world it produces and G the loss form.  Its extreme eigenvalues come from
-        Lanczos on matvecs.  Returns {"min", "max", "ok", "converged"} with min/max the eigenvalues
+        Lanczos on matvecs.  With a past the world has the initial shocks' columns after the channels',
+        each under the point form of the line s = 0 (_loss_form(agent, init=True)), as expected_cost
+        integrates them.  Returns {"min", "max", "ok", "converged"} with min/max the eigenvalues
         of M scaled by max; None when the objective is not a quadratic form in the strategy (the
         stationary engine with rho > 0: the discounted objective is not one in the stationary kernel).
         The objective is truncated at the window, so a strategy can push a little loss past the edge:
@@ -457,55 +459,69 @@ class EngineBase:
         from scipy.sparse.linalg import LinearOperator, eigsh
         N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
         GAO = self._loss_form(agent)                                             # symmetric loss form on the world
+        ncol = Gk.shape[0]                                                      # the channels, then a past's initial shocks
+        forms = [(GAO, slice(0, nW))]                                           # (loss form, its columns of the world)
+        if ncol > nW:
+            forms.append((self._loss_form(agent, init=True), slice(nW, ncol)))
         idx = np.where(keep)[0]
         Nm = Gk.shape[2] // nR if nR else N                                     # a row's map block (N, plus discrete weights with a past)
 
-        def T(delta_full):                     # strategy -> world, per channel: (n_prim N, nW)
-            Zd = np.zeros((GAO.shape[0], nW))
+        def T(delta_full):                     # strategy -> world, per column: (n_prim N, ncol)
+            Zd = np.zeros((GAO.shape[0], ncol))
             for ui in range(nU):
                 du = delta_full[ui * nR * Nm:(ui + 1) * nR * Nm]
-                for k in range(nW):
+                for k in range(ncol):
                     Zd[:, k] += Resp[ui] @ (Gk[k] @ du)
             return Zd
 
         def Tt(Zd):                            # its transpose
             out = np.zeros(nU * nR * Nm)
             for ui in range(nU):
-                RZ = Resp[ui].T @ Zd                                            # (N, nW)
-                for k in range(nW):
+                RZ = Resp[ui].T @ Zd                                            # (N, ncol)
+                for k in range(ncol):
                     out[ui * nR * Nm:(ui + 1) * nR * Nm] += Gk[k].T @ RZ[:, k]
+            return out
+
+        def GT(Zd):                            # the loss form, column by column
+            out = np.empty_like(Zd)
+            for G, sl in forms:
+                out[:, sl] = G @ Zd[:, sl]
             return out
 
         def matvec(v):
             full = np.zeros(nU * nR * Nm); full[idx] = np.asarray(v, dtype=float).ravel()
-            return Tt(GAO @ T(full))[idx]
+            return Tt(GT(T(full)))[idx]
         n = idx.size
         if n <= self.SECOND_ORDER_DENSE:
-            # the form explicitly, M = sum_k T_k' G T_k with T_k = [Resp_u G_k]_u, associated as
-            # M[u, v] = sum_k G_k' (Resp_u' G Resp_v) G_k: the inner form H_uv is N x N (through the responding
-            # primaries' nodes only), and the sum over channels is one product of the stacked row operators,
-            # restricted per channel to the rows whose column block of G_k is not identically zero
+            # the form explicitly, M = sum_k T_k' G_(k) T_k with T_k = [Resp_u G_k]_u and G_(k) the column's loss
+            # form, associated as M[u, v] = sum_k G_k' (Resp_u' G_(k) Resp_v) G_k: the inner form H_uv is N x N
+            # (through the responding primaries' nodes only), and the sum over the columns of one loss form is
+            # one product of the stacked row operators, restricted per column to the rows whose block of G_k is
+            # not identically zero
             nz = np.where(np.any(np.stack([np.any(Rv != 0, axis=1) for Rv in Resp]), axis=0))[0]   # primaries' nodes that respond
-            GAOnz = GAO[np.ix_(nz, nz)]
             Rnz = [np.ascontiguousarray(Rv[nz]) for Rv in Resp]                                    # (nz, N)
-            GR = [GAOnz @ Rv for Rv in Rnz]
-            rowsof = {}                                                                             # rows with a nonzero block -> channels
-            for k in range(nW):
-                rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * Nm:(r + 1) * Nm]))
-                if rows_k:
-                    rowsof.setdefault(rows_k, []).append(k)
-            parts = []
-            for rows_k, ks in rowsof.items():
-                cols = np.concatenate([np.arange(r * Nm, (r + 1) * Nm) for r in rows_k])
-                parts.append((cols, np.ascontiguousarray(Gk[ks][:, :, cols])))                     # (n_k, N, |cols|)
+            groups = []                                                                             # per loss form: G Resp_v and its column groups
+            for G, sl in forms:
+                GR = [G[np.ix_(nz, nz)] @ Rv for Rv in Rnz]
+                rowsof = {}                                                                         # rows with a nonzero block -> columns
+                for k in range(sl.start, sl.stop):
+                    rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * Nm:(r + 1) * Nm]))
+                    if rows_k:
+                        rowsof.setdefault(rows_k, []).append(k)
+                parts = []
+                for rows_k, ks in rowsof.items():
+                    cols = np.concatenate([np.arange(r * Nm, (r + 1) * Nm) for r in rows_k])
+                    parts.append((cols, np.ascontiguousarray(Gk[ks][:, :, cols])))                 # (n_k, N, |cols|)
+                groups.append((GR, parts))
             Mall = np.zeros((nU * nR * Nm, nU * nR * Nm))
             for ui in range(nU):
                 for vi in range(ui, nU):
-                    Huv = Rnz[ui].T @ GR[vi]                                                        # (N, N)
                     Muv = np.zeros((nR * Nm, nR * Nm))
-                    for cols, Gg in parts:
-                        HG = Huv @ Gg                                                               # every channel of the group
-                        Muv[np.ix_(cols, cols)] += Gg.reshape(-1, cols.size).T @ HG.reshape(-1, cols.size)
+                    for GR, parts in groups:
+                        Huv = Rnz[ui].T @ GR[vi]                                                    # (N, N)
+                        for cols, Gg in parts:
+                            HG = Huv @ Gg                                                           # every column of the group
+                            Muv[np.ix_(cols, cols)] += Gg.reshape(-1, cols.size).T @ HG.reshape(-1, cols.size)
                     Mall[ui * nR * Nm:(ui + 1) * nR * Nm, vi * nR * Nm:(vi + 1) * nR * Nm] = Muv
                     if vi != ui:
                         Mall[vi * nR * Nm:(vi + 1) * nR * Nm, ui * nR * Nm:(ui + 1) * nR * Nm] = Muv.T   # H_vu = H_uv'
@@ -534,15 +550,17 @@ class EngineBase:
                 out["ok"] = out["edge"]
         return out
 
-    def _loss_form(self, agent: Agent) -> np.ndarray:
+    def _loss_form(self, agent: Agent, init: bool = False) -> np.ndarray:
         """The loss form on the primary kernels, AO' kron(Q, mass) AO for the stacked atom operators AO,
         assembled block by block over the atoms' primary blocks (each atom reads one primary through one
         N x N block; an undelayed atom through the identity, whose products are skipped).  Map-independent,
-        cached per agent."""
-        if agent.name not in self._loss_forms:
+        cached per agent.  With init=True the form of a past's initial-shock column: the same atoms under
+        the point mass of the line s = 0 (_init_mass), as expected_cost integrates those columns."""
+        key = (agent.name, init)
+        if key not in self._loss_forms:
             c = self.c; N = c.N; n = len(c.prim) * N
             atoms, Q, q = c.loss[agent.name]
-            mass = c.cost_mass()
+            mass = self._init_mass() if init else c.cost_mass()
             AO = [c.atom_op(at) for at in atoms]
             blocks = [[(p, A[:, p * N:(p + 1) * N]) for p in range(len(c.prim)) if np.any(A[:, p * N:(p + 1) * N])] for A in AO]
             GAO = np.zeros((n, n))
@@ -555,8 +573,13 @@ class EngineBase:
                         for p2, Aj in blocks[j]:
                             WA = W if _is_eye(Aj) else W @ Aj
                             GAO[p * N:(p + 1) * N, p2 * N:(p2 + 1) * N] += WA if _is_eye(Ai) else Ai.T @ WA
-            self._loss_forms[agent.name] = GAO
-        return self._loss_forms[agent.name]
+            self._loss_forms[key] = GAO
+        return self._loss_forms[key]
+
+    def _init_mass(self) -> np.ndarray:
+        """Hook (spectral finite with a past): the (N, N) mass under which the cost integrates an initial
+        shock's column, a point column on the line s = 0.  Only that engine has such columns."""
+        raise NotImplementedError
 
     # ------------------------------------------------ maps from kernels
 

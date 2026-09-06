@@ -32,8 +32,8 @@ def test_kyle_back_prior_example():
     profit is 1.11508; the initial shock's loading sqrt(Sigma0) is a parameter expression that survives
     with_params().  Back's price impact at eps = 0 is sqrt(Sigma0/T)/sigma_Z = 0.7071 at T = 2 (the identity
     test below; the README records the eps sweep toward it).  The trader's second-order check flags NOT A
-    MINIMUM (-0.078): the strip quadrature's error on the D P cross term at a small trading cost, with or
-    without the prior (README, Limits)."""
+    MINIMUM (-0.0102 relative to the form's largest curvature, the prior column's): the strip quadrature's
+    error on the D P cross term at a small trading cost, with or without the prior (README, Limits)."""
     m = ns.load(EX + "kyle_back_prior.yaml")
     assert m.horizon.past["initial"][0]["loads"] == {"V": 1.0} and m.with_params(eps=0.2).horizon.past["initial"][0]["loads"] == {"V": 1.0}
     assert m.with_params(Sigma0=4.0).horizon.past["initial"][0]["loads"] == {"V": 2.0}
@@ -45,6 +45,7 @@ def test_kyle_back_prior_example():
         assert abs(be[0] - 1.0) < 1e-10 and np.all(np.diff(be) <= 1e-9) and abs(be[-1] - 0.1318) < 5e-4
         assert abs(-r.costs["trader1"] - 1.11508) < 2e-5
     assert not res[12].second_order["trader1"]["ok"] and res[12].second_order["market_maker"]["ok"]
+    assert abs(res[12].second_order["trader1"]["min"] + 0.010235) < 3e-4, res[12].second_order["trader1"]
 
 
 def test_kyle_back_prior_martingale_identity():

@@ -55,7 +55,12 @@
   4.8e-4 at T = 6, 2.7e-6 at T = 9, 0.58 at T = L).  The `past window` and `continuation window` rows echo
   their window tails.  `res.representation_parts[agent]` = {"interior", "band tip", "last window",
   "buffer"} says where the resolution guard's error sits (the band's collapsing tip and the last window
-  are geometry, not resolution) and the resolution row's flag names them.
+  are geometry, not resolution) and the resolution row's flag names them.  The second-order check's form
+  includes a past's initial-shock columns, each under the point form of the line s = 0 that `expected_cost`
+  integrates them with (`_loss_form(agent, init=True)`, the engine hook `_init_mass`), so a saddle on the
+  point weights is seen (they were a zero direction of the form before); without a past the form is
+  unchanged, and the Kyle-Back trader's flagged direction, with no weight on the point weights, keeps its
+  raw curvature to 1e-7.
 - The model file and the API.  `horizon: {kind: transition, window: T, nodes: n, discount: rho, past:
   {model: old.yaml | an inline stationary model, initial: [...]}, continuation: stationary | end,
   stationary: {window: L, nodes: m}}` compiles to the spectral finite engine with the past solved on the
@@ -120,7 +125,9 @@
   12 nodes, pinned to 1e-4, 3e-5 and 6e-5 at 0.05 and 0.03; Back's eps = 0 limit is sqrt(Sigma0/T)/sigma_Z
   = 0.7071 at T = 2 and the eps sweep converges to it, 0.614, 0.659, 0.683, 0.692, 0.697 at 0.2 down to
   0.02, eps 0.05 and below warm-started only; the trader's second-order check reports NOT A MINIMUM,
-  -0.0098 at 8 nodes and -0.0128 at 12 at eps 0.2, -0.078 at 12 at eps 0.1, passing at eps 1: a correct
+  -0.0021 at 8 nodes and -0.0018 at 12 at eps 0.2, -0.0102 at 12 at eps 0.1 relative to the form's largest
+  curvature, the prior column's (-0.0098, -0.0128 and -0.078 relative to the flow map's own), passing at
+  eps 1: a correct
   report on the discrete objective, the strip quadrature's error on the D P cross term along the line
   s = 0 at a small trading cost, present with or without the prior, not vanishing with nodes, a known
   limitation of the quadrature and not a saddle of the market; README, Transitions and Limits).  The

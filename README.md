@@ -259,8 +259,10 @@ every eps, and it does: at 12 nodes lambda = 0.614143 against sqrt((Sigma0 - Sig
 rising from 75% to 99%; eps 0.05 and below converge only warm-started from the previous point
 (`sweep`), not from a zero start, and at 0.02 the fixed point no longer converges from the warm
 start (0.697066 against the identity's 0.697067 all the same).  The trader's second-order check
-reports NOT A MINIMUM: -0.0098 at 8 nodes and -0.0128 at 12 at eps 0.2, -0.072, -0.078, -0.086 at
-8, 12, 16 at eps 0.1, passing at eps 1.  The report is correct about the discrete objective
+reports NOT A MINIMUM: -0.0021 at 8 nodes and -0.0018 at 12 at eps 0.2, -0.0145, -0.0102, -0.0083
+at 8, 12, 16 at eps 0.1 relative to the form's largest curvature, which sits on the prior column
+(relative to the flow map's own largest, -0.0098, -0.0128 and -0.072, -0.078, -0.086), passing at
+eps 1.  The report is correct about the discrete objective
 (finite differences of the trader's cost along the flagged direction equal the form to 7 digits)
 and has nothing to do with the prior: the direction is the trader's response to the first flow
 increments, alternating in t along the line s = 0, with no weight on the prior column, and the
@@ -620,11 +622,11 @@ loop (it is validated at tau = 1, L = T = 2, 5 nodes).  The closure after T assu
 transition has settled by T - L; a short T gives a biased answer that only the `settled`
 row reports.  The strip's quadrature is not exact on the product of an interpolant with its
 own Volterra integral along the line s = 0, so at a small trading cost the second-order check
-flags the Kyle-Back trader, with or without a prior: -0.013 at eps 0.2 and 12 nodes, not
-vanishing with nodes, gone at eps 1, a correct report on the discrete objective and the
-quadrature's artefact on the D P cross term, not a saddle of the market (Transitions); a
-product rule for that term on the diagonal is a candidate fix.  The second-order check ignores
-the initial-shock columns.  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
+flags the Kyle-Back trader, with or without a prior: -0.0018 at eps 0.2 and 12 nodes (-0.013
+relative to the flow map's own largest curvature), not vanishing with nodes, gone at eps 1, a
+correct report on the discrete objective and the quadrature's artefact on the D P cross term,
+not a saddle of the market (Transitions); a product rule for that term on the diagonal is a
+candidate fix.  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
 outside the grammar; a state with an empty `drift` and `noise` validates and is carried
 as its initial value.  The Chapter 4 example is the stationary variant, where V is a
 random walk on the window and the agents keep receiving V shocks.

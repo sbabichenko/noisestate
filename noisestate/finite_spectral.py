@@ -1439,6 +1439,13 @@ class SpectralFiniteSolver(EngineBase):
         G = np.einsum("ink,nm,jmk->ij", zeta, c.cost_mass(), zeta)
         return float(0.5 * np.sum(Q * G))
 
+    def _init_mass(self) -> np.ndarray:
+        """The mass of an initial shock's column for the second-order check: the time weights on the diagonal
+        nodes (the line s = 0), the quadrature expected_cost uses for those columns."""
+        c = self.c; W = np.zeros((c.N, c.N))
+        W[c.diag, c.diag] = c.time_mass(c.rho)[:c.Nd]
+        return W
+
     def continuation_cost(self, agent: Agent, Z: np.ndarray) -> float:
         """The variance part of the agent's discounted cost over the buffer [T, T + L] under the frozen stationary
         maps (the shocks of the channels; the band and the initial shocks are gone by T >= L): reported in

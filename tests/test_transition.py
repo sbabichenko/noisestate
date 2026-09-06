@@ -477,3 +477,23 @@ def test_past_validation():
     from noisestate.triangle import TriangleGrid
     with pytest.raises(ValueError, match="age panels shifted"):
         TriangleGrid([0.0, 1.0, 2.0, 3.5], 4, 4, T=3.5, window=1.0, buffer=2.0)
+
+
+def test_second_order_check_sees_the_initial_shock_columns():
+    """The check's form includes a past's initial-shock columns under the point form of the line s = 0 (the
+    quadrature expected_cost uses for them): on a one-agent problem with a prior seen at once, the point weights
+    are no longer a zero direction of the form (min was exactly 0 with the columns skipped; now positive, as the
+    finite differences of the cost along a point-weight direction say, +1.2).  The Kyle-Back prior's verdict is
+    unchanged (its flagged direction has no weight on the point weights, the raw curvature -1.209e-3 at 8 nodes,
+    eps 0.2, the same to 1e-7; the reported value is now relative to the prior column's larger curvature)."""
+    d = {"channels": ["w0"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
+         "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {}, "noise": {"w0": 1.0}}},
+                          "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}},
+         "horizon": {"kind": "transition", "window": 3.0, "nodes": 6, "discount": 0.0, "continuation": "end",
+                     "past": {"initial": [{"name": "xi", "loads": {"X": 0.9}, "rows": {"a.y": 1.0}}]}}}
+    res = ns.solve(d); so = res.second_order["a"]
+    assert res.converged and so["ok"] and so["min"] > 0.0, so
+    S = res._make_solver(res.model); c = S.c; agent = res.model.agents[0]; gam = res.maps["a"]
+    v = np.zeros_like(gam); v[0, 0, c.N:] = 1.0                                  # a direction on the point weights only
+    J = lambda h: S.expected_cost(agent, c.closed_loop({"a": gam + h * v}))
+    assert (J(1e-2) + J(-1e-2) - 2 * J(0.0)) / 1e-4 > 1.0
