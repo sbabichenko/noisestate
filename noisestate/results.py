@@ -316,7 +316,8 @@ class BaseResult:
                "residual": float(self.residual), "evaluations": int(self.iterations), "seconds": float(self.seconds),
                "message": self.message, "params": {k: float(v) for k, v in m.params.items()}, "model": m.to_dict(),
                "horizon": {k: v for k, v in asdict(m.horizon).items() if v is not None},
-               "options": {"solver": dict(self.solver_kw), "solve": dict(self.solve_kw)},
+               "options": {"solver": {k: (v.to_dict() if hasattr(v, "to_dict") else v) for k, v in self.solver_kw.items()},
+                           "solve": dict(self.solve_kw)},
                "grid": self.grid_info(), "discount": float(c.rho), "channels": self.channels,
                "agents": {a.name: {"controls": list(a.controls),
                                    "signals": {r.name: {"delay": float(r.delay), **self.map_axes(r.delay)} for r in a.signals}}
@@ -442,25 +443,39 @@ class StationaryResult(BaseResult):
 @dataclass
 class TriangleResult(BaseResult):
     kind: str = "finite"
+    past: object = None                     # the Past a transition started from (None: the game starts at rest)
+    settled: Optional[float] = None         # stage 2: how far the last window is from the new stationary equilibrium
     MAP_CONVENTION = ("the map on a row observed with delay d is stored at the shifted time t - d: maps[agent][u][row][n] "
                       "is the weight the control at time agents[agent].signals[row].map_time[n] = grid.t[n] + delay puts "
                       "on the increment of the row as the agent sees it at age grid.age[n]; that increment entered the raw "
                       "row at time grid.s[n] (age map_age[n] = grid.age[n] + delay before the control), and the map is zero "
-                      "where map_time is beyond the horizon")
+                      "where map_time is beyond the horizon; with a past, nodes with grid.s[n] < 0 weigh the increments "
+                      "observed before zero, and the entries after the grid's nodes (map_init_time) are the weights on the "
+                      "row's point observation of the initial shocks")
 
     @property
     def grid(self):
         return self.compiled.g
 
+    @property
+    def shocks(self) -> List[str]:
+        """The columns of the kernels: the channels, then the initial shocks of the past."""
+        return list(self.compiled.channels) + list(getattr(self.compiled, "init_names", []))
+
     def map_axes(self, delay: float) -> dict:
-        g = self.grid
-        return {"map_time": (g.t + delay).tolist(), "map_age": (g.a + delay).tolist()}
+        g = self.grid; c = self.compiled
+        out = {"map_time": (g.t + delay).tolist(), "map_age": (g.a + delay).tolist()}
+        if getattr(c, "n_init", 0):
+            out["map_init_time"] = (c.tm + delay).tolist()
+        return out
 
     def kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
-        """Closed-loop kernel at the triangle nodes (res.grid.t, res.grid.s): (N, nW) or (N,)."""
+        """Closed-loop kernel at the triangle nodes (res.grid.t, res.grid.s): (N, nW) or (N,); the band's
+        nodes (s < 0) are the old shocks.  channel may also name an initial shock of the past (its kernel
+        is meaningful on the nodes with s = 0)."""
         c = self.compiled
         K = self.Z[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.Z
-        return K if channel is None else K[:, self.channels.index(channel)]
+        return K if channel is None else K[:, self.shocks.index(channel)]
 
     def plot(self, path: str) -> None:
         """Each kernel as a function of the shock time s at five dates t (needs matplotlib)."""
@@ -475,7 +490,7 @@ class TriangleResult(BaseResult):
         # read the fine kernel at the coarse nodes from the same side of each piece boundary as the coarse
         # node (kernels jump across the delay line; a one-sided read from the other side is not an error)
         g = self.grid; worst = 0.0
-        I = fine.grid.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a)
+        I = fine.grid.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_d)
         for name in self.compiled.prim:
             for ch in self.channels:
                 K0 = self.kernel(name, ch); K1 = I @ fine.kernel(name, ch)
@@ -494,8 +509,21 @@ class TriangleResult(BaseResult):
 
     def grid_info(self) -> dict:
         g = self.grid
-        return {"kind": "finite", "breakpoints": [float(b) for b in g.bp], "nodes_per_side": g.nt,
-                "t": g.t.tolist(), "age": g.a.tolist(), "s": g.s.tolist()}
+        out = {"kind": "finite", "breakpoints": [float(b) for b in g.bp], "nodes_per_side": g.nt,
+               "t": g.t.tolist(), "age": g.a.tolist(), "s": g.s.tolist()}
+        if g.L is not None:
+            out["window"] = float(g.L); out["horizon"] = float(g.T)
+        return out
+
+    def to_dict(self) -> dict:
+        out = super().to_dict()
+        if self.past is not None:
+            out["past"] = self.past.to_dict()
+            out["settled"] = self.settled
+            for name in self.compiled.prim:
+                for ch in self.shocks[len(self.channels):]:
+                    out["kernels"][name][ch] = self.kernel(name, ch).tolist()
+        return out
 
     def summary(self) -> str:
         c = self.compiled

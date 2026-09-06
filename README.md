@@ -486,12 +486,19 @@ several equilibria: `ties` selects the symmetric one, an untied solve from a zer
 start may land on another.
 
 The finite engines start every state at its `initial` value (a known number, zero by
-default, which moves the mean path only) and integrate flow losses only: there is no
-initial state distribution (a value drawn once at t = 0 from a given covariance) and no
-terminal cost x(T)'Qx(T), so the canonical finite-horizon Kyle-Back model and LQ games
-with a terminal penalty are outside the grammar; a state with an empty `drift` and `noise`
-validates and is carried as its initial value.  The Chapter 4 example is the stationary variant, where
-V is a random walk on the window and the agents keep receiving V shocks.
+default, which moves the mean path only) and integrate flow losses only.  The spectral
+engine can start from a known past instead (`SpectralFiniteSolver(model, past=...)`,
+`solve(model, past=...)`): a converged stationary result or model of the regime before
+zero (the old shocks stay alive on a band of nodes with s < 0 until age L; the game
+still ends at T, and the maps within L of T, hence the kernels within about 3L of T,
+carry the end), or a list of initial shocks `{"name", "loads": {state: coef}, "rows":
+{"agent.row": coef}}` (a value drawn once at t = 0- from a given covariance, seen at
+once by the rows named, so a prior on a state is one column of the world).  A past with
+a window needs rows without observation delays, and mean paths need the past's window to
+cover T.  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
+outside the grammar; a state with an empty `drift` and `noise` validates and is carried
+as its initial value.  The Chapter 4 example is the stationary variant, where V is a
+random walk on the window and the agents keep receiving V shocks.
 
 On the finite spectral engine the time and age panels are the multiples of the
 lags closed under every lag and delay, so a lagged read and a delayed row are exact

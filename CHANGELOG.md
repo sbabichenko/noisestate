@@ -23,7 +23,39 @@
   shocks are extra columns of the world with discrete observation weights (`disc_embed`,
   `disc_select`), impulse columns are zero on the band.  Under the stationary maps of
   `examples/ch3_two_player.yaml` the closed loop on the strip (T = 6, L = 3) returns K_stat(t - s)
-  on both shock families to 5e-9.  The engine does not accept a past yet (stage 1b).
+  on both shock families to 5e-9.
+- Transition from a known past, stage 1b (the engine; the game still ends at T).
+  `SpectralFiniteSolver(model, past=...)` and `solve(model, past=...)` take a `Past`, a
+  `StationaryResult`, a stationary model/dict/path (solved on the fly) or a list of initial
+  shocks; the past is recorded in `solver_kw`, so `refine()` and `stability()` rebuild it.  The
+  best response runs on the strip: the passive rows carry their pre-zero part (the excluded agent's
+  own pre-zero actions are history), the map gains the band (the weights on the increments observed
+  before zero, identified where the old row carried something), the projection the old-shock segment
+  of every increment and the past segment of every band node, and the cost is additive over the
+  shock families; the FOC system is assembled densely over the columns of the world.  Initial
+  shocks are columns after the channels (`res.kernel(name, "xi")`, `res.shocks`) with discrete
+  observation weights after each row's map nodes (`maps` are `(nU, nR, N + Nt)`; `map_init_time`
+  in the payload).  The degenerate corner row of every Duffy triangle is one unknown with the
+  corner action node as a point condition: with a past the control reacts at once, and the zero the
+  game at rest leaves there would pollute the piece.  Mean paths start from the past's constant
+  means (a nonzero per-state `initial` overrides) and lagged reads before zero return them; they
+  need the past's window to cover T.  `TriangleResult` gains `past`, `settled` (None until stage
+  2), `shocks`, kernels on the band through `kernel()`/`evaluate()` (s < 0) and the past's
+  provenance in `to_dict()`.  Tests (`tests/test_transition.py`): a zero past is the finite engine
+  bit for bit (Z, maps, costs, evaluations, the same cached grid); the Chapter 3 stationary
+  equilibrium as its own past (L = 3, T = 12, 16 nodes) is reproduced on every node with
+  t < T - 3L to 1.4e-9 (state) and 1.2e-8 (controls), the end reaching back 3L, not L: the maps
+  within L of T carry the end, the FOC of every shock alive then (born after T - 2L) with them, and
+  the agent's own re-optimised end leaks further back through the forward-backward FOC system at
+  the closed-loop rate (4e-6 on [T - 3L, T - 2L), 1e-3 on the next window); the discounted
+  one-agent closed form with a prior N(0, P0) on the state, unobserved (a Kalman filter from
+  P(0) = P0) and observed at once (P(0) = 0), on the cost and the kernels of the prior's column;
+  the unobserved prior's column is sqrt(P0) times the state-noise channel's to round-off; a
+  precision change on Chapter 3 (p1 = 3 to 10) starts from the old kernels at 0+ exactly, and
+  `past=Model` equals `past=StationaryResult` bit for bit.  Not in this stage: the stationary
+  continuation beyond T (`settled`), a `transition` horizon kind in model files, plots and helpers,
+  a past with a window on rows observed with a delay (`NotImplementedError`), and the second-order
+  check ignores the initial-shock columns.  The shipped examples are unchanged to every digit.
 
 - `noisestate.Settings`: the tuning constants (Anderson memory and iterations, the singular-system
   and mean-system condition thresholds, the projection ridges, the second-order tolerance and the

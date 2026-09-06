@@ -38,12 +38,13 @@ from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
 
 from .engine import EngineBase
 from .compile import CompiledBase, close_under_delays, reject_leads
-from .grid import bary_rows, cheb_lobatto
+from .grid import bary_rows, bary_weights, cheb_lobatto
 from .results import TriangleResult
 from .settings import tunable
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
 from .grid_cache import triangle_grid
+from .past import Past
 
 
 def _common_unit_hint(lags, kmax: int = 100) -> str:
@@ -102,6 +103,8 @@ class SpectralCompiled(CompiledBase):
                                           "of a delayed row on the increments observed before zero has no place in the "
                                           "shifted-time storage; drift and loss lags are fine")
             bp = sorted(set(bp) | {b for b in past.breakpoints if b < L - 1e-12} | {float(L)})
+            if not lags and not hz.breakpoints:                     # no lags: time panels of width L (the shocks' lifetime), then T
+                bp = sorted(set(bp) | {float(b) for b in np.arange(0.0, self.T - 1e-12, L)})
             bp = close_under_delays(bp, lags) if lags else bp
             self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes, self.T, float(L))
         g = self.g
@@ -152,6 +155,8 @@ class SpectralCompiled(CompiledBase):
         tri = [g._piece_by_pq[(p, p)] for p in range(min(g.P, g.PL))]
         self.tm = np.concatenate([cheb_lobatto(g.nt, g.bp[p], g.bp[p + 1]) for p in range(g.P)])
         self.Nt = len(self.tm)
+        self.tm_side = np.where(np.abs(self.tm - np.repeat(g.bp[1:g.P + 1], g.nt)) < 1e-13, -1, 1)   # a panel's last node reads from below
+        self._bwt = bary_weights(g.nt)
         self.diag = np.concatenate([pc.offset + np.arange(pc.nt) * pc.na + pc.na - 1 for pc in tri])
         self.Nd = len(self.diag)                          # time nodes on which the line s = 0 exists
         self.mean_embed = np.zeros((self.N, self.Nt))
@@ -369,7 +374,7 @@ class SpectralCompiled(CompiledBase):
             if base not in paths:
                 if swap:                    # build the base geometry: the unknown reads what this key's known reads
                     kw = dict(kw, point_fn=kw["known_fn"], known_fn=kw["point_fn"])
-                paths[base] = self.g.path(self.g.t, self.g.a, side_t=self.g.side_t, **kw)
+                paths[base] = self.g.path(self.g.t, self.g.a, side_t=self.g.side_t, side_d=self.g.side_d, **kw)
             paths[key] = paths[base].swapped() if swap else paths[base]
         return paths[key]
 
@@ -569,12 +574,13 @@ class SpectralCompiled(CompiledBase):
         of the interpolant on every panel (exact for a polynomial of the panel's degree at rho = 0)."""
         key = round(float(rho), 12)
         if key not in self._time_mass:
-            xg, wg = legendre.leggauss(self.g.nt + 2)
+            g = self.g; nt = g.nt
+            xg, wg = legendre.leggauss(nt + 2)
             w = np.zeros(self.Nt)
-            for p in range(self.g.P):
-                pc = self.g._piece_by_pq[(p, p)]
-                tq = 0.5 * (pc.t1 - pc.t0) * xg + 0.5 * (pc.t1 + pc.t0); tw = 0.5 * (pc.t1 - pc.t0) * wg
-                w[p * pc.nt:(p + 1) * pc.nt] = (tw * np.exp(-key * tq)) @ bary_rows(tq, pc.tn, pc.wt)
+            for p in range(g.P):
+                t0, t1 = g.bp[p], g.bp[p + 1]
+                tq = 0.5 * (t1 - t0) * xg + 0.5 * (t1 + t0); tw = 0.5 * (t1 - t0) * wg
+                w[p * nt:(p + 1) * nt] = (tw * np.exp(-key * tq)) @ bary_rows(tq, self.tm[p * nt:(p + 1) * nt], self._bwt)
             self._time_mass[key] = w
         return self._time_mass[key]
 
@@ -588,7 +594,8 @@ class SpectralCompiled(CompiledBase):
                 self._mean_reads[key] = np.eye(self.Nt)
             else:
                 t = self.tm - key
-                self._mean_reads[key] = self.g.interp(t, t, side_t=self.g.side_t[self.diag]) @ self.mean_embed
+                a = t if self.g.L is None else np.zeros(self.Nt)          # the line s = 0, or (cut at L) the row's age-0 node
+                self._mean_reads[key] = self.g.interp(t, a, side_t=self.tm_side) @ self.mean_embed
         return self._mean_reads[key]
 
     def projection_rows(self, Y: np.ndarray, delay: float) -> np.ndarray:
@@ -838,12 +845,28 @@ class SpectralFiniteSolver(EngineBase):
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
     MAP_RIDGE = tunable("map_ridge")      # ridge of the per-time-row map projection, relative to the row's own Gram (settings)
 
-    def __init__(self, model: Model, verbose: bool = False, settings=None):
+    def __init__(self, model: Model, verbose: bool = False, settings=None, past=None):
         """The triangle grid's compiled model and the map shapes (nU, nR, N).  settings: the tuning constants
-        (noisestate.Settings, or a dict of its fields; the defaults when None)."""
-        super().__init__(model, verbose, settings=settings)
-        self.c = SpectralCompiled(model)
-        self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
+        (noisestate.Settings, or a dict of its fields; the defaults when None).  past: the known past of a
+        transition (a Past, a StationaryResult, a stationary Model/dict/path solved on the fly, or a list
+        of initial shocks; see past.py): the game then starts at time zero from that regime and still ends
+        at T; recorded in solver_kw, so refine() and stability() rebuild it.  With initial shocks the maps
+        are (nU, nR, N + Nt): after each row's map nodes, the discrete weights on the row's point
+        observation of the shocks, on the time nodes."""
+        past = Past.of(past) if past is not None else None
+        super().__init__(model, verbose, settings=settings, **({"past": past} if past is not None else {}))
+        self.c = SpectralCompiled(model, past=past)
+        self.Nm = self.c.N + (self.c.Nt if self.c.n_init else 0)
+        self.shapes = {a.name: (len(a.controls), len(a.signals), self.Nm) for a in model.agents}
+
+    @property
+    def action_shapes(self) -> Dict[str, Tuple[int, int, int]]:
+        """Action kernels: (n_controls, N, ncol) per agent, the columns the channels then the initial shocks."""
+        return {a.name: (len(a.controls), self.c.N, self.c.ncol) for a in self.model.agents}
+
+    def _finish(self, res) -> None:
+        res.past = self.c.past
+        super()._finish(res)
 
     # ------------------------------------------------ best-response pieces
     def _identified(self, agent: Agent) -> np.ndarray:
@@ -853,19 +876,77 @@ class SpectralFiniteSolver(EngineBase):
         masked inside a piece; with a mask cutting through a piece the interpolant of the map between the
         kept nodes and the zeroed ones is meaningless, and the delayed rows were not exact.)"""
         c = self.c; g = c.g; N = c.N
-        keep = np.ones(len(agent.signals) * N, dtype=bool)
-        for r in range(len(agent.signals)):
+        if c.past is None:
+            keep = np.ones(len(agent.signals) * N, dtype=bool)
+            for r in range(len(agent.signals)):
+                d = c.rows[agent.name][r][3]
+                if d > 0:
+                    keep[r * N:(r + 1) * N] = c.panel_of_node + c.panel_shift(d) < g.P
+            return keep
+        # with a past: the band's map nodes of a row whose old regime carried nothing are masked (nothing to
+        # read), and a row's discrete weights are kept only where it sees an initial shock
+        Nm = self.Nm; nR = len(agent.signals)
+        keep = np.zeros(nR * Nm, dtype=bool)
+        for r in range(nR):
             d = c.rows[agent.name][r][3]
-            if d > 0:
-                keep[r * N:(r + 1) * N] = c.panel_of_node + c.panel_shift(d) < g.P
+            k = c.panel_shift(d) if d > 0 else 0
+            flow = c.panel_of_node + k < g.P
+            if g.L is not None:
+                empty = not np.any(c.past_row_kernel(agent.name, r)) and not np.any(c.E_old[agent.name][r])
+                if empty:
+                    flow = flow & ~g.upper
+            keep[r * Nm:r * Nm + N] = flow
+            if c.n_init and np.any(c.init_rows[agent.name][r]):
+                tpanel = np.repeat(np.arange(g.P), g.nt)
+                keep[r * Nm + N:(r + 1) * Nm] = tpanel + k < g.P
         return keep
 
     def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
-        """The system on the kept unknowns, solved directly; a singular one raises (see _solve_regular)."""
+        """The system on the kept unknowns, solved directly; a singular one raises (see _solve_regular).
+        With a past the nodes of a Duffy triangle's degenerate corner row (one point, na nodes) are one
+        unknown (see _maps_from_world_past): the system is restricted to that space (the group's columns
+        summed, its equations summed), so the map's interpolant is single-valued at the corner."""
         keep = np.tile(self._identified(agent), len(agent.controls))
         gamma = np.zeros(Amat.shape[0])
-        gamma[keep] = self._solve_regular(agent, Amat[np.ix_(keep, keep)], -bvec[keep])
+        if self.c.past is None:
+            gamma[keep] = self._solve_regular(agent, Amat[np.ix_(keep, keep)], -bvec[keep])
+            return gamma
+        Rm = self._corner_ties(agent)[keep]
+        Rm = Rm[:, np.any(Rm, axis=0)]
+        A = Rm.T @ Amat[np.ix_(keep, keep)] @ Rm
+        gamma[keep] = Rm @ self._solve_regular(agent, A, -(Rm.T @ bvec[keep]))
         return gamma
+
+    def _corner_ties(self, agent: Agent) -> np.ndarray:
+        """(nG, nG') restriction of the FOC unknowns (control, row, node) to one value per degenerate corner row
+        of every Duffy triangle (the lower one's row at t = t_p, the upper one's at t = t_{p+1}); every other
+        unknown is its own column.  Cached per agent shape."""
+        key = ("ties", len(agent.controls), len(agent.signals))
+        if key not in self.c._disc:
+            c = self.c; g = c.g; Nm = self.Nm
+            nU, nR = len(agent.controls), len(agent.signals)
+            group = -np.ones(Nm, dtype=int)                                     # node -> corner group id (per row block)
+            ng = 0
+            for pc in g.pieces:
+                if pc.triangle:
+                    nodes = pc.offset + (0 if not pc.upper else (pc.nt - 1) * pc.na) + np.arange(pc.na)
+                    group[nodes] = ng; ng += 1
+            nG = nU * nR * Nm
+            cols = np.zeros(nG, dtype=int); col = 0
+            for ui in range(nU):
+                for r in range(nR):
+                    base = (ui * nR + r) * Nm
+                    seen = {}
+                    for n in range(Nm):
+                        if group[n] < 0:
+                            cols[base + n] = col; col += 1
+                        elif group[n] in seen:
+                            cols[base + n] = seen[group[n]]
+                        else:
+                            seen[group[n]] = col; cols[base + n] = col; col += 1
+            Rm = np.zeros((nG, col)); Rm[np.arange(nG), cols] = 1.0
+            self.c._disc[key] = Rm
+        return self.c._disc[key]
 
     def _project(self, agent: Agent, Zfull: np.ndarray, cact: np.ndarray) -> np.ndarray:
         """Raw maps (nU, nR, N) reproducing the action kernels cact (nU, N, nW) on the closed-loop rows of
@@ -879,6 +960,8 @@ class SpectralFiniteSolver(EngineBase):
         nR, nU = len(agent.signals), len(agent.controls)
         rows, inst = self._seen_rows(agent, Zfull, set())
         Bk = self._row_operator(agent, rows, inst)
+        if c.past is not None:
+            return self._maps_from_world_past(agent, Bk, cact)
         gmap = np.zeros((nU, nR, N))
         shifts = [c.panel_shift(c.rows[agent.name][r][3]) if c.rows[agent.name][r][3] > 0 else 0 for r in range(nR)]
         systems: Dict[int, list] = {}                     # size -> [(cols, G, [rhs per control])]: solved in one call per size
@@ -905,10 +988,98 @@ class SpectralFiniteSolver(EngineBase):
                     gmap[ui].reshape(-1)[cols] = x
         return gmap
 
+    def _maps_from_world_past(self, agent: Agent, Bk: np.ndarray, cact: np.ndarray) -> np.ndarray:
+        """maps_from_world with a past: the Gram of a time row runs over the ages [0, L] of both shock families
+        (the band's action nodes read the map's band through the past's row kernel) plus, for each initial
+        shock, its point at the row's node on the line s = 0; the unknowns of the time row are the map nodes
+        at the shifted time and, for a row seeing an initial shock, its discrete weight there.
+        The degenerate corner of a Duffy triangle (the lower one's row at t = t_p, the upper one's at
+        t = t_{p+1}, every theta node at one point) has no quadrature weight; the game starting at rest leaves it at zero, which is
+        exact there (nothing has been seen at t = 0), but with a past the control reacts at once and the
+        corner is the map's value at the oldest increment: the corner's nodes are tied to one unknown and
+        the corner action node is a point condition (the instantaneous entry identifies it)."""
+        c = self.c; g = c.g; N, nW = c.N, c.nW; Nm = self.Nm
+        nR, nU = len(agent.signals), len(agent.controls)
+        keep = self._identified(agent)
+        gmap = np.zeros((nU, nR, Nm))
+        shifts = [c.panel_shift(c.rows[agent.name][r][3]) if c.rows[agent.name][r][3] > 0 else 0 for r in range(nR)]
+        diag_of = {int(node): j for j, node in enumerate(c.diag)}
+        corner_of = {}                                                          # node -> its triangle, on the degenerate row
+        for pc in g.pieces:
+            if pc.triangle:                                                     # lower: the row at t_p; upper: the row at t_{p+1}
+                for node in pc.offset + (0 if not pc.upper else (pc.nt - 1) * pc.na) + np.arange(pc.na):
+                    corner_of[int(node)] = (pc.p, pc.upper)
+        for (p, it), idx in sorted(c.trow_by_pit.items()):
+            tv = g.t[idx[0]]
+            w = g.row_weights(tv, side=(-1 if tv >= g.bp[p + 1] - 1e-12 else +1))[idx]
+            parts = []
+            for r in range(nR):
+                if p - shifts[r] < 0:
+                    continue
+                parts.append(r * Nm + c.trow_by_pit[(p - shifts[r], it)])
+                if c.n_init:
+                    parts.append(np.array([r * Nm + N + (p - shifts[r]) * g.nt + it]))
+            if not parts:
+                continue
+            cols = np.concatenate(parts)
+            cols = cols[keep[cols]]
+            if cols.size == 0:
+                continue
+            # reduce the corner groups (row r, triangle p) to one unknown each
+            groups = {}
+            for j, col in enumerate(cols):
+                r, node = divmod(int(col), Nm)
+                if node < N and node in corner_of:
+                    groups.setdefault((r, corner_of[node]), []).append(j)
+            single = [j for j in range(len(cols)) if not any(j in js for js in groups.values())]
+            Rm = np.zeros((len(cols), len(single) + len(groups)))
+            for i, j in enumerate(single):
+                Rm[j, i] = 1.0
+            for i, js in enumerate(groups.values()):
+                Rm[js, len(single) + i] = 1.0
+            Bsub = Bk[:, idx][:, :, cols] @ Rm
+            G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
+            rhs = [sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW)) for ui in range(nU)]
+            jc = [j for j, node in enumerate(idx) if int(node) in corner_of]        # the time row's own degenerate corner
+            if groups and jc:
+                jc = jc[0]
+                for k in range(nW):
+                    G = G + np.outer(Bsub[k][jc], Bsub[k][jc])
+                    for ui in range(nU):
+                        rhs[ui] = rhs[ui] + Bsub[k][jc] * cact[ui, idx[jc], k]
+            jd = [j for j, node in enumerate(idx) if int(node) in diag_of]          # the time row's node on s = 0, if any
+            if c.n_init and jd:
+                jd = jd[0]
+                for i in range(c.n_init):
+                    G = G + np.outer(Bsub[nW + i][jd], Bsub[nW + i][jd])
+                    for ui in range(nU):
+                        rhs[ui] = rhs[ui] + Bsub[nW + i][jd] * cact[ui, idx[jd], nW + i]
+            if np.trace(G) <= 0:
+                continue
+            G = G + self.MAP_RIDGE * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
+            for ui in range(nU):
+                gmap[ui].reshape(-1)[cols] = Rm @ np.linalg.solve(G, rhs[ui])
+        return gmap
+
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
         """Closed-loop primary kernels when every agent's action kernels are given."""
         c = self.c; N, nW = c.N, c.nW
         n = len(c.prim) * N
+        if c.past is not None:
+            Z = np.zeros((n, c.ncol))
+            for a in self.model.agents:
+                for ui, u in enumerate(a.controls):
+                    Z[c.block(u)] = actions[a.name][ui]
+            if c.nX:
+                blocks, B0 = c._state_part(None, set(), [])
+                rhs = B0[:c.nX * N].copy(); Lx = np.zeros((c.nX * N, c.nX * N))
+                for (i, p), blk in blocks.items():
+                    if p < c.nX:
+                        Lx[i * N:(i + 1) * N, p * N:(p + 1) * N] += blk
+                    else:
+                        rhs[i * N:(i + 1) * N] += blk @ Z[p * N:(p + 1) * N]
+                Z[:c.nX * N] = np.linalg.solve(np.eye(c.nX * N) - Lx, rhs) if Lx.any() else rhs
+            return Z
         Z = np.zeros((n, nW))
         for a in self.model.agents:
             for ui, u in enumerate(a.controls):
@@ -947,14 +1118,180 @@ class SpectralFiniteSolver(EngineBase):
         c = self.c
         atoms, Q, q = c.loss[agent.name]
         zeta = np.stack([c.atom_op(at) @ Z for at in atoms])                  # (m, N, nW)
+        if c.past is not None:
+            # the pre-zero part of the lagged atoms on the band, then the initial shocks along the line s = 0
+            zeta[:, :, :c.nW] += c.zeta_past(agent.name)
+            G = np.einsum("ink,nm,jmk->ij", zeta[:, :, :c.nW], c.cost_mass(), zeta[:, :, :c.nW])
+            if c.n_init:
+                w = c.time_mass(c.rho)[:c.Nd]
+                zd = zeta[:, c.diag, c.nW:]                                   # (m, Nd, n_init)
+                G = G + np.einsum("itk,t,jtk->ij", zd, w, zd)
+            return float(0.5 * np.sum(Q * G))
         G = np.einsum("ink,nm,jmk->ij", zeta, c.cost_mass(), zeta)
         return float(0.5 * np.sum(Q * G))
 
     def interpolate_maps(self, coarse) -> Dict[str, np.ndarray]:
         """The coarse result's raw maps read at this triangle's nodes from each node's side of its piece."""
-        g, gc = self.c.g, coarse.compiled.g
+        c = self.c; g, gc = c.g, coarse.compiled.g
+        if c.past is not None:
+            I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_d)
+            out = {}
+            for a in self.model.agents:
+                gm = np.zeros(self.shapes[a.name])
+                gm[:, :, :c.N] = np.einsum("fn,urn->urf", I, coarse.maps[a.name][:, :, :gc.N])
+                if c.n_init:
+                    It = gc.interp(c.tm, np.zeros(c.Nt), side_t=np.where(np.abs(c.tm - np.repeat(g.bp[1:g.P + 1], g.nt)) < 1e-12, -1, 1)) @ coarse.compiled.mean_embed
+                    gm[:, :, c.N:] = np.einsum("fn,urn->urf", It, coarse.maps[a.name][:, :, gc.N:])
+                out[a.name] = gm
+            return out
         I = gc.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a)
         return {a.name: np.einsum("fn,urn->urf", I, coarse.maps[a.name]) for a in self.model.agents}
+
+    # ------------------------------------------- best response with a past
+    # Every piece below calls the base with no past and, with one, assembles the same objects over the
+    # strip and the initial shocks: the seen rows gain their pre-zero part, the row operator the band's
+    # read of the past's increments and the discrete weights, the projection the old-shock segments and
+    # the point conditions, and the FOC system is assembled densely (H_k (Fu Resp) G_k summed over the
+    # columns of the world) with the FOC kernel's affine pre-zero part.
+    def _seen_rows(self, agent: Agent, Z: np.ndarray, excluded: set):
+        rows, inst = super()._seen_rows(agent, Z, excluded)
+        c = self.c
+        if c.past is not None and c.g.L is not None:
+            for r in range(len(rows)):
+                rows[r][:, :c.nW] += c.row_past(agent.name, r)
+        return rows, inst
+
+    def _row_operator(self, agent: Agent, rows, inst):
+        c = self.c
+        if c.past is None:
+            return super()._row_operator(agent, rows, inst)
+        N, nW, ncol, Nm = c.N, c.nW, c.ncol, self.Nm; nR = len(rows)
+        Gk = np.zeros((ncol, N, nR * Nm))
+        sup, groups = self._row_support(agent, rows)
+        for d, rs in groups.items():
+            pairs = [(r, k) for r in rs for k in np.where(sup[r])[0]]
+            if pairs:
+                ops = c.conv_rows(np.stack([rows[r][:, k] for r, k in pairs], axis=1), d)
+                for i, (r, k) in enumerate(pairs):
+                    Gk[k, :, r * Nm:r * Nm + N] = ops[i]
+        for r in range(nR):
+            d = c.rows[agent.name][r][3]
+            if c.g.L is not None:
+                Kp = c.past_row_kernel(agent.name, r)
+                for k in range(nW):
+                    if np.any(Kp[:, k]):
+                        Gk[k, :, r * Nm:r * Nm + N] += c.past_conv_path().with_known(Kp[:, k])
+            for (k, age, w) in inst[r]:
+                Gk[k, :, r * Nm:r * Nm + N] += c.noise_weight(agent.name, r, k, w)[:, None] * c.instant(age, d)
+            if c.n_init:
+                for i in range(c.n_init):
+                    e = c.init_rows[agent.name][r, i]
+                    if e:
+                        Gk[nW + i, :, r * Nm + N:(r + 1) * Nm] += e * c.disc_embed(d)
+        return Gk
+
+    def _projection_operator(self, agent: Agent, rows, inst):
+        c = self.c
+        if c.past is None:
+            return super()._projection_operator(agent, rows, inst)
+        N, nW, ncol, Nm = c.N, c.nW, c.ncol, self.Nm; nR = len(rows)
+        H = np.zeros((nR * Nm, ncol * N))
+        for r in range(nR):
+            d = c.rows[agent.name][r][3]
+            flow = slice(r * Nm, r * Nm + N)
+            H[flow, :nW * N] += c.projection_rows(rows[r][:, :nW], d)
+            if c.g.L is not None:
+                raw = rows[r][:, :nW] if not d else c.read(-d, -d) @ rows[r][:, :nW]
+                Kp = c.past_row_kernel(agent.name, r)
+                for k in range(nW):
+                    if np.any(raw[:, k]):
+                        H[flow, k * N:(k + 1) * N] += c.old_shock_proj_path().with_known(raw[:, k])
+                    if np.any(Kp[:, k]):
+                        H[flow, k * N:(k + 1) * N] += c.past_proj_path().with_known(Kp[:, k])
+            for (k, age, w) in inst[r]:
+                H[flow, k * N:(k + 1) * N] += (c.noise_weight(agent.name, r, k, w)[:, None] * c.instant(age, d)).T
+            if c.n_init:
+                Id = c.diag_read(d); St = c.shock_time_read()
+                for i in range(c.n_init):
+                    col = slice((nW + i) * N, (nW + i + 1) * N)
+                    yi = St @ rows[r][:, nW + i]                              # the row's kernel on the shock at the increment's time
+                    if np.any(yi):
+                        H[flow, col] += yi[:, None] * Id
+                    e = c.init_rows[agent.name][r, i]
+                    if e:
+                        H[r * Nm + N:(r + 1) * Nm, col] += e * c.disc_select(d)
+        return H
+
+    def _foc_affine(self, agent: Agent, Ms) -> Optional[list]:
+        """Per control, the pre-zero part of the FOC kernel on the band, (N, nW): the lagged loss atoms read
+        before zero through the same operators as the kernels (None when there is none)."""
+        c = self.c
+        if c.g.L is None:
+            return None
+        zp = c.zeta_past(agent.name)
+        if not np.any(zp):
+            return None
+        atoms, Q, q = c.loss[agent.name]
+        out = []
+        for ui in range(len(agent.controls)):
+            MQ = np.tensordot(Q.T, Ms[ui], axes=1)                             # MQ[i] = sum_j Q[j, i] M_j
+            out.append(sum(MQ[i] @ zp[i] for i in range(len(atoms))))
+        return out
+
+    def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
+        c = self.c
+        if c.past is None:
+            return super().best_response(agent, maps, want_decomp)
+        N, nW, ncol, Nm = c.N, c.nW, c.ncol, self.Nm
+        nR, nU = len(agent.signals), len(agent.controls)
+        Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
+        Zpass, R = Zp[:, :ncol], Zp[:, ncol:]
+        R = self._impulse_responses(agent, maps, R)
+        Zpass = self._passive_world(agent, maps, Zpass, R)
+        ytil, yinst = self._passive_rows(agent, Zpass)
+        Gk = self._row_operator(agent, ytil, yinst)
+        Resp = self._response_operators(agent, R)
+        Fu, Ms = self._foc_operators(agent, R, atoms=True)
+        phi_past = self._foc_affine(agent, Ms)
+        H = self._projection_operator(agent, ytil, yinst)
+        nG = nU * nR * Nm
+        Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
+        for ui in range(nU):
+            phi = Fu[ui] @ Zpass                                                # (N, ncol)
+            if phi_past is not None:
+                phi[:, :nW] += phi_past[ui]
+            rows_u = slice(ui * nR * Nm, (ui + 1) * nR * Nm)
+            bvec[rows_u] = sum(H[:, k * N:(k + 1) * N] @ phi[:, k] for k in range(ncol))
+            for vi in range(nU):
+                FR = Fu[ui] @ Resp[vi]
+                Amat[rows_u, vi * nR * Nm:(vi + 1) * nR * Nm] = sum(H[:, k * N:(k + 1) * N] @ (FR @ Gk[k]) for k in range(ncol))
+        gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, Nm)
+        cact = np.stack([(Gk @ gamma[ui].reshape(-1)).T for ui in range(nU)])
+        Zfull = Zpass.copy()
+        for ui in range(nU):
+            Zfull += Resp[ui] @ cact[ui]
+        out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
+        if want_decomp:
+            self._decompose(agent, out, Fu, Resp, Gk, maps)
+            if phi_past is not None:
+                for ui, u in enumerate(agent.controls):
+                    for part in ("foc", "physical"):
+                        out["decomp"][u][part] = out["decomp"][u][part] + phi_past[ui]
+        return self._project(agent, Zfull, cact), out
+
+    def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
+        if self.c.past is None:
+            return super()._representation_error(agent, Zfull, actions, g)
+        rows, inst = self._seen_rows(agent, Zfull, set())
+        Bk = self._row_operator(agent, rows, inst)
+        c = self.c; worst = 0.0
+        for ui in range(len(agent.controls)):
+            recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(Bk.shape[0])], axis=1)
+            err = np.abs(recon - actions[ui])
+            err[:, c.nW:] = 0.0
+            err[c.diag, c.nW:] = np.abs(recon - actions[ui])[c.diag, c.nW:]     # an initial shock's column: on the line s = 0 only
+            worst = max(worst, float(err.max() / max(1e-300, np.abs(actions[ui][:, :c.nW]).max(), np.abs(actions[ui][c.diag, c.nW:]).max(initial=0.0))))
+        return worst
 
     # ------------------------------------------------------------ means
     MEAN_RCOND = tunable("mean_rcond")          # a mean system whose reciprocal condition estimate is below this is singular (settings)
@@ -973,10 +1310,15 @@ class SpectralFiniteSolver(EngineBase):
         equilibrium kernels, the agent's own control passive) applied to the mean paths with no information
         constraint (a deterministic path is common knowledge) and the targets q as the driver in place of
         the shocks.  Linear in (q, x0, const): one direct solve, no iteration."""
-        c = self.c; N, Nt, nP, nX, nW = c.N, c.Nt, len(c.prim), c.nX, c.nW
+        c = self.c; N, Nt, nP, nX = c.N, c.Nt, len(c.prim), c.nX
+        if c.Nd < Nt:
+            raise NotImplementedError("the mean paths need the line s = 0 on every time panel: with a past whose window is "
+                                      "shorter than the horizon it is cut off at age L (stage 2 closes the tail); give the past "
+                                      "a window of at least T, or drop the targets, constant drifts and initial values")
         E, diag = c.mean_embed, c.diag
         blk = lambda i: slice(i * Nt, (i + 1) * Nt)
         M = np.zeros((nP * Nt, nP * Nt)); b = np.zeros(nP * Nt); ones = np.ones(N)
+        x0 = self._mean_start()
         if nX:
             blocks, B0 = c._state_part(None, set(), [])
             for i in range(nX):
@@ -985,10 +1327,14 @@ class SpectralFiniteSolver(EngineBase):
                 M[blk(i), blk(p)] -= B[diag] @ E
             EA = c.expA(c.tm)
             for i in range(nX):
-                b[blk(i)] = EA[:, i, :] @ c.x0 + sum((c.const[j] * (c.Vol[i, j][diag] @ ones) for j in range(nX) if c.const[j]), 0.0)
+                b[blk(i)] = EA[:, i, :] @ x0 + sum((c.const[j] * (c.Vol[i, j][diag] @ ones) for j in range(nX) if c.const[j]), 0.0)
+                for si, (nm, lag), coef in c.state_inputs:                  # lagged inputs read before zero: the old means
+                    pre = self._mean_before(nm, lag)
+                    if pre is not None:
+                        b[blk(i)] += coef * (c.Vol[i, si][diag] @ (E @ pre))
         for a in self.model.agents:
             atoms, Q, q = c.loss[a.name]
-            R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)[:, nW:]
+            R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)[:, c.ncol:]
             R = self._impulse_responses(a, maps, R)
             Fu, Ms = self._foc_operators(a, R, atoms=True)
             for ui, u in enumerate(a.controls):
@@ -997,14 +1343,43 @@ class SpectralFiniteSolver(EngineBase):
                 for p in range(nP):
                     M[row, blk(p)] = Fd[:, p, :] @ E
                 b[row] = -sum((q[j] * (Ms[ui][j][diag] @ ones) for j in range(len(atoms)) if q[j]), 0.0)
+                MQ = None
+                for i, (nm, lag) in enumerate(atoms):                       # lagged atoms read before zero: the old means
+                    pre = self._mean_before(nm, lag)
+                    if pre is not None:
+                        MQ = np.tensordot(Q.T, Ms[ui], axes=1) if MQ is None else MQ
+                        b[row] -= (MQ[i][diag] @ (E @ pre))
         return M, b
+
+    def _mean_start(self) -> np.ndarray:
+        """The mean state at time zero: the model's per-state `initial` where given (nonzero), else the past's
+        constant mean of the state (zero without a past)."""
+        c = self.c
+        x0 = np.array(c.x0, dtype=float)
+        if c.past is not None:
+            for i, name in enumerate(self.model.state_names):
+                if x0[i] == 0.0:
+                    x0[i] = c.past.mean(name)
+        return x0
+
+    def _mean_before(self, name: str, lag: float) -> Optional[np.ndarray]:
+        """(Nt,): the pre-zero value of `name` read `lag` earlier at every time node (the past's constant mean
+        on the time nodes before the lag, zero after); None when nothing is read before zero."""
+        c = self.c; g = c.g
+        if lag <= 0 or c.past is None or not c.past.mean(name):
+            return None
+        tpanel = np.repeat(np.arange(g.P), g.nt)
+        return np.where(g.bp[tpanel + 1] <= lag + 1e-12, c.past.mean(name), 0.0)
 
     def solve_means(self, maps: Dict[str, np.ndarray]) -> np.ndarray:
         """The mean paths of the primaries (states then controls, Nt values each) under `maps`: exactly zero,
         with no solve, when nothing drives them (every q zero, no constant drift, no initial state); else
         the direct solve of mean_system, refusing a singular system."""
         c = self.c
-        if not (c.x0.any() or c.const.any() or any(q.any() for atoms, Q, q in c.loss.values())):
+        driven = c.x0.any() or c.const.any() or any(q.any() for atoms, Q, q in c.loss.values())
+        if c.past is not None and any(c.past.mean(n) for n in c.prim):
+            driven = True
+        if not driven:
             return np.zeros(len(c.prim) * c.Nt)
         M, b = self.mean_system(maps)
         with warnings.catch_warnings():
@@ -1023,14 +1398,19 @@ class SpectralFiniteSolver(EngineBase):
         paths, read on the line s = 0 (a lagged atom is the path at t - lag, zero before 0)."""
         c = self.c; Nt = c.Nt
         Zm = np.concatenate([c.mean_embed @ zbar[p * Nt:(p + 1) * Nt] for p in range(len(c.prim))])
-        return np.stack([(c.atom_op(at) @ Zm)[c.diag] for at in atoms])
+        out = np.stack([(c.atom_op(at) @ Zm)[c.diag] for at in atoms])
+        for i, (nm, lag) in enumerate(atoms):
+            pre = self._mean_before(nm, lag)
+            if pre is not None:
+                out[i] += pre[:c.Nd]
+        return out
 
     def mean_cost(self, agent: Agent, zbar: np.ndarray) -> float:
         """The mean part of the agent's discounted cost, int_0^T e^{-rho t} (1/2 zbar'Q zbar + q'zbar) dt over its
         loss atoms at the mean paths `zbar` (the constant of a target, theta^2, is not in the model): spectral
         quadrature on the time panels."""
         atoms, Q, q = self.c.loss[agent.name]
-        zeta = self._mean_atoms(zbar, atoms); w = self.c.time_mass(self.c.rho)
+        zeta = self._mean_atoms(zbar, atoms); w = self.c.time_mass(self.c.rho)[:self.c.Nd]
         return float(0.5 * np.einsum("it,ij,jt,t->", zeta, Q, zeta, w) + q @ (zeta @ w))
 
     def _mean_part(self, res) -> None:
@@ -1040,7 +1420,8 @@ class SpectralFiniteSolver(EngineBase):
         c = self.c; m = self.model; Nt = c.Nt
         zbar = self.solve_means(res.maps)
         blk = lambda nm: slice(c.index[nm] * Nt, (c.index[nm] + 1) * Nt)
-        value = lambda expr: sum((coef * (c.mean_read(lag) @ zbar[blk(nm)]) for (nm, lag), coef in expr.items()), np.zeros(Nt))
+        before = lambda nm, lag: (lambda pre: np.zeros(Nt) if pre is None else pre)(self._mean_before(nm, lag))
+        value = lambda expr: sum((coef * (c.mean_read(lag) @ zbar[blk(nm)] + before(nm, lag)) for (nm, lag), coef in expr.items()), np.zeros(Nt))
         res.means = {name: zbar[blk(name)].copy() for name in c.prim}
         res.means.update({d.name: value(m.expand({d.name: 1.0})) for d in m.definitions})
         res.means.update({f"{a.name}.{r.name}": value(m.expand(r.drift)) for a in m.agents for r in a.signals})

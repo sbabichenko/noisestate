@@ -374,7 +374,9 @@ class TriangleGrid:
                 sel = lp.rows == k
                 tt, aa = known_fn(int(k), lp.r[sel]); kt[sel] = tt; ka[sel] = aa
             st_J = np.where(at_bp(kt), side_t[lp.rows], +1) if side_t.ndim == 1 else +1
-            lp.Jf = self.interp_factors(kt, ka, side_t=st_J, side_d=sd_I)   # the known kernel is read through its factors
+            # the known kernel is read through its factors; a known read on the diagonal (an impulse response
+            # at (r, r) from a node at t = 0) is the new-shock side: the node's side_d is the unknown's
+            lp.Jf = self.interp_factors(kt, ka, side_t=st_J)
             lp.J = self.interp_sparse(kt, ka, side_t=st_J, factors=lp.Jf)
         lp.out_t = out_t; lp.out_a = out_a
         lp.R = csr_matrix((np.ones(len(lp.rows)), (lp.rows, np.arange(len(lp.rows)))), shape=(n_out, len(lp.rows)))

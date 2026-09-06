@@ -458,25 +458,26 @@ class EngineBase:
         N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
         GAO = self._loss_form(agent)                                             # symmetric loss form on the world
         idx = np.where(keep)[0]
+        Nm = Gk.shape[2] // nR if nR else N                                     # a row's map block (N, plus discrete weights with a past)
 
         def T(delta_full):                     # strategy -> world, per channel: (n_prim N, nW)
             Zd = np.zeros((GAO.shape[0], nW))
             for ui in range(nU):
-                du = delta_full[ui * nR * N:(ui + 1) * nR * N]
+                du = delta_full[ui * nR * Nm:(ui + 1) * nR * Nm]
                 for k in range(nW):
                     Zd[:, k] += Resp[ui] @ (Gk[k] @ du)
             return Zd
 
         def Tt(Zd):                            # its transpose
-            out = np.zeros(nU * nR * N)
+            out = np.zeros(nU * nR * Nm)
             for ui in range(nU):
                 RZ = Resp[ui].T @ Zd                                            # (N, nW)
                 for k in range(nW):
-                    out[ui * nR * N:(ui + 1) * nR * N] += Gk[k].T @ RZ[:, k]
+                    out[ui * nR * Nm:(ui + 1) * nR * Nm] += Gk[k].T @ RZ[:, k]
             return out
 
         def matvec(v):
-            full = np.zeros(nU * nR * N); full[idx] = np.asarray(v, dtype=float).ravel()
+            full = np.zeros(nU * nR * Nm); full[idx] = np.asarray(v, dtype=float).ravel()
             return Tt(GAO @ T(full))[idx]
         n = idx.size
         if n <= self.SECOND_ORDER_DENSE:
@@ -490,24 +491,24 @@ class EngineBase:
             GR = [GAOnz @ Rv for Rv in Rnz]
             rowsof = {}                                                                             # rows with a nonzero block -> channels
             for k in range(nW):
-                rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * N:(r + 1) * N]))
+                rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * Nm:(r + 1) * Nm]))
                 if rows_k:
                     rowsof.setdefault(rows_k, []).append(k)
             parts = []
             for rows_k, ks in rowsof.items():
-                cols = np.concatenate([np.arange(r * N, (r + 1) * N) for r in rows_k])
+                cols = np.concatenate([np.arange(r * Nm, (r + 1) * Nm) for r in rows_k])
                 parts.append((cols, np.ascontiguousarray(Gk[ks][:, :, cols])))                     # (n_k, N, |cols|)
-            Mall = np.zeros((nU * nR * N, nU * nR * N))
+            Mall = np.zeros((nU * nR * Nm, nU * nR * Nm))
             for ui in range(nU):
                 for vi in range(ui, nU):
                     Huv = Rnz[ui].T @ GR[vi]                                                        # (N, N)
-                    Muv = np.zeros((nR * N, nR * N))
+                    Muv = np.zeros((nR * Nm, nR * Nm))
                     for cols, Gg in parts:
                         HG = Huv @ Gg                                                               # every channel of the group
                         Muv[np.ix_(cols, cols)] += Gg.reshape(-1, cols.size).T @ HG.reshape(-1, cols.size)
-                    Mall[ui * nR * N:(ui + 1) * nR * N, vi * nR * N:(vi + 1) * nR * N] = Muv
+                    Mall[ui * nR * Nm:(ui + 1) * nR * Nm, vi * nR * Nm:(vi + 1) * nR * Nm] = Muv
                     if vi != ui:
-                        Mall[vi * nR * N:(vi + 1) * nR * N, ui * nR * N:(ui + 1) * nR * N] = Muv.T   # H_vu = H_uv'
+                        Mall[vi * nR * Nm:(vi + 1) * nR * Nm, ui * nR * Nm:(ui + 1) * nR * Nm] = Muv.T   # H_vu = H_uv'
             Mfull = Mall if n == Mall.shape[0] else Mall[np.ix_(idx, idx)]
             w, V = np.linalg.eigh((Mfull + Mfull.T) / 2)
             lo, hi = float(w[0]), float(w[-1]); vmin = V[:, 0]
