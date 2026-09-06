@@ -81,11 +81,13 @@ class _Stop(Exception):
 
 
 def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping: float = 0.5,
-                      anderson_iters: int = 150, max_newton: int = 30, M: int = 6,
+                      anderson_iters: int = 150, max_newton: int = 30, M: int = 6, reg: float = 1e-8, inner_m: int = 15,
                       max_evaluations=None, deadline=None, progress=None, t0=None):
     """Regularised Anderson mixing on the residual F(z) = G(z) - z, then a Newton-Krylov polish if it
     stalls above tol.  Returns (z, residual, evaluations, converged, message), where the residual is
     norm(F(z)) / max(1, norm(z)) and converged means residual <= tol.
+    anderson_iters, M and reg are the Anderson iterations, memory and regularisation; inner_m the fresh
+    Krylov vectors per Newton step (the engines pass their Settings' values).
     max_evaluations bounds the evaluations of F over both phases and deadline the wall time in seconds
     since t0 (default: now); at least one evaluation is made, and past either bound the best iterate so
     far is returned, with the message naming the bound.  progress(info) is called after every evaluation
@@ -118,7 +120,7 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
 
     msg = []
     try:
-        z, rn, ev, ok, stalled = anderson(Fb, z0, tol=tol, M=M, beta=damping, maxiter=anderson_iters, verbose=verbose)
+        z, rn, ev, ok, stalled = anderson(Fb, z0, tol=tol, M=M, beta=damping, maxiter=anderson_iters, reg=reg, verbose=verbose)
     except _Stop as stop:
         z, rn, ev = state["best_x"], state["best_rn"], state["evals"]
         return z, rn, ev, rn <= tol, f"anderson: {ev} evaluations, residual {rn:.2e}; {stop}"
@@ -134,7 +136,7 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
             # evaluation of F each); a step also re-multiplies the up to outer_k=10 directions carried from
             # earlier steps (store_outer_Av is False) and makes the line search's, 16 to 26 in all
             z2 = newton_krylov(Fb, z, f_tol=tol * max(1.0, float(np.linalg.norm(z))), maxiter=max_newton,
-                               method="lgmres", inner_inner_m=15, verbose=verbose)
+                               method="lgmres", inner_inner_m=inner_m, verbose=verbose)
             note = "newton polish: {n} evaluations, residual {r:.2e}"
         except NoConvergence as e:
             z2 = np.asarray(e.args[0])

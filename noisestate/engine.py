@@ -16,6 +16,7 @@ import numpy as np
 import scipy.linalg as sla
 
 from .accel import solve_fixed_point
+from .settings import Settings, tunable
 from .spec import Agent, Model
 
 
@@ -105,22 +106,27 @@ class EngineBase:
     shapes: Dict[str, Tuple[int, ...]]      # agent -> shape of its raw maps
     RESULT = None                   # the result class
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.5, 60       # solve() defaults; each engine sets its own
-    ANDERSON_M = 15                 # Anderson memory: 15 with damping 0.6 takes Ch5 from 58 to 37 evaluations, Kyle-Back from 81 to 47
+    ANDERSON_M = tunable("anderson_m")              # Anderson memory (settings.anderson_m)
     ACTIONS = True                  # whether the engine can iterate on action kernels
-    SECOND_ORDER_TOL = 1e-4         # curvature (relative to the largest) below which a negative value is window truncation
+    SECOND_ORDER_TOL = tunable("second_order_tol")      # curvature below which a negative value is window truncation (settings)
     SECOND_ORDER_QUADRATIC = True   # whether the objective is a quadratic form in the strategy at every discount
-    SECOND_ORDER_DENSE = 4000       # strategy dimension up to which the form is built densely (always settles, 2.7 s at 1600); Lanczos above
+    SECOND_ORDER_DENSE = tunable("second_order_dense")  # strategy dimension up to which the form is built densely (settings)
 
-    def __init__(self, model: Model, verbose: bool = False, **options):
+    def __init__(self, model: Model, verbose: bool = False, settings=None, **options):
         """Hook (every engine overrides it): an engine's __init__ calls this first, with its own
         constructor options as `options`, then builds self.c (its compiled model) and self.shapes
         (agent -> shape of its raw maps: (nU, nR, N), or (nU, nR, N, N) on the cell engine).  The
         base assumes self.c and self.shapes exist after construction, and that solver_kw holds
         exactly the keywords that rebuild an equal engine: type(self)(model, **solver_kw) is how
-        coarse_start, the embedded curvature check and a result's refine()/stability() make one."""
+        coarse_start, the embedded curvature check and a result's refine()/stability() make one.
+        settings: a Settings (or a dict of its fields) with the tuning constants, DEFAULT when None;
+        self.settings is what the engine and its result read, and solver_kw records the fields that
+        differ from the defaults."""
         self.model = model
         self.verbose = verbose
-        self.solver_kw = {"verbose": verbose, **options}   # so a result can rebuild the same engine
+        self.settings = Settings.of(settings)
+        changed = self.settings.changed()
+        self.solver_kw = {"verbose": verbose, **options, **({"settings": changed} if changed else {})}   # so a result can rebuild the same engine
         self._qa: Dict[str, np.ndarray] = {}                # agent -> (Q zeta) as an operator on the primary kernels
         self._rphys: Dict[str, np.ndarray] = {}             # agent -> physical impulse responses (all reactions off)
         self._second_order_cache: Dict[str, dict] = {}       # representative -> its second-order check, shared with tied agents
@@ -369,7 +375,7 @@ class EngineBase:
         estimate), which solve_fixed_point passes through the Newton polish unchanged."""
         raise NotImplementedError
 
-    FOC_RCOND = 1e-10    # a best-response system whose reciprocal condition estimate is below this is singular
+    FOC_RCOND = tunable("foc_rcond")    # a best-response system whose reciprocal condition estimate is below this is singular (settings)
 
     def _solve_regular(self, agent: Agent, A: np.ndarray, b: np.ndarray) -> np.ndarray:
         """x solving A x = b for the best-response system of `agent` on its kept unknowns, refusing a
@@ -508,9 +514,10 @@ class EngineBase:
         else:
             vmin = None
             op = LinearOperator((n, n), matvec=matvec, dtype=float)
+            ltol, lmax = self.settings.second_order_lanczos_tol, self.settings.second_order_lanczos_maxiter
             try:
-                hi = float(eigsh(op, k=1, which="LA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
-                lo = float(eigsh(op, k=1, which="SA", tol=1e-6, maxiter=300, return_eigenvectors=False)[0])
+                hi = float(eigsh(op, k=1, which="LA", tol=ltol, maxiter=lmax, return_eigenvectors=False)[0])
+                lo = float(eigsh(op, k=1, which="SA", tol=ltol, maxiter=lmax, return_eigenvectors=False)[0])
             except Exception as exc:                          # Lanczos did not settle: say so rather than stay silent
                 return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
         scale = max(abs(lo), abs(hi), 1e-300)
@@ -754,8 +761,10 @@ class EngineBase:
         def F(zz):
             evals[0] += 1
             return pack(respond(unpack(zz))) - zz
+        st = self.settings
         z, resid, _, converged, message = solve_fixed_point(F, pack(x0), tol=tol, verbose=self.verbose, damping=damping,
-                                                            max_newton=max_newton, M=self.ANDERSON_M, max_evaluations=max_evaluations,
+                                                            anderson_iters=st.anderson_iters, max_newton=max_newton, M=self.ANDERSON_M,
+                                                            reg=st.anderson_reg, inner_m=st.newton_inner_m, max_evaluations=max_evaluations,
                                                             deadline=deadline, progress=progress, t0=t0)
         maps = self.maps_from_actions(unpack(z)) if variable == "actions" else unpack(z)
         Z = self.c.closed_loop(maps)
@@ -763,7 +772,7 @@ class EngineBase:
             message = f"coarse start: {coarse_evals} evaluations at {self._coarse_nodes} nodes; " + message
         res = self.RESULT(model=self.model, compiled=self.c, maps=maps, Z=Z, converged=converged, residual=resid,
                           iterations=evals[0], seconds=0.0, message=message, solver_class=type(self),
-                          solver_kw=self.solver_kw,
+                          solver_kw=self.solver_kw, settings=self.settings,
                           solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start": start,
                                     **{k: v for k, v in (("max_evaluations", max_evaluations), ("deadline", deadline)) if v is not None},
                                     **({} if diagnostics else {"diagnostics": False})})

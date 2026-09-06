@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- `noisestate.Settings`: the tuning constants (Anderson memory and iterations, the singular-system
+  and mean-system condition thresholds, the projection ridges, the second-order tolerance and the
+  dense/Lanczos switch, the result's resolution, window-tail, refinement and stability thresholds
+  and the stability budget) are one frozen dataclass in `noisestate/settings.py`, each with its
+  default and meaning (README, Settings).  `settings=` on `solve()`, `sweep(solver_kw=...)` and the
+  engine constructors takes a `Settings` or a dict of the fields to change; the changed fields are
+  recorded in `res.solver_kw` and the payload's `options.solver`, so `refine()`, `stability()` and a
+  re-solve from the payload keep them.  Every default is unchanged, and the older class-attribute
+  names (`EngineBase.FOC_RCOND`, `BaseResult.STABILITY_MAX_EVALUATIONS`, `SpectralFiniteSolver.MAP_RIDGE`,
+  ...) remain as aliases of the same fields.  Two literals now read from it under their own names:
+  the cell engine's dense/Krylov switch (200 unknowns) and LGMRES tolerances, and the stationary
+  projection's ridge (1e-14).
 - Mean paths on the finite engines.  Targets (linear loss terms), constant drifts and the new
   per-state `initial` value (`X: {drift: ..., noise: ..., initial: 1.0}`; zero by default, a number
   or a parameter expression, refused in a stationary model, which has no initial time) move the

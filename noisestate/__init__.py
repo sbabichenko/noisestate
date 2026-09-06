@@ -3,6 +3,7 @@ import inspect
 
 from .spec import Model, ModelBuilder
 from .accel import ConvergenceError
+from .settings import Settings
 from .results import BaseResult, StationaryResult, TriangleResult, CellResult
 from .stationary import StationarySolver
 from .finite import FiniteSolver
@@ -10,7 +11,7 @@ from .finite_spectral import SpectralFiniteSolver
 from .sweep import sweep, make_solver, ENGINES
 from .grid_cache import clear as clear_grid_cache
 
-__all__ = ["Model", "ModelBuilder", "ConvergenceError", "BaseResult", "StationaryResult", "TriangleResult",
+__all__ = ["Model", "ModelBuilder", "ConvergenceError", "Settings", "BaseResult", "StationaryResult", "TriangleResult",
            "CellResult", "StationarySolver", "FiniteSolver", "SpectralFiniteSolver", "load", "solve", "sweep",
            "read_yaml", "read_json", "make_solver", "ENGINES", "clear_grid_cache"]
 
@@ -53,7 +54,7 @@ def load(path: str) -> Model:
 
 def solve(model, refine: bool = False, stability: bool = False, **kw) -> BaseResult:
     """Solve a model (a Model, a dict, or a path to a YAML file) with the engine its horizon selects.
-    Keyword arguments go to the engine's constructor (e.g. verbose, naive_observers) or to its
+    Keyword arguments go to the engine's constructor (e.g. verbose, naive_observers, settings) or to its
     solve() (e.g. tol, init, start, variable); unknown ones are an error.  refine=True re-solves
     on a finer grid and reports the change (res.refinement); stability=True adds res.stability()."""
     if isinstance(model, str):

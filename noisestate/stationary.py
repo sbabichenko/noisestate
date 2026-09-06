@@ -30,16 +30,17 @@ from .engine import EngineBase, singular_system_message
 from .compile import CompiledBase, close_under_delays
 from .symmetry import find_cyclic_symmetry
 from .results import StationaryResult
+from .settings import Settings, tunable
 from .spec import Agent, Atom, Model
 
 
 class Compiled(CompiledBase):
     """Grid, index maps and constant operators for a stationary model."""
-    LEAD_WEIGHT_WARN = 100.0     # warn when a lead's past flows outweigh the current one by more than this
+    LEAD_WEIGHT_WARN = tunable("lead_weight_warn")     # warn when a lead's past flows outweigh the current one by more than this (settings)
 
-
-    def __init__(self, model: Model):
+    def __init__(self, model: Model, settings=None):
         super().__init__(model)
+        self.settings = Settings.of(settings)
         hz = model.horizon
         lags = model.all_lags()
         if hz.breakpoints:
@@ -494,11 +495,12 @@ class StationarySolver(EngineBase):
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.6, 60       # with Anderson memory 15 (0.3 was needed at memory 6 for Kyle-Back)
     SECOND_ORDER_QUADRATIC = False   # the flow loss is a quadratic form in the stationary strategy only at rho = 0
 
-    def __init__(self, model: Model, verbose: bool = False, naive_observers: Optional[Dict[str, List[str]]] = None):
+    def __init__(self, model: Model, verbose: bool = False, naive_observers: Optional[Dict[str, List[str]]] = None, settings=None):
         """naive_observers: {agent: [observers]} lists agents whose strategies do NOT react to that agent's
-        deviations (Chapter 6's naive observers); every other observer is privy and reacts through its map."""
-        super().__init__(model, verbose, naive_observers=naive_observers)
-        self.c = Compiled(model)
+        deviations (Chapter 6's naive observers); every other observer is privy and reacts through its map.
+        settings: the tuning constants (noisestate.Settings, or a dict of its fields; the defaults when None)."""
+        super().__init__(model, verbose, settings=settings, naive_observers=naive_observers)
+        self.c = Compiled(model, settings=self.settings)
         self.naive_observers = naive_observers or {}
         names = [a.name for a in model.agents]
         if not isinstance(self.naive_observers, dict):
@@ -563,7 +565,7 @@ class StationarySolver(EngineBase):
         rhs = Bk.reshape(nW * N, nR * N).T @ (actions * W[None, :, None]).transpose(2, 1, 0).reshape(nW * N, nU)   # column ui: sum_k Bk' W actions[ui, :, k]
         if not keep.all():
             Gram = Gram[np.ix_(keep, keep)]; rhs = rhs[keep]
-        Gram += 1e-14 * np.trace(Gram) / Gram.shape[0] * np.eye(Gram.shape[0])
+        Gram += self.settings.stationary_map_ridge * np.trace(Gram) / Gram.shape[0] * np.eye(Gram.shape[0])
         g = np.zeros((nU, nR * N))
         g[:, keep] = np.linalg.solve(Gram, rhs).T                              # one factorisation for every control
         return g.reshape(nU, nR, N)
@@ -712,7 +714,7 @@ class StationarySolver(EngineBase):
     expected_loss = expected_cost                       # the older name
 
     # ------------------------------------------------------------ means
-    MEAN_RCOND = 1e-12          # a mean system whose reciprocal condition estimate is below this is singular
+    MEAN_RCOND = tunable("mean_rcond")          # a mean system whose reciprocal condition estimate is below this is singular (settings)
 
     def mean_system(self, maps: Dict[str, np.ndarray]):
         """The linear system M zbar = b of the stationary means over the primaries (states then controls)

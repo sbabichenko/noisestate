@@ -28,6 +28,7 @@ from .engine import EngineBase
 from .compile import CompiledBase, close_under_delays, reject_leads
 from .grid import bary_rows
 from .results import TriangleResult
+from .settings import tunable
 from .spec import Agent, Atom, Model
 from .triangle import TriangleGrid
 from .grid_cache import triangle_grid
@@ -536,11 +537,12 @@ class SpectralCompiled(CompiledBase):
 class SpectralFiniteSolver(EngineBase):
     RESULT = TriangleResult
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
-    MAP_RIDGE = 1e-13      # ridge of the per-time-row map projection, relative to the row's own Gram
+    MAP_RIDGE = tunable("map_ridge")      # ridge of the per-time-row map projection, relative to the row's own Gram (settings)
 
-    def __init__(self, model: Model, verbose: bool = False):
-        """The triangle grid's compiled model and the map shapes (nU, nR, N); no engine options."""
-        super().__init__(model, verbose)
+    def __init__(self, model: Model, verbose: bool = False, settings=None):
+        """The triangle grid's compiled model and the map shapes (nU, nR, N).  settings: the tuning constants
+        (noisestate.Settings, or a dict of its fields; the defaults when None)."""
+        super().__init__(model, verbose, settings=settings)
         self.c = SpectralCompiled(model)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
 
@@ -656,7 +658,7 @@ class SpectralFiniteSolver(EngineBase):
         return {a.name: np.einsum("fn,urn->urf", I, coarse.maps[a.name]) for a in self.model.agents}
 
     # ------------------------------------------------------------ means
-    MEAN_RCOND = 1e-12          # a mean system whose reciprocal condition estimate is below this is singular
+    MEAN_RCOND = tunable("mean_rcond")          # a mean system whose reciprocal condition estimate is below this is singular (settings)
 
     def mean_system(self, maps: Dict[str, np.ndarray]):
         """The linear system M zbar = b of the mean paths on the time nodes (states then controls, Nt values

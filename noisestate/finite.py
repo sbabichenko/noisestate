@@ -171,10 +171,11 @@ class FiniteSolver(EngineBase):
     RESULT = CellResult
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 60
     ACTIONS = False
-    def __init__(self, model: Model, verbose: bool = False):
+    def __init__(self, model: Model, verbose: bool = False, settings=None):
         """The cell grid's compiled model and the map shapes (nU, nR, N, N): g[u][r][i, v], the weight the
-        control in cell i puts on the seen increment of cell v < i.  No engine options."""
-        super().__init__(model, verbose)
+        control in cell i puts on the seen increment of cell v < i.  settings: the tuning constants
+        (noisestate.Settings, or a dict of its fields; the defaults when None)."""
+        super().__init__(model, verbose, settings=settings)
         self.c = FiniteCompiled(model)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N, self.c.N) for a in model.agents}
         self._warm = {}                                          # last Krylov solution per agent (warm start)
@@ -279,7 +280,8 @@ class FiniteSolver(EngineBase):
         for r, (rname, drift, E, dly) in enumerate(c.rows[agent.name]):
             keep[:, r] = tri & (np.arange(N)[None, :] >= dly)
         keep = keep[:, :, tri].reshape(-1)
-        if n <= 200:
+        st = self.settings
+        if n <= st.cell_dense_max:
             M = np.column_stack([op.matvec(e) for e in np.eye(n)])
             gvec = np.zeros(n)
             gvec[keep] = self._solve_regular(agent, M[np.ix_(keep, keep)], -b[keep])
@@ -300,9 +302,9 @@ class FiniteSolver(EngineBase):
             x0 = self._warm.get(agent.name)
             if x0 is not None and x0.shape[0] != n:
                 x0 = None
-            gvec, info = lgmres(op, -b, x0=x0, rtol=1e-12, atol=0, maxiter=400)
+            gvec, info = lgmres(op, -b, x0=x0, rtol=st.cell_krylov_rtol, atol=0, maxiter=st.cell_krylov_maxiter)
             if info != 0:
-                gvec, info = lgmres(op, -b, x0=gvec, rtol=1e-12, atol=0, maxiter=1000)
+                gvec, info = lgmres(op, -b, x0=gvec, rtol=st.cell_krylov_rtol, atol=0, maxiter=st.cell_krylov_retry)
             if info != 0:
                 raise RuntimeError(f"cell engine: the best-response linear solve did not converge (lgmres info {info}); "
                                    f"the system of {agent.name} may be singular (a control with no quadratic term in itself)")
@@ -318,7 +320,7 @@ class FiniteSolver(EngineBase):
             G = B @ B.T
             if np.trace(G) <= 0:
                 continue                                   # no information yet (delayed rows): map stays zero
-            G += 1e-13 * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
+            G += st.map_ridge * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
             for ui in range(nU):
                 sol = np.linalg.solve(G, B @ cact[ui, i])
                 g[ui, :, i, :i] = sol.reshape(nR, i)

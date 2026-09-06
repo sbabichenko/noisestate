@@ -208,6 +208,26 @@ releases them; a large stationary grid holds a few hundred MB of convolution ten
 most 32 grids and at most 1.5 GB of their tensors, paths and read matrices (`noisestate.grid_cache.BUDGET_BYTES`),
 dropping the least recently used grids beyond that.
 
+## Settings
+
+The tuning constants live in one frozen dataclass, `noisestate.Settings` (`noisestate/settings.py`),
+each with its default and a one-line meaning: the outer fixed point (`anderson_m` 15,
+`anderson_iters` 150, `anderson_reg` 1e-8, `newton_inner_m` 15), the best response (`foc_rcond`
+1e-10, `stationary_map_ridge` 1e-14, `map_ridge` 1e-13, and the cell engine's `cell_dense_max` 200,
+`cell_krylov_rtol` 1e-12, `cell_krylov_maxiter` 400, `cell_krylov_retry` 1000), the second-order check
+(`second_order_tol` 1e-4, `second_order_dense` 4000, `second_order_lanczos_tol` 1e-6,
+`second_order_lanczos_maxiter` 300), the means (`mean_rcond` 1e-12, `lead_weight_warn` 100) and the
+result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `mean_zero` 1e-12, `refine_cost_tol`
+1e-6, `refine_kernel_tol` 1e-5, `stability_k` 2, `stability_eps` 1e-6, `stability_tol` 1e-3,
+`stability_max_evaluations` 200, `stability_fallback` 30).  Pass `settings=Settings(second_order_tol=1e-3)`
+(or a dict of the fields to change) to `solve()`, `sweep(solver_kw=...)` or an engine's constructor;
+the fields that differ from the defaults are recorded in `res.solver_kw` and the payload's
+`options.solver`, so `refine()`, `stability()` and a re-solve from the payload keep them.  The older
+class-attribute names (`EngineBase.FOC_RCOND`, `BaseResult.STABILITY_MAX_EVALUATIONS`,
+`SpectralFiniteSolver.MAP_RIDGE`, ...) remain as aliases of the same fields.  The defaults of
+`solve()`'s own arguments (`tol`, `damping`, `max_newton`) stay per engine (`TOL`, `DAMPING`,
+`MAX_NEWTON`), since they differ by engine and are recorded in `res.solve_kw`.
+
 ## How it works
 
 A model whose single tie group is a cycle (the Chapter 5 market) is solved with that symmetry: the

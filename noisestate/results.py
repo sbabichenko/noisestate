@@ -33,6 +33,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from .accel import ConvergenceError
+from .settings import DEFAULT, Settings, tunable
 from .spec import Model
 
 
@@ -62,10 +63,12 @@ class BaseResult:
     means: Dict[str, object] = field(default_factory=dict)        # quantity -> its mean, a float (stationary) or a path (finite); zero when nothing drives it
     means_t: Optional[np.ndarray] = None                          # the time nodes of the mean paths (finite engines)
     cost_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> {"variance", "mean"} parts of its cost
+    settings: Settings = DEFAULT                                  # the tuning constants of the engine that produced this result
     kind: str = "base"
 
-    RESOLUTION_TOL = 1e-6
-    WINDOW_TAIL_TOL = 0.02
+    # the thresholds of the checks: aliases of the fields of self.settings (settings.py)
+    RESOLUTION_TOL = tunable("resolution_tol")
+    WINDOW_TAIL_TOL = tunable("window_tail_tol")
     MAP_CONVENTION = ""             # how maps[agent][u][row] is indexed, in words, for a consumer of to_dict()
 
     def map_axes(self, delay: float) -> dict:
@@ -80,7 +83,7 @@ class BaseResult:
         (the stationary result's; diagnose() reads it when present)."""
         raise NotImplementedError
 
-    MEAN_ZERO = 1e-12          # below this a mean is round-off (the mean system is solved only when something drives it)
+    MEAN_ZERO = tunable("mean_zero")          # below this a mean is round-off (the mean system is solved only when something drives it)
 
     @property
     def means_driven(self) -> bool:
@@ -158,14 +161,15 @@ class BaseResult:
                "kernel_change": float(kernel_change)}
         # the spectral engines converge exponentially, so a small change means resolved; the cell engine is
         # first order and its change halves per doubling: no verdict, the numbers are the report
-        rep["resolved"] = None if self.kind == "finite_cells" else bool(fine.converged and cost_change < 1e-6 and kernel_change < 1e-5)
+        rep["resolved"] = None if self.kind == "finite_cells" else bool(fine.converged and cost_change < self.REFINE_COST_TOL
+                                                                        and kernel_change < self.REFINE_KERNEL_TOL)
         self.refinement = rep
         return rep
 
     def _kernel_change(self, fine) -> float:
         raise NotImplementedError
 
-    REFINE_COST_TOL, REFINE_KERNEL_TOL = 1e-6, 1e-5
+    REFINE_COST_TOL, REFINE_KERNEL_TOL = tunable("refine_cost_tol"), tunable("refine_kernel_tol")
 
     def diagnose(self) -> List[dict]:
         """Every check this result carries, as rows {name, value, threshold, ok, flag, advice}: ok is
@@ -194,11 +198,11 @@ class BaseResult:
             if so.get("converged") is False:
                 row(f"second_order:{a}", None, None, None, f"second-order check did not converge for {a!r}", so.get("message", ""))
             else:
-                row(f"second_order:{a}", so["min"], -self.solver_class.SECOND_ORDER_TOL if self.solver_class is not None else None, so["ok"],
+                row(f"second_order:{a}", so["min"], -self.settings.second_order_tol if self.solver_class is not None else None, so["ok"],
                     f"NOT A MINIMUM (the best response of {a!r} is a saddle: its loss is not convex in its own strategy, "
                     f"smallest curvature {so['min']:.1e} of the largest)", "the loss is not convex in the agent's own strategy")
                 if so.get("edge"):
-                    row(f"second_order_edge:{a}", so["min"], -self.solver_class.SECOND_ORDER_TOL if self.solver_class is not None else None, None,
+                    row(f"second_order_edge:{a}", so["min"], -self.settings.second_order_tol if self.solver_class is not None else None, None,
                         f"window edge: the curvature of {a!r} is negative ({so['min']:.1e}) on this window but positive "
                         f"({so['embedded']:.1e}) on a window longer by two lags: a truncation of the lagged loss terms at the edge, not a saddle",
                         "a wider window moves it, a quadratic term in the control's current value removes it")
@@ -229,8 +233,9 @@ class BaseResult:
                     parts.append(d["flag"])
         return "; ".join(parts)
 
-    STABILITY_K, STABILITY_EPS, STABILITY_TOL, STABILITY_MAX_EVALUATIONS = 2, 1e-6, 1e-3, 200
-    STABILITY_FALLBACK = 30         # of those evaluations, the rounds kept for the power iteration when Arnoldi does not settle
+    STABILITY_K, STABILITY_EPS, STABILITY_TOL = tunable("stability_k"), tunable("stability_eps"), tunable("stability_tol")
+    STABILITY_MAX_EVALUATIONS = tunable("stability_max_evaluations")
+    STABILITY_FALLBACK = tunable("stability_fallback")     # of those evaluations, the rounds kept for the power iteration when Arnoldi does not settle
 
     def stability(self, untied: bool = True) -> dict:
         """Stability of this equilibrium under best-response dynamics: the eigenvalues of largest
