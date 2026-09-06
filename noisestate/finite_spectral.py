@@ -289,69 +289,20 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         point, na nodes, no quadrature weight) are one unknown (_corner_index) with a point condition at the
         corner's action node, since with a past the control reacts at once and the corner is the map's value
         at the oldest increment.  The systems of one size are solved in one LAPACK call."""
-        c = self.c; g = c.g; N, nW, Nm = c.N, c.nW, self.Nm
+        c = self.c; N, Nm = c.N, self.Nm
         nR, nU = len(agent.signals), len(agent.controls)
         past = c.past is not None
         sub = finite_free.panel_rows(self, agent, Zfull).sub
         shifts = [c.panel_shift(c.rows[agent.name][r][3]) if c.rows[agent.name][r][3] > 0 else 0 for r in range(nR)]
         gmap = np.zeros((nU, nR, Nm))
-        if past:
-            keep = self._identified(agent)
-            group = self._corner_index(agent)[:nR * Nm]                             # map unknown -> its corner group (or itself)
-            diag_of = {int(node): j for j, node in enumerate(c.diag)}
-            corner_of = {}                                                          # action node -> its triangle, on the degenerate row
-            for pc in g.pieces:
-                if pc.triangle:
-                    for node in pc.offset + (0 if not pc.upper else (pc.nt - 1) * pc.na) + np.arange(pc.na):
-                        corner_of[int(node)] = (pc.p, pc.q, pc.upper)
+        ctx = self._projection_context(agent) if past else None
         systems: Dict[int, list] = {}                     # size -> [(cols, Rm, G, rhs (nU, n))]
         for (p, it), idx in sorted(c.trow_by_pit.items()):
             if past and p >= c.P_T:
                 continue                                                            # the buffer's rows are frozen
-            tv = g.t[idx[0]]
-            w = g.row_weights(tv, side=(-1 if tv >= g.bp[p + 1] - 1e-12 else +1))[idx]
-            parts = []
-            for r in range(nR):
-                if p - shifts[r] < 0:
-                    continue
-                parts.append(r * Nm + c.trow_by_pit[(p - shifts[r], it)])
-                if c.n_init:
-                    parts.append(np.array([r * Nm + N + (p - shifts[r]) * g.nt + it]))
-            if not parts:
-                continue
-            cols = np.concatenate(parts)
-            Rm = None
-            if past:
-                cols = cols[keep[cols]]
-                if cols.size == 0:
-                    continue
-                uniq, inv = np.unique(group[cols], return_inverse=True)
-                if uniq.size < cols.size:                                           # tie the corner groups to one unknown each
-                    Rm = np.zeros((cols.size, uniq.size)); Rm[np.arange(cols.size), inv] = 1.0
-            Bsub = sub(idx, cols)
-            if Rm is not None:
-                Bsub = Bsub @ Rm
-            G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
-            rhs = np.stack([sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW)) for ui in range(nU)])
-            if Rm is not None:
-                corners = {}
-                for j, node in enumerate(idx):
-                    corners.setdefault(corner_of[int(node)], j) if int(node) in corner_of else None
-                for jc in corners.values():                                         # a point condition at each corner's action node
-                    for k in range(nW):
-                        G = G + np.outer(Bsub[k][jc], Bsub[k][jc])
-                        rhs = rhs + np.outer(cact[:, idx[jc], k], Bsub[k][jc])
-            if past and c.n_init:
-                jd = [j for j, node in enumerate(idx) if int(node) in diag_of]      # the time row's node on s = 0, if any
-                if jd:
-                    jd = jd[0]
-                    for i in range(c.n_init):
-                        G = G + np.outer(Bsub[nW + i][jd], Bsub[nW + i][jd])
-                        rhs = rhs + np.outer(cact[:, idx[jd], nW + i], Bsub[nW + i][jd])
-            if np.trace(G) <= 0:
-                continue
-            G = G + self.MAP_RIDGE * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
-            systems.setdefault(G.shape[0], []).append((cols, Rm, G, rhs))
+            item = self._time_row_system(agent, p, it, idx, cact, sub, shifts, ctx)
+            if item is not None:
+                systems.setdefault(item[2].shape[0], []).append(item)
         for size, items in systems.items():
             Gs = np.stack([G for _, _, G, _ in items])
             for ui in range(nU):
@@ -361,6 +312,79 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         if c.frozen is not None:
             gmap[:, :, :N][:, :, c.buffer] = c.frozen[agent.name][:, :, c.buffer]
         return gmap
+
+    def _projection_context(self, agent: Agent):
+        """With a past, what every time row's system of maps_from_world shares: the identified map unknowns (keep),
+        the corner group of every map unknown (group), the time index of every node on the line s = 0 (diag_of)
+        and the triangle of every action node on a degenerate corner row (corner_of)."""
+        c = self.c; g = c.g; Nm = self.Nm; nR = len(agent.signals)
+        keep = self._identified(agent)
+        group = self._corner_index(agent)[:nR * Nm]                             # map unknown -> its corner group (or itself)
+        diag_of = {int(node): j for j, node in enumerate(c.diag)}
+        corner_of = {}                                                          # action node -> its triangle, on the degenerate row
+        for pc in g.pieces:
+            if pc.triangle:
+                for node in pc.offset + (0 if not pc.upper else (pc.nt - 1) * pc.na) + np.arange(pc.na):
+                    corner_of[int(node)] = (pc.p, pc.q, pc.upper)
+        return keep, group, diag_of, corner_of
+
+    def _time_row_system(self, agent: Agent, p: int, it: int, idx: np.ndarray, cact: np.ndarray, sub, shifts, ctx):
+        """The weighted least-squares system of one time row (p, it) with action nodes idx, (cols, Rm, G, rhs): the
+        map unknowns cols of the seen rows at the row shifted by each delay (with a past the identified ones,
+        the corner groups tied to one unknown each by Rm), the Gram G over the row's action nodes under its
+        quadrature weights summed over the channels (with a past the point conditions at the corners and, per
+        initial shock, at the row's node on s = 0 added, then the ridge) and the right-hand sides per control;
+        None when the row has no unknown or no weight."""
+        c = self.c; g = c.g; N, nW, Nm = c.N, c.nW, self.Nm
+        nR, nU = len(agent.signals), len(agent.controls)
+        past = c.past is not None
+        if past:
+            keep, group, diag_of, corner_of = ctx
+        tv = g.t[idx[0]]
+        w = g.row_weights(tv, side=(-1 if tv >= g.bp[p + 1] - 1e-12 else +1))[idx]
+        parts = []
+        for r in range(nR):
+            if p - shifts[r] < 0:
+                continue
+            parts.append(r * Nm + c.trow_by_pit[(p - shifts[r], it)])
+            if c.n_init:
+                parts.append(np.array([r * Nm + N + (p - shifts[r]) * g.nt + it]))
+        if not parts:
+            return None
+        cols = np.concatenate(parts)
+        Rm = None
+        if past:
+            cols = cols[keep[cols]]
+            if cols.size == 0:
+                return None
+            uniq, inv = np.unique(group[cols], return_inverse=True)
+            if uniq.size < cols.size:                                           # tie the corner groups to one unknown each
+                Rm = np.zeros((cols.size, uniq.size)); Rm[np.arange(cols.size), inv] = 1.0
+        Bsub = sub(idx, cols)
+        if Rm is not None:
+            Bsub = Bsub @ Rm
+        G = sum((Bsub[k] * w[:, None]).T @ Bsub[k] for k in range(nW))
+        rhs = np.stack([sum((Bsub[k] * w[:, None]).T @ cact[ui, idx, k] for k in range(nW)) for ui in range(nU)])
+        if Rm is not None:
+            corners = {}
+            for j, node in enumerate(idx):
+                corners.setdefault(corner_of[int(node)], j) if int(node) in corner_of else None
+            for jc in corners.values():                                         # a point condition at each corner's action node
+                for k in range(nW):
+                    G = G + np.outer(Bsub[k][jc], Bsub[k][jc])
+                    rhs = rhs + np.outer(cact[:, idx[jc], k], Bsub[k][jc])
+        if past and c.n_init:
+            jd = [j for j, node in enumerate(idx) if int(node) in diag_of]      # the time row's node on s = 0, if any
+            if jd:
+                jd = jd[0]
+                for i in range(c.n_init):
+                    G = G + np.outer(Bsub[nW + i][jd], Bsub[nW + i][jd])
+                    rhs = rhs + np.outer(cact[:, idx[jd], nW + i], Bsub[nW + i][jd])
+        if np.trace(G) <= 0:
+            return None
+        G = G + self.MAP_RIDGE * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
+        return cols, Rm, G, rhs
+
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
         """Closed-loop primary kernels when every agent's action kernels (nU, N, ncol) are given: the closed loop's
         assembly with the controls' rows replaced by the actions, the states solved time panel by time panel."""

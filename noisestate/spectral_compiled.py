@@ -36,7 +36,7 @@ import warnings
 
 import numpy as np
 
-from .closed_loop import ClosedLoopRows
+from .closed_loop import ClosedLoopRows, ClosedLoopSources
 from .compile import CompiledBase, close_under_delays, reject_leads
 from .grid import bary_weights, cheb_lobatto
 from .grid_cache import triangle_grid
@@ -55,18 +55,36 @@ def _common_unit_hint(lags, kmax: int = 100) -> str:
             return f" ({u:g} works)"
     return f" (none above {lo / kmax:g}: the finite engines need commensurable lags)"
 
-class SpectralCompiled(TimeLineOps, CompiledBase):
+class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
     def __init__(self, model: Model, past=None, continuation=None):
         """past: a Past (the game starts at time zero from that regime); continuation: a converged
         StationaryResult of this model at the past's window, on which every agent's map is frozen on the
         buffer [T, T + L] after the horizon (the unknowns stay on [0, T]; the closed loop and the
         first-order conditions run to T + L, by when every shock born before T is forgotten), or None:
-        the game ends at T."""
+        the game ends at T.  Built in named steps, in this order: the regimes (the past and the
+        continuation), the breakpoint sequence and its closure under the lags, the grid, the buffer's
+        wiring, the past's wiring, the paths and the time nodes, the caches; each step's docstring names
+        its invariant."""
         super().__init__(model)
         reject_leads(model, 'spectral finite engine')
         hz = model.horizon
-        self.T = float(hz.window)
         lags = model.all_lags()
+        L = self._regimes(model, past, continuation, lags)
+        bp, required, unit = self._breakpoints(hz, lags, L)
+        self._grid(hz, lags, L, bp, required, unit)
+        self._wire_buffer()
+        self._wire_past(model, L)
+        self._wire_time(L)
+        self._caches()
+
+    def _regimes(self, model: Model, past, continuation, lags) -> Optional[float]:
+        """The past and the continuation as the game's regimes: T, self.past (validated against the model at the
+        panel unit), row_delays and, with a past, the rows undelayed (their maps in raw age), self.cont (a
+        converged StationaryResult of this model at the past's window L, which needs T >= L) and Tg, the
+        grid's end.  Invariant: Tg = T + L with a continuation, T without; a continuation always has a past
+        with a window.  Returns L, the past's window (None without one)."""
+        hz = model.horizon
+        self.T = float(hz.window)
         self.past = past
         if past is not None:
             past.validate(model, (hz.unit or min(lags)) if lags else None)
@@ -88,6 +106,19 @@ class SpectralCompiled(TimeLineOps, CompiledBase):
                 raise ValueError(f"the horizon T = {self.T:g} is shorter than the past's window L = {L:g}: with a stationary "
                                  "continuation the shocks born before zero must be forgotten by T; raise horizon.window to at least L")
         self.Tg = self.T + L if continuation is not None else self.T        # the grid's end: the buffer [T, T + L] follows T
+        return L
+
+    def _breakpoints(self, hz, lags, L: Optional[float]):
+        """The breakpoint sequence of the triangle in time and age: within horizon.unit_range (self.coarse) the
+        unit multiples up to it, T and, when the game ends at T, T - k unit, filled geometrically between
+        (TriangleGrid.fill_geometric); else horizon.breakpoints or every multiple of the unit up to T
+        (TriangleGrid.breakpoints), closed under the lags (close_under_delays, with a warning when it adds
+        panels).  Invariant: every lag and delay of the model is a breakpoint, and unless coarse every panel
+        shifted by a lag is again a panel, so a lagged read is a node-to-node shift (map_shift).  Returns
+        (bp, required, unit): the required cuts and the unit of a coarse grid (None, None otherwise), which
+        the strip's sequence is rebuilt from."""
+        past, continuation = self.past, self.cont
+        required = unit = None
         # unit_range below the window: the delay cuts stay at every multiple of the unit up to it, in time and
         # in age (the kink at the k-th delay line weakens with k), and the panels grow geometrically beyond;
         # the delay reads are then node-to-node within it and interpolated beyond (map_shift), and the panels
@@ -136,6 +167,17 @@ class SpectralCompiled(TimeLineOps, CompiledBase):
                           f"{P1 * (P1 + 1) // 2} pieces, instead of {P0} panels, {P0 * (P0 + 1) // 2} pieces); a window that "
                           "is a multiple of every lag, with breakpoints closed under them, avoids the extra panels")
         bp = closed
+        return bp, required, unit
+
+    def _grid(self, hz, lags, L: Optional[float], bp, required, unit) -> None:
+        """The triangle grid self.g (shared through grid_cache.triangle_grid), N and rho: without a past the
+        triangle on bp; with one the strip [0, T] x [0, L] on one sequence for time and age, bp with the past
+        grid's panels below L and L itself (a coarse grid: the geometric fill between the required points and
+        them), panels of width L when the model has no lags, with a continuation the buffer's time panels (the
+        age panels shifted to T), closed under the lags again.  Invariant: the past's panels lie on piece edges
+        (the old kernels kink there) and the buffer's pieces are the strip's on [0, L] with the origin at T."""
+        past, continuation = self.past, self.cont
+        R = hz.unit_range
         if L is None:
             self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes)   # shared
         else:
@@ -155,9 +197,15 @@ class SpectralCompiled(TimeLineOps, CompiledBase):
                 self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes, self.Tg, float(L), self.T)
             else:
                 self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes, self.Tg, float(L))
-        g = self.g
-        self.N = g.N
+        self.N = self.g.N
         self.rho = float(hz.discount)
+
+    def _wire_buffer(self) -> None:
+        """The buffer: P_T, the time panels up to T (the unknowns' panels), the mask of the nodes of the pieces
+        after T and, with a continuation, the frozen stationary maps at every node's age (_frozen_maps; None
+        without).  Invariant: without a continuation no node is on the buffer; with one every buffer node reads
+        the continuation's map at its age, and every unknown lies on a panel below P_T."""
+        g = self.g; continuation = self.cont
         # the buffer: the nodes of the pieces after T, where every map is frozen at the continuation's stationary
         # map at the node's age; P_T counts the time panels up to T (the unknowns' panels)
         eps = 1e-12 * max(1.0, self.Tg)
@@ -165,6 +213,14 @@ class SpectralCompiled(TimeLineOps, CompiledBase):
         self.buffer = np.concatenate([np.full(pc.n, bool(pc.t0 >= self.T - eps)) for pc in g.pieces]) if continuation is not None \
             else np.zeros(self.N, dtype=bool)
         self.frozen: Optional[Dict[str, np.ndarray]] = self._frozen_maps() if continuation is not None else None
+
+    def _wire_past(self, model: Model, L: Optional[float]) -> None:
+        """The columns of the world and the old regime's loadings: the channels, then one column per initial
+        shock of the past (n_init, ncol, init_names; init_sigma (nX, n_init) the shocks' loads on the states,
+        init_rows[agent] (nR, n_init) their point observations in the rows), and E_old, the past's direct noise
+        loadings of every row (an increment observed before zero carries them; None without a window).
+        Invariant: ncol = nW + n_init; without a past n_init = 0 and E_old is None."""
+        past = self.past
         # the columns of the world: the channels, then one column per initial shock of the past
         self.n_init = past.n_initial if past is not None else 0
         self.ncol = self.nW + self.n_init
@@ -181,6 +237,15 @@ class SpectralCompiled(TimeLineOps, CompiledBase):
                     self.init_rows[an][[r.name for r in ag.signals].index(rn), i] = e
         # the old regime's direct noise loadings of every row (the increments observed before zero carry them)
         self.E_old = {a.name: [past.row_noise(f"{a.name}.{r.name}") for r in a.signals] for a in model.agents} if L else None
+
+    def _wire_time(self, L: Optional[float]) -> None:
+        """The map-independent structures on the grid: the Volterra path (r from the shock time, or zero for an
+        old shock, to t) with its e^{A(t - r)} weights when there are states; the time rows (trows, trow_by_pit,
+        panel_of_node); and the time nodes tm (Nt of them, both one-sided values at a breakpoint, tm_side),
+        the line s = 0 (diag, Nd) and mean_embed, which carries a path on the time nodes as the kernel constant
+        in shock age on the new-shock region.  Invariant: a time row's nodes are contiguous within its panel,
+        and diag is the nodes at age = t of the panels below L (every panel without a strip)."""
+        g = self.g
         # state propagation operators (matrix exponentials of A)
         if self.nX:
             # state propagation e^{A(t-r)} along the Volterra path; entrywise weights from expm, which
@@ -215,6 +280,12 @@ class SpectralCompiled(TimeLineOps, CompiledBase):
                 continue                                  # a path is carried on the new-shock region only
             for it in range(pc.nt):
                 self.mean_embed[pc.offset + it * pc.na + np.arange(pc.na), pc.p * g.nt + it] = 1.0
+
+    def _caches(self) -> None:
+        """The caches, empty: the time masses per discount, the mean reads per lag, the map shifts per delay, the
+        row operators per (agent, row, excluded), the past's reads and the rows' pre-zero parts, the discrete-
+        weight operators, the state columns per (excluded, impulses) and the sparse reads.  Invariant: every
+        entry is map-independent, keyed by what it was built from, so it is built once per compiled model."""
         self._time_mass: Dict[float, np.ndarray] = {}
         self._mean_reads: Dict[float, np.ndarray] = {}
         self._map_shifts: Dict[float, np.ndarray] = {}
@@ -236,15 +307,6 @@ class SpectralCompiled(TimeLineOps, CompiledBase):
                 for j in range(self.nX):
                     Vol[i, j] = self._vol_path.apply(self._vol_E[:, i, j])
         return Vol
-
-    def _vol_rows(self, i: int, j: int, p: int) -> np.ndarray:
-        """The rows of Vol[i, j] on time panel p against the nodes before the panel's end, (N_p, hi), from the
-        path (map-independent, but not cached: at N = 14700 the rows of every panel are 0.9 GB and their
-        recomputation is within the noise of a 2 s closed loop)."""
-        lo, hi = self._panel_ranges[p]
-        if self._vol_E is None:
-            return np.zeros((hi - lo, hi))
-        return self._vol_path.apply(self._vol_E[:, i, j], rows=(lo, hi))[:, :hi]
 
     def _vol_mat(self, i: int, j: int, X: np.ndarray) -> np.ndarray:
         """Vol[i, j] @ X for X (N, m): the same integrals with X read along the path (no N x N operator)."""
@@ -776,60 +838,6 @@ class SpectralCompiled(TimeLineOps, CompiledBase):
             return np.full(self.N, float(w))
         return np.where(g.upper, self.E_old[agent][r][k], float(w))
 
-    def _state_columns(self, excluded, excl: set, imp: list) -> np.ndarray:
-        """The shock and impulse columns of the state rows, B0 (n, ncol + len(imp)), cached per (excluded
-        agent, impulse controls): the state's response to each channel's shock (with a past on the new-shock
-        region; on the band the past's state kernel at age a - t propagated by e^{At}), the initial shocks'
-        loads, the lagged inputs read before zero through the Volterra operator (every control, the excluded
-        one's pre-zero actions being history), and each impulse's column (zero on the band: a deviation before
-        zero is sunk)."""
-        key = (excluded, tuple(imp))
-        if key in self._state_cols:
-            return self._state_cols[key]
-        g = self.g; N = self.N; nW = self.nW; n = len(self.prim) * N; ncol = self.ncol
-        B0 = np.zeros((n, ncol + len(imp)))
-        EA = self.expA(g.a)                                             # (N, nX, nX)
-        if self.past is None:
-            for k in range(nW):
-                v = self.sigma[:, k]
-                for i in range(self.nX):
-                    B0[self.block(self.prim[i]), k] += EA[:, i, :] @ v
-        else:
-            up = g.upper; lower = ~up
-            for k in range(nW):
-                v = self.sigma[:, k]
-                for i in range(self.nX):
-                    B0[self.block(self.prim[i]), k] += lower * (EA[:, i, :] @ v)
-            if up.any():
-                EAt = self.expA(g.t[up])                                     # (n_up, nX, nX)
-                iu = np.where(up)[0]
-                K0 = np.stack([self.past_at(self.prim[j], iu, g.a[iu] - g.t[iu]) for j in range(self.nX)], axis=1)   # (n_up, nX, nW)
-                for i in range(self.nX):
-                    B0[self.block(self.prim[i]), :nW][up] += np.einsum("nj,njk->nk", EAt[:, i, :], K0)
-            for col in range(self.n_init):
-                v = self.init_sigma[:, col]
-                for i in range(self.nX):
-                    B0[self.block(self.prim[i]), nW + col] += lower * (EA[:, i, :] @ v)
-            for si, (nm, lag), c in self.state_inputs:
-                if lag > 0 and g.L is not None:
-                    pr = self.past_read(nm, lag)
-                    if np.any(pr):
-                        for i in range(self.nX):
-                            B0[self.block(self.prim[i]), :nW] += c * (self._vol_mat(i, si, pr))
-        for col, u in enumerate(imp):
-            for si, (nm, lag), c in self.state_inputs:
-                if nm != u:
-                    continue
-                v = np.zeros(self.nX); v[si] = c
-                EAd = self.expA(np.maximum(g.a - lag, 0.0)) if lag else EA
-                on = (g.a0 >= lag - 1e-12) if lag else np.ones(N, dtype=bool)
-                if self.past is not None:
-                    on = on & lower
-                for i in range(self.nX):
-                    B0[self.block(self.prim[i]), ncol + col] += on * (EAd[:, i, :] @ v)
-        self._state_cols[key] = B0
-        return B0
-
     @cached_property
     def _state_blocks(self) -> Dict[Tuple[int, int], np.ndarray]:
         """The state rows of the closed loop without the maps and with no agent excluded, dense: the nonzero
@@ -846,13 +854,6 @@ class SpectralCompiled(TimeLineOps, CompiledBase):
                     blk = self.Vol[i, j] @ inp[j][:, p * N:(p + 1) * N]
                     blocks[(i, p)] = blocks[(i, p)] + blk if (i, p) in blocks else blk
         return blocks
-
-    def conv_left_rows(self, gker: np.ndarray, delay: float, lo: int, hi: int) -> np.ndarray:
-        """Rows [lo, hi) of conv_left(gker, delay)."""
-        g = self.g
-        lp = self._path(("conv_left", delay), r_lo=g.s + delay, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
-                        known_fn=lambda k, r: (np.full_like(r, g.t[k] - delay), g.t[k] - r))
-        return lp.with_known(gker, rows=(lo, hi))
 
     @cached_property
     def _panel_ranges(self):

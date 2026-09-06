@@ -128,17 +128,7 @@ class FocSystem:
         """Per time row (p, it) the block kron(Q_l, sum_k H_k D_l G_k) summed over the controls' own lags l on the
         row's kept unknowns (tied at the corners), LU-factored: [(reduced indices, lu)]."""
         c = self.c; g = c.g; N, Nm, nR, nU = self.N, self.Nm, self.nR, self.nU
-        atoms, Q = self.foc.atoms, self.foc.Q
-        ctrl = list(self.agent.controls)
-        Ql = {}
-        for l, w in self.foc.own_lags().items():
-            M = np.zeros((nU, nU))
-            for ui, u in enumerate(ctrl):
-                for vi, v in enumerate(ctrl):
-                    if (u, l) in atoms and (v, l) in atoms:
-                        M[ui, vi] = Q[atoms.index((u, l)), atoms.index((v, l))]
-            if np.any(M):
-                Ql[l] = (w * M, self._lag_read(l))
+        Ql = self._lag_forms()
         shifts = [c.panel_shift(c.rows[self.agent.name][r][3]) if c.rows[self.agent.name][r][3] > 0 else 0 for r in range(nR)]
         panel = PanelRows(self.solver, self.rowops, shifts)
         gecon, = get_lapack_funcs(("gecon",), (np.zeros((1, 1)),))
@@ -161,28 +151,7 @@ class FocSystem:
             if not parts:
                 continue
             cols = np.concatenate([cr for _, cr in parts])
-            Gsub = panel.sub(idx, cols)                                                  # (ncol, nidx, ncols)
-            Hsub = np.zeros((self.ncol, cols.size, idx.size))                            # the projection's rows at the map nodes
-            pos = 0
-            for r, cr in parts:
-                if (p, r) not in hrows:
-                    if any(k[0] != p for k in hrows):
-                        hrows.clear()
-                    lo_r, hi_r = ranges[p - shifts[r]]
-                    hrows[(p, r)] = (lo_r, self.projops.rows(r, lo_r, hi_r, lo, hi))
-                lo_r, (flow, disc) = hrows[(p, r)]
-                nf = int(np.sum(cr < r * Nm + N))
-                Hsub[:, pos:pos + nf] = flow[:, cr[:nf] - r * Nm - lo_r][:, :, idx - lo]
-                if disc is not None and nf < cr.size:
-                    Hsub[:, pos + nf:pos + cr.size] = disc[:, cr[nf:] - r * Nm - N][:, :, idx - lo]
-                pos += cr.size
-            P = np.zeros((nU * cols.size, nU * cols.size))
-            for l, (M, D) in Ql.items():
-                S = np.zeros((cols.size, cols.size))
-                Dl = D[idx]
-                for k in range(self.ncol):
-                    S += Hsub[k] @ (Dl[:, None] * Gsub[k])
-                P += np.kron(M, S)
+            P = self._time_row_block(p, idx, lo, hi, parts, cols, shifts, panel, hrows, Ql)
             # the kept unknowns of the block, tied at the corners
             full = np.concatenate([ui * nR * Nm + cols for ui in range(nU)])
             kp = kept_pos[full]
@@ -204,6 +173,55 @@ class FocSystem:
             self.block_rcond = min(self.block_rcond, rcond)
             blocks.append((uniq, lu))
         return blocks
+
+    def _lag_forms(self) -> Dict[float, tuple]:
+        """{lag l: (e^{-rho l} Q_l, D_l)} over the controls' own lags (FocOps.own_lags): Q_l the block of Q on the
+        controls' atoms (u, l), (v, l), D_l where the lag's read exists (_lag_read); a lag whose block is zero is
+        left out."""
+        atoms, Q = self.foc.atoms, self.foc.Q
+        ctrl = list(self.agent.controls); nU = self.nU
+        Ql = {}
+        for l, w in self.foc.own_lags().items():
+            M = np.zeros((nU, nU))
+            for ui, u in enumerate(ctrl):
+                for vi, v in enumerate(ctrl):
+                    if (u, l) in atoms and (v, l) in atoms:
+                        M[ui, vi] = Q[atoms.index((u, l)), atoms.index((v, l))]
+            if np.any(M):
+                Ql[l] = (w * M, self._lag_read(l))
+        return Ql
+
+    def _time_row_block(self, p: int, idx: np.ndarray, lo: int, hi: int, parts, cols: np.ndarray, shifts, panel: PanelRows,
+                        hrows: Dict[tuple, tuple], Ql) -> np.ndarray:
+        """P (nU ncols, nU ncols): the block kron(Q_l, sum_k H_k D_l G_k) of one time row on its map unknowns cols
+        (parts: per seen row r its unknowns), summed over the lags of Ql, from the rows of G_k at the action
+        nodes idx (panel.sub) and the rows of H_k at the map nodes (projops.rows per (panel, row), kept in hrows
+        while the panel lasts)."""
+        c = self.c; N, Nm, nU = self.N, self.Nm, self.nU
+        ranges = c._panel_ranges
+        Gsub = panel.sub(idx, cols)                                                  # (ncol, nidx, ncols)
+        Hsub = np.zeros((self.ncol, cols.size, idx.size))                            # the projection's rows at the map nodes
+        pos = 0
+        for r, cr in parts:
+            if (p, r) not in hrows:
+                if any(k[0] != p for k in hrows):
+                    hrows.clear()
+                lo_r, hi_r = ranges[p - shifts[r]]
+                hrows[(p, r)] = (lo_r, self.projops.rows(r, lo_r, hi_r, lo, hi))
+            lo_r, (flow, disc) = hrows[(p, r)]
+            nf = int(np.sum(cr < r * Nm + N))
+            Hsub[:, pos:pos + nf] = flow[:, cr[:nf] - r * Nm - lo_r][:, :, idx - lo]
+            if disc is not None and nf < cr.size:
+                Hsub[:, pos + nf:pos + cr.size] = disc[:, cr[nf:] - r * Nm - N][:, :, idx - lo]
+            pos += cr.size
+        P = np.zeros((nU * cols.size, nU * cols.size))
+        for l, (M, D) in Ql.items():
+            S = np.zeros((cols.size, cols.size))
+            Dl = D[idx]
+            for k in range(self.ncol):
+                S += Hsub[k] @ (Dl[:, None] * Gsub[k])
+            P += np.kron(M, S)
+        return P
 
     def _lag_read(self, l: float) -> np.ndarray:
         """D_l (N,): where the control's read l later of its own map shifted back by l exists (1 inside, 0

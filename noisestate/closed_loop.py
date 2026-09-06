@@ -1,6 +1,8 @@
-"""The spectral finite engine's closed loop: ClosedLoopRows, the rows of (I - M) Z = B one time panel at a time
-and their solve by block forward substitution (SpectralCompiled.closed_loop calls it; the reads, paths and
-row blocks it draws on are spectral_compiled.py's, the operators of the best response spectral_operators.py's)."""
+"""The spectral finite engine's closed loop: ClosedLoopSources, the map-independent blocks and forcing the assembly
+draws from the compiled model (mixed into SpectralCompiled, spectral_compiled.py, whose reads, paths and row
+blocks they use), and ClosedLoopRows, the rows of (I - M) Z = B one time panel at a time and their solve by block
+forward substitution (SpectralCompiled.closed_loop calls it).  The operators of the best response are
+spectral_operators.py's."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, Tuple
@@ -9,6 +11,82 @@ import numpy as np
 
 if TYPE_CHECKING:
     from .spectral_compiled import SpectralCompiled
+
+
+class ClosedLoopSources:
+    """The map-independent sources of the assembly on the compiled model (mixed into SpectralCompiled): the rows of
+    the Volterra propagation on a time panel, the forcing columns of the state rows and the rows of a control's
+    convolution with its map kernel."""
+
+    def _vol_rows(self, i: int, j: int, p: int) -> np.ndarray:
+        """The rows of Vol[i, j] on time panel p against the nodes before the panel's end, (N_p, hi), from the
+        path (map-independent, but not cached: at N = 14700 the rows of every panel are 0.9 GB and their
+        recomputation is within the noise of a 2 s closed loop)."""
+        lo, hi = self._panel_ranges[p]
+        if self._vol_E is None:
+            return np.zeros((hi - lo, hi))
+        return self._vol_path.apply(self._vol_E[:, i, j], rows=(lo, hi))[:, :hi]
+
+    def _state_columns(self, excluded, excl: set, imp: list) -> np.ndarray:
+        """The shock and impulse columns of the state rows, B0 (n, ncol + len(imp)), cached per (excluded
+        agent, impulse controls): the state's response to each channel's shock (with a past on the new-shock
+        region; on the band the past's state kernel at age a - t propagated by e^{At}), the initial shocks'
+        loads, the lagged inputs read before zero through the Volterra operator (every control, the excluded
+        one's pre-zero actions being history), and each impulse's column (zero on the band: a deviation before
+        zero is sunk)."""
+        key = (excluded, tuple(imp))
+        if key in self._state_cols:
+            return self._state_cols[key]
+        g = self.g; N = self.N; nW = self.nW; n = len(self.prim) * N; ncol = self.ncol
+        B0 = np.zeros((n, ncol + len(imp)))
+        EA = self.expA(g.a)                                             # (N, nX, nX)
+        if self.past is None:
+            for k in range(nW):
+                v = self.sigma[:, k]
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), k] += EA[:, i, :] @ v
+        else:
+            up = g.upper; lower = ~up
+            for k in range(nW):
+                v = self.sigma[:, k]
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), k] += lower * (EA[:, i, :] @ v)
+            if up.any():
+                EAt = self.expA(g.t[up])                                     # (n_up, nX, nX)
+                iu = np.where(up)[0]
+                K0 = np.stack([self.past_at(self.prim[j], iu, g.a[iu] - g.t[iu]) for j in range(self.nX)], axis=1)   # (n_up, nX, nW)
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), :nW][up] += np.einsum("nj,njk->nk", EAt[:, i, :], K0)
+            for col in range(self.n_init):
+                v = self.init_sigma[:, col]
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), nW + col] += lower * (EA[:, i, :] @ v)
+            for si, (nm, lag), c in self.state_inputs:
+                if lag > 0 and g.L is not None:
+                    pr = self.past_read(nm, lag)
+                    if np.any(pr):
+                        for i in range(self.nX):
+                            B0[self.block(self.prim[i]), :nW] += c * (self._vol_mat(i, si, pr))
+        for col, u in enumerate(imp):
+            for si, (nm, lag), c in self.state_inputs:
+                if nm != u:
+                    continue
+                v = np.zeros(self.nX); v[si] = c
+                EAd = self.expA(np.maximum(g.a - lag, 0.0)) if lag else EA
+                on = (g.a0 >= lag - 1e-12) if lag else np.ones(N, dtype=bool)
+                if self.past is not None:
+                    on = on & lower
+                for i in range(self.nX):
+                    B0[self.block(self.prim[i]), ncol + col] += on * (EAd[:, i, :] @ v)
+        self._state_cols[key] = B0
+        return B0
+
+    def conv_left_rows(self, gker: np.ndarray, delay: float, lo: int, hi: int) -> np.ndarray:
+        """Rows [lo, hi) of conv_left(gker, delay)."""
+        g = self.g
+        lp = self._path(("conv_left", delay), r_lo=g.s + delay, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
+                        known_fn=lambda k, r: (np.full_like(r, g.t[k] - delay), g.t[k] - r))
+        return lp.with_known(gker, rows=(lo, hi))
 
 
 class ClosedLoopRows:

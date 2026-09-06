@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The three long functions of the spectral finite engine in named parts, the same statements in the same order
+  (step C4, bit for bit): `SpectralCompiled.__init__` (168 lines) calls `_regimes` (the past and the
+  continuation, T, Tg), `_breakpoints` (the sequence and its closure under the lags, or the unit panels
+  within unit_range), `_grid` (the strip's sequence and the triangle grid), `_wire_buffer`, `_wire_past`,
+  `_wire_time` (the Volterra path, the time rows, the time nodes and mean_embed) and `_caches`, each
+  docstring naming its invariant; `maps_from_world` (86) builds each time row's weighted least-squares
+  system in `_time_row_system` (the shared masks and corner maps of a past in `_projection_context`) and
+  keeps the batched solve; `FocSystem.preconditioner` (80) takes the lag forms from `_lag_forms` and each
+  time row's block kron(Q_l, sum_k H_k D_l G_k) from `_time_row_block`, and keeps the reduction to the kept
+  unknowns and the factorisation.  `_vol_rows`, `_state_columns` and `conv_left_rows`, the map-independent
+  blocks and forcing only the assembly reads, are the ClosedLoopSources mixin in `closed_loop.py`.  No
+  function of the spectral modules is over 80 lines; no spectral module over 900.
 - The spectral finite engine in six modules, one responsibility each (the consolidation pass, step C4; pure
   moves, every shipped case's Z bit for bit): `spectral_compiled.py` (SpectralCompiled: the breakpoints and
   their closure, the grid, the past's and the buffer's wiring, the reads and sparse reads, the line paths,
