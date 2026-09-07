@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `foc_dense_max` 8192 -> 500: the dense first-order-condition solve of the spectral finite engine is never
+  faster than the matrix-free one (0.26 s vs 0.12 s at 482 unknowns, 90 s vs 0.76 s at 4926, four times
+  the memory), so only the smallest systems stay on the direct solve.  Shipped cases above 500 unknowns
+  move in their last bits (costs and evaluation counts unchanged); the baseline is re-recorded.
 - **The march's steps are local.**  After the first step, a solve at the next T fixes every strategy on the panels before
   T_prev - L at the previous solve's values (`SpectralFiniteSolver.freeze_before(t_lo, maps, actions=)`: the fixed
   maps enter the closed loop as known, the agents' own fixed actions join the passive world their first-order

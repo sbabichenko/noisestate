@@ -247,7 +247,7 @@ what the numbers are (flow losses per unit time or discounted integrals, a rando
 
 The tuning constants live in one frozen dataclass, `noisestate.Settings`, each with its default and a
 one-line meaning: the outer fixed point (`anderson_m` 15, `anderson_iters` 150, ...), the best response
-(`foc_rcond` 1e-10, `foc_dense_max` 8192, ...), the second-order check (`second_order_tol` 1e-4, ...),
+(`foc_rcond` 1e-10, `foc_dense_max` 500, ...), the second-order check (`second_order_tol` 1e-4, ...),
 the means and the result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02, `settled_tol` 1e-4,
 ...).  They are the `settings` field of `Numerics`: `ns.Numerics(settings=ns.Settings(second_order_tol=1e-3))`,
 or `{"settings": {"second_order_tol": 1e-3}}`; the fields that differ from the defaults are recorded in

@@ -2,7 +2,7 @@
  "Z_tol": 1e-12,
  "cases": {
   "ch1_delayed_finite": {
-   "Z_bits": "f2d797b49b79becaedc6e3950a19d2fa063ecb8b512321bd71c60a35953b5fad",
+   "Z_bits": "52aee313506a33a87d161a24b224d8c24e073b9b89bdbda97a884c6358464dd9",
    "Z_shape": [
     1920,
     3
@@ -11,22 +11,22 @@
    "cost_parts": {
     "player1": {
      "mean": 0.0,
-     "variance": 0.48382426626820924
+     "variance": 0.4838242662682093
     },
     "player2": {
      "mean": 0.0,
-     "variance": 0.47667801199497833
+     "variance": 0.476678011994979
     }
    },
    "costs": {
-    "player1": 0.48382426626820924,
-    "player2": 0.47667801199497833
+    "player1": 0.4838242662682093,
+    "player2": 0.476678011994979
    },
    "engine": "TriangleResult",
    "evaluations": 13,
    "means": {},
-   "residual": 6.210709836492557e-09,
-   "seconds": 2.51
+   "residual": 6.2106826293030294e-09,
+   "seconds": 4.44
   },
   "ch1_mean_sweep_p10": {
    "Z_bits": "a8f1a62fbb6f1eed3be78dbb8c1263290da56d3e90d3779e8c41aa72259d534d",
@@ -53,7 +53,7 @@
    "evaluations": 15,
    "means": {},
    "residual": 6.04397933753032e-09,
-   "seconds": 0.37
+   "seconds": 0.42
   },
   "ch1_two_player_finite": {
    "Z_bits": "0d285ddc34f6efb3d34b17986b63c079b6a80e1870d6bb908f02104d5d5903e4",
@@ -80,10 +80,10 @@
    "evaluations": 15,
    "means": {},
    "residual": 5.901114133166483e-09,
-   "seconds": 0.48
+   "seconds": 0.56
   },
   "ch3_precision_change": {
-   "Z_bits": "b8ad3c51e64d44d9af310ff24b0ef8628b151c4bfbd1f21064f90cf234992f7a",
+   "Z_bits": "a00c1e762dc8568a702738c823092b21c7b5f24606ea931ed83446a857b13bb6",
    "Z_shape": [
     2160,
     3
@@ -91,26 +91,26 @@
    "converged": true,
    "cost_parts": {
     "player1": {
-     "continuation": 1.2652308079596062,
+     "continuation": 1.265230807959606,
      "mean": 0.0,
-     "variance": 2.554488725509091
+     "variance": 2.554488725509258
     },
     "player2": {
-     "continuation": 1.2652308079435597,
+     "continuation": 1.2652308079435595,
      "mean": 0.0,
-     "variance": 2.559082502568793
+     "variance": 2.5590825025686046
     }
    },
    "costs": {
-    "player1": 2.554488725509091,
-    "player2": 2.559082502568793
+    "player1": 2.554488725509258,
+    "player2": 2.5590825025686046
    },
    "engine": "TransitionResult",
    "evaluations": 20,
    "means": {},
-   "residual": 9.927515259816984e-09,
-   "seconds": 7.29,
-   "settled": 0.0004830689659904385
+   "residual": 9.92751903556354e-09,
+   "seconds": 13.06,
+   "settled": 0.00048306896578957154
   },
   "ch3_same_model_T6_n6": {
    "Z_bits": "03efc7b608413d90ab0a602b6ba940db2198551d5b19a7698fadafbf0fbb75f1",
@@ -139,7 +139,7 @@
    "evaluations": 19,
    "means": {},
    "residual": 5.012884201528273e-09,
-   "seconds": 0.4,
+   "seconds": 0.45,
    "settled": 0.004536898545055094
   },
   "ch3_two_player": {
@@ -294,7 +294,7 @@
     "yH2": 0.2740216433923257
    },
    "residual": 8.62637334428049e-11,
-   "seconds": 5.66
+   "seconds": 6.6
   },
   "kyle_back_prior": {
    "Z_bits": "b303fcb16b57916d772361596790e77cdc02c033c56a45c2bbe1ecb3293ff319",
@@ -321,13 +321,13 @@
    "evaluations": 67,
    "means": {},
    "residual": 5.913230726105629e-09,
-   "seconds": 0.93
+   "seconds": 1.05
   }
  },
- "commit": "b73226f",
+ "commit": "bcdc8b3",
  "cost_tol": 1e-12,
  "date": "2026-09-06",
- "noisestate": "0.4.0",
+ "noisestate": "0.5.0",
  "numpy": "2.5.2",
  "python": "3.12.3"
 }

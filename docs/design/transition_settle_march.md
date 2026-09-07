@@ -122,3 +122,18 @@ but fits a rate the march observes directly.  Linearising the best-response map 
 equilibrium and solving the transition as one linear (block-Toeplitz-in-time) problem: exact only to
 first order in the change, and its matrix-free form costs one strip evaluation per Krylov step, no
 better than Anderson unless the translation invariance is exploited; shelved.
+
+## What the march is worth (measured 2026-09-06)
+
+Built and measured: the march finds the window, and that is its value.  It is not faster than one explicit
+solve at the window it finds: 12.0 s against 10.1 s on Chapter 3 at 12 nodes (its first solve from the
+stationary start costs about what the explicit solve does, since the strip grows only with T + L, and each
+step adds four to seven evaluations plus a gap pass), and 25 s against 10 s on the delayed Chapter 1 game.
+Local steps (the strategies before the previous horizon frozen, a polish pass at the end) are kept: they
+reproduce the full-strip march to 3e-11 after the polish and save a little.  Panel reuse was built,
+verified bit for bit, and dropped: it saves a fifth of a second per grid because a step's cost is its
+evaluations, not its paths.  An automatic step schedule was dropped with it; one window per step is the
+default, and steps shorter than the past's window are refused by the cost of the shattered strip rather
+than by rule.  The measurement that mattered was the crossover of the first-order-condition solve: dense
+is never faster than matrix-free, and a hundred times slower at five thousand unknowns, so
+`foc_dense_max` fell from 8192 to 500.
