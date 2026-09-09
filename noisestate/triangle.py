@@ -534,7 +534,6 @@ class TriangleGrid:
         side_d = np.asarray(side_d)
         sd_I = side_d[lp.rows] if side_d.ndim >= 1 else side_d                 # per node (N,) or (N, 3) with the piece s-range
         lp.If = self.interp_factors(pt, pa, side_t=st_I, side_a=side_a, side_d=sd_I)
-        lp.I = self.interp_sparse(pt, pa, side_t=st_I, side_a=side_a, factors=lp.If, side_d=sd_I)
         if known_fn is not None and known_grid is not None:
             ages = np.broadcast_to(np.asarray(known_fn(lp.rows, lp.r), dtype=float), lp.r.shape)
             lp.J = known_grid.interp(ages)                              # dense (nq, N_past): the known past kernel
@@ -545,7 +544,6 @@ class TriangleGrid:
             # the known kernel is read through its factors; a known read on the diagonal (an impulse response
             # at (r, r) from a node at t = 0) is the new-shock side: the node's side_d is the unknown's
             lp.Jf = self.interp_factors(kt, ka, side_t=st_J)
-            lp.J = self.interp_sparse(kt, ka, side_t=st_J, factors=lp.Jf)
         lp.out_t = out_t; lp.out_a = out_a
         lp.R = csr_matrix((np.ones(len(lp.rows)), (lp.rows, np.arange(len(lp.rows)))), shape=(n_out, len(lp.rows)))
         return lp
@@ -621,8 +619,46 @@ class LinePath:
 
     def __init__(self, n_out: int, N: int):
         self.n_out, self.N = n_out, N
-        self.rows = None; self.r = None; self.w = None; self.I = None; self.J = None; self.R = None
-        self.Jf = None; self.If = None
+        self.rows = None; self.r = None; self.w = None; self.R = None
+        self._I = None; self._J = None; self.Jf = None; self.If = None
+
+    @staticmethod
+    def _expand(factors, nq, N):
+        """The interpolation the factors describe, as the CSR matrix interp_sparse builds (the same entries in
+        the same order, so the sums that read it are unchanged to the bit)."""
+        from scipy.sparse import csr_matrix
+        rows, cols, vals = [], [], []
+        for pc, sel, Rt, Rx in factors:
+            vals.append((Rt[:, :, None] * Rx[:, None, :]).reshape(len(sel), -1).ravel())
+            rows.append(np.repeat(sel, pc.n)); cols.append(np.tile(np.arange(pc.offset, pc.offset + pc.n), len(sel)))
+        if not rows:
+            return csr_matrix((nq, N))
+        return csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(nq, N))
+
+    def _matrix(self, held, factors):
+        """The expanded matrix, built once on first use.  Half the paths of a solve never touch one (every
+        use of theirs goes through the factors), and those never pay for it."""
+        if held is None and factors is not None and self.rows is not None:
+            held = self._expand(factors, len(self.rows), self.N)
+        return held
+
+    @property
+    def I(self):
+        self._I = self._matrix(self._I, self.If)
+        return self._I
+
+    @I.setter
+    def I(self, value):
+        self._I = value
+
+    @property
+    def J(self):
+        self._J = self._matrix(self._J, self.Jf)
+        return self._J
+
+    @J.setter
+    def J(self, value):
+        self._J = value
 
     def _through(self, factors, kernels: np.ndarray) -> np.ndarray:
         """M @ kernels (nq, m) for kernels (N, m) and M the interpolation `factors` describe: read piece by piece
@@ -651,7 +687,7 @@ class LinePath:
         array (nothing is copied), so the two operators of a geometry cost one set of read matrices."""
         lp = LinePath(self.n_out, self.N)
         lp.rows, lp.r, lp.w, lp.R = self.rows, self.r, self.w, self.R
-        lp.I, lp.J = self.J, self.I
+        lp._I, lp._J = self._J, self._I            # whatever is already expanded, exchanged; the rest on demand
         lp.If, lp.Jf = self.Jf, self.If
         lp.out_t = getattr(self, "out_t", None); lp.out_a = getattr(self, "out_a", None)
         return lp
@@ -737,7 +773,7 @@ class LinePath:
         with_known(kernel[:, j]) @ f, associated pointwise."""
         if self.rows is None:
             return np.zeros((self.n_out,) + kernel.shape[1:])
-        g = self.I @ f
+        g = self.read_unknown(f)
         K = self.read(kernel) if self.Jf is not None else self.J @ kernel
         prod = (self.w * g)[:, None] * K if K.ndim == 2 else self.w * g * K
         return self.R @ prod
@@ -750,7 +786,7 @@ class LinePath:
             return np.zeros((n, self.N))
         if rows is not None:
             i0, i1 = self.points(rows)
-            f = self.J[i0:i1] @ kernel
+            f = self.read(kernel)[i0:i1] if self.Jf is not None else self.J[i0:i1] @ kernel
             if extra is not None:
                 f = f * extra[i0:i1]
             return self.apply(f, rows)
