@@ -533,7 +533,8 @@ class TriangleGrid:
         st_I = np.where(at_bp(pt), side_t[lp.rows], +1) if side_t.ndim == 1 else side_t
         side_d = np.asarray(side_d)
         sd_I = side_d[lp.rows] if side_d.ndim >= 1 else side_d                 # per node (N,) or (N, 3) with the piece s-range
-        lp.I = self.interp_sparse(pt, pa, side_t=st_I, side_a=side_a, side_d=sd_I)
+        lp.If = self.interp_factors(pt, pa, side_t=st_I, side_a=side_a, side_d=sd_I)
+        lp.I = self.interp_sparse(pt, pa, side_t=st_I, side_a=side_a, factors=lp.If, side_d=sd_I)
         if known_fn is not None and known_grid is not None:
             ages = np.broadcast_to(np.asarray(known_fn(lp.rows, lp.r), dtype=float), lp.r.shape)
             lp.J = known_grid.interp(ages)                              # dense (nq, N_past): the known past kernel
@@ -620,19 +621,29 @@ class LinePath:
 
     def __init__(self, n_out: int, N: int):
         self.n_out, self.N = n_out, N
-        self.rows = None; self.r = None; self.w = None; self.I = None; self.J = None; self.R = None; self.Jf = None
+        self.rows = None; self.r = None; self.w = None; self.I = None; self.J = None; self.R = None
+        self.Jf = None; self.If = None
 
-    def read(self, kernels: np.ndarray) -> np.ndarray:
-        """J @ kernels (nq, m) for kernels (N, m): the known kernels at the quadrature points, read piece by piece
-        through the interpolation factors as dense products Rt (K_piece) Rx' (the same sums as the sparse product,
-        associated over the piece's time nodes first; identical to round-off)."""
+    def _through(self, factors, kernels: np.ndarray) -> np.ndarray:
+        """M @ kernels (nq, m) for kernels (N, m) and M the interpolation `factors` describe: read piece by piece
+        as the dense products Rt (K_piece) Rx', associating over the piece's time nodes first.  The interpolation
+        row of a point is the outer product Rt Rx', so this is the sparse product's sums in another order and
+        agrees with it to round-off, at a fraction of the cost (dense blocks, no index indirection)."""
         K = kernels if kernels.ndim == 2 else kernels[:, None]
         m = K.shape[1]
-        F = np.zeros((self.J.shape[0], m))
-        for pc, sel, Rt, Rx in self.Jf:
+        F = np.zeros((len(self.rows), m))
+        for pc, sel, Rt, Rx in factors:
             KB = K[pc.offset:pc.offset + pc.n].reshape(pc.nt, pc.na * m)
             F[sel] = np.einsum("qjc,qj->qc", (Rt @ KB).reshape(len(sel), pc.na, m), Rx)
         return F if kernels.ndim == 2 else F[:, 0]
+
+    def read(self, kernels: np.ndarray) -> np.ndarray:
+        """J @ kernels: the known kernels at the quadrature points, through J's factors."""
+        return self._through(self.Jf, kernels)
+
+    def read_unknown(self, V: np.ndarray) -> np.ndarray:
+        """I @ V: the unknown at the quadrature points, through I's factors when the path kept them."""
+        return self._through(self.If, V) if self.If is not None else self.I @ V
 
     def swapped(self) -> "LinePath":
         """The same path with the unknown's and the known's read matrices exchanged: the integral of a
@@ -641,6 +652,7 @@ class LinePath:
         lp = LinePath(self.n_out, self.N)
         lp.rows, lp.r, lp.w, lp.R = self.rows, self.r, self.w, self.R
         lp.I, lp.J = self.J, self.I
+        lp.If, lp.Jf = self.Jf, self.If
         lp.out_t = getattr(self, "out_t", None); lp.out_a = getattr(self, "out_a", None)
         return lp
 
