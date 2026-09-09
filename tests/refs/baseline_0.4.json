@@ -2,7 +2,7 @@
  "Z_tol": 1e-12,
  "cases": {
   "ch1_delayed_finite": {
-   "Z_bits": "52aee313506a33a87d161a24b224d8c24e073b9b89bdbda97a884c6358464dd9",
+   "Z_bits": "2acf0495ffd976861a5b6365f2ec8f176dc15ca43f24a43259ab9b05b6726e9c",
    "Z_shape": [
     1920,
     3
@@ -25,11 +25,11 @@
    "engine": "TriangleResult",
    "evaluations": 13,
    "means": {},
-   "residual": 6.2106826293030294e-09,
-   "seconds": 4.44
+   "residual": 6.210682631068998e-09,
+   "seconds": 2.38
   },
   "ch1_mean_sweep_p10": {
-   "Z_bits": "a8f1a62fbb6f1eed3be78dbb8c1263290da56d3e90d3779e8c41aa72259d534d",
+   "Z_bits": "9a18162b0e245698335a765b43eb8def914c8bf810798c0863e3b6c837d53c4a",
    "Z_shape": [
     432,
     3
@@ -52,11 +52,11 @@
    "engine": "TriangleResult",
    "evaluations": 15,
    "means": {},
-   "residual": 6.04397933753032e-09,
-   "seconds": 0.42
+   "residual": 6.0439793471744224e-09,
+   "seconds": 0.28
   },
   "ch1_two_player_finite": {
-   "Z_bits": "0d285ddc34f6efb3d34b17986b63c079b6a80e1870d6bb908f02104d5d5903e4",
+   "Z_bits": "b3368830e6683044ec308a71329ea2731ac347d5e43974a7be6c91008e598072",
    "Z_shape": [
     432,
     3
@@ -79,11 +79,11 @@
    "engine": "TriangleResult",
    "evaluations": 15,
    "means": {},
-   "residual": 5.901114133166483e-09,
-   "seconds": 0.56
+   "residual": 5.9011141084706746e-09,
+   "seconds": 0.42
   },
   "ch3_precision_change": {
-   "Z_bits": "a00c1e762dc8568a702738c823092b21c7b5f24606ea931ed83446a857b13bb6",
+   "Z_bits": "920a68209ed3cf9da6b025d6f03c96dcf9a722bf3e5f412c57327de367fcc5db",
    "Z_shape": [
     2160,
     3
@@ -108,12 +108,12 @@
    "engine": "TransitionResult",
    "evaluations": 20,
    "means": {},
-   "residual": 9.92751903556354e-09,
-   "seconds": 13.06,
-   "settled": 0.00048306896578957154
+   "residual": 9.927518972667372e-09,
+   "seconds": 5.65,
+   "settled": 0.0004830689657896072
   },
   "ch3_same_model_T6_n6": {
-   "Z_bits": "03efc7b608413d90ab0a602b6ba940db2198551d5b19a7698fadafbf0fbb75f1",
+   "Z_bits": "3040300494b117e40bce58a64611673aff96a726618449858cca389bf4dbe60a",
    "Z_shape": [
     540,
     3
@@ -128,19 +128,19 @@
     "player2": {
      "continuation": 1.4966663422666593,
      "mean": 0.0,
-     "variance": 2.993327747386741
+     "variance": 2.9933277473867403
     }
    },
    "costs": {
     "player1": 2.576982385180492,
-    "player2": 2.993327747386741
+    "player2": 2.9933277473867403
    },
    "engine": "TransitionResult",
    "evaluations": 19,
    "means": {},
-   "residual": 5.012884201528273e-09,
-   "seconds": 0.45,
-   "settled": 0.004536898545055094
+   "residual": 5.01288423548269e-09,
+   "seconds": 0.4,
+   "settled": 0.004536898545055017
   },
   "ch3_two_player": {
    "Z_bits": "b3cf529570a073713fcbb9624b646a9d78b71293475b98176ad22f6afcd28dff",
@@ -173,7 +173,7 @@
     "player2.y2": 0.0
    },
    "residual": 5.188467161776373e-11,
-   "seconds": 0.05
+   "seconds": 0.04
   },
   "ch4_kyle_back": {
    "Z_bits": "ba825183063b7396eb733b3faabca9cffd61681d3110c66448b2890b723735b3",
@@ -294,10 +294,10 @@
     "yH2": 0.2740216433923257
    },
    "residual": 8.62637334428049e-11,
-   "seconds": 6.6
+   "seconds": 5.75
   },
   "kyle_back_prior": {
-   "Z_bits": "b303fcb16b57916d772361596790e77cdc02c033c56a45c2bbe1ecb3293ff319",
+   "Z_bits": "3a6408d795a463edbe23de57c370c12525bf875425eae1180b3c812a880347a0",
    "Z_shape": [
     432,
     2
@@ -306,7 +306,7 @@
    "cost_parts": {
     "market_maker": {
      "mean": 0.0,
-     "variance": -0.8682256615768675
+     "variance": -0.8682256615768663
     },
     "trader1": {
      "mean": 0.0,
@@ -314,19 +314,19 @@
     }
    },
    "costs": {
-    "market_maker": -0.8682256615768675,
+    "market_maker": -0.8682256615768663,
     "trader1": -1.1150782253864768
    },
    "engine": "TransitionResult",
    "evaluations": 67,
    "means": {},
-   "residual": 5.913230726105629e-09,
-   "seconds": 1.05
+   "residual": 5.9132309199897e-09,
+   "seconds": 0.76
   }
  },
- "commit": "bcdc8b3",
+ "commit": "dd24ac1",
  "cost_tol": 1e-12,
- "date": "2026-09-06",
+ "date": "2026-09-08",
  "noisestate": "0.5.0",
  "numpy": "2.5.2",
  "python": "3.12.3"
