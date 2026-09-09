@@ -26,6 +26,7 @@ Python >= 3.10.  Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml; matplotlib 
 ```python
 import noisestate as ns
 
+print(ns.load("examples/ch3_two_player.yaml").describe())         # the model itself, no solve: equations, delays, losses, conventions (HTML in a notebook)
 res = ns.solve("examples/ch3_two_player.yaml")                    # the model file's own numerics
 res = ns.solve("examples/ch3_two_player.yaml", ns.Numerics(nodes=32, tol=1e-12))   # a change of resolution, not of model
 print(res.summary())
@@ -124,6 +125,7 @@ X.drift = D1 + D2 + sigma * w.w0
 player1 = Agent("player1", controls=[D1], signals=[Signal("y1", p1**0.5 * X + w.w1)], loss=X**2 + r1 * D1**2)
 player2 = Agent("player2", controls=[D2], signals=[Signal("y2", p2**0.5 * X + w.w2, delay=0.5)], loss=(X - 1)**2 + r2 * D2**2)
 game = ns.Model("ch1", states=[X], agents=[player1, player2], horizon=ns.Stationary(window=3.0))
+print(game.describe())  # equations, observations and delays, losses, conventions (HTML in a notebook)
 eq = game.solve()
 eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
 eq.status.ok; eq.costs["player1"]; eq.cost_parts["player1"]; eq.means["X"]

@@ -6,6 +6,10 @@ The reference of every key of a model file, generated from `noisestate.schema("m
 own checks ([guards.md](guards.md), "What the model rejects").  Unknown keys are errors everywhere.  Every
 coefficient may be a number or an expression in the parameters (`"sqrt(p1)"`, `"-gamma1"`).
 
+To read a file back as equations rather than as keys, `print(ns.load(path).describe())` lays the loaded
+model out as differentials, delays, losses and the conventions that apply, at the current parameter
+values and without a solve; a notebook cell shows the same content as HTML.
+
 ## The keys
 
 | key | type | meaning | default |

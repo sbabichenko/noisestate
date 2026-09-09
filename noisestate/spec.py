@@ -244,6 +244,17 @@ class Model:
         self.source = source; self.deprecations = list(deprecations or []); self.remarks = list(remarks or [])
 
     # ------------------------------------------------------------ the expression form's conveniences
+    def describe(self):
+        """Return a readable summary of the model as it now stands.
+
+        Uses the current evaluated coefficients, without compiling or solving.
+        The value is a string: print it in a terminal for aligned plain text,
+        or return it from a notebook cell for the same content as HTML.
+        The notes describe conventions, not a certification of solvability.
+        """
+        from .description import describe
+        return describe(self)
+
     def solve(self, numerics=None, **solve_kw):
         """noisestate.solve(self, numerics, **solve_kw); an expression model's naive_observers are passed along."""
         from . import solve

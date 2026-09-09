@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`Model.describe()`: the model as it now stands, without a solve.**  It reads the resolved fields, not the
+  source dictionary, so a coefficient set on the object after loading shows up and no compile or solve is
+  needed: the horizon and its window, the parameters at their current values, each state's and signal row's
+  differential (a part that is identically zero is dropped, so a static state prints `dV = 0`), the delays,
+  the definitions, each agent's controls and quadratic flow loss, the ties, the naive-observer assumptions,
+  a transition's past and continuation, and `model.notes`, the conventions that apply.  The value is a
+  string that prints as aligned plain text in a terminal (equals signs lined up within a block, everything
+  wrapped to 88 columns, nothing escaped) and returns as HTML from a notebook cell, with the agents in a
+  table; both views are rendered from one extraction, so they cannot drift apart.
+
 - `foc_dense_max` 8192 -> 500: the dense first-order-condition solve of the spectral finite engine is never
   faster than the matrix-free one (0.26 s vs 0.12 s at 482 unknowns, 90 s vs 0.76 s at 4926, four times
   the memory), so only the smallest systems stay on the direct solve.  Shipped cases above 500 unknowns
