@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A path's interpolation is written straight into the CSR arrays.**  A quadrature point lies in one piece
+  and touches its nt x na nodes at ascending columns, so the row layout is known before anything is built:
+  order the points by their output row (a stable sort of the points, ~13k of them) and the blocks already
+  are the CSR data.  The COO build instead materialised a row and a column index for every entry, 1.6M of
+  them, and sorted those.  2.5x faster to build (11.6 ms to 4.6 ms on the largest operator) and bit-identical.
+  The solve does not move -- the build is 0.3% of it -- but peak RSS falls about 15 MB on the transition
+  example, to ~355 MB.
+
 - **An atom operator's one nonzero block is asked for, not searched for.**  `atom_op` builds an
   N x (n_prim N) matrix that is zero but for the block at the atom's own primary, and two callers built it
   and then tested every block with `np.any` to find out which -- a search whose answer is `index[name]` by

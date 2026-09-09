@@ -625,15 +625,31 @@ class LinePath:
     @staticmethod
     def _expand(factors, nq, N):
         """The interpolation the factors describe, as the CSR matrix interp_sparse builds (the same entries in
-        the same order, so the sums that read it are unchanged to the bit)."""
+        the same order, so the sums that read it are unchanged to the bit).
+
+        A quadrature point lies in one piece and touches its nt x na nodes at ascending columns, so the row
+        layout is known before anything is built: order the points by their output row (a stable sort of the
+        points, not of the entries) and the blocks are already the CSR data.  Going through COO instead
+        builds the row and column index of every entry and sorts those, an order of magnitude more of them."""
         from scipy.sparse import csr_matrix
-        rows, cols, vals = [], [], []
-        for pc, sel, Rt, Rx in factors:
-            vals.append((Rt[:, :, None] * Rx[:, None, :]).reshape(len(sel), -1).ravel())
-            rows.append(np.repeat(sel, pc.n)); cols.append(np.tile(np.arange(pc.offset, pc.offset + pc.n), len(sel)))
-        if not rows:
-            return csr_matrix((nq, N))
-        return csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(nq, N))
+        widths = {pc.n for pc, _, _, _ in factors}
+        if len(widths) != 1:                                  # pieces of different sizes: the general build
+            rows, cols, vals = [], [], []
+            for pc, sel, Rt, Rx in factors:
+                vals.append((Rt[:, :, None] * Rx[:, None, :]).reshape(len(sel), -1).ravel())
+                rows.append(np.repeat(sel, pc.n)); cols.append(np.tile(np.arange(pc.offset, pc.offset + pc.n), len(sel)))
+            if not rows:
+                return csr_matrix((nq, N))
+            return csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(nq, N))
+        w = widths.pop()
+        blocks = np.concatenate([(Rt[:, :, None] * Rx[:, None, :]).reshape(len(sel), -1) for _, sel, Rt, Rx in factors])
+        rows = np.concatenate([sel for _, sel, _, _ in factors])
+        offsets = np.concatenate([np.full(len(sel), pc.offset) for pc, sel, _, _ in factors])
+        order = np.argsort(rows, kind="stable")
+        counts = np.zeros(nq, dtype=np.int64); counts[rows] = w
+        indptr = np.zeros(nq + 1, dtype=np.int64); np.cumsum(counts, out=indptr[1:])
+        indices = (offsets[order][:, None] + np.arange(w)).ravel().astype(np.int32)
+        return csr_matrix((blocks[order].ravel(), indices, indptr), shape=(nq, N))
 
     def _matrix(self, held, factors):
         """The expanded matrix, built once on first use.  Half the paths of a solve never touch one (every
