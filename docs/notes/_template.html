@@ -1,0 +1,235 @@
+<title>Note Title Here</title>
+<!--
+  A note template: the design system of docs/notes/best-response-jacobian.html with the
+  content stripped out.  Copy this file, change the <title>, and write.
+
+  WHY IT IS BUILT THIS WAY (the constraints are the artifact viewer's, and they bite silently):
+
+  * Fonts load only from fonts.googleapis.com.  A face from anywhere else falls back with no
+    error, so always declare a real fallback stack.
+  * KaTeX and MathJax cannot be used: their stylesheets and font files are both off the
+    allowlist.  Set maths by hand -- .m for an italic symbol, .frac for a stacked derivative.
+    They are below and they are enough for a first-order condition.
+  * The page renders in the viewer's theme, and "system" stamps nothing on the root element.
+    Every colour is a token declared in the bare :root, redefined in BOTH the
+    prefers-color-scheme block and the [data-theme="dark"] block.  A colour defined only
+    inside one of those renders one theme's text on the other theme's ground.
+  * body must paint its own background from a token; a transparent body borrows the host's.
+
+  THE PIECES: .measure (the reading column) .breakout (full width, for figures and tables)
+  .eq (a display equation) .frac (a stacked derivative) .thesis (the answer, up front)
+  .callout (the consequence) .blocks .planes .tw (a scrolling table wrapper)
+-->
+<style>
+  :root{
+    --ground:#f4f5f3; --surface:#ffffff; --ink:#17242a; --muted:#5f7076;
+    --rule:#dbe0dd; --rule-strong:#c2cac6; --accent:#1f6f78;
+    --stable:#2e6f4f; --unstable:#a8402c;
+    --fill-stable:rgba(46,111,79,.10); --fill-unstable:rgba(168,64,44,.10);
+    --serif:"Newsreader",Georgia,"Times New Roman",serif;
+    --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#111819; --surface:#182124; --ink:#e6ecea; --muted:#93a5a8;
+      --rule:#28353a; --rule-strong:#3a4b50; --accent:#5bb8bf;
+      --stable:#5fae83; --unstable:#e07a5f;
+      --fill-stable:rgba(95,174,131,.13); --fill-unstable:rgba(224,122,95,.13);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#111819; --surface:#182124; --ink:#e6ecea; --muted:#93a5a8;
+    --rule:#28353a; --rule-strong:#3a4b50; --accent:#5bb8bf;
+    --stable:#5fae83; --unstable:#e07a5f;
+    --fill-stable:rgba(95,174,131,.13); --fill-unstable:rgba(224,122,95,.13);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--ground); color:var(--ink); font-family:var(--serif);
+    font-size:18px; line-height:1.62; margin:0; padding:0 24px 96px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1120px; margin:0 auto}
+  .measure{max-width:44em; margin-inline:auto}
+
+  header{padding:64px 0 30px; margin-bottom:8px}
+
+  /* the answer, before the derivation that earns it */
+  .thesis{
+    margin-top:30px; padding:20px 24px; background:var(--surface);
+    border:1px solid var(--rule); border-left:3px solid var(--accent); border-radius:3px;
+  }
+  .thesis-eq{
+    font-family:var(--serif); font-size:25px; margin:0 0 9px; letter-spacing:.01em;
+  }
+  .thesis-say{font-family:var(--sans); font-size:14.5px; line-height:1.6; color:var(--muted); margin:0}
+  .thesis-say b{color:var(--ink); font-weight:600}
+
+  .eyebrow{
+    font-family:var(--sans); font-size:11.5px; font-weight:600; letter-spacing:.13em;
+    text-transform:uppercase; color:var(--accent); margin:0 0 16px;
+  }
+  h1{
+    font-size:clamp(31px,4.4vw,46px); font-weight:500; line-height:1.13; margin:0 0 18px;
+    letter-spacing:-.018em; text-wrap:balance;
+  }
+  .standfirst{font-size:20px; color:var(--muted); margin:0; text-wrap:pretty}
+  .standfirst em{color:var(--ink); font-style:italic}
+
+  h2{
+    font-size:25px; font-weight:600; letter-spacing:-.012em; text-wrap:balance;
+    margin:56px 0 6px; padding-top:20px; border-top:2px solid var(--accent);
+  }
+  h2 .n{font-family:var(--mono); font-size:14px; color:var(--accent); display:block; margin-bottom:7px; font-weight:500}
+  h3{font-size:18px; font-weight:600; margin:34px 0 8px; letter-spacing:-.005em}
+  p{margin:0 0 17px; text-wrap:pretty}
+  a{color:var(--accent)}
+  strong{font-weight:600}
+
+  /* hand-set math: no external stylesheet is reachable from an artifact */
+  .m{font-family:var(--serif); font-style:italic}
+  .m sub,.m sup{font-style:normal; font-size:.68em; font-family:var(--sans)}
+  .op{font-style:normal; padding:0 .18em}
+  /* stacked fractions: KaTeX cannot be loaded here (its stylesheet and font files
+     are both off the artifact CSP's allowlist), so derivatives are set by hand */
+  .frac{
+    display:inline-flex; flex-direction:column; align-items:center;
+    vertical-align:middle; line-height:1.16; margin:0 .22em; font-size:.95em;
+  }
+  .frac>span{display:block; padding:0 .34em; white-space:nowrap}
+  .frac .num{border-bottom:1px solid currentColor; padding-bottom:.1em}
+  .frac .den{padding-top:.1em}
+  .eq{
+    margin:24px 0; padding:22px 22px; background:var(--surface);
+    border-left:2px solid var(--rule-strong); border-radius:2px;
+    font-size:19px; line-height:2.05; overflow-x:auto;
+  }
+  .eq .note{
+    display:block; font-family:var(--sans); font-size:12.5px; color:var(--muted);
+    margin-top:11px; font-style:normal; line-height:1.5;
+  }
+
+  .breakout{margin:38px 0}
+  figure{margin:0}
+  figcaption{
+    font-family:var(--sans); font-size:13px; color:var(--muted); line-height:1.55;
+    margin-top:13px; max-width:46em;
+  }
+  figcaption b{color:var(--ink); font-weight:600}
+
+  /* the measured block structure */
+  .blocks{display:flex; gap:26px; align-items:center; flex-wrap:wrap;
+          background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:22px 24px}
+  .grid2{display:grid; grid-template-columns:repeat(2,88px); gap:5px; flex:0 0 auto}
+  .cell{
+    font-family:var(--mono); font-size:12.5px; text-align:center; padding:15px 6px;
+    border-radius:2px; line-height:1.35;
+  }
+  .cell .lab{display:block; font-size:10.5px; color:var(--muted); letter-spacing:.05em}
+  .cell.zero{background:var(--fill-stable); color:var(--stable); border:1px dashed var(--stable)}
+  .cell.live{background:var(--surface); color:var(--ink); border:1px solid var(--rule-strong)}
+  .blocks .say{flex:1 1 240px; font-size:16.5px; color:var(--muted); line-height:1.6}
+  .blocks .say b{color:var(--ink); font-weight:600}
+
+  /* complex plane */
+  .planes{display:grid; grid-template-columns:repeat(auto-fit,minmax(276px,1fr)); gap:22px}
+  .plane{background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:16px 16px 10px}
+  .plane h4{
+    font-family:var(--sans); font-size:13px; font-weight:600; margin:0 0 2px; letter-spacing:.01em;
+  }
+  .plane .sub{font-family:var(--sans); font-size:12px; color:var(--muted); margin:0 0 10px}
+  .verdict{font-family:var(--sans); font-size:11px; font-weight:600; letter-spacing:.07em;
+           text-transform:uppercase; padding:2px 7px; border-radius:2px; margin-left:7px; white-space:nowrap}
+  .verdict.ok{background:var(--fill-stable); color:var(--stable)}
+  .verdict.bad{background:var(--fill-unstable); color:var(--unstable)}
+
+  table{border-collapse:collapse; width:100%; font-size:15px; font-variant-numeric:tabular-nums}
+  th,td{text-align:right; padding:9px 12px; border-bottom:1px solid var(--rule)}
+  th:first-child,td:first-child{text-align:left}
+  thead th{
+    font-family:var(--sans); font-size:11.5px; font-weight:600; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--muted); border-bottom:1px solid var(--rule-strong);
+  }
+  td.num{font-family:var(--mono); font-size:13.5px}
+  tbody tr:last-child td{border-bottom:none}
+  .tw{overflow-x:auto; background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:4px 6px}
+
+  code{font-family:var(--mono); font-size:.86em; background:var(--surface);
+       border:1px solid var(--rule); border-radius:2px; padding:1px 5px}
+  pre{
+    font-family:var(--mono); font-size:13px; line-height:1.62; background:var(--surface);
+    border:1px solid var(--rule); border-left:2px solid var(--accent); border-radius:2px;
+    padding:16px 18px; overflow-x:auto; margin:22px 0;
+  }
+  pre code{background:none; border:none; padding:0; font-size:inherit}
+
+  .callout{
+    background:var(--surface); border:1px solid var(--rule); border-top:2px solid var(--accent);
+    border-radius:3px; padding:20px 22px; margin:30px 0;
+  }
+  .callout p:last-child{margin-bottom:0}
+  .callout .tag{
+    font-family:var(--sans); font-size:11px; font-weight:600; letter-spacing:.11em;
+    text-transform:uppercase; color:var(--accent); display:block; margin-bottom:9px;
+  }
+  footer{margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
+         font-family:var(--sans); font-size:13px; color:var(--muted)}
+  @media (prefers-reduced-motion:no-preference){
+    .dot{transition:r .2s ease}
+  }
+</style>
+
+<div class="wrap">
+<header class="measure">
+  <p class="eyebrow">project &middot; section</p>
+  <h1>The claim the note makes, in a line</h1>
+  <p class="standfirst">One sentence saying what the reader gets, with <em>the key phrase</em> pulled out.</p>
+
+  <div class="thesis">
+    <p class="thesis-eq">the result <span class="op">=</span> in symbols</p>
+    <p class="thesis-say">The answer before the derivation that earns it, so the reader knows where this lands.</p>
+  </div>
+</header>
+
+<section class="measure">
+  <h2><span class="n">1</span>Sections are numbered only when they are a sequence</h2>
+  <p>A derivation is a sequence, so numbers carry information here. Drop them when the sections are
+  merely a list &mdash; structure should encode something true, not decorate.</p>
+
+  <div class="eq">
+    <span class="frac"><span class="num">&part;<span class="m">J<sub>i</sub></span></span><span class="den">&part;<span class="m">g<sub>i</sub></span></span></span>
+    <span class="op">=</span> <span class="m">H<sub>ii</sub></span> <span class="m">g<sub>i</sub></span>
+    <span class="op">+</span> <span class="m">c<sub>i</sub></span>
+    <span class="note">A note under an equation, for the thing the symbols do not say.</span>
+  </div>
+</section>
+
+<section class="breakout">
+  <figure>
+    <div class="tw">
+      <table>
+        <thead><tr><th>case</th><th>measured</th><th>threshold</th></tr></thead>
+        <tbody>
+          <tr><td>the good one</td><td class="num">4.8e&minus;11</td><td class="num">1e&minus;10</td></tr>
+          <tr><td>the bad one</td><td class="num">1.8e&minus;04</td><td class="num">1e&minus;10</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <figcaption>Numbers in <code>td.num</code> get the mono face and tabular figures, so columns line up.
+    Say <b>where they came from</b> in the caption &mdash; a measured number with no provenance is a claim.</figcaption>
+  </figure>
+</section>
+
+<section class="measure">
+  <div class="callout">
+    <span class="tag">The consequence</span>
+    <p>One paragraph for the thing the reader should carry away.</p>
+  </div>
+</section>
+
+<footer class="measure">
+  Where the numbers came from: the model, the settings, the version, the script that reproduces them.
+</footer>
+</div>

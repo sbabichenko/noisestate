@@ -1,0 +1,370 @@
+<title>Reading Stability Off the FOC</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --ground:#f4f5f3; --surface:#ffffff; --ink:#17242a; --muted:#5f7076;
+    --rule:#dbe0dd; --rule-strong:#c2cac6; --accent:#1f6f78;
+    --stable:#2e6f4f; --unstable:#a8402c;
+    --fill-stable:rgba(46,111,79,.10); --fill-unstable:rgba(168,64,44,.10);
+    --serif:"Newsreader",Georgia,"Times New Roman",serif;
+    --sans:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#111819; --surface:#182124; --ink:#e6ecea; --muted:#93a5a8;
+      --rule:#28353a; --rule-strong:#3a4b50; --accent:#5bb8bf;
+      --stable:#5fae83; --unstable:#e07a5f;
+      --fill-stable:rgba(95,174,131,.13); --fill-unstable:rgba(224,122,95,.13);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#111819; --surface:#182124; --ink:#e6ecea; --muted:#93a5a8;
+    --rule:#28353a; --rule-strong:#3a4b50; --accent:#5bb8bf;
+    --stable:#5fae83; --unstable:#e07a5f;
+    --fill-stable:rgba(95,174,131,.13); --fill-unstable:rgba(224,122,95,.13);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--ground); color:var(--ink); font-family:var(--serif);
+    font-size:18px; line-height:1.62; margin:0; padding:0 24px 96px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1120px; margin:0 auto}
+  .measure{max-width:44em; margin-inline:auto}
+
+  header{padding:64px 0 30px; margin-bottom:8px}
+
+  /* the answer, before the derivation that earns it */
+  .thesis{
+    margin-top:30px; padding:20px 24px; background:var(--surface);
+    border:1px solid var(--rule); border-left:3px solid var(--accent); border-radius:3px;
+  }
+  .thesis-eq{
+    font-family:var(--serif); font-size:25px; margin:0 0 9px; letter-spacing:.01em;
+  }
+  .thesis-say{font-family:var(--sans); font-size:14.5px; line-height:1.6; color:var(--muted); margin:0}
+  .thesis-say b{color:var(--ink); font-weight:600}
+
+  .eyebrow{
+    font-family:var(--sans); font-size:11.5px; font-weight:600; letter-spacing:.13em;
+    text-transform:uppercase; color:var(--accent); margin:0 0 16px;
+  }
+  h1{
+    font-size:clamp(31px,4.4vw,46px); font-weight:500; line-height:1.13; margin:0 0 18px;
+    letter-spacing:-.018em; text-wrap:balance;
+  }
+  .standfirst{font-size:20px; color:var(--muted); margin:0; text-wrap:pretty}
+  .standfirst em{color:var(--ink); font-style:italic}
+
+  h2{
+    font-size:25px; font-weight:600; letter-spacing:-.012em; text-wrap:balance;
+    margin:56px 0 6px; padding-top:20px; border-top:2px solid var(--accent);
+  }
+  h2 .n{font-family:var(--mono); font-size:14px; color:var(--accent); display:block; margin-bottom:7px; font-weight:500}
+  h3{font-size:18px; font-weight:600; margin:34px 0 8px; letter-spacing:-.005em}
+  p{margin:0 0 17px; text-wrap:pretty}
+  a{color:var(--accent)}
+  strong{font-weight:600}
+
+  /* hand-set math: no external stylesheet is reachable from an artifact */
+  .m{font-family:var(--serif); font-style:italic}
+  .m sub,.m sup{font-style:normal; font-size:.68em; font-family:var(--sans)}
+  .op{font-style:normal; padding:0 .18em}
+  /* stacked fractions: KaTeX cannot be loaded here (its stylesheet and font files
+     are both off the artifact CSP's allowlist), so derivatives are set by hand */
+  .frac{
+    display:inline-flex; flex-direction:column; align-items:center;
+    vertical-align:middle; line-height:1.16; margin:0 .22em; font-size:.95em;
+  }
+  .frac>span{display:block; padding:0 .34em; white-space:nowrap}
+  .frac .num{border-bottom:1px solid currentColor; padding-bottom:.1em}
+  .frac .den{padding-top:.1em}
+  .eq{
+    margin:24px 0; padding:22px 22px; background:var(--surface);
+    border-left:2px solid var(--rule-strong); border-radius:2px;
+    font-size:19px; line-height:2.05; overflow-x:auto;
+  }
+  .eq .note{
+    display:block; font-family:var(--sans); font-size:12.5px; color:var(--muted);
+    margin-top:11px; font-style:normal; line-height:1.5;
+  }
+
+  .breakout{margin:38px 0}
+  figure{margin:0}
+  figcaption{
+    font-family:var(--sans); font-size:13px; color:var(--muted); line-height:1.55;
+    margin-top:13px; max-width:46em;
+  }
+  figcaption b{color:var(--ink); font-weight:600}
+
+  /* the measured block structure */
+  .blocks{display:flex; gap:26px; align-items:center; flex-wrap:wrap;
+          background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:22px 24px}
+  .grid2{display:grid; grid-template-columns:repeat(2,88px); gap:5px; flex:0 0 auto}
+  .cell{
+    font-family:var(--mono); font-size:12.5px; text-align:center; padding:15px 6px;
+    border-radius:2px; line-height:1.35;
+  }
+  .cell .lab{display:block; font-size:10.5px; color:var(--muted); letter-spacing:.05em}
+  .cell.zero{background:var(--fill-stable); color:var(--stable); border:1px dashed var(--stable)}
+  .cell.live{background:var(--surface); color:var(--ink); border:1px solid var(--rule-strong)}
+  .blocks .say{flex:1 1 240px; font-size:16.5px; color:var(--muted); line-height:1.6}
+  .blocks .say b{color:var(--ink); font-weight:600}
+
+  /* complex plane */
+  .planes{display:grid; grid-template-columns:repeat(auto-fit,minmax(276px,1fr)); gap:22px}
+  .plane{background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:16px 16px 10px}
+  .plane h4{
+    font-family:var(--sans); font-size:13px; font-weight:600; margin:0 0 2px; letter-spacing:.01em;
+  }
+  .plane .sub{font-family:var(--sans); font-size:12px; color:var(--muted); margin:0 0 10px}
+  .verdict{font-family:var(--sans); font-size:11px; font-weight:600; letter-spacing:.07em;
+           text-transform:uppercase; padding:2px 7px; border-radius:2px; margin-left:7px; white-space:nowrap}
+  .verdict.ok{background:var(--fill-stable); color:var(--stable)}
+  .verdict.bad{background:var(--fill-unstable); color:var(--unstable)}
+
+  table{border-collapse:collapse; width:100%; font-size:15px; font-variant-numeric:tabular-nums}
+  th,td{text-align:right; padding:9px 12px; border-bottom:1px solid var(--rule)}
+  th:first-child,td:first-child{text-align:left}
+  thead th{
+    font-family:var(--sans); font-size:11.5px; font-weight:600; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--muted); border-bottom:1px solid var(--rule-strong);
+  }
+  td.num{font-family:var(--mono); font-size:13.5px}
+  tbody tr:last-child td{border-bottom:none}
+  .tw{overflow-x:auto; background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:4px 6px}
+
+  code{font-family:var(--mono); font-size:.86em; background:var(--surface);
+       border:1px solid var(--rule); border-radius:2px; padding:1px 5px}
+  pre{
+    font-family:var(--mono); font-size:13px; line-height:1.62; background:var(--surface);
+    border:1px solid var(--rule); border-left:2px solid var(--accent); border-radius:2px;
+    padding:16px 18px; overflow-x:auto; margin:22px 0;
+  }
+  pre code{background:none; border:none; padding:0; font-size:inherit}
+
+  .callout{
+    background:var(--surface); border:1px solid var(--rule); border-top:2px solid var(--accent);
+    border-radius:3px; padding:20px 22px; margin:30px 0;
+  }
+  .callout p:last-child{margin-bottom:0}
+  .callout .tag{
+    font-family:var(--sans); font-size:11px; font-weight:600; letter-spacing:.11em;
+    text-transform:uppercase; color:var(--accent); display:block; margin-bottom:9px;
+  }
+  footer{margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
+         font-family:var(--sans); font-size:13px; color:var(--muted)}
+  @media (prefers-reduced-motion:no-preference){
+    .dot{transition:r .2s ease}
+  }
+</style>
+
+<div class="wrap">
+<header class="measure">
+  <p class="eyebrow">noisestate · best-response dynamics</p>
+  <h1>Reading stability off the first-order condition</h1>
+  <p class="standfirst">The spectral radius the solver reports is not a new object. It is <em>the ratio of cross-curvature to own curvature</em>, and it falls out of the FOC you already write down.</p>
+
+  <div class="thesis">
+    <p class="thesis-eq">ρ(<span class="m">J</span>) <span class="op">=</span> ρ(<span class="m">D</span><sup>−1</sup><span class="m">O</span>) <span class="op">&lt;</span> 1</p>
+    <p class="thesis-say">Adjustment converges when each agent's <b>own</b> curvature dominates its sensitivity to the <b>others</b>. Everything below is getting to that line and checking it against the solver.</p>
+  </div>
+</header>
+
+<section class="measure">
+  <h2><span class="n">1</span>Where the map comes from</h2>
+  <p>Each agent's objective is quadratic in the strategy profile — that is what makes this an LQG game. So the derivative of agent <span class="m">i</span>'s cost in its own strategy <span class="m">g<sub>i</sub></span> is <strong>affine</strong>:</p>
+
+  <div class="eq">
+    <span class="frac"><span class="num">∂<span class="m">J<sub>i</sub></span></span><span class="den">∂<span class="m">g<sub>i</sub></span></span></span>
+    <span class="op">=</span>
+    <span class="m">H<sub>ii</sub></span> <span class="m">g<sub>i</sub></span>
+    <span class="op">+</span> Σ<sub>j≠i</sub> <span class="m">H<sub>ij</sub></span> <span class="m">g<sub>j</sub></span>
+    <span class="op">+</span> <span class="m">c<sub>i</sub></span>
+    <span class="op">=</span> 0
+    <span class="note" style="line-height:2">
+      <span class="m">H<sub>ii</sub></span> <span class="op">=</span>
+      <span class="frac"><span class="num">∂²<span class="m">J<sub>i</sub></span></span><span class="den">∂<span class="m">g<sub>i</sub></span>²</span></span>
+      is agent <em>i</em>'s own curvature.
+      <span class="m">H<sub>ij</sub></span> <span class="op">=</span>
+      <span class="frac"><span class="num">∂²<span class="m">J<sub>i</sub></span></span><span class="den">∂<span class="m">g<sub>i</sub></span> ∂<span class="m">g<sub>j</sub></span></span></span>
+      is the cross curvature — how far <em>j</em>'s strategy tilts <em>i</em>'s optimality condition.
+    </span>
+  </div>
+
+  <p>Affine in <span class="m">g<sub>i</sub></span> means you can solve it. The best response is not an abstract fixed point of anything; it is one linear solve:</p>
+
+  <div class="eq">
+    <span class="m">g<sub>i</sub></span> <span class="op">=</span> BR<sub>i</sub>(<span class="m">g<sub>−i</sub></span>)
+    <span class="op">=</span> −<span class="m">H<sub>ii</sub></span><sup>−1</sup>
+    ( Σ<sub>j≠i</sub> <span class="m">H<sub>ij</sub></span> <span class="m">g<sub>j</sub></span> <span class="op">+</span> <span class="m">c<sub>i</sub></span> )
+  </div>
+
+  <p>Now differentiate. There is nothing else to do — the Jacobian of the best-response map is read straight off that line:</p>
+
+  <div class="eq">
+    <span class="frac"><span class="num">∂BR<sub>i</sub></span><span class="den">∂<span class="m">g<sub>j</sub></span></span></span>
+    <span class="op">=</span> −<span class="m">H<sub>ii</sub></span><sup>−1</sup><span class="m">H<sub>ij</sub></span>
+    &nbsp;&nbsp;(<span class="m">j</span> ≠ <span class="m">i</span>),
+    <span style="padding-left:1.8em">
+      <span class="frac"><span class="num">∂BR<sub>i</sub></span><span class="den">∂<span class="m">g<sub>i</sub></span></span></span>
+      <span class="op">=</span> 0</span>
+    <span class="note">The diagonal blocks vanish because <em>i</em>'s best response does not depend on <em>i</em>'s current strategy — it replaces it.</span>
+  </div>
+
+  <p>So the whole Jacobian is <span class="m">J</span> = −<span class="m">D</span><sup>−1</sup><span class="m">O</span>, with <span class="m">D</span> the block diagonal of own curvatures and <span class="m">O</span> the off-diagonal cross curvatures.</p>
+</section>
+
+<section class="breakout">
+  <figure>
+    <div class="blocks">
+      <div class="grid2">
+        <div class="cell zero"><span class="lab">J₁₁</span>0.000e+00</div>
+        <div class="cell live"><span class="lab">J₁₂</span>2.046e−01</div>
+        <div class="cell live"><span class="lab">J₂₁</span>1.337e−01</div>
+        <div class="cell zero"><span class="lab">J₂₂</span>0.000e+00</div>
+      </div>
+      <p class="say">The prediction is falsifiable, so it was tested. Assembling all 48 columns of the Jacobian for <code>ch3_two_player</code> gives <b>diagonal blocks that are identically zero</b> — not small, zero — and its spectral radius, 0.4342, matches what <code>stability()</code> reports by Arnoldi to four decimals.</p>
+    </div>
+    <figcaption>Largest absolute entry per 24×24 block, from 48 finite-difference matvecs of the best-response map at the equilibrium. <b>ch3_two_player</b>, window 3, 24 nodes per panel.</figcaption>
+  </figure>
+</section>
+
+<section class="measure">
+  <h2><span class="n">2</span>Two players collapse further</h2>
+  <p>With a zero diagonal, <span class="m">J</span>² is block diagonal, so the eigenvalues arrive in ± pairs and the radius is a square root:</p>
+
+  <div class="eq">
+    ρ(<span class="m">J</span>) <span class="op">=</span> √ ρ(
+    <span class="m">H</span><sub>11</sub><sup>−1</sup><span class="m">H</span><sub>12</sub>
+    <span class="m">H</span><sub>22</sub><sup>−1</sup><span class="m">H</span><sub>21</sub> )
+    <span class="note">Verified to six digits on both branches below: 0.434208 against 0.434208, and 1.161319 against 1.161319.</span>
+  </div>
+
+  <p>The ± pairing is not a curiosity — it is the visible signature of the zero diagonal, and you can see it in the spectra.</p>
+</section>
+
+<section class="breakout">
+  <figure>
+    <div class="planes">
+      <div class="plane">
+        <h4>Window 3 <span class="verdict ok">stable</span></h4>
+        <p class="sub">ρ = 0.4342 · cost 0.4290 · the equilibrium</p>
+        <svg viewBox="0 0 260 260" width="100%" height="auto" role="img" aria-label="Eigenvalues of the best-response Jacobian at window 3, all well inside the unit circle">
+          <g id="p1"></g>
+        </svg>
+      </div>
+      <div class="plane">
+        <h4>Window 18 <span class="verdict bad">unstable</span></h4>
+        <p class="sub">ρ = 1.1613 · cost 3.1352 · a second branch</p>
+        <svg viewBox="0 0 260 260" width="100%" height="auto" role="img" aria-label="Eigenvalues at window 18, with a conjugate pair outside the unit circle">
+          <g id="p2"></g>
+        </svg>
+      </div>
+    </div>
+    <figcaption>Eigenvalues of <span class="m">J</span> on the complex plane, against the unit circle. Both spectra are exactly symmetric about the origin — the ± pairing the zero diagonal forces. At window 18 a real pair sits <b>outside</b> the circle at ±1.1613: adjustment dynamics diverge along it. The dashed ring is |<span class="m">z</span>| = 1.</figcaption>
+  </figure>
+</section>
+
+<section class="measure">
+  <h2><span class="n">3</span>What the condition says</h2>
+  <p>Best-response adjustment is locally stable exactly when ρ(<span class="m">D</span><sup>−1</sup><span class="m">O</span>) &lt; 1: <strong>each agent's own curvature must dominate its sensitivity to the others.</strong> In the scalar case that reads |<span class="m">H</span><sub>12</sub><span class="m">H</span><sub>21</sub>| &lt; |<span class="m">H</span><sub>11</sub><span class="m">H</span><sub>22</sub>| — diagonal dominance of the game's Hessian.</p>
+  <p>This is the standard object under other names: Rosen's diagonal strict concavity (1965), the Jacobian of the pseudo-gradient, best response as a contraction. Nothing here is exotic. It is the operator version of the two-by-two determinant condition, with <span class="m">H<sub>ii</sub></span> an operator on the strategy's nodes rather than a number.</p>
+</section>
+
+<section class="measure">
+  <h2><span class="n">4</span>Why the second-order check cannot see it</h2>
+  <p>This is the part worth carrying away, because it explains a live finding in the package.</p>
+</section>
+
+<section class="breakout">
+  <figure>
+    <div class="tw">
+      <table>
+        <thead>
+          <tr><th>window</th><th>own curvature, player 1</th><th>own curvature, player 2</th><th>convex?</th><th>ρ(J)</th><th>verdict</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>3</td><td class="num">2.69e−03</td><td class="num">5.84e−04</td><td>yes</td><td class="num">0.4342</td><td style="color:var(--stable);font-weight:600">equilibrium</td></tr>
+          <tr><td>18</td><td class="num">3.76e−05</td><td class="num">9.86e−06</td><td>yes</td><td class="num">1.1613</td><td style="color:var(--unstable);font-weight:600">second branch</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <figcaption>Smallest curvature relative to the largest, from the second-order check, beside the spectral radius. Both rows are strictly convex in each agent's own strategy.</figcaption>
+  </figure>
+</section>
+
+<section class="measure">
+  <p>At window 18 <strong>each agent's own problem is still strictly convex</strong>. The FOC holds, the second-order condition holds: it is a genuine Nash equilibrium of the truncated game. What fails is the interaction. The own curvatures have collapsed by two orders of magnitude while the cross terms have not, so <span class="m">D</span><sup>−1</sup><span class="m">O</span> runs past 1. Each player is nearly indifferent along some direction, which makes them hypersensitive to the other.</p>
+
+  <div class="callout">
+    <span class="tag">The consequence</span>
+    <p>The second-order check only ever looks at <span class="m">D</span>. The radius looks at <span class="m">D</span><sup>−1</sup><span class="m">O</span>. They answer genuinely different questions, and the spurious long-window branch is precisely a case where the first passes and the second fails — which is why neither alone identifies it, and why the two flags are now reported together.</p>
+  </div>
+
+  <h2><span class="n">5</span>Half of it is already in the code</h2>
+  <p><code>_second_order</code> builds <span class="m">M</span> = <span class="m">T</span>′<span class="m">GT</span> and takes its extreme eigenvalues by Lanczos. That <span class="m">M</span> <em>is</em> <span class="m">H<sub>ii</sub></span>. The diagonal blocks exist analytically today; only the cross blocks are missing, and they are the same construction with the other agent's response operator in place of its own.</p>
+  <p>So an analytic Jacobian would not be a new derivation. It would be the off-diagonal of an object the code already builds half of — one closed-loop linearisation and one FOC solve per matvec, in place of a full nonlinear best response.</p>
+
+  <pre><code>ρ(J) = 0.434208   sqrt(ρ(J₁₂J₂₁)) = 0.434208   diag blocks 0.0e+00
+ρ(J) = 1.161319   sqrt(ρ(J₁₂J₂₁)) = 1.161319   diag blocks 0.0e+00</code></pre>
+
+  <p>Worth knowing before anyone builds it: the finite-difference route is not the weak link. Sweeping the step over six orders of magnitude, 1e−4 to 1e−9, moves the radius by 1e−4. An exact Jacobian would return the same number — the case for it is cost per matvec and the transpose, not accuracy.</p>
+</section>
+
+<footer class="measure">
+  Numbers measured on <code>examples/ch3_two_player.yaml</code> at 24 nodes per panel, noisestate 0.6.9.
+  The full Jacobian is 48×48 — small enough to assemble and diagonalise directly, which is how the block
+  structure and the square-root identity were checked rather than assumed.
+</footer>
+</div>
+
+<script>
+  const DATA = {
+    p1: [[-0.4342,0],[0.4342,0],[0.1718,0],[-0.1718,0],[-0.1057,0],[0.1057,0],[0.0405,0],[-0.0405,0],
+         [0.0249,0],[-0.0249,0],[0.0117,0],[-0.0117,0],[0.0074,0],[-0.0074,0],[-0.0042,0],[0.0042,0],
+         [-0.0028,0],[0.0028,0],[0.0018,0],[-0.0018,0],[0.0012,0],[-0.0012,0],[0.0009,0],[-0.0009,0]],
+    p2: [[1.1613,0],[-1.1613,0],[0.6213,0.2477],[0.6213,-0.2477],[-0.6213,0.2477],[-0.6213,-0.2477],
+         [-0.4527,-0.2421],[-0.4527,0.2421],[0.4527,-0.2421],[0.4527,0.2421],[-0.3313,-0.2025],[-0.3313,0.2025],
+         [0.3313,-0.2025],[0.3313,0.2025],[0.2460,0.1587],[0.2460,-0.1587],[-0.2460,0.1587],[-0.2460,-0.1587],
+         [-0.1854,-0.1205],[-0.1854,0.1205],[0.1854,-0.1205],[0.1854,0.1205],[0.1404,0.0887],[0.1404,-0.0887]]
+  };
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const S = 260, C = S / 2, R = 88;             // R pixels per unit modulus; 1.4 units fit the box
+
+  function el(name, attrs){
+    const n = document.createElementNS(SVGNS, name);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+
+  function draw(gid, pts){
+    const g = document.getElementById(gid);
+    const X = re => C + re * R, Y = im => C - im * R;
+
+    g.appendChild(el("line", {x1:10, y1:C, x2:S-10, y2:C, stroke:"var(--rule)", "stroke-width":1}));
+    g.appendChild(el("line", {x1:C, y1:10, x2:C, y2:S-10, stroke:"var(--rule)", "stroke-width":1}));
+    g.appendChild(el("circle", {cx:C, cy:C, r:R, fill:"none", stroke:"var(--rule-strong)",
+                                "stroke-width":1.2, "stroke-dasharray":"4 4"}));
+
+    const lab = el("text", {x:X(1)+4, y:C-7, fill:"var(--muted)", "font-size":10,
+                            "font-family":"IBM Plex Mono, monospace"});
+    lab.textContent = "1";
+    g.appendChild(lab);
+
+    for (const [re, im] of pts){
+      const out = Math.hypot(re, im) > 1;
+      g.appendChild(el("circle", {
+        class:"dot", cx:X(re), cy:Y(im), r: out ? 4.6 : 3.2,
+        fill: out ? "var(--unstable)" : "var(--accent)",
+        "fill-opacity": out ? .95 : .72,
+        stroke: out ? "var(--unstable)" : "none", "stroke-width": out ? 1.2 : 0
+      }));
+    }
+  }
+
+  draw("p1", DATA.p1);
+  draw("p2", DATA.p2);
+</script>
