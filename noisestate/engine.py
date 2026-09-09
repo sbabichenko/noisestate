@@ -123,7 +123,6 @@ class EngineBase(MeanLayer):
         self.settings = Settings.of(settings)
         changed = self.settings.changed()
         self.solver_kw = {"verbose": verbose, **options, **({"settings": changed} if changed else {})}   # so a result can rebuild the same engine
-        self._qa: Dict[str, np.ndarray] = {}                # agent -> (Q zeta) as an operator on the primary kernels
         self._rphys: Dict[str, np.ndarray] = {}             # agent -> physical impulse responses (all reactions off)
         self._second_order_cache: Dict[str, dict] = {}       # representative -> its second-order check, shared with tied agents
         self._loss_forms: Dict[tuple, np.ndarray] = {}       # (agent, init) -> the loss form on the world (map-independent; built for the
@@ -270,14 +269,6 @@ class EngineBase(MeanLayer):
             Cu[c.block(u)] = np.eye(N)
             out.append(Cu)
         return out
-
-    def _qa_operator(self, agent: Agent) -> np.ndarray:
-        """(Q zeta) as an operator on the primary kernels: map-independent, cached per agent."""
-        if agent.name not in self._qa:
-            c = self.c; atoms, Q, q = c.loss[agent.name]
-            AO = np.concatenate([c.atom_op(at) for at in atoms], axis=0)
-            self._qa[agent.name] = np.kron(Q, np.eye(c.N)) @ AO
-        return self._qa[agent.name]
 
     def _foc_operators(self, agent: Agent, R: np.ndarray, atoms: bool = False):
         """Per control, the operator (N x n_prim N) mapping the primary kernels of one channel to the
