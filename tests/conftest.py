@@ -1,6 +1,17 @@
 """The examples directory (its model-building scripts) and extras/ (compare_baseline) are importable from every
-test; the `slow` marker (tests/helpers.slow, the NOISESTATE_SLOW gate) is registered so `-m slow` selects them."""
+test; the `slow` marker (tests/helpers.slow, the NOISESTATE_SLOW gate) is registered so `-m slow` selects them;
+the BLAS thread count is capped before numpy loads."""
 import os, sys
+
+# The solves here are small (a few hundred to a few thousand unknowns), the size at which a widely threaded
+# GEMM spends longer synchronising than computing: on a 16-core machine the fast suite takes 743 s at the
+# BLAS default and 16.9 s against 75.9 s on its heaviest file alone at four threads.  Four is also where
+# tests/SLOW.md's seconds were measured.  This must run before numpy imports its BLAS, so it stays at the
+# top of the first conftest pytest loads; an explicit setting in the environment wins.
+for _threads in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+                 "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_threads, "4")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 for sub in ("examples", "extras"):
     p = os.path.join(HERE, "..", sub)

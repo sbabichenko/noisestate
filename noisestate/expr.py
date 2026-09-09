@@ -817,155 +817,168 @@ def is_expression_form(states, agents, horizon, definitions) -> bool:
             or isinstance(horizon, Stationary) or any(isinstance(d, Definition) for d in (definitions or [])))
 
 
+def _no_repeats(names, message, model):
+    """Names used once each; `message` names the offender as {name}."""
+    dup = sorted({n for n in names if names.count(n) > 1})
+    if dup:
+        raise ValueError(f"Model {model}: " + message.format(name=repr(dup[0])))
+
+
+def _check_kinds(name, states, agents, definitions, horizon):
+    """The arguments are the objects the expression form builds, and the horizon is one of the three."""
+    for items, kind, what in ((states, State, "states must be State objects"),
+                              (agents, Agent, "agents must be Agent objects"),
+                              (definitions, Definition, "definitions must be define()d quantities")):
+        for x in items:
+            if not isinstance(x, kind):
+                raise ValueError(f"Model {name}: {what}, not {x!r}")
+    if not isinstance(horizon, Stationary):
+        raise ValueError(f"Model {name}: horizon must be Stationary(...), Finite(...) or Transition(...), not {horizon!r}")
+
+
+class _Walk:
+    """One pass over every expression of a model, gathering what the file needs: the definitions reached
+    (a define()d quantity that appears, and whatever its own expression reaches), the shocks loaded, and
+    the Params used by a coefficient, a lag or a delay."""
+
+    def __init__(self):
+        self.defs: Dict[str, Definition] = {}
+        self.shocks: Dict[str, Shock] = {}
+        self.params: Dict[int, Param] = {}
+
+    def coef(self, c):
+        if isinstance(c, Coef):
+            for p in c.params():
+                self.params.setdefault(id(p), p)
+
+    def _lag(self, atom):
+        if isinstance(atom.lag, Param):
+            self.params.setdefault(id(atom.lag), atom.lag)
+
+    def _reach(self, quantities):
+        for q in quantities:
+            if isinstance(q, Definition) and q.name not in self.defs:
+                self.defs[q.name] = q
+                self.linear(q.expr)
+
+    def linear(self, l: Linear):
+        for a, c in l.terms.items():
+            self.coef(c); self._lag(a)
+        for w in l.shocks.values():
+            self.shocks.setdefault(w.name, w)
+        self._reach(l.quantities.values())
+
+    def quad(self, q: Quad):
+        for key, c in q.terms.items():
+            self.coef(c)
+            for x in key:
+                self._lag(x)
+        self.coef(q.const)
+        self._reach(q.quantities.values())
+
+    def model(self, states, agents, definitions, horizon):
+        self._reach(definitions)
+        for s in states:
+            if s.drift is not None:
+                self.linear(s.drift)
+            self.coef(s.initial)
+        for a in agents:
+            for sg in a.signals:
+                self.linear(sg.expr); self.coef(sg.delay)
+            self.quad(a.loss)
+        self.coef(horizon.window); self.coef(horizon.discount)
+        if isinstance(horizon, Transition):
+            self.coef(horizon.stationary_window)
+            if isinstance(horizon.past, (list, tuple)):
+                for sh in horizon.past:
+                    for key in ("loads", "rows"):
+                        for c in (sh.get(key) or {}).values():
+                            self.coef(c)
+        return self
+
+
+def _check_quantities(name, states, controls, defs, agents):
+    """Every atom names a state, a control or a definition of this model, and the very object this model
+    lists: a State of the right name built elsewhere is a different quantity (Quantity equality is identity)."""
+    known = set(defs) | {x.name for x in states} | {x.name for x in controls}
+    own = {id(x) for x in states} | {id(x) for x in controls}
+
+    def check(where, quantities):
+        """`where` is the whole lead-in, up to but not including the verb."""
+        for q in quantities:
+            if q.name not in known or (isinstance(q, (State, Control)) and id(q) not in own):
+                raise ValueError(f"{where} uses {q!r}, which is not a state, control or definition of the model {name!r}")
+
+    for s in states:
+        if s.drift is not None:
+            check(f"state {s.name}: its drift", s.drift.quantities.values())
+    for a in agents:
+        for sg in a.signals:
+            check(f"signal {a.name}.{sg.name}:", sg.expr.quantities.values())
+        check(f"agent {a.name}: its loss", a.loss.quantities.values())
+    for d in defs.values():
+        check(f"definition {d.name}:", d.expr.quantities.values())
+
+
+def _param_values(name, used, params):
+    """The parameters used, in creation order, with the values to write: as each Param was given, or as
+    `params` supplies them (a mapping name -> value, or an iterable of Params)."""
+    plist = sorted(used.values(), key=lambda p: p.order)
+    seen: Dict[str, Param] = {}
+    for p in plist:
+        if seen.setdefault(p.name, p) is not p:
+            raise ValueError(f"Model {name}: two different Params are named {p.name!r}")
+    if params is None:
+        values = {p.name: p.given for p in plist}
+    else:
+        as_map = isinstance(params, dict)
+        if not as_map:
+            for p in params:
+                if not isinstance(p, Param):
+                    raise ValueError(f"Model {name}: params must be Params or a mapping of name to value, not {p!r}")
+        supplied = dict(params) if as_map else {p.name: p.given for p in params}
+        for p in plist:
+            if p.name not in supplied:
+                raise ValueError(f"unknown Param {p.name!r} in a coefficient of the model {name!r}: it is not among params={sorted(supplied)}")
+        values = {p.name: supplied[p.name] for p in plist}
+        for k, v in supplied.items():
+            if k not in values:
+                if as_map:
+                    raise ValueError(f"Model {name}: params gives {k!r}, which no coefficient of the model uses")
+                values[k] = v
+    for k, v in values.items():
+        if v is None:
+            raise ValueError(f"unknown Param {k!r} in a coefficient of the model {name!r}: it has no value; give Param({k!r}, value) or params={{{k!r}: value}}")
+        if not _is_number(v):
+            raise ValueError(f"Model {name}: the value of {k!r} must be a number, not {v!r}")
+    return values
+
+
 def compile_model(name: str, states, agents, definitions=None, ties=None, horizon=None, numerics=None, params=None):
     """The model file dict of an expression model, and its notes.  Channels are the shocks used, in the order
     of their shocks() namespaces; params are the Params used (in creation order, values as given, or the
     values `params` supplies: a mapping name -> value or an iterable of Params); definitions are the given
     ones then every define()d quantity that appears."""
     states = list(states or []); agents = list(agents or []); definitions = list(definitions or [])
-    for s in states:
-        if not isinstance(s, State):
-            raise ValueError(f"Model {name}: states must be State objects, not {s!r}")
-    for a in agents:
-        if not isinstance(a, Agent):
-            raise ValueError(f"Model {name}: agents must be Agent objects, not {a!r}")
-    for d in definitions:
-        if not isinstance(d, Definition):
-            raise ValueError(f"Model {name}: definitions must be define()d quantities, not {d!r}")
-    if horizon is None:
-        horizon = Stationary()
-    if not isinstance(horizon, Stationary):
-        raise ValueError(f"Model {name}: horizon must be Stationary(...), Finite(...) or Transition(...), not {horizon!r}")
-    names = [s.name for s in states]
-    dup = sorted({n for n in names if names.count(n) > 1})
-    if dup:
-        raise ValueError(f"Model {name}: two states named {dup[0]!r}")
-    anames = [a.name for a in agents]
-    dup = sorted({n for n in anames if anames.count(n) > 1})
-    if dup:
-        raise ValueError(f"Model {name}: two agents named {dup[0]!r}")
+    horizon = Stationary() if horizon is None else horizon
+    _check_kinds(name, states, agents, definitions, horizon)
     controls = [u for a in agents for u in a.controls]
-    cnames = [u.name for u in controls]
-    dup = sorted({n for n in cnames if cnames.count(n) > 1})
-    if dup:
-        raise ValueError(f"Model {name}: control {dup[0]!r} is listed by two agents")
+    _no_repeats([s.name for s in states], "two states named {name}", name)
+    _no_repeats([a.name for a in agents], "two agents named {name}", name)
+    _no_repeats([u.name for u in controls], "control {name} is listed by two agents", name)
 
-    # walk every expression: the definitions used, the shocks, the Params
-    defs: Dict[str, Definition] = {}
-    shock_set: Dict[str, Shock] = {}
-    used_params: Dict[int, Param] = {}
+    walk = _Walk().model(states, agents, definitions, horizon)
+    _check_quantities(name, states, controls, walk.defs, agents)
+    values = _param_values(name, walk.params, params)
+
     notes: List[str] = []
-
-    def coef(c):
-        if isinstance(c, Coef):
-            for p in c.params():
-                used_params.setdefault(id(p), p)
-
-    def walk_linear(l: Linear):
-        for a, c in l.terms.items():
-            coef(c)
-            if isinstance(a.lag, Param):
-                used_params.setdefault(id(a.lag), a.lag)
-        for w in l.shocks.values():
-            shock_set.setdefault(w.name, w)
-        for q in l.quantities.values():
-            if isinstance(q, Definition) and q.name not in defs:
-                defs[q.name] = q
-                walk_linear(q.expr)
-
-    def walk_quad(q: Quad):
-        for key, c in q.terms.items():
-            coef(c)
-            for x in key:
-                if isinstance(x.lag, Param):
-                    used_params.setdefault(id(x.lag), x.lag)
-        coef(q.const)
-        for qq in q.quantities.values():
-            if isinstance(qq, Definition) and qq.name not in defs:
-                defs[qq.name] = qq
-                walk_linear(qq.expr)
-
-    for d in definitions:
-        if d.name not in defs:
-            defs[d.name] = d
-            walk_linear(d.expr)
-    for s in states:
-        if s.drift is not None:
-            walk_linear(s.drift)
-        coef(s.initial)
-    for a in agents:
-        for sg in a.signals:
-            walk_linear(sg.expr); coef(sg.delay)
-        walk_quad(a.loss)
-    coef(horizon.window); coef(horizon.discount)
-    if isinstance(horizon, Transition):
-        coef(horizon.stationary_window)
-        if isinstance(horizon.past, (list, tuple)):
-            for sh in horizon.past:
-                for key in ("loads", "rows"):
-                    for c in (sh.get(key) or {}).values():
-                        coef(c)
-
-    # the quantities every atom names must be a state, a control or a definition of this model
-    known = set(names) | set(cnames) | set(defs)
-    for s in states:
-        for q in (s.drift.quantities.values() if s.drift is not None else []):
-            if q.name not in known or (isinstance(q, (State, Control)) and q not in states and q not in controls):
-                raise ValueError(f"state {s.name}: its drift uses {q!r}, which is not a state, control or definition of the model {name!r}")
-    for a in agents:
-        for sg in a.signals:
-            for q in sg.expr.quantities.values():
-                if q.name not in known or (isinstance(q, (State, Control)) and q not in states and q not in controls):
-                    raise ValueError(f"signal {a.name}.{sg.name}: uses {q!r}, which is not a state, control or definition of the model {name!r}")
-        for q in a.loss.quantities.values():
-            if q.name not in known or (isinstance(q, (State, Control)) and q not in states and q not in controls):
-                raise ValueError(f"agent {a.name}: its loss uses {q!r}, which is not a state, control or definition of the model {name!r}")
-    for d in defs.values():
-        for q in d.expr.quantities.values():
-            if q.name not in known or (isinstance(q, (State, Control)) and q not in states and q not in controls):
-                raise ValueError(f"definition {d.name}: uses {q!r}, which is not a state, control or definition of the model {name!r}")
-
-    # parameters: the values as given, or as supplied
-    plist = sorted(used_params.values(), key=lambda p: p.order)
-    values: Dict[str, object] = {}
-    if params is not None:
-        supplied = dict(params) if isinstance(params, dict) else {p.name: p.given for p in params}
-        for p in params if not isinstance(params, dict) else []:
-            if not isinstance(p, Param):
-                raise ValueError(f"Model {name}: params must be Params or a mapping of name to value, not {p!r}")
-        for p in plist:
-            if p.name not in supplied:
-                raise ValueError(f"unknown Param {p.name!r} in a coefficient of the model {name!r}: it is not among params={sorted(supplied)}")
-        values = {p.name: supplied[p.name] for p in plist}
-        for k in supplied:
-            if k not in values:
-                if isinstance(params, dict):
-                    raise ValueError(f"Model {name}: params gives {k!r}, which no coefficient of the model uses")
-                values[k] = supplied[k]
-    else:
-        for p in plist:
-            values[p.name] = p.given
-    seen: Dict[str, Param] = {}
-    for p in plist:
-        if p.name in seen and seen[p.name] is not p:
-            raise ValueError(f"Model {name}: two different Params are named {p.name!r}")
-        seen[p.name] = p
-    for k, v in values.items():
-        if v is None:
-            raise ValueError(f"unknown Param {k!r} in a coefficient of the model {name!r}: it has no value; give Param({k!r}, value) or params={{{k!r}: value}}")
-        if not _is_number(v):
-            raise ValueError(f"Model {name}: the value of {k!r} must be a number, not {v!r}")
-
-    # the channels: the shocks used, by namespace then position
-    chans = sorted(shock_set.values(), key=lambda w: (w.space.order, w.index))
-
     d: dict = {"name": name}
     if values:
         d["params"] = dict(values)
-    d["channels"] = [w.name for w in chans]
+    d["channels"] = [w.name for w in sorted(walk.shocks.values(), key=lambda w: (w.space.order, w.index))]
     d["states"] = {s.name: s.compile() for s in states}
-    if defs:
-        d["definitions"] = {n: q.compile() for n, q in defs.items()}
+    if walk.defs:
+        d["definitions"] = {n: q.compile() for n, q in walk.defs.items()}
     d["agents"] = {}
     for a in agents:
         block, const = a.compile()

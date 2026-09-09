@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **The fast suite runs at four BLAS threads: 743 s to 148 s.**  Nothing capped the thread count, so on a
+  16-core machine every solve ran a 16-way GEMM on matrices of a few hundred to a few thousand unknowns,
+  where the synchronisation costs more than the arithmetic; the curve is flat from 1 to 8 threads and falls
+  off a cliff at 16 (`test_means_finite.py` 75.9 s uncapped against 16.9 s at four, `test_stability.py`
+  55.2 s against 8.3 s).  `tests/conftest.py` now sets OMP/OPENBLAS/MKL/NUMEXPR/VECLIB to 4 before numpy
+  loads, by `setdefault`, so an explicit setting still wins.  No test was gated, shortened or dropped: the
+  same 233 pass.  tests/SLOW.md said "under two minutes" and its per-test seconds were already recorded "at
+  four BLAS threads" -- the measurements were right and the setting under them had simply never been in the
+  repo.
+- `expr.compile_model` split into the pieces it already had as comment-delimited phases: `_check_kinds`,
+  `_no_repeats`, a `_Walk` collector for the definitions reached, the shocks loaded and the Params used,
+  `_check_quantities` and `_param_values`, leaving a 40-line assembler.  The check that an atom names a
+  quantity of this model was written out four times and is now one closure; the duplicate-name check three
+  times and is now one call.  No behaviour changes (the error wordings are pinned by
+  test_expr.py::test_errors_name_the_object).
+
 - **`Model.describe()`: the model as it now stands, without a solve.**  It reads the resolved fields, not the
   source dictionary, so a coefficient set on the object after loading shows up and no compile or solve is
   needed: the horizon and its window, the parameters at their current values, each state's and signal row's

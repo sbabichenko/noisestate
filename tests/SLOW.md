@@ -1,14 +1,20 @@
 # The slow tests
 
-The fast suite (`python -m pytest -q tests`) runs in under two minutes; every solve above about five
-seconds whose pin is repeated at a smaller size, by a closed form or by another test is gated behind
+The fast suite (`python -m pytest -q tests`) runs in about two and a half minutes; every solve above about
+five seconds whose pin is repeated at a smaller size, by a closed form or by another test is gated behind
 `NOISESTATE_SLOW=1` (`helpers.slow`, `helpers.slow_param`), which also marks the test `slow`:
 
     NOISESTATE_SLOW=1 python -m pytest -q tests -m slow          # the gated tests only (about 10 minutes)
     NOISESTATE_SLOW=1 python -m pytest -q tests                  # everything
 
-CI runs the fast suite on every push and `-m slow` weekly.  Each gated test, and the one line of what it
-pins (the seconds are at four BLAS threads):
+CI runs the fast suite on every push and `-m slow` weekly.
+
+The seconds here and the suite's own are at four BLAS threads, which `tests/conftest.py` now sets (it caps
+OMP/OPENBLAS/MKL/NUMEXPR/VECLIB before numpy loads, leaving an explicit setting alone).  The cap is not a
+detail: these solves are small enough that a widely threaded GEMM synchronises longer than it computes, and
+on a 16-core machine the uncapped suite takes 743 s against 148 s capped, with the heaviest file at 75.9 s
+against 16.9 s.  If a plugin that imports numpy is ever loaded before that conftest, the cap stops applying
+and the suite silently returns to the slow figures.  Each gated test, and the one line of what it pins:
 
 | test | pins | s |
 |---|---|---|
