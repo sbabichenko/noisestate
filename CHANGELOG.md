@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **An atom operator's one nonzero block is asked for, not searched for.**  `atom_op` builds an
+  N x (n_prim N) matrix that is zero but for the block at the atom's own primary, and two callers built it
+  and then tested every block with `np.any` to find out which -- a search whose answer is `index[name]` by
+  construction, in both engines.  `atom_block(atom)` returns `(primary index, the N x N block)`, with a
+  default in the compiled interface that slices `atom_op` and an override in each engine that never builds
+  the full width; `_foc_operators` and `_loss_forms` use it, and the impulse responses take their atom's
+  own rows of R.  `spectral_means` likewise reads through the sparse block on the line s = 0 rather than
+  the full-width operator (144 MB an solve of the delayed example at 10 nodes, two thirds of it zeros).
+  Every shipped case is unchanged to the bit with the same evaluation counts.  Measured: nothing.  The
+  transition example solves in 5.38 s against 5.41 s and peaks at the same 366 MB -- the allocator was
+  already recycling those pages and the work was not on the fixed point's path.  Kept for the code, not
+  for the clock.
+
 - **The unknown is read through the interpolation factors: a solve runs about twice as fast in a fifth
   less memory.**  A quadrature point's interpolation is the outer product of a time and an age basis over
   one piece's nt x na nodes, and `interp_factors` already returned it that way, but only the known kernel

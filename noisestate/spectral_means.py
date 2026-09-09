@@ -253,8 +253,11 @@ class SpectralMeans:
         if c.Nd < Nt:                                     # the time line (see _mean_conditions): the path at t - lag
             out = np.stack([c.mean_read(lag) @ zbar[c.index[nm] * Nt:(c.index[nm] + 1) * Nt] for (nm, lag) in atoms])
         else:
-            Zm = np.concatenate([c.mean_embed @ zbar[p * Nt:(p + 1) * Nt] for p in range(len(c.prim))])
-            out = np.stack([(c.atom_op(at) @ Zm)[c.diag] for at in atoms])
+            Zm = [c.mean_embed @ zbar[p * Nt:(p + 1) * Nt] for p in range(len(c.prim))]
+            # an atom operator is one N x N block (the shift into its own primary) in a row of zeros, and only
+            # the line s = 0 is read: take the block against that primary's path on those rows alone, never the
+            # full-width dense operator (144 MB per solve of the delayed example at 10 nodes, two thirds zeros)
+            out = np.stack([c.atom_sparse(at)[c.diag] @ Zm[c.index[at[0]]] for at in atoms])
         for i, (nm, lag) in enumerate(atoms):
             pre = self._mean_before(nm, lag)
             if pre is not None:

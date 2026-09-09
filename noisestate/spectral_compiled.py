@@ -576,6 +576,12 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         i = self.index[name]
         return slice(i * self.N, (i + 1) * self.N)
 
+    def atom_block(self, atom: Atom):
+        """(primary index, the N x N block): where atom_op's one nonzero block sits and what it is.  The
+        position is the atom's own primary, so nothing has to look for it."""
+        name, lag = atom
+        return self.index[name], (self.map_shift(lag) if lag > 0 else self.read(lag, lag))
+
     def atom_op(self, atom: Atom) -> np.ndarray:
         """N x (n_prim N) matrix giving the kernel of `name@lag` from the primary vector.  A lagged atom reads
         through map_shift (the exact node-to-node shift on the delay-aligned pieces, a triangle's degenerate

@@ -86,6 +86,11 @@ class Compiled(CompiledBase):
         i = self.index[name]
         return slice(i * self.N, (i + 1) * self.N)
 
+    def atom_block(self, atom: Atom):
+        """(primary index, the N x N block): where atom_op's one nonzero block sits and what it is.  The
+        position is the atom's own primary, so nothing has to look for it."""
+        return self.index[atom[0]], self.shift(atom[1])
+
     def atom_op(self, atom: Atom) -> np.ndarray:
         """N x (n_prim N) matrix giving the kernel of `name@lag` from the primary vector (cached)."""
         key = (atom[0], round(float(atom[1]), 12))

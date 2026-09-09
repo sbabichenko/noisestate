@@ -87,6 +87,12 @@ class KernelAlgebra:
         """(N, n_prim N): the kernel of name@lag from the primary vector."""
         raise missing(self, "atom_op")
 
+    def atom_block(self, atom: Atom):
+        """(primary index, N x N block) of atom_op's one nonzero block.  Default: slice it out of atom_op;
+        an engine that knows the block without building the full width overrides this."""
+        name, _ = atom
+        return self.index[name], self.atom_op(atom)[:, self.block(name)]
+
     def expr_op(self, expr: Dict[Atom, float]) -> np.ndarray:
         """(N, n_prim N): the kernel of a linear expression over atoms (a definition, a row's drift)."""
         raise missing(self, "expr_op")

@@ -288,9 +288,9 @@ class EngineBase(MeanLayer):
         atoms' kernels that Fu contracts with Q (the mean part applies them to the targets q)."""
         c = self.c; N = c.N; n_prim = len(c.prim) * N
         atms, Q, q = c.loss[agent.name]
-        AO = [c.atom_op(at) for at in atms]
-        # the nonzero N x N blocks of every atom operator (one block, the shift into the atom's primary)
-        AO_blocks = [[(p, A[:, p * N:(p + 1) * N]) for p in range(len(c.prim)) if np.any(A[:, p * N:(p + 1) * N])] for A in AO]
+        # an atom operator is one N x N block, the shift into the atom's own primary: the position is the
+        # atom's, so ask for the block rather than build the full-width operator and scan its zeros for it
+        AO_blocks = [[c.atom_block(at)] for at in atms]
         AO_eye = [[_is_eye(blk) for p, blk in blocks] for blocks in AO_blocks]      # an undelayed atom reads through the identity
         Fu, Ms = [], []
         for ui, u in enumerate(agent.controls):
@@ -301,7 +301,8 @@ class EngineBase(MeanLayer):
             if (u, 0.0) in atms:
                 M[atms.index((u, 0.0))] += np.eye(N)
             if not agent.myopic:
-                Rj = np.stack([AO[j] @ R[:, ui] for j in range(len(atms))], axis=1)   # impulse responses of every atom
+                # impulse responses of every atom: its block against its own primary's rows of R
+                Rj = np.stack([sum(A @ R[p * N:(p + 1) * N, ui] for p, A in AO_blocks[j]) for j in range(len(atms))], axis=1)
                 CR = c.continuation(Rj)
                 for j, (name, lag) in enumerate(atms):
                     if name in agent.controls:
@@ -568,8 +569,7 @@ class EngineBase(MeanLayer):
             if init:
                 raise NotImplementedError("the form of an initial-shock column is the spectral finite engine's (finite_free)")
             mass = c.cost_mass()
-            AO = [c.atom_op(at) for at in atoms]
-            blocks = [[(p, A[:, p * N:(p + 1) * N]) for p in range(len(c.prim)) if np.any(A[:, p * N:(p + 1) * N])] for A in AO]
+            blocks = [[c.atom_block(at)] for at in atoms]
             GAO = np.zeros((n, n))
             for i in range(len(atoms)):
                 for j in range(len(atoms)):
