@@ -6,7 +6,8 @@ import noisestate as ns
 from noisestate.finite_spectral import SpectralFiniteSolver
 from helpers import example, example_dict, stationary, same_model_solver, slow
 
-FREE = {"foc_dense_max": 0}
+FREE = {"foc_dense_max": 0}          # every system matrix-free
+DENSE = {"foc_dense_max": 1 << 20}   # every system assembled and factored (the default 500 leaves only tiny ones there)
 
 
 def _same_best_response(dense, free, maps, tol=1e-10):
@@ -44,11 +45,11 @@ def test_matrix_free_best_response_matches_the_dense_one_without_a_past():
     best response to random maps agrees with the dense path to 1e-12 of its peak (gamma, actions, world, the
     projected map, the second-order check, the decomposition, the cost and the representation error), and
     the fixed point on the action kernels reaches the same equilibrium in the same 13 evaluations, the costs
-    to 1e-15.  The default threshold (8192) keeps this system, like every shipped one, on the dense path."""
+    to 1e-15.  This system is past the default threshold (500), so the dense path is asked for explicitly."""
     d = example_dict("ch1_delayed_finite"); d.setdefault("numerics", {})["nodes"] = 8
     m = ns.Model.from_dict(d)
-    dense = SpectralFiniteSolver(m); free = SpectralFiniteSolver(m, settings=FREE)
-    assert not dense.foc_free and free.foc_free and free.settings.foc_dense_max == 0 and dense.settings.foc_dense_max == 8192
+    dense = SpectralFiniteSolver(m, settings=DENSE); free = SpectralFiniteSolver(m, settings=FREE)
+    assert not dense.foc_free and free.foc_free and free.settings.foc_dense_max == 0
     c = dense.c; rng = np.random.default_rng(5)
     acts = {a.name: rng.standard_normal((len(a.controls), c.N, c.nW)) * 0.1 for a in m.agents}
     _same_best_response(dense, free, dense.maps_from_actions(acts))

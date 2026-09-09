@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **The unknown is read through the interpolation factors: a solve runs about twice as fast in a fifth
+  less memory.**  A quadrature point's interpolation is the outer product of a time and an age basis over
+  one piece's nt x na nodes, and `interp_factors` already returned it that way, but only the known kernel
+  was read through it: the unknown fell back to the expanded sparse product, which was 6.9 s of a 12.2 s
+  solve.  Paths now keep `If` beside `Jf` and `read`/`read_unknown` share one `_through` (a small dense
+  GEMM per piece against a single-threaded CSR walk over the same sums: 4 to 6 times cheaper, 6.52 ms
+  against 1.13 ms on the largest operator).  The expanded matrices are then built only when something
+  reads one -- half of them never are, 84.0 MB of 171.6 MB on the transition example, the largest path
+  needing neither of its two -- by the construction `interp_sparse` used, so a matrix that is read is
+  unchanged to the bit and `_weighted_sum`'s layout still holds.  ch3_precision_change: 11.86 s to 5.41 s,
+  peak RSS 458 MB to 366 MB.  Costs and evaluation counts are unchanged on every shipped case; five cases'
+  Z moves in its last bits (4.4e-16 to 2.2e-13, the baseline record's warning, inside its 1e-12 tolerance).
+- Fixed a guard that 0.5.0's `foc_dense_max` change (8192 to 500) had silently invalidated: the dense
+  reference of `test_matrix_free_best_response_matches_the_dense_one_without_a_past` relied on the default
+  keeping an N = 640 system on the direct solve, so at 500 the test lost its dense side and failed on the
+  stale literal.  It now asks for the dense path explicitly (`DENSE = {"foc_dense_max": 1 << 20}`).  Being
+  slow-gated, it had not run since.
+
 - **The fast suite runs at four BLAS threads: 743 s to 148 s.**  Nothing capped the thread count, so on a
   16-core machine every solve ran a 16-way GEMM on matrices of a few hundred to a few thousand unknowns,
   where the synchronisation costs more than the arithmetic; the curve is flat from 1 to 8 threads and falls
