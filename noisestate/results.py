@@ -180,9 +180,24 @@ class Result:
 
     # ----------------------------------------------------------- common
     def check(self):
-        """Return self, or raise ConvergenceError if the solve did not reach its tolerance."""
+        """Return self, or raise ConvergenceError if the solve did not reach its tolerance.
+
+        Convergence only.  A converged solve is a solution of the *discretised, truncated* model, so
+        check() passes on a result whose window is too short or whose grid is too coarse: those are the
+        guards, and `status["ok"]` is what reads them.  require_ok() is check() plus the guards."""
         if not self.converged:
             raise ConvergenceError(f"{self.model.name}: residual {self.residual:.2e} ({self.message})")
+        return self
+
+    def require_ok(self):
+        """Return self, or raise ConvergenceError if the solve did not converge *or* any guard failed.
+
+        The whole verdict: what check() tests, and then `status["flags"]` empty.  Use it wherever a number
+        is going to be used rather than looked at."""
+        self.check()
+        flags = self.status["flags"]
+        if flags:
+            raise ConvergenceError(f"{self.model.name}: converged, but " + "; ".join(flags))
         return self
 
     @property
@@ -328,10 +343,111 @@ class Result:
                 "naive best-response adjustment would not find this equilibrium")
         return rows
 
-    def _status(self) -> str:
+    def _diagnostic_record(self, d: dict) -> dict:
+        """Add stable presentation and automation fields to an existing numerical check."""
+        name = d["name"]
+        root = name.split(":", 1)[0]
+        category = ("solve" if root == "converged" else "equilibrium" if root.startswith("second_order") or root == "stability"
+                    else "numerics")
+        meanings = {
+            "converged": "Whether the fixed-point solve reached its requested tolerance.",
+            "resolution": "Whether the computed strategy is represented accurately on this grid.",
+            "window": "Whether stationary kernels have stopped changing near the window boundary.",
+            "past window": "Whether the inherited stationary kernels have stopped changing near their boundary.",
+            "continuation window": "Whether the stationary continuation kernels have stopped changing near their boundary.",
+            "settled": "Whether transition strategies have reached the stationary continuation by the end of the horizon.",
+            "settle floor": "Whether the requested settle tolerance is distinguishable on this grid.",
+            "stability": "Whether small strategy deviations shrink under naive best-response iteration.",
+        }
+        options = {}
+        if name == "window":
+            options["window"] = 2 * float(self.model.horizon.window)
+        elif name == "settled":
+            options["window"] = 2 * float(self.compiled.T)
+        elif name == "past window":
+            options["past_window"] = 2 * float(self.past.window)
+        elif name == "continuation window":
+            options["continuation_window"] = 2 * float((self.compiled.continuation_info or {})["window"])
+        elif name in ("resolution", "settle floor", "refinement"):
+            options["nodes"] = max(int(self.numerics.nodes) + 2, int(np.ceil(1.5 * self.numerics.nodes)))
+        out = dict(d)
+        out.update(code=name.lower().replace(":", "_").replace(" ", "_"), category=category,
+                   severity="error" if d["ok"] is False else "info" if d["ok"] is None else "ok",
+                   meaning=meanings.get(name, "A numerical or equilibrium check reported by the solver."),
+                   action=d.get("advice", ""), suggested_options=options)
+        trend = None; trend_source = None
+        if name == "window" and hasattr(self, "window_tail_extrapolation"):
+            trend_source = self
+        elif name == "past window" and getattr(getattr(self, "past", None), "source", None) is not None:
+            trend_source = self.past.source
+        elif name == "continuation window" and getattr(self, "continuation", None) is not None:
+            trend_source = self.continuation
+        if trend_source is not None:
+            trend = trend_source.window_tail_extrapolation()
+            if not trend_source.converged or trend_source.resolution_ok is False:
+                trend["assessment"] = "inconclusive"
+                trend["reason"] = "the underlying stationary solve is unconverged or under-resolved"
+        if trend is not None:
+            out["trend"] = trend
+            if d["ok"] is False and trend["assessment"] == "not_decaying":
+                out["action"] = "the tail is not decaying; check whether the stationary problem exists before extending the window"
+                out["suggested_options"] = {}
+        return out
+
+    def diagnostic_summary(self, detailed: bool = False) -> str:
+        """Compact grouped verdict, with full explanations when ``detailed`` is true."""
+        rows = [self._diagnostic_record(d) for d in self.diagnose()]
+        judged = [d for d in rows if d["ok"] is not None]
+        failed = [d for d in judged if d["ok"] is False]
+        lines = [f"Diagnostics: {len(failed)} failed, {len(judged) - len(failed)} passed"]
+        for category, label in (("solve", "Solve"), ("numerics", "Numerics"), ("equilibrium", "Equilibrium")):
+            group = [d for d in judged if d["category"] == category]
+            bad = [d["name"] for d in group if d["ok"] is False]
+            lines.append(f"  {label:<11} " + ("FAIL — " + ", ".join(bad) if bad else "PASS" if group else "NOT CHECKED"))
+        for d in failed:
+            value = d["value"]
+            threshold = d["threshold"]
+            measure = (f"{value:.2e}" if isinstance(value, (int, float)) else str(value))
+            limit = (f"{threshold:.2e}" if isinstance(threshold, (int, float)) else str(threshold))
+            lines.append(f"  FAIL  {d['name']:<20} {measure}" + (f" > {limit}" if threshold is not None else ""))
+            if detailed:
+                lines.extend((f"        meaning: {d['meaning']}", f"        action: {d['action'] or 'inspect the diagnostic details'}",
+                              f"        detail: {d['flag']}"))
+                if d["suggested_options"]:
+                    suggested = " ".join(f"--{key.replace('_', '-')} {value:g}" for key, value in d["suggested_options"].items())
+                    lines.append(f"        suggested: {suggested}")
+                if d.get("trend"):
+                    trend = d["trend"]
+                    lo, hi = trend["projection_range"]
+                    lines.append(f"        tail trend: {trend['assessment']} (per-segment ratio {trend['ratio']:.2f}, "
+                                 f"rough tail at 2x window {trend['predicted_at_double_window']:.2e}, "
+                                 f"benchmark range {lo:.2e}–{hi:.2e})"
+                                 + (f"; {trend['reason']}" if trend.get("reason") else ""))
+        suggestions = {key: value for d in failed for key, value in d["suggested_options"].items()}
+        if "past_window" in suggestions and "continuation_window" in suggestions:
+            value = max(suggestions.pop("past_window"), suggestions.pop("continuation_window"))
+            suggestions["past_window"] = value
+            shared = " (also enlarges the continuation's shared lag window)"
+        else:
+            shared = ""
+        if suggestions:
+            opts = " ".join(f"--{key.replace('_', '-')} {value:g}" for key, value in suggestions.items())
+            lines.append(f"  Next: retry with {opts}{shared}")
+        elif any(d.get("trend", {}).get("assessment") == "not_decaying" for d in failed):
+            lines.append("  Next: inspect whether the stationary problem exists; the measured tail is not decaying")
+        unjudged = [d for d in rows if d["ok"] is None and d["flag"]]
+        if detailed:
+            for d in unjudged:
+                lines.extend((f"  INFO  {d['name']}", f"        meaning: {d['meaning']}", f"        detail: {d['flag']}"))
+        return "\n".join(lines)
+
+    def _status(self, compact: bool = False) -> str:
         """One line: the outcome, then every check that failed or has no verdict, and the informational
         rows (refinement, stability, a skipped diagnostics pass) whenever they were computed."""
         rows = self.diagnose()
+        if compact:
+            converged = next(d for d in rows if d["name"] == "converged")
+            return "converged" if converged["ok"] else f"NOT converged ({converged['advice']})"
         parts = []
         for d in rows:
             if d["name"] == "converged":
@@ -443,7 +559,7 @@ class Result:
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
         if self.representation_parts:
             out["representation_parts"] = {a: {k: float(v) for k, v in p.items()} for a, p in self.representation_parts.items()}
-        out["diagnostics"] = [{k: (None if v is None else v) for k, v in d.items()} for d in self.diagnose()]
+        out["diagnostics"] = [{k: (None if v is None else v) for k, v in self._diagnostic_record(d).items()} for d in self.diagnose()]
         out["resolution_ok"] = None if self.resolution_ok is None else bool(self.resolution_ok)
         st = self.status
         out["status"] = {"ok": st["ok"], "flags": st["flags"]}
@@ -515,6 +631,38 @@ class StationaryResult(Result):
                 worst = max(worst, float(np.abs(I1 @ K - I0 @ K).max() / peak))
         return worst
 
+    def window_tail_extrapolation(self) -> dict:
+        """Estimate tail decay from four consecutive tenths near the current window boundary.
+
+        The median ratio of adjacent kernel increments is robust to one irregular segment.  Raising that
+        ratio through the ten further tenths in a doubled window gives a directional projection, not a new
+        solve.  A ratio at or above one says extension is not currently reducing the truncation error.
+        """
+        g = self.compiled.grid; L = float(g.L)
+        points = np.arange(0.6, 1.01, 0.1) * L
+        I = g.interp(points)
+        worst = None
+        for name in self.compiled.prim:
+            K = np.asarray(self.kernel(name), dtype=float); peak = float(np.max(np.abs(K)))
+            if peak <= 0:
+                continue
+            steps = np.max(np.abs(np.diff(I @ K, axis=0)), axis=1) / peak
+            if worst is None or steps[-1] > worst[0][-1]:
+                worst = (steps, name)
+        if worst is None:
+            steps, name = np.zeros(4), ""
+        else:
+            steps, name = worst
+        ratios = [float(b / a) for a, b in zip(steps[:-1], steps[1:]) if a > 1e-15]
+        ratio = float(np.median(ratios)) if ratios else 0.0
+        assessment = "decaying" if ratio < 0.9 else "slow_decay" if ratio < 1.0 else "not_decaying"
+        predicted = float(steps[-1] * ratio ** 10) if np.isfinite(ratio) else float("inf")
+        return {"assessment": assessment, "ratio": ratio, "predicted_at_double_window": predicted,
+                "projection_range": [0.5 * predicted, 2.5 * predicted],
+                "quantity": name, "segment_changes": [float(x) for x in steps],
+                "method": "median ratio of kernel changes over [0.6L, 0.7L], ..., [0.9L, L]",
+                "range_basis": "0.5x to 2.5x the projection covered seven resolved doubled-window benchmarks"}
+
     def _kernel_change(self, fine) -> float:
         I = fine.compiled.grid.interp(self.ages)
         worst = 0.0
@@ -544,16 +692,16 @@ class StationaryResult(Result):
             ax.legend(fontsize=7, frameon=False, ncol=2)
         for ax in axes.ravel()[len(names):]:
             ax.axis("off")
-        fig.suptitle(f"{self.model.name}  (residual {self.residual:.1e})", fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
+        fig.suptitle(_result_plot_title(self), fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
 
     def grid_info(self) -> dict:
         g = self.compiled.grid
         return {"kind": "stationary", "breakpoints": [float(b) for b in g.breakpoints], "nodes_per_panel": g.n,
                 "ages": g.nodes.tolist()}
 
-    def summary(self) -> str:
+    def summary(self, diagnostics: bool = True) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.evaluations} evaluations, "
+        lines = [f"{self.model.name}: {self._status(compact=not diagnostics)} residual {self.residual:.2e} in {self.evaluations} evaluations, "
                  f"{self.seconds:.1f}s; grid {c.grid.P} panels x {c.grid.n} nodes on [0, {c.grid.L}], rho={c.rho}"]
         for a in self.model.agents:
             parts = self.cost_parts.get(a.name)
@@ -729,9 +877,9 @@ class TriangleResult(Result):
                     out["kernels"][name][ch] = self.kernel(name, ch).tolist()
         return out
 
-    def summary(self) -> str:
+    def summary(self, diagnostics: bool = True) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.evaluations} evaluations, "
+        lines = [f"{self.model.name}: {self._status(compact=not diagnostics)} residual {self.residual:.2e} in {self.evaluations} evaluations, "
                  f"{self.seconds:.1f}s; triangle grid {c.g.P} panels, {len(c.g.pieces)} pieces x {c.g.nt}x{c.g.na} nodes "
                  f"= {c.N} nodes on [0, {c.T}]" + (f" and the buffer [{c.T}, {c.g.T}] (maps frozen at the stationary ones)"
                                                   if self.continuation is not None else "") + f", rho={c.rho}"]
@@ -810,6 +958,8 @@ class TransitionResult(TriangleResult):
         out = super().to_dict()
         out["times"] = None if self.times is None else self.times.tolist()
         out["loss_path"] = {k: v.tolist() for k, v in self.loss_path.items()}
+        out["belief_error"] = {a.name: {name: self.belief_error(a.name, name).tolist() for name in self.model.state_names}
+                               for a in self.model.agents}
         out["excess_costs"] = {k: float(v) for k, v in self.excess_costs.items()}
         out["old_flows"] = self.old_flows; out["new_flows"] = self.new_flows
         if self.excess_tail is not None:
@@ -833,8 +983,8 @@ class TransitionResult(TriangleResult):
         belief-error variance of every state, and the mean paths when driven (needs matplotlib)."""
         _plot_transition(self, path)
 
-    def summary(self) -> str:
-        lines = [super().summary()]
+    def summary(self, diagnostics: bool = True) -> str:
+        lines = [super().summary(diagnostics=diagnostics)]
         if self.excess_costs:
             lines.append("  excess cost over the new stationary flow on [0, T]: " + ", ".join(f"{k}={v:+.6f}" for k, v in self.excess_costs.items()))
         if self.excess_costs_total:
@@ -896,9 +1046,9 @@ class CellResult(Result):
                 yield t_i * h, np.arange(t_i) * h, K[t_i, :t_i]
         _plot_by_shock_time(self, curves, path)
 
-    def summary(self) -> str:
+    def summary(self, diagnostics: bool = True) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {self._status()} residual {self.residual:.2e} in {self.evaluations} evaluations, "
+        lines = [f"{self.model.name}: {self._status(compact=not diagnostics)} residual {self.residual:.2e} in {self.evaluations} evaluations, "
                  f"{self.seconds:.1f}s; {c.N} cells on [0, {c.T}], rho={c.rho}"]
         for a in self.model.agents:
             parts = self.cost_parts.get(a.name)
@@ -917,6 +1067,17 @@ def _pyplot():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     return plt
+
+
+def _plot_title(name: str, residual: float, rows, suffix: str = "") -> str:
+    """A figure title that cannot lose the result's numerical trust verdict when it is shared alone."""
+    failed = [row["name"] for row in rows if row.get("ok") is False]
+    title = f"{name}  (residual {residual:.1e}{suffix})"
+    return title + ("\nWARNING: failed checks — " + ", ".join(failed) if failed else "")
+
+
+def _result_plot_title(res, suffix: str = "") -> str:
+    return _plot_title(res.model.name, res.residual, res.diagnose(), suffix)
 
 
 def _plot_transition(res, path: str) -> None:
@@ -964,7 +1125,8 @@ def _plot_transition(res, path: str) -> None:
         ax.axhline(0, color="k", lw=0.4); ax.set_title("mean paths", fontsize=9); ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
         for ax in axes[-1, 1:]:
             ax.axis("off")
-    fig.suptitle(f"{res.model.name}  (residual {res.residual:.1e}" + (f", settled {res.settled:.1e}" if res.settled is not None else "") + ")", fontsize=11)
+    suffix = f", settled {res.settled:.1e}" if res.settled is not None else ""
+    fig.suptitle(_result_plot_title(res, suffix), fontsize=11)
     fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
 
 
@@ -990,4 +1152,172 @@ def _plot_by_shock_time(res, curves, path: str) -> None:
         ax.axhline(0, color="k", lw=0.4); ax.set_title("mean paths", fontsize=9); ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
         for ax in axes[-1, 1:]:
             ax.axis("off")
-    fig.suptitle(f"{res.model.name}  (residual {res.residual:.1e})", fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
+    fig.suptitle(_result_plot_title(res), fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
+
+
+def plot_payload(payload: dict, path: str):
+    """Plot a saved result from the payload alone, without re-solving it.
+
+    `to_dict()` stores every kernel by name and channel, and the node coordinates beside them (`age` on
+    the stationary grid, `time`/`age`/`shock_time` on the triangle).  Curves are drawn through the nodes
+    the solve actually produced, not through an interpolant of them: on the triangle that means the
+    shock-time slices are the node rows at a few dates, so a jump at a delay line shows where it is instead
+    of being smoothed across.  A transition's expected losses, belief errors and means are serialized beside
+    its kernels and plotted from those saved paths too.
+
+    Raises KeyError if the payload predates the fields it needs; the caller can fall back to re-solving.
+    """
+    plt = _pyplot()
+    kernels = payload["kernels"]; chans = payload["channels"]; axes_of = payload["axes"]
+    names = list(kernels)                                             # a zero kernel is still a result
+    suffix = ", from the saved result"
+
+    if payload["kind"] == "stationary":
+        age = np.asarray(axes_of["age"], dtype=float)
+        nrow = (len(names) + 1) // 2
+        fig, axs = plt.subplots(nrow, 2, figsize=(10.4, 2.6 * nrow), squeeze=False)
+        for ax, name in zip(axs.ravel(), names):
+            for ch in chans:
+                K = np.asarray(kernels[name][ch], dtype=float)
+                if np.abs(K).max() > 1e-12:
+                    ax.plot(age, K, lw=1.1, label=ch)
+            ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name}: kernel by channel", fontsize=10)
+            ax.set_xlabel("shock age")
+            if ax.lines[1:]:
+                ax.legend(fontsize=7, frameon=False, ncol=2)
+        for ax in axs.ravel()[len(names):]:
+            ax.axis("off")
+    elif payload["kind"] == "finite_cells":
+        t = np.asarray(axes_of["time"], dtype=float); s = np.asarray(axes_of["shock_time"], dtype=float)
+        fig, axs = plt.subplots(len(names), len(chans), figsize=(3.8 * len(chans), 3.0 * len(names)), squeeze=False)
+        extent = [float(s[0]), float(s[-1]), float(t[0]), float(t[-1])]
+        for i, name in enumerate(names):
+            for k, ch in enumerate(chans):
+                ax = axs[i, k]; K = np.asarray(kernels[name][ch], dtype=float)
+                future = s[None, :] > t[:, None] + 1e-12
+                shown = np.ma.array(K, mask=future)
+                cmap = plt.get_cmap("RdBu_r").with_extremes(bad="0.88")
+                scale = float(np.max(np.abs(K[~future]))) if np.any(~future) else 0.0
+                im = ax.imshow(shown, origin="lower", aspect="auto", extent=extent, cmap=cmap,
+                               **({"vmin": -scale, "vmax": scale} if scale > 0 else {"vmin": -1, "vmax": 1}))
+                if scale > 0:
+                    fig.colorbar(im, ax=ax)
+                else:
+                    ax.text(0.5, 0.5, "zero on causal cells", transform=ax.transAxes,
+                            ha="center", va="center", fontsize=8, color="0.35")
+                ax.set_title(f"{name} on {ch}", fontsize=9)
+                ax.set_xlabel("shock time s"); ax.set_ylabel("time t")
+    else:
+        t = np.asarray(axes_of["time"], dtype=float); s = np.asarray(axes_of["shock_time"], dtype=float)
+        T = float(payload["window"] if payload["kind"] == "transition" else payload["horizon"]["window"])
+        available = np.unique(np.round(t[t <= T + 1e-12], 12))
+        targets = np.linspace(0.2, 1.0, min(5, len(available))) * T if len(available) else np.array([])
+        dates = np.unique([available[np.abs(available - x).argmin()] for x in targets]) if len(available) else available
+        transition = payload["kind"] == "transition"
+        agents = list(payload["agents"]); states = list(payload["model"].get("states", {}))
+        means = payload.get("means_t") is not None and any(np.any(np.asarray(v, dtype=float)) for v in payload.get("means", {}).values())
+        extra_rows = (2 if transition else 0) + (1 if means else 0)
+        ncol = max(len(chans), len(agents) if transition else 0, 1)
+        fig, axs = plt.subplots(len(names) + extra_rows, ncol,
+                                figsize=(3.6 * ncol, 2.5 * (len(names) + extra_rows)), squeeze=False)
+        L = float(payload.get("grid", {}).get("window", 0.0) or 0.0)
+        for i, name in enumerate(names):
+            for k, ch in enumerate(chans):
+                ax = axs[i, k]; K = np.asarray(kernels[name][ch], dtype=float)
+                for d in dates:
+                    sel = np.abs(t - d) < 1e-12
+                    if sel.sum() > 1:
+                        o = np.argsort(s[sel], kind="stable")
+                        ax.plot(s[sel][o], K[sel][o], lw=1, marker=".", ms=2.5, label=f"t={d:.2f}")
+                if transition and L:
+                    ax.axvspan(-L, 0.0, color="0.85", alpha=0.6, lw=0)
+                ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name} on {ch}", fontsize=9)
+                ax.set_xlabel("shock time s (saved nodes)")
+                if i == 0 and k == 0:
+                    ax.legend(fontsize=6, frameon=False)
+            for ax in axs[i, len(chans):]:
+                ax.axis("off")
+        row = len(names)
+        if transition:
+            times = np.asarray(payload["times"], dtype=float)
+            old, new, losses = payload.get("old_flows", {}), payload.get("new_flows", {}), payload.get("loss_path", {})
+            for k, agent in enumerate(agents):
+                ax = axs[row, k]
+                if agent in losses:
+                    ax.plot(times, losses[agent], lw=1, label="E[loss(t)]")
+                if agent in old:
+                    ax.axhline(old[agent], color="C1", lw=0.8, ls="--", label="old flow")
+                if agent in new:
+                    ax.axhline(new[agent], color="C2", lw=0.8, ls=":", label="new flow")
+                ax.axvline(T, color="k", lw=0.4); ax.set_title(f"{agent}: expected loss", fontsize=9)
+                ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
+            for ax in axs[row, len(agents):]:
+                ax.axis("off")
+            row += 1
+            belief = payload["belief_error"]
+            for k, agent in enumerate(agents):
+                ax = axs[row, k]
+                for name in states:
+                    ax.plot(times, belief[agent][name], lw=1, label=name)
+                ax.axvline(T, color="k", lw=0.4); ax.set_title(f"{agent}: belief error variance", fontsize=9)
+                ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
+            for ax in axs[row, len(agents):]:
+                ax.axis("off")
+            row += 1
+            settled = payload.get("settled")
+            if settled is not None:
+                suffix += f", settled {settled:.1e}"
+        if means:
+            mt = np.asarray(payload["means_t"], dtype=float); ax = axs[row, 0]
+            for name in names:
+                if name in payload["means"]:
+                    ax.plot(mt, payload["means"][name], lw=1, label=name)
+            ax.axhline(0, color="k", lw=0.4); ax.set_title("mean paths", fontsize=9)
+            ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
+            for ax in axs[row, 1:]:
+                ax.axis("off")
+    title = _plot_title(payload["name"], payload["residual"], payload.get("diagnostics", []), suffix)
+    fig.suptitle(title, fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
+    return fig
+
+
+def plot_sweep_payload(rows: list, path: str):
+    """Plot the main decision measures from the JSON list written by the sweep CLI."""
+    if not rows:
+        raise ValueError("a sweep plot needs at least one row")
+    plt = _pyplot()
+    values = np.asarray([row["value"] for row in rows], dtype=float)
+    results = [row["result"] for row in rows]
+    param = rows[0].get("param", "parameter")
+    fig, axs = plt.subplots(2, 2, figsize=(9.2, 6.5), squeeze=False)
+
+    agents = list(results[0].get("agents", {}))
+    for agent in agents:
+        costs = [result.get("costs", {}).get(agent, np.nan) for result in results]
+        axs[0, 0].plot(values, costs, marker="o", ms=3, lw=1.1, label=agent)
+    axs[0, 0].set_title("costs"); axs[0, 0].legend(fontsize=8, frameon=False)
+
+    residuals = np.asarray([result.get("residual", np.nan) for result in results], dtype=float)
+    axs[0, 1].semilogy(values, np.maximum(residuals, np.finfo(float).tiny), marker="o", ms=3, lw=1.1)
+    axs[0, 1].set_title("solver residual")
+
+    changes = np.asarray([np.nan if row.get("change") is None else row["change"] for row in rows], dtype=float)
+    axs[1, 0].plot(values, changes, marker="o", ms=3, lw=1.1)
+    jumps = np.asarray([bool(row.get("jump", False)) for row in rows])
+    if np.any(jumps):
+        axs[1, 0].scatter(values[jumps], changes[jumps], marker="x", s=65, linewidths=1.8,
+                          color="crimson", label="possible branch jump", zorder=3)
+        axs[1, 0].legend(fontsize=8, frameon=False)
+    axs[1, 0].set_title("relative strategy change")
+
+    seconds = [row.get("seconds", np.nan) for row in rows]
+    axs[1, 1].plot(values, seconds, marker="o", ms=3, lw=1.1, label="seconds")
+    axs[1, 1].set_title("solve time")
+    for ax in axs.ravel():
+        ax.set_xlabel(param); ax.grid(alpha=0.2)
+    failed = [str(row["value"]) for row in rows if not row.get("converged", False)]
+    title = f"sweep of {param} ({len(rows)} points)"
+    if failed:
+        title += "\nWARNING: unconverged values — " + ", ".join(failed)
+    fig.suptitle(title, fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
+    return fig

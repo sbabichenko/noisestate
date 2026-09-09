@@ -118,9 +118,25 @@ class Kernel(np.ndarray):
                 ax.plot(s, v if v.ndim == 1 else v[:, 0], lw=1.0, label=f"t = {t:.2g}")
             ax.set_xlabel("shock time"); ax.set_ylabel(label); ax.legend(fontsize=7)
         else:
-            im = ax.imshow(K if K.ndim == 2 else K[:, None], origin="lower", aspect="auto",
+            shown = K if K.ndim == 2 else K[..., 0]
+            t = self.axes["time"]
+            s = self.axes["shock_time"]
+            future = s[None, :] > t[:, None] + 1e-12
+            shown = np.ma.array(shown, mask=future)
+            cmap = plt.get_cmap("RdBu_r").with_extremes(bad="0.88")
+            scale = float(np.max(np.abs(np.asarray(K if K.ndim == 2 else K[..., 0])[~future]))) if np.any(~future) else 0.0
+            im = ax.imshow(shown, origin="lower", aspect="auto", cmap=cmap,
+                           **({"vmin": -scale, "vmax": scale} if scale > 0 else {"vmin": -1, "vmax": 1}),
                            extent=[self.axes["shock_time"][0], self.axes["shock_time"][-1], self.axes["time"][0], self.axes["time"][-1]])
-            fig.colorbar(im, ax=ax); ax.set_xlabel("shock time"); ax.set_ylabel("time"); ax.set_title(label)
+            if scale > 0:
+                fig.colorbar(im, ax=ax)
+            else:
+                ax.text(0.5, 0.5, "zero on causal cells", transform=ax.transAxes, ha="center", va="center", fontsize=8)
+            ax.set_xlabel("shock time"); ax.set_ylabel("time"); ax.set_title(label)
+        if self.result is not None:
+            failed = [row["name"] for row in self.result.status["rows"] if row.get("ok") is False]
+            if failed:
+                fig.suptitle("WARNING: failed checks — " + ", ".join(failed), fontsize=10)
         fig.tight_layout()
         if path is not None:
             fig.savefig(path, dpi=130); plt.close(fig)

@@ -1,6 +1,7 @@
 """The API stage's surface: Numerics apart from the model, the explicit solve(), the engines namespace."""
 import os
 
+import numpy as np
 import pytest
 
 import noisestate as ns
@@ -78,6 +79,9 @@ def test_one_result_reads_the_same_on_every_engine(numerics):
     assert isinstance(r, ns.Result) and isinstance(r, ns.BaseResult)
     assert not hasattr(r, "Z") and not hasattr(r, "iterations")      # the 0.5 spellings, removed in 0.6
     assert r.status["ok"] is True and r.status["flags"] == [] and r.status["rows"] == r.diagnose()
+    diagnostic = r.to_dict()["diagnostics"][0]
+    assert diagnostic["code"] == "converged" and diagnostic["category"] == "solve"
+    assert diagnostic["severity"] == "ok" and diagnostic["meaning"] and "suggested_options" in diagnostic
     assert r.cost_kind.startswith("discounted") and set(r.cost_parts["player1"]) == {"variance", "mean"}
     p = r.to_dict()
     assert p["payload_version"] == 1 and p["engine"] == numerics["engine"] and set(p["axes"]) == set(node_axes) and p["status"]["ok"]
@@ -133,11 +137,43 @@ def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
     p = json.load(open(out))
     assert code == 1 and p["kind"] == "transition" and p["options"]["solve"]["start"] == "stationary" and p["numerics"]["nodes"] == 5
     assert ns.schema.validate(p, "payload") == []
+    recovery = capsys.readouterr().out
+    assert "Next: retry with" in recovery and "--past-window 6" in recovery
+    continuation = next(d for d in p["diagnostics"] if d["name"] == "continuation window")
+    assert continuation["trend"]["assessment"] == "inconclusive"       # do not infer nonexistence from a coarse continuation
     pytest.importorskip("matplotlib")
     r = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8}, max_evaluations=3)
     with open(tmp_path / "res.json", "w") as fh:
         json.dump(r.to_dict(), fh)
     assert main(["plot", str(tmp_path / "res.json"), str(tmp_path / "res.png")]) == 1 and (tmp_path / "res.png").exists()
+
+    from noisestate.results import plot_payload
+    stationary = r.to_dict()
+    stationary["kernels"]["D1"] = {ch: [0.0] * len(stationary["axes"]["age"]) for ch in stationary["channels"]}
+    fig = plot_payload(stationary, str(tmp_path / "zero.png"))
+    assert any(ax.get_title().startswith("D1:") for ax in fig.axes)       # a zero kernel remains visible
+    assert "WARNING: failed checks" in fig._suptitle.get_text()           # an under-resolved plot cannot look authoritative
+
+    cells = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
+    cells["numerics"] = {"engine": "cells", "nodes": 6}
+    cp = ns.solve(cells, max_evaluations=1).to_dict()
+    fig = plot_payload(cp, str(tmp_path / "cells.png"))
+    image_axes = [ax for ax in fig.axes if ax.get_title()]
+    assert len(image_axes) == len(cp["kernels"]) * len(cp["channels"])
+    assert all(len(ax.images) == 1 for ax in image_axes)                  # every cell kernel has data, not an empty panel
+    mask = np.ma.getmaskarray(image_axes[0].images[0].get_array())
+    assert mask.any() and not mask[-1, 0]                                 # shocks after the observation time are visibly excluded
+
+    fig = plot_payload(p, str(tmp_path / "transition.png"))
+    titles = [ax.get_title() for ax in fig.axes]
+    assert sum("expected loss" in x for x in titles) == len(p["agents"])
+    assert sum("belief error variance" in x for x in titles) == len(p["agents"])
+    kernel_axes = [ax for ax in fig.axes if " on " in ax.get_title()]
+    assert kernel_axes and all(ax.patches for ax in kernel_axes)          # the pre-transition band is shaded
+    assert all(line.get_marker() == "." for ax in kernel_axes for line in ax.lines
+               if line.get_label().startswith("t="))                     # saved-node interpolation is visually explicit
+    assert all(float(line.get_label().split("=")[1]) <= p["window"] + 1e-12
+               for line in kernel_axes[0].lines if line.get_label().startswith("t="))
 
 
 def test_the_zero_start_is_explicit_with_a_continuation():

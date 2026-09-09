@@ -63,3 +63,51 @@ solves in 3 s at `window: 1.0` (5 panels, 10 pieces) and in about 120 s at
 counts when the closure adds panels; a window that is a multiple of every lag, or
 fewer nodes per side, keeps the cost down.  Lags that are not multiples of one unit
 (0.25 and 0.3 without `horizon.unit: 0.05`) are rejected with the unit to set.
+
+A stationary window much longer than the kernel's support is not free: the truncated
+problem can admit a second fixed point, and the solve can land on it while reporting
+convergence.  `examples/ch3_two_player.yaml` at 64 nodes is the case.  Up to *L* = 15 the
+state kernel decays as it should and the cost is the equilibrium's; from *L* = 18 the solve
+still converges to its tolerance, and to something else entirely:
+
+| window | residual | *K(L)* / peak | cost of player1 |
+|---|---|---|---|
+| 12 | 6.0e-11 | 1.2e-06 | 0.427295 |
+| 15 | 4.8e-11 | 3.2e-08 | 0.427295 |
+| 18 | 6.1e-11 | 8.7e-01 | 3.137288 |
+| 21 | 6.5e-11 | 2.3e-01 | 3.731 |
+| 24 | 1.8e-04 (stalls) | 9.2e-01 | --- |
+
+The kernels say what happened: at *L* = 15 the state's response to its own shock falls from
+1 to 1.8e-08 over the window; at *L* = 18 it falls almost linearly to *-0.87*, and at *L* = 21
+it sits on a plateau near 0.65 out to age 15 before dropping off the edge.  A response that has
+not decayed by the end of the window is a closed loop that does not stabilise the state, which
+is not the equilibrium of the untruncated game.  At *L* = 24 that branch is ill-conditioned
+enough that the fixed point stalls at a residual of 1.8e-04 and the solve reports failure ---
+more evaluations do not help (2000 changed nothing: both Anderson and the Newton polish hit the
+same noise floor of the map).
+
+The window guard catches every one of these, and it is the only thing that does: `res.check()`
+passes at *L* = 18 because the solve did converge.  `res.require_ok()` (or `--require-ok`) is
+what refuses a cost of 3.14 for a game whose answer is 0.427.
+
+It is a cold start landing in the wrong basin, not a limit of the formulation: both fixed points
+exist at *L* = 18, and warm-starting that solve from the *L* = 15 equilibrium reaches the right one
+(cost 0.427295, residual 6.7e-11, tail 8.5e-10).  What separates them is best-response stability ---
+`res.stability()` gives spectral radius **0.52** on the equilibrium and **1.16** and **1.09** on the
+two spurious branches.  The fixed point is found by Anderson mixing and a Newton polish, which are
+root finders: they solve *F(x) = x* whether or not naive best-response adjustment would go there.
+That is deliberate (the Kyle-Back equilibrium is best-response unstable and genuine, see "Stability"
+in the README), so an unstable radius alone does not condemn a solve --- but an unstable radius
+*together with* a kernel that has not decayed at the window's edge is the spurious signature.
+
+Continuation in the window is the remedy, and it is complete: solving at 12 and warm-starting each
+larger window from the previous holds the cost at 0.427295 through *L* = 24, with the residual at
+3.4e-11 and the tail falling to 7.9e-12.
+
+    prev = ns.solve(m.with_horizon(window=12.0)).check()
+    for L in (15.0, 18.0, 21.0, 24.0):
+        wider = m.with_horizon(window=L)
+        prev = ns.solve(wider, init=ns.StationarySolver(wider).interpolate_maps(prev)).require_ok()
+
+`extras/tools/ch3_long_window_branch.py` reproduces the table, the figure and the continuation.

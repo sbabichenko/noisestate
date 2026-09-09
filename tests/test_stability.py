@@ -40,3 +40,44 @@ def test_a_shrinking_negative_curvature_is_the_grid_not_a_saddle():
     assert cv["shrinking"] and cv["min"] < cv["fine_min"] < 0        # less negative on the finer grid
     assert not any("NOT A MINIMUM" in f for f in r.status["flags"])  # the verdict is overturned
     assert any(d["name"] == "second_order_grid:trader1" and d["ok"] for d in r.diagnose())
+
+
+def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
+    """docs/limits.md, "a stationary window much longer than the kernel's support".  ch3_two_player at
+    64 nodes solves the equilibrium up to L = 15 (the state kernel decays to 3e-08 of its peak, cost
+    0.4273); at L = 18 the solve still converges to its tolerance, onto a fixed point of the truncated
+    problem whose kernel has not decayed at the edge and whose cost is seven times larger.  check()
+    passes on it because it did converge -- only the window guard, and so require_ok(), refuses it."""
+    import numpy as np, pytest, noisestate as ns
+    base = ns.load(example_path("ch3_two_player"))
+
+    good = ns.solve(base.with_horizon(window=15.0).with_numerics(nodes=64))
+    a = np.asarray(good.ages); K = np.asarray(good.kernel("X"))
+    assert good.status["ok"] and abs(good.costs["player1"] - 0.427295) < 1e-5
+    assert np.abs(K[a > 0.95 * 15.0]).max() / np.abs(K).max() < 1e-6      # decayed by the edge
+
+    spurious = ns.solve(base.with_horizon(window=18.0).with_numerics(nodes=64))
+    assert spurious.converged and spurious.check() is spurious            # it really did converge
+    assert spurious.costs["player1"] > 3.0                                # and to the wrong thing
+    Ks = np.asarray(spurious.kernel("X")); asp = np.asarray(spurious.ages)
+    assert np.abs(Ks[asp > 0.95 * 18.0]).max() / np.abs(Ks).max() > 0.5   # a closed loop that does not stabilise
+    assert not spurious.status["ok"] and any("WINDOW TOO SHORT" in f for f in spurious.status["flags"])
+    with pytest.raises(ns.ConvergenceError, match="converged, but"):
+        spurious.require_ok()
+
+    # both fixed points exist at L = 18: a cold start lands on the spurious one, and continuation in
+    # the window reaches the equilibrium.  What separates them is best-response stability -- Anderson
+    # and the Newton polish are root finders and will sit on a fixed point naive adjustment would flee.
+    wider = base.with_horizon(window=18.0).with_numerics(nodes=64)
+    warm = ns.solve(wider, init=ns.StationarySolver(wider).interpolate_maps(good)).require_ok()
+    assert abs(warm.costs["player1"] - 0.427295) < 1e-5
+    assert warm.stability()["radius"] < 0.9 < 1.0 < spurious.stability()["radius"]
+
+    # the radius is computed unasked where it discriminates: the window guard failing is the only place
+    # it is worth its best responses, and there it separates a branch from a truncation
+    report = lambda r: getattr(r, "stability_report", None)     # only set once stability() has run
+    assert report(spurious) is not None and report(spurious)["radius"] > 1.0
+    assert "UNSTABLE" in spurious.summary() and "WINDOW TOO SHORT" in spurious.summary()
+    assert report(good) is None                                 # a window that passes pays nothing
+    shipped = ns.solve(example_path("ch3_two_player"))           # window 3: flagged, but a truncation
+    assert report(shipped) is not None and report(shipped)["radius"] < 1.0

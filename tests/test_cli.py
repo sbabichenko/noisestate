@@ -3,7 +3,7 @@ import noisestate as ns
 from noisestate.cli import main
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
 
-def test_cli_validate_solve_sweep_on_every_engine(tmp_path):
+def test_cli_validate_solve_sweep_on_every_engine(tmp_path, capsys):
     assert main(["validate", os.path.join(EX, "ch5_cycle_market.yaml")]) == 0
     cells = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); cells["horizon"] = {"kind": "finite", "window": 1.0}; cells["numerics"] = {"engine": "cells", "nodes": 24}
     cells_path = tmp_path / "cells.yaml"; cells_path.write_text(yaml.safe_dump(cells))
@@ -17,6 +17,14 @@ def test_cli_validate_solve_sweep_on_every_engine(tmp_path):
     sw = tmp_path / "sw.json"
     assert main(["sweep", os.path.join(EX, "ch3_two_player.yaml"), "p2", "3,5", "-o", str(sw)]) == 0
     sw_rows = json.load(open(sw)); assert len(sw_rows) == 2 and all(r["param"] == "p2" and r["result"]["params"]["p2"] == r["value"] for r in sw_rows)
+    assert all("change" in r and "jump" in r for r in sw_rows)
+    table = capsys.readouterr().out
+    assert "residual" in table and "change" in table and "NOT converged" not in table
+    figure = tmp_path / "sweep-figure"
+    assert main(["plot-sweep", str(sw), str(figure)]) == 0
+    report = capsys.readouterr().out
+    assert (tmp_path / "sweep-figure.png").stat().st_size > 1000
+    assert f"wrote {figure}.png" in report
 
 def test_cli_file_errors_are_usage_errors(tmp_path, capsys):
     # a missing model file, bad YAML and an output path that cannot be written print `error: ...` and exit 2
@@ -35,3 +43,30 @@ def test_top_level_solve_rejects_unknown_options():
         ns.solve(os.path.join(EX, "ch3_two_player.yaml"), tolerance=1e-8)
     res = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), tol=1e-8, verbose=False)
     assert isinstance(res, ns.BaseResult) and res.check() is res
+
+
+def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
+    """check() is convergence alone, so it passes on ch3_two_player while a guard fails; require_ok() is
+    the whole verdict, and --require-ok gives the command line the same split.  A script that reads only
+    the exit status would otherwise take a WINDOW TOO SHORT result as sound."""
+    import pytest
+    r = ns.solve(os.path.join(EX, "ch3_two_player.yaml"))
+    assert r.check() is r and not r.status["ok"]
+    with pytest.raises(ns.ConvergenceError, match="converged, but"):
+        r.require_ok()
+    assert ns.solve(os.path.join(EX, "ch4_kyle_back.yaml")).require_ok().status["ok"]
+    assert main(["solve", os.path.join(EX, "ch3_two_player.yaml")]) == 0
+    capsys.readouterr()
+    assert main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--require-ok"]) == 1
+    report = capsys.readouterr()
+    assert "Diagnostics: 1 failed" in report.out and "Numerics    FAIL — window" in report.out
+    assert "WINDOW TOO SHORT" not in report.out
+    assert "failed diagnostic checks:" in report.err and "raise horizon.window" not in report.err
+    assert main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--diagnostics"]) == 0
+    detailed = capsys.readouterr().out
+    assert "meaning: Whether stationary kernels" in detailed and "suggested: --window 6" in detailed
+    assert main(["solve", os.path.join(EX, "ch4_kyle_back.yaml"), "--require-ok"]) == 0
+
+
+def test_describe_prints_the_model_as_equations():
+    assert main(["describe", os.path.join(EX, "ch3_two_player.yaml")]) == 0

@@ -45,6 +45,17 @@ past elsewhere keeps the absolute path, which is what it means.
 set the threads: 743 s against 118 s capped.  `tests/conftest.py` caps them, and `./run-tests` caps them
 again in the environment.
 
+### `check()` did less than its name implied, and the CLI said 0 either way
+
+`res.check()` tested convergence only, so it passed on a result whose guards had failed; `noisestate
+solve` exited 0 on the same result, and a script reading only the exit status would have taken it as
+sound.  `res.require_ok()` is now check() plus the guards, `noisestate solve --require-ok` is the same
+split on the command line, and `noisestate describe model.yaml` reaches the model explanation that was
+only available from Python.  (Found by an external review, `UX_REVIEW.txt`, which also notes that
+`noisestate plot` used to re-solve the model rather than plotting the stored payload --- the help text said
+so, but the name did not.  It now renders the saved kernels and transition paths directly; `--re-solve`
+asks explicitly for the old reproduction path.)
+
 ## Open, and deliberate
 
 ### `check()` passes while `status["ok"]` is False

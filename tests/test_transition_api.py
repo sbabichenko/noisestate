@@ -153,7 +153,8 @@ def test_cli_round_trip(tmp_path, capsys):
     assert payload["past"]["kind"] == "stationary" and payload["past"]["name"] == "ch3_two_player" and payload["settled"] is not None
     assert payload["horizon"]["kind"] == "transition" and payload["horizon"]["past"]["model"] == str(tmp_path / "old.yaml")
     assert payload["continuation"]["nodes"] == 8 and set(payload["kernels"]) == {"X", "D1", "D2"}
-    assert "TRANSITION NOT SETTLED" in capsys.readouterr().out            # T = 6 is short for this change (settled 6e-4)
+    report = capsys.readouterr().out
+    assert "FAIL  settled" in report                                      # T = 6 is short for this change (settled 6e-4)
     with open(tmp_path / "bad.yaml", "w") as fh:
         yaml.safe_dump({**d, "horizon": {**d["horizon"], "continuation": "tail"}}, fh)
     assert main(["solve", str(tmp_path / "bad.yaml")]) == 2

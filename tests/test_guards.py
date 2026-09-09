@@ -22,6 +22,9 @@ def test_refinement_check_on_a_resolved_and_an_unresolved_model():
 def test_window_tail_flag():
     short = ns.solve(os.path.join(EX, "ch3_two_player.yaml"))        # L = 3: the state kernel still moves 2.4% over the last tenth
     assert short.window_tail > 0.02 and "WINDOW TOO SHORT" in short.summary()
+    trend = short.window_tail_extrapolation()
+    assert trend["assessment"] == "decaying" and trend["predicted_at_double_window"] < short.window_tail
+    assert trend["projection_range"] == [0.5 * trend["predicted_at_double_window"], 2.5 * trend["predicted_at_double_window"]]
     d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["horizon"]["window"] = 10.0; d.setdefault("numerics", {})["nodes"] = 48
     long = ns.solve(ns.Model.from_dict(d))
     assert long.window_tail < 1e-3 and "WINDOW TOO SHORT" not in long.summary()

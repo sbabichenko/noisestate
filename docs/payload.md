@@ -26,7 +26,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `numerics` | numerics (see above) | the resolved numerics |
 | `axes` | map of list of number | the coordinates of every kernel by name: `age` (stationary); `time`, `age`, `shock_time` node-wise on the spectral triangle (`shock_time` < 0 on a transition's band); `time`, `shock_time` for the cell engine's (N, N) matrices; under `maps`, where each row's map values belong |
 | `times` | list of number or null | the time nodes of the paths; null on the stationary engine |
-| `options` | object | `numerics` (the resolved Numerics), `solver` (the engine's constructor options) and `solve` (the solve options: start, bounds, diagnostics, ...); `noisestate plot` re-solves under them |
+| `options` | object | `numerics` (the resolved Numerics), `solver` (the engine's constructor options) and `solve` (the solve options: start, bounds, diagnostics, ...); `noisestate plot --re-solve` re-solves under them |
 | `grid` | object | the grid's description (`res.grid_info()`): its `kind`, nodes, panels or pieces, window |
 | `discount` | number | the discount rate |
 | `channels` | list of string | the Brownian channels in kernel column order |
@@ -41,7 +41,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `means_t` | list of number or null | the time nodes of the mean paths; null on the stationary engine |
 | `representation_error` | map of number | per agent: the representation error of the action kernels on the seen rows |
 | `representation_parts` | map of map of number (optional) | a transition's error by region: interior, tip, last window, buffer |
-| `diagnostics` | list of object | every row of `res.diagnose()` ([guards.md](guards.md)) |
+| `diagnostics` | list of object | every row of `res.diagnose()` ([guards.md](guards.md)), plus stable `code`, `category`, `severity`, `meaning`, `action`, and `suggested_options` fields; stationary window rows add a `trend` with the within-window tail ratio, rough doubled-window projection, benchmark range, and `decaying`, `slow_decay`, `not_decaying`, or `inconclusive` assessment (the last when the underlying solve is unconverged or under-resolved) |
 | `resolution_ok` | boolean or null | the resolution row's verdict (null when not computed) |
 | `status` | object | `ok` and the failing `flags` (and the rows) |
 | `cost_kind` | string | `flow loss per unit time` (stationary) or the discounted integral (finite) |
@@ -54,6 +54,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `settled` | number or null (optional) | a transition's largest relative distance of any map on [T - L, T] from the stationary continuation |
 | `continuation` | object (optional) | a transition's continuation: the same provenance |
 | `loss_path` | map of list of number (optional) | a transition's E[loss(t)] per agent on `times` |
+| `belief_error` | map of agent to map of state to list of number (optional) | a transition's estimation-error variance paths on `times` |
 | `excess_costs` | map of number (optional) | per agent: the discounted integral over [0, T] of E[loss(t)] minus the new stationary flow |
 | `old_flows` | map of number (optional) | per agent: the old regime's stationary flow loss |
 | `new_flows` | map of number (optional) | per agent: the new regime's stationary flow loss |

@@ -14,7 +14,7 @@ loss over causal linear strategies on its own observation history.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest -q tests        # regression tests against the chapter solvers
+./run-tests                                # regression tests against the chapter solvers (takes a lock; see CONTRIBUTING.md)
 ```
 
 Python >= 3.10.  Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml; matplotlib only for plots
@@ -31,6 +31,7 @@ res = ns.solve("examples/ch3_two_player.yaml")                    # the model fi
 res = ns.solve("examples/ch3_two_player.yaml", ns.Numerics(nodes=32, tol=1e-12))   # a change of resolution, not of model
 print(res.summary())
 res.check()                  # raises ConvergenceError unless converged -- convergence only, not the guards
+res.require_ok()             # check() and the guards: what to call before a number is used rather than read
 res.status["ok"]             # False while any guard fails; res.status["flags"] says which
 res.costs["player1"]         # the cost of each agent (res.cost_kind says what it is)
 res.kernel("X")              # closed-loop kernel of a state, one column per channel (the last axis); res.axes gives its coordinates
@@ -252,14 +253,31 @@ edge, not a saddle` instead.
 **Settled.**  A transition whose maps on [T - L, T] are more than 1e-4 of their peak from the
 stationary continuation prints `TRANSITION NOT SETTLED by T - L: raise horizon.window (...)`; the
 past's and the continuation's own window tails are echoed as `PAST WINDOW TOO SHORT` and
-`CONTINUATION WINDOW TOO SHORT`.
+`CONTINUATION WINDOW TOO SHORT`.  The transition CLI suggests a larger old-regime window after a
+past-window failure; pass it directly with `--past-window L`.  A short continuation likewise suggests
+`--continuation-window L`; because the buffer reads both stationary regimes over the same ages, this option
+enlarges their shared lag window.
+
+**Diagnostic summaries.**  CLI solves end with a compact verdict grouped into `Solve`, `Numerics`, and
+`Equilibrium`.  Add `--diagnostics` to `solve` or `transition` for every failed measurement, threshold,
+interpretation, action, and suggested option.  Python's `result.summary()` retains its detailed one-line
+flags; `result.diagnostic_summary(detailed=True)` provides the grouped form.  Saved payload rows also carry
+stable `code`, `category`, `severity`, `meaning`, `action`, and `suggested_options` fields.
+For a stationary-window failure, the solver compares kernel changes over the last four tenths of the
+existing window.  It reports their median decay ratio and projects the tail at twice the window.  A tail
+whose increments are not shrinking suppresses the automatic extension suggestion and instead warns that
+the stationary problem may not exist, as in undiscounted Kyle–Back.  The projection is deliberately shown
+with a benchmark range: alternatives based on the last ratio, an upper ratio, or a log-linear fit were less
+stable when one tail segment was irregular.
 
 **Stability.**  `res.stability()` (or `solve(..., stability=True)`) reports the spectral radius of the
 best-response map, `best-response dynamics UNSTABLE (spectral radius 1.400)` above one: the Kyle-Back
 equilibrium converges under Anderson mixing while naive best-response adjustment would not find it.
 
-**Sweeps.**  A row whose `change` is more than five times the sweep's median is a `jump`, so a branch
-change between neighbouring points is visible instead of plotted as a curve.
+**Sweeps.**  The CLI prints value, convergence, residual, evaluations, time, strategy change and branch-jump
+status, and records the same fields in its JSON.  A row whose `change` is more than five times the sweep's
+median is a `jump`, so a branch change between neighbouring points is visible instead of plotted as a curve.
+Plot the JSON directly with `noisestate plot-sweep sweep.json sweep.png`.
 
 **What the model rejects.**  A misspelled key, an unused channel or parameter, a control that does not
 enter its owner's loss, a zero noise loading, a lag or delay not below the window, and a singular
@@ -304,7 +322,7 @@ noisestate sweep examples/ch4_kyle_back.yaml eps 0.2,0.1,0.05 -o sweep.json
 noisestate transition examples/ch3_two_player.yaml new.yaml --window 6 --nodes 12 -o change.json
 noisestate transition examples/ch3_two_player.yaml new.yaml --settle 1e-4 --nodes 12     # the horizon found by the march in T
 noisestate schema model > model.schema.json               # JSON Schema (draft 2020-12); also: schema payload
-noisestate plot kb.json kb.pdf                            # re-solves the payload's model under its recorded options
+noisestate plot kb.json kb.pdf                            # plots the saved result; --re-solve reproduces the solve first
 noisestate --version
 ```
 

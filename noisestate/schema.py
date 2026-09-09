@@ -109,7 +109,12 @@ def payload_schema() -> dict:
     numbers = {"type": "array", "items": {"type": "number"}}
     by_name = lambda inner: {"type": "object", "additionalProperties": inner}   # noqa: E731
     row = {"type": "object", "required": ["name", "value", "threshold", "ok", "flag", "advice"],
-           "properties": {"name": {"type": "string"}, "ok": {"type": ["boolean", "null"]}, "flag": {"type": "string"}, "advice": {"type": "string"}}}
+           "properties": {"name": {"type": "string"}, "ok": {"type": ["boolean", "null"]}, "flag": {"type": "string"},
+                          "advice": {"type": "string"}, "code": {"type": "string"},
+                          "category": {"enum": ["solve", "numerics", "equilibrium"]},
+                          "severity": {"enum": ["ok", "info", "error"]}, "meaning": {"type": "string"},
+                          "action": {"type": "string"}, "suggested_options": {"type": "object"},
+                          "trend": {"type": "object"}}}
     return {"$schema": DRAFT, "$id": "https://noisestate/schema/payload", "title": "noisestate result payload",
             "type": "object",
             "required": ["payload_version", "version", "name", "engine", "kind", "converged", "residual", "evaluations", "seconds",
@@ -160,7 +165,8 @@ def payload_schema() -> dict:
                 "refinement": {"type": "object"}, "window_tail": {"type": "number"},
                 "stability": {"type": "object", "required": ["radius", "stable"]},
                 "past": {"type": "object"}, "settled": {"type": ["number", "null"]}, "continuation": {"type": "object"},
-                "loss_path": by_name(numbers), "excess_costs": by_name({"type": "number"}),
+                "loss_path": by_name(numbers), "belief_error": by_name(by_name(numbers)),
+                "excess_costs": by_name({"type": "number"}),
                 "window": {"type": "number"}, "march": {"type": "array"}, "march_stop": {"type": ["string", "null"]},
                 "excess_windows": by_name(numbers), "excess_costs_tail": by_name({"type": "number"}),
                 "excess_costs_total": by_name({"type": "number"}), "excess_tail": {"type": "object"},
