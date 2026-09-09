@@ -21,3 +21,14 @@ noisestate = "noisestate.cli:main"
 
 [tool.setuptools]
 packages = ["noisestate"]
+
+[tool.pytest.ini_options]
+# A deprecation is an error in this suite: the spellings deprecated in 0.5 were still used by 55 test
+# sites when 0.6 removed them, because nothing ever read the warnings.  The filter is not qualified by
+# module: warnings.warn(stacklevel=2) attributes the warning to the caller, so "…:noisestate.*" matches
+# the test that made the call, never the package, and fires on nothing (checked, not assumed).  A
+# third-party deprecation we cannot fix gets its own ignore line here.
+filterwarnings = [
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
+]

@@ -151,3 +151,28 @@ def test_the_zero_start_is_explicit_with_a_continuation():
     rows = ns.sweep(new.with_horizon(kind="transition", past={"model": old.model.to_dict()}, continuation="stationary"), "p1",
                     [10.0], solve_kw={"max_evaluations": 1})
     assert rows[0]["result"].solve_kw["start"] == "stationary"
+
+
+def test_a_saved_transition_keeps_its_past_beside_it():
+    """A past under the saved file's own directory is written relative to it, so a copied pair reads the
+    past beside the copy; a past elsewhere keeps the absolute path, which names that file and no other.
+    Before 0.6.9 both were absolute, so a copied pair silently read the original past."""
+    import shutil, tempfile, yaml
+    d = tempfile.mkdtemp()
+    ns.load(os.path.join(EX, "ch3_two_player.yaml")).save(os.path.join(d, "past.yaml"))
+    tr = ns.load(os.path.join(EX, "ch3_precision_change.yaml")).with_horizon(past={"model": os.path.join(d, "past.yaml")})
+    tr.save(os.path.join(d, "tr.yaml"))
+    assert yaml.safe_load(open(os.path.join(d, "tr.yaml")))["horizon"]["past"] == {"model": "past.yaml"}
+
+    moved = tempfile.mkdtemp()                       # the pair copied elsewhere reads the copy, not the original
+    for f in ("past.yaml", "tr.yaml"):
+        shutil.copy(os.path.join(d, f), moved)
+    edited = yaml.safe_load(open(os.path.join(moved, "past.yaml"))); edited["params"]["p1"] = 99.0
+    yaml.safe_dump(edited, open(os.path.join(moved, "past.yaml"), "w"))
+    m = ns.load(os.path.join(moved, "tr.yaml"))
+    assert ns.load(m.horizon.past["model"]).params["p1"] == 99.0
+
+    elsewhere = tempfile.mkdtemp()                    # a past outside the directory stays absolute
+    ns.load(os.path.join(EX, "ch3_precision_change.yaml")).save(os.path.join(elsewhere, "tr.yaml"))
+    saved = yaml.safe_load(open(os.path.join(elsewhere, "tr.yaml")))["horizon"]["past"]["model"]
+    assert os.path.isabs(saved) and os.path.exists(saved)

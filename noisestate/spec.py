@@ -282,10 +282,24 @@ class Model:
         return self.with_horizon(kind="stationary", window=window, **fields)
 
     def save(self, path: str) -> None:
-        """Write the model file (to_dict() as YAML, the parameter expressions intact)."""
+        """Write the model file (to_dict() as YAML, the parameter expressions intact).
+
+        A transition's past that lies under this file's own directory is written relative to it, so the
+        pair travels together; a past elsewhere keeps its absolute path, which is what it means (that
+        file, not whatever happens to sit beside the copy)."""
         import yaml
+        d = self.to_dict()
+        past = (d.get("horizon") or {}).get("past")
+        if isinstance(past, dict) and isinstance(past.get("model"), str):
+            base = os.path.dirname(os.path.abspath(path)) or os.curdir
+            try:
+                rel = os.path.relpath(past["model"], base)
+            except ValueError:                    # another drive on Windows: no relative path exists
+                rel = None
+            if rel is not None and not rel.startswith(os.pardir + os.sep) and rel != os.pardir:
+                past["model"] = rel
         with open(path, "w") as fh:
-            yaml.safe_dump(self.to_dict(), fh, sort_keys=False)
+            yaml.safe_dump(d, fh, sort_keys=False)
 
     @classmethod
     def load(cls, path: str) -> "Model":
