@@ -570,8 +570,11 @@ class Model:
             self._check_losses(a)
 
     def _check_signals(self, a: "Agent") -> None:
-        """Each signal row of the agent loads known channels, has a nonzero noise loading (exact rows are not
-        supported), a non-negative delay, a causal drift and no constant."""
+        """The agent has at least one signal row, and each row loads known channels, has a nonzero noise
+        loading (exact rows are not supported), a non-negative delay, a causal drift and no constant."""
+        if not a.signals:
+            raise ValueError(f"agent {a.name} has no signal rows: a strategy reads its rows, so there is "
+                             f"nothing to solve for (give it a row, or drop the agent and its controls)")
         for r in a.signals:
             for ch in r.noise:
                 if ch not in self.channels:

@@ -42,3 +42,14 @@ def test_unreferenced_parameter_is_an_error_and_notes_exist():
     notes = m.notes
     assert any("observes the control" in n for n in notes) and any("myopic" in n for n in notes) and any("flow loss" in n for n in notes)
     res = ns.solve(m); assert res.cost_kind.startswith("stationary") and "flow loss" in res.summary() and res.to_dict()["notes"]
+
+
+def test_an_agent_with_no_signal_rows_is_refused_by_name():
+    """Before 0.6.9 this reached the linear algebra: a RuntimeWarning about a divide, three
+    ' ** On entry to DSYRK parameter number 10 had an illegal value' lines on stderr from LAPACK, and
+    an IndexError out of numpy.  An agent that reads nothing has no strategy to solve for."""
+    d = {"channels": ["w"], "states": {"X": {"drift": {"D": 1.0}, "noise": {"w": 1.0}}},
+         "agents": {"a": {"controls": ["D"], "loss": [[1.0, "X", "X"], [1.0, "D", "D"]]}},
+         "horizon": {"kind": "stationary", "window": 3.0}, "numerics": {"nodes": 8}}
+    with pytest.raises(ValueError, match="agent a has no signal rows"):
+        ns.Model.from_dict(d).validate()
