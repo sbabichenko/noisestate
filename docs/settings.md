@@ -54,8 +54,7 @@ and the result's checks (`resolution_tol`, `window_tail_tol`, `settled_tol` for 
 on [T - L, T] against the stationary ones, `mean_zero`, `refine_cost_tol`, `refine_kernel_tol`, `stability_k`,
 `stability_eps`, `stability_tol`, `stability_max_evaluations`, `stability_fallback`).
 
-`solve(settings=...)` is accepted as an alias of `Numerics(settings=...)` until 0.6.  The older
-class-attribute names (`EngineBase.FOC_RCOND`, `BaseResult.STABILITY_MAX_EVALUATIONS`,
+The older class-attribute names (`EngineBase.FOC_RCOND`, `BaseResult.STABILITY_MAX_EVALUATIONS`,
 `SpectralFiniteSolver.MAP_RIDGE`, ...) remain as aliases of the same fields.  The defaults of the fixed
 point's own options (`tol`, `damping`, `max_newton`) stay per engine (`TOL`, `DAMPING`, `MAX_NEWTON`), since
 they differ by engine; a `Numerics` overrides them and `res.numerics` reports the resolved values.

@@ -43,7 +43,7 @@ def test_closed_loop_with_a_past_and_a_continuation_matches_the_stacked_dense_so
     the buffer's frozen rows, the excluded agent frozen or off on the buffer, the plain closed loop, each the
     dense solve of the stacked rows to 1e-12 of the world's peak."""
     m3 = example("ch3_two_player"); stat = stationary(m3, 6)
-    S = SpectralFiniteSolver(m3.with_horizon(kind="finite", window=6.0, nodes=6), past=stat, continuation=stat); c = S.c
+    S = SpectralFiniteSolver(m3.with_horizon(kind="finite", window=6.0).with_numerics(nodes=6), past=stat, continuation=stat); c = S.c
     assert c.buffer.any() and c.g.upper.any()
     cases = [dict(maps=c.frozen)]
     for a in m3.agents:

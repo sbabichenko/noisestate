@@ -2,7 +2,7 @@
 
 CROSS-CHECK ENGINE.  The production finite-horizon engine is finite_spectral.py; this first-order
 scheme is kept as an independent discretisation for validation (Richardson-extrapolated), selected
-with horizon.kind = "finite_cells".
+with numerics.engine = "cells" (its result reports kind "finite_cells").
 
 Time [0, T] is cut into N cells of length h.  Shocks are the cell increments
 dW_j (variance h).  A kernel K[i, j] is the response at cell i (state at t_i,

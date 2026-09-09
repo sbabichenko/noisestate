@@ -1,14 +1,14 @@
 """JSON Schema (draft 2020-12) for the model file and for the result payload, and a validator.
 
     import noisestate as ns
-    ns.schema("model")                     # the model file's schema (the numerics block; the deprecated nested keys marked)
+    ns.schema("model")                     # the model file's schema (the numerics block)
     ns.schema("payload")                   # res.to_dict()'s schema
     ns.schema.validate(doc, "model")       # [] or the errors as "path: message"
 
 `validate` uses the `jsonschema` package when it is importable (a full draft 2020-12 validator); otherwise the
 small validator here covers exactly the keywords these two schemas use (type, enum, const, properties,
 required, additionalProperties, items, minItems, minimum, exclusiveMinimum, anyOf, $ref into $defs,
-deprecated) and reports every violation with its path.  The CLI's `validate` runs it before the model's own
+) and reports every violation with its path.  The CLI's `validate` runs it before the model's own
 checks, and `noisestate schema {model|payload}` prints the schema.
 """
 from __future__ import annotations
@@ -62,12 +62,10 @@ def numerics_schema() -> dict:
 
 def model_schema() -> dict:
     """The model file (a Model.to_dict() / Model.from_dict() document)."""
-    deprecated = "deprecated: this key now lives under numerics: (read until 0.6)"
     horizon = {"type": "object", "additionalProperties": False,
                "description": "the economics of time: the kind, the discount, the window, a transition's past and continuation",
                "properties": {
-                   "kind": {"enum": ["stationary", "finite", "transition", "finite_cells"],
-                            "description": "finite_cells is deprecated: kind finite with numerics.engine cells (read until 0.6)"},
+                   "kind": {"enum": ["stationary", "finite", "transition"]},
                    "discount": _NUMBER_OR_EXPR,
                    "window": {**_NUMBER_OR_EXPR, "description": "the lag window L (stationary) or the horizon T (finite, transition)"},
                    "past": {"type": "object", "additionalProperties": False,
@@ -79,14 +77,8 @@ def model_schema() -> dict:
                    "settle": {**_NUMBER_OR_EXPR, "description": "kind transition only, in place of window: the settle tolerance the "
                               "horizon T is found for by a march in T (exactly one of window and settle)"},
                    "stationary": {"type": "object", "additionalProperties": False,
-                                  "properties": {"window": {**_NUMBER_OR_EXPR, "description": "must equal the past's window"},
-                                                 "nodes": {"type": "integer", "minimum": 2, "deprecated": True,
-                                                           "description": "deprecated: numerics.continuation_nodes (read until 0.6)"}},
-                                  "description": "kind transition only: the continuation's stationary solve"},
-                   "nodes": {"type": "integer", "minimum": 2, "deprecated": True, "description": deprecated},
-                   "unit": {**_NUMBER_OR_EXPR, "deprecated": True, "description": deprecated},
-                   "unit_range": {**_NUMBER_OR_EXPR, "deprecated": True, "description": deprecated},
-                   "breakpoints": {"anyOf": [{"type": "array", "items": _NUMBER_OR_EXPR}, {"type": "null"}], "deprecated": True, "description": deprecated}}}
+                                  "properties": {"window": {**_NUMBER_OR_EXPR, "description": "must equal the past's window"}},
+                                  "description": "kind transition only: the continuation's stationary solve"}}}
     state = {"type": "object", "additionalProperties": False,
              "properties": {"drift": _EXPR, "noise": _EXPR, "initial": {**_NUMBER_OR_EXPR, "description": "finite horizon only; moves the means"}}}
     signal = {"type": "object", "additionalProperties": False,

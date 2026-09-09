@@ -15,14 +15,16 @@ from helpers import example, delayed_stationary, same_model_solver, one_shot_dev
 
 
 def undelayed(**hz):
+    """The delayed example without the delay; the grid keys go to with_numerics, the rest to with_horizon."""
     d = example("ch1_delayed_finite").to_dict()
     d["agents"]["player2"]["signals"]["y2"].pop("delay")
-    return ns.Model.from_dict(d).with_horizon(**hz)
+    num = {k: hz.pop(k) for k in list(hz) if k in ("nodes", "unit", "unit_range", "breakpoints")}
+    return ns.Model.from_dict(d).with_horizon(**hz).with_numerics(**num)
 
 
 def test_unit_range_at_the_window_is_the_grid_bit_for_bit():
-    m = example("ch1_delayed_finite").with_horizon(nodes=5)
-    a = ns.solve(m); b = ns.solve(m.with_horizon(unit_range=1.0))
+    m = example("ch1_delayed_finite").with_horizon().with_numerics(nodes=5)
+    a = ns.solve(m); b = ns.solve(m.with_horizon().with_numerics(unit_range=1.0))
     assert not b.compiled.coarse and [float(x) for x in b.grid.bp] == [float(x) for x in a.grid.bp] and b.compiled.N == a.compiled.N
     assert all(np.array_equal(a.maps[k], b.maps[k]) for k in a.maps) and a.costs == b.costs
 
@@ -65,10 +67,10 @@ def test_unit_range_on_a_transition_keeps_the_identity_within_the_measured_floor
 def test_unit_range_guards_and_kind_change():
     m = example("ch1_delayed_finite")
     with pytest.raises(ValueError, match="shifted by the delay"):
-        ns.SpectralFiniteSolver(m.with_horizon(window=2.0, nodes=4, unit_range=0.5))
+        ns.SpectralFiniteSolver(m.with_horizon(window=2.0).with_numerics(nodes=4, unit_range=0.5))
     with pytest.raises(ValueError, match="below the largest lag"):
         ns.SpectralFiniteSolver(undelayed(window=2.0, nodes=4, unit=0.125, unit_range=0.125))
-    s = m.with_horizon(kind="stationary", window=3.0, nodes=4, unit_range=2.0)
+    s = m.with_horizon(kind="stationary", window=3.0).with_numerics(nodes=4, unit_range=2.0)
     assert s.with_horizon(kind="finite", window=2.0).horizon.unit_range is None            # a stationary sizing is not a finite one
-    assert s.with_horizon(kind="finite", window=2.0, unit_range=1.0).horizon.unit_range == 1.0
-    assert s.with_horizon(nodes=6).horizon.unit_range == 2.0
+    assert s.with_horizon(kind="finite", window=2.0).with_numerics(unit_range=1.0).horizon.unit_range == 1.0
+    assert s.with_horizon().with_numerics(nodes=6).horizon.unit_range == 2.0

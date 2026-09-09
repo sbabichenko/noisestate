@@ -100,12 +100,22 @@ def riccati(A, B, Qx, theta, r, rho, x0, T, ts):
     return xs, us, fw.y[n, -1], 0.5 * x0 @ y0[:n * n].reshape(n, n) @ x0 + y0[n * n:n * n + n] @ x0 + y0[-1]
 
 
+def _kind(kind):
+    """kind "finite_cells" names the cell engine's result; the model asks for kind finite with engine cells."""
+    return "finite" if kind == "finite_cells" else kind
+
+
+def _engine(kind):
+    return {"engine": "cells"} if kind == "finite_cells" else {}
+
+
 def one_state(a, r, theta, rho, x0, kind="finite", nodes=12):
     """dX = (a X + D) dt + dW0, loss X^2 - 2 theta X + r D^2, X(0) = x0, one agent with a noisy signal on X."""
     loss = [[1.0, "X", "X"], [r, "D", "D"]] + ([[-2.0 * theta, "X"]] if theta else [])
     return ns.Model.from_dict({"name": "lq1", "channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}, "initial": x0}},
                                "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 2.0 ** 0.5}, "noise": {"w1": 1.0}}}, "loss": loss}},
-                               "horizon": {"kind": kind, "window": 1.0, "nodes": nodes, "discount": rho}})
+                               "horizon": {"kind": _kind(kind), "window": 1.0, "discount": rho},
+                               "numerics": {"nodes": nodes, **_engine(kind)}})
 
 
 @pytest.mark.parametrize("a,r,theta,rho,x0", [(-1.0, 0.5, 1.0, 0.0, 0.0), (0.3, 0.2, 0.0, 0.0, 1.0), (-0.5, 0.3, 2.0, 0.5, -1.0)])
@@ -136,7 +146,7 @@ def test_two_states_matrix_riccati(theta, rho):
          "states": {"X": {"drift": {"X": -0.5, "Y": 1.0, "D": 1.0}, "noise": {"w0": 1.0}, "initial": 0.2}, "Y": {"drift": {"Y": -1.0, "D": 0.5}, "initial": -0.4}},
          "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.0}, "noise": {"w1": 1.0}}},
                           "loss": [[1.0, "X", "X"], [-2.0 * theta, "X"], [0.3, "Y", "Y"], [0.4, "D", "D"]]}},
-         "horizon": {"kind": "finite", "window": 1.5, "nodes": 12, "discount": rho}}
+         "horizon": {"kind": "finite", "window": 1.5, "discount": rho}, "numerics": {"nodes": 12}}
     res = ns.solve(d).check()
     xs, us, J, V0 = riccati([[-0.5, 1.0], [0.0, -1.0]], [1.0, 0.5], np.diag([1.0, 0.3]), [theta, 0.0], 0.4, rho, [0.2, -0.4], 1.5, res.means_t)
     assert np.abs(res.means["X"] - xs[0]).max() < 1e-11 and np.abs(res.means["Y"] - xs[1]).max() < 1e-11 and np.abs(res.means["D"] - us).max() < 1e-11

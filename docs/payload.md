@@ -14,7 +14,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `version` | string | the package version that wrote it |
 | `name` | string | the model's name |
 | `engine` | `stationary` \| `spectral` \| `cells` | the engine that solved it (`numerics.engine` resolved) |
-| `kind` | `stationary` \| `finite` \| `transition` \| `finite_cells` | the result kind |
+| `kind` | `stationary` \| `finite` \| `transition` \| `finite_cells` | the result kind (the cell engine reports `finite_cells`) |
 | `converged` | boolean | the fixed point reached `tol` |
 | `residual` | number | the fixed point's final residual |
 | `evaluations` | integer | best-response evaluations (Anderson and the Newton-Krylov polish together) |
@@ -46,7 +46,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `status` | object | `ok` and the failing `flags` (and the rows) |
 | `cost_kind` | string | `flow loss per unit time` (stationary) or the discounted integral (finite) |
 | `second_order` | map of object | per agent: `min`, `max`, `ok`, `converged`, and `edge`/`embedded` when the negative direction was re-evaluated on a longer window |
-| `notes` | list of string | the model's notes (what the numbers are, deprecations) |
+| `notes` | list of string | the model's notes (what the numbers are) |
 | `refinement` | object (optional) | with `--refine`: `cost_change`, `kernel_change`, `nodes`, `resolved` |
 | `window_tail` | number (optional) | stationary: the largest change of a kernel over the last tenth of the window relative to its peak |
 | `stability` | object (optional) | with `--stability`: `radius`, `stable`, `method`, `untied` |

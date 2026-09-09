@@ -199,7 +199,7 @@ class Horizon:
     def is_transition(self) -> bool:
         return self.kind == "transition"
 
-    _NUMERICS_KEYS = ("breakpoints", "unit", "unit_range", "nodes")     # the keys once nested here, now under numerics:
+    _NUMERICS_KEYS = ("breakpoints", "unit", "unit_range", "nodes")     # nested here before 0.6; under numerics: since
 
 
 @dataclass(init=False)
@@ -736,8 +736,7 @@ class Model:
     # ------------------------------------------------------- construction
     _KEYS = {
         "model": {"name", "params", "channels", "states", "definitions", "agents", "ties", "horizon", "numerics"},
-        "horizon": {"kind", "discount", "window", "past", "continuation", "stationary", "settle",
-                    "breakpoints", "unit", "unit_range", "nodes"},         # the last four: the old nesting, deprecated
+        "horizon": {"kind", "discount", "window", "past", "continuation", "stationary", "settle"},
         "numerics": {"engine", "nodes", "unit", "unit_range", "breakpoints", "continuation_nodes", "tol", "damping", "max_newton",
                      "variable", "settings"},
         "state": {"drift", "noise", "initial"},
@@ -751,7 +750,9 @@ class Model:
             raise ValueError(f"{what}{where} must be a mapping, got {type(d).__name__}")
         bad = sorted(set(d) - allowed)
         if bad:
-            raise ValueError(f"unknown key(s) {bad} in {what}{where}; allowed: {sorted(allowed)}")
+            moved = [k for k in bad if what == "horizon" and k in Horizon._NUMERICS_KEYS]
+            hint = (f"; {', '.join('horizon.' + k for k in moved)} moved under numerics: in 0.6" if moved else "")
+            raise ValueError(f"unknown key(s) {bad} in {what}{where}; allowed: {sorted(allowed)}{hint}")
 
     def to_dict(self, numeric: bool = False) -> dict:
         """The file structure of this model.  When the model was built from a file or dict, that
@@ -774,9 +775,6 @@ class Model:
             d = copy.deepcopy(self.source)
             hsrc = d.get("horizon") or {}
             nsrc = dict(d.get("numerics") or {})
-            for k in Horizon._NUMERICS_KEYS:              # the old nesting: the same spelling, under numerics
-                if k in hsrc and k not in nsrc:
-                    nsrc[k] = hsrc[k]
             seen: Dict[str, float] = {}
             for k, v in (d.get("params") or {}).items():
                 seen[k] = eval_coef(v, seen)
@@ -843,24 +841,22 @@ class Model:
         """A new model with these horizon fields (kind, window, discount, past, continuation, stationary).  A
         change of kind drops the panel sizing of the old kind (numerics.breakpoints, numerics.unit_range) unless
         given, as transition() does: a stationary grid's unit_range is not a finite grid's.  The numerics keys
-        once nested here (nodes, breakpoints, unit, unit_range; kind="finite_cells") are still accepted and go
-        to with_numerics(); they are deprecated."""
+        (nodes, breakpoints, unit, unit_range) go to with_numerics(), and the cell engine is
+        with_numerics(engine="cells")."""
         d = self.to_dict(); d.setdefault("horizon", {}); d.setdefault("numerics", {})
         bad = sorted(set(fields) - self._KEYS["horizon"])
         if bad:
             raise ValueError(f"unknown horizon field(s) {bad}; the numerics fields go to with_numerics()")
         fields = dict(fields)
         if fields.get("kind") == "finite_cells":
-            fields["kind"] = "finite"; d["numerics"]["engine"] = "cells"
-        elif fields.get("kind") is not None and fields["kind"] != self.horizon.kind:
+            raise ValueError("horizon kind 'finite_cells' was removed in 0.6: "
+                             "with_horizon(kind='finite').with_numerics(engine='cells')")
+        if fields.get("kind") is not None and fields["kind"] != self.horizon.kind:
             d["numerics"].pop("engine", None)             # the old kind's engine is not the new kind's
         if fields.get("kind") is not None and fields["kind"] != self.horizon.kind:
             for k in ("breakpoints", "unit_range"):
                 if k not in fields:
                     d["numerics"].pop(k, None)
-        for k in Horizon._NUMERICS_KEYS:
-            if k in fields:
-                d["numerics"][k] = fields.pop(k)
         d["horizon"].update(fields)
         return Model.from_dict(d)
 
@@ -971,32 +967,24 @@ class Model:
 
 
 def _numerics_block(d: dict):
-    """The numerics of a model dict: its `numerics:` block, with the keys the old files nested under horizon
-    (nodes, unit, unit_range, breakpoints; `stationary.nodes`; `kind: finite_cells`) mapped in when the block
-    does not give them.  Returns (block, kind, the deprecation notes)."""
+    """The numerics of a model dict: its `numerics:` block.  The spellings 0.5 accepted under horizon
+    (nodes, unit, unit_range, breakpoints; `stationary.nodes`; `kind: finite_cells`) were removed in 0.6 and
+    each is refused here by the name that replaced it.  Returns (block, kind, notes)."""
     hz = d.get("horizon") or {}
     nm = dict(d.get("numerics") or {}) if isinstance(d.get("numerics"), dict) or d.get("numerics") is None else d["numerics"]
     if not isinstance(nm, dict):
         raise ValueError(f"numerics must be a mapping of its fields, got {type(nm).__name__}")
     notes = []
     moved = [k for k in Horizon._NUMERICS_KEYS if k in hz]
-    for k in moved:
-        if k in nm and nm[k] != hz[k]:
-            raise ValueError(f"numerics.{k} ({nm[k]!r}) and the deprecated horizon.{k} ({hz[k]!r}) disagree; give numerics.{k} only")
-        nm[k] = hz[k]
     if moved:
-        notes.append(f"deprecated: {', '.join('horizon.' + k for k in moved)} now live under numerics: (accepted until 0.6)")
+        raise ValueError(f"{', '.join('horizon.' + k for k in moved)} moved under numerics: in 0.6; write "
+                         f"numerics: {{{', '.join(k + ': ...' for k in moved)}}}")
     kind = hz.get("kind", "stationary")
     if kind == "finite_cells":
-        kind = "finite"; nm.setdefault("engine", "cells")
-        notes.append("deprecated: horizon.kind 'finite_cells' is horizon.kind 'finite' with numerics.engine 'cells' (accepted until 0.6)")
+        raise ValueError("horizon.kind 'finite_cells' was removed in 0.6: kind 'finite' with numerics.engine 'cells'")
     st = hz.get("stationary")
     if isinstance(st, dict) and st.get("nodes") is not None:
-        if nm.get("continuation_nodes") not in (None, st["nodes"]):
-            raise ValueError(f"numerics.continuation_nodes ({nm['continuation_nodes']!r}) and the deprecated horizon.stationary.nodes "
-                             f"({st['nodes']!r}) disagree; give numerics.continuation_nodes only")
-        nm["continuation_nodes"] = st["nodes"]
-        notes.append("deprecated: horizon.stationary.nodes is numerics.continuation_nodes (accepted until 0.6)")
+        raise ValueError("horizon.stationary.nodes became numerics.continuation_nodes in 0.6")
     return nm, kind, notes
 
 

@@ -11,7 +11,9 @@ def _kyle_back(kind, nodes, mm_loss):
     d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml"))
     d["agents"]["market_maker"]["loss"] = mm_loss
     if kind != "stationary":
-        d["horizon"] = {"kind": kind, "window": 2.0}; d["numerics"] = {"nodes": nodes}; del d["params"]["rho"]
+        cells = kind == "finite_cells"      # the cell engine's result kind; the model asks for finite + engine cells
+        d["horizon"] = {"kind": "finite" if cells else kind, "window": 2.0}
+        d["numerics"] = {"nodes": nodes, **({"engine": "cells"} if cells else {})}; del d["params"]["rho"]
     return d
 
 

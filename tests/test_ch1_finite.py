@@ -4,7 +4,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def test_ch1_finite_converges_and_matches_cost_to_first_order():
     d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_two_player_finite.yaml"))
-    d.setdefault("numerics", {})["nodes"] = 24; d["horizon"]["kind"] = "finite_cells"     # the first-order cell scheme
+    d.setdefault("numerics", {}).update(nodes=24, engine="cells")     # the first-order cell scheme
     res = ns.solve(ns.Model.from_dict(d))
     print(res.summary())
     assert res.converged and res.residual < 1e-8

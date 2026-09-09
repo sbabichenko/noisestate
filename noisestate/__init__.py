@@ -35,18 +35,14 @@ __all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", 
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
            "settings", "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh"]
 
-_DEPRECATED_RESULTS = ("StationaryResult", "TriangleResult", "TransitionResult", "CellResult")      # until 0.6 (CHANGELOG)
+_REMOVED_RESULTS = ("StationaryResult", "TriangleResult", "TransitionResult", "CellResult")   # exported until 0.6
 
 
 def __getattr__(name: str):
-    """The engines' result subclasses by name (noisestate.StationaryResult, ...) with a DeprecationWarning: they are
-    internal since one Result; isinstance(res, noisestate.Result) holds for every result."""
-    if name in _DEPRECATED_RESULTS:
-        import warnings
-        from . import results
-        warnings.warn(f"noisestate.{name} is deprecated: every engine returns noisestate.Result (the name goes in 0.6)",
-                      DeprecationWarning, stacklevel=2)
-        return getattr(results, name)
+    """A removed name explains itself rather than raising a bare AttributeError."""
+    if name in _REMOVED_RESULTS:
+        raise AttributeError(f"noisestate.{name} was removed in 0.6: every engine returns noisestate.Result, and "
+                             f"isinstance(res, noisestate.Result) holds for every result")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 def _read_version() -> str:
@@ -101,12 +97,9 @@ def as_model(model) -> Model:
     raise TypeError(f"expected a Model, a ModelBuilder, a dict or a path, not {type(model).__name__}")
 
 
-_ALIASES = {"nodes": "numerics.nodes", "settings": "numerics.settings"}      # accepted until 0.6 (CHANGELOG)
-
-
 def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluations=None, deadline=None,
           progress=None, diagnostics: bool = True, refine: bool = False, stability: bool = False, verbose: bool = False,
-          naive_observers=None, past=None, continuation=None, **deprecated) -> Result:
+          naive_observers=None, past=None, continuation=None, **unknown) -> Result:
     """Solve a model (a Model, a ModelBuilder, a dict, or a path to a YAML file) under `numerics` (a Numerics or
     a dict of its fields, laid over the model's own: engine, nodes, unit, unit_range, breakpoints,
     continuation_nodes, tol, damping, max_newton, variable, settings).  The other options are the solve's:
@@ -118,16 +111,10 @@ def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluati
     on a finer grid and report the change, res.refinement), stability (add res.stability()), verbose;
     naive_observers ({agent: [observers]}, the stationary engine); past and continuation (a transition's, on the
     spectral engine; on a model of kind "transition" each overrides the file's block).  Unknown options are a
-    TypeError naming the Numerics or Settings field they belong to; nodes= and settings= are accepted as aliases of the
-    Numerics fields until 0.6, with a DeprecationWarning.  res.numerics is the resolved Numerics."""
+    TypeError naming the Numerics or Settings field they belong to.  res.numerics is the resolved Numerics."""
     model = as_model(model)
-    for k in list(deprecated):
-        if k in _ALIASES:
-            import warnings
-            warnings.warn(f"solve({k}=) is deprecated, pass Numerics({k}=) (the alias goes in 0.6)", DeprecationWarning, stacklevel=2)
-            numerics = Numerics.of(numerics).merged(Numerics.of({k: deprecated.pop(k)}))
-    if deprecated:
-        bad = sorted(deprecated)
+    if unknown:
+        bad = sorted(unknown)
         fields = [k for k in bad if k in Numerics.field_names()]
         tuning = [k for k in bad if k in {f.name for f in dataclasses.fields(Settings)}]
         hint = (f"; {fields} are fields of Numerics: solve(model, Numerics({fields[0]}=...))" if fields else "") + \

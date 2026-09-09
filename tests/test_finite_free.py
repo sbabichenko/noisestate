@@ -70,7 +70,7 @@ def test_matrix_free_best_response_matches_the_dense_one_with_a_past():
     assert free.foc_free and free.c.buffer.any() and free.c.g.upper.any()
     _same_best_response(dense, free, dense.c.frozen)
     _same_fixed_point(dense.solve(start="stationary"), free.solve(start="stationary"))
-    kb = example("kyle_back_prior").with_horizon(nodes=8)
+    kb = example("kyle_back_prior").with_horizon().with_numerics(nodes=8)
     rd = ns.solve(kb); rf = ns.solve(kb, {"settings": FREE})
     assert rd.compiled.n_init == 1 and rf.solver_kw["settings"] == FREE
     _same_fixed_point(rd, rf)

@@ -54,7 +54,7 @@ action from a map, response to an action, discounted continuation, projection on
 the observation history) is a line integral built by Gauss quadrature split at
 the piece boundaries; their quadrature structure is cached once per model, so a
 best response is a few sparse products and one dense solve.  A first-order
-uniform-cell scheme (`horizon.kind: finite_cells`) is kept as a cross-check.
+uniform-cell scheme (`numerics.engine: cells`) is kept as a cross-check.
 
 ## Means
 

@@ -7,7 +7,12 @@ HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..",
 
 
 def _ch3(**hz):
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["numerics"] = {**d.get("numerics", {}), **{k: hz.pop(k) for k in list(hz) if k in ("nodes", "unit", "unit_range", "breakpoints")}}; d["horizon"].update(hz); return d
+    """kind "finite_cells" names the cell engine's result; the model asks for kind finite with engine cells."""
+    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml"))
+    d["numerics"] = {**d.get("numerics", {}), **{k: hz.pop(k) for k in list(hz) if k in ("nodes", "unit", "unit_range", "breakpoints")}}
+    if hz.get("kind") == "finite_cells":
+        hz["kind"] = "finite"; d["numerics"]["engine"] = "cells"
+    d["horizon"].update(hz); return d
 
 
 # ---------------------------------------------------------------- delayed rows in the stationary engine
@@ -28,14 +33,14 @@ def test_one_agent_delayed_observation_costs_more_and_passes_second_order():
     base = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.5}, "noise": {"w1": 1.0}, "delay": 0.5}},
                              "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}},
-            "horizon": {"kind": "stationary", "window": 6.0, "nodes": 12}}
+            "horizon": {"kind": "stationary", "window": 6.0}, "numerics": {"nodes": 12}}
     r = ns.solve(base).check(); base["agents"]["a"]["signals"]["y"]["delay"] = 0.0; r0 = ns.solve(base).check()
     assert r.costs["a"] > r0.costs["a"] and r.second_order["a"]["ok"]
     assert r.stability()["radius"] == 0.0 and "stable" in r.summary()        # one agent: radius 0, not NaN
 
 
 def test_cell_engine_dense_branch_with_delays():
-    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d["horizon"]["kind"] = "finite_cells"; d.setdefault("numerics", {})["nodes"] = 16
+    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d.setdefault("numerics", {}).update(nodes=16, engine="cells")
     r = ns.solve(d).check()
     assert r.resolution_ok is None and r.to_dict()["resolution_ok"] is None
     r.refine(); assert r.refinement["nodes"] == 32                             # doubled: lags stay aligned
@@ -61,7 +66,7 @@ def test_model_is_single_sourced():
     m.horizon.nodes = 30                                                       # horizon fields are read live
     r = ns.solve(m); assert r.compiled.N == 30 and m.to_dict()["numerics"]["nodes"] == 30
     r.refine(); assert r.refinement["nodes"] == 45
-    assert ns.solve(m.with_horizon(nodes=12)).compiled.N == 12
+    assert ns.solve(m.with_horizon().with_numerics(nodes=12)).compiled.N == 12
     with pytest.raises(ValueError, match="not parameters"):
         m.with_params(zzz=1.0)
 
@@ -199,7 +204,7 @@ def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
 
 
 def test_leads_only_in_cross_terms_with_the_own_current_control():
-    d = _ch3(window=8.0, nodes=10); d["horizon"].update(unit=0.5, unit_range=4.0)
+    d = _ch3(window=8.0, nodes=10); d["numerics"].update(unit=0.5, unit_range=4.0)
     for bad in ([[0.5, "X@-0.5", "X@-0.5"], ["0.5*r1", "D1", "D1"]], [[0.5, "X", "X"], ["0.5*r1", "D1@-0.5", "D1@-0.5"]],
                 [[0.5, "X", "X"], ["0.5*r1", "D1", "D1"], [0.1, "D1@0.5", "X@-0.5"]]):
         d["agents"]["player1"]["loss"] = bad
@@ -216,7 +221,7 @@ def test_ties_compare_private_state_dynamics_and_channel_sharing():
         d = {"channels": ["w0", "wa0", "wa1", "wy0", "wy1"],
              "states": {"X": {"drift": {"D0": 1.0, "D1": 1.0}, "noise": {"w0": 1.0}},
                         "a0": {"drift": {"a0": -0.5}, "noise": {"wa0": 1.0}}, "a1": {"drift": {"a1": -th1}, "noise": {"wa1": s1}}},
-             "agents": {}, "ties": [["f0", "f1"]], "horizon": {"kind": "stationary", "window": 4.0, "nodes": 8}}
+             "agents": {}, "ties": [["f0", "f1"]], "horizon": {"kind": "stationary", "window": 4.0}, "numerics": {"nodes": 8}}
         for i in range(2):
             d["agents"][f"f{i}"] = {"controls": [f"D{i}"], "signals": {"y": {"drift": {"X": 1.0, f"a{i}": 1.0}, "noise": {(f"wa{i}" if share and i == 0 else f"wy{i}"): 1.0}}},
                                     "loss": [[1.0, "X", "X"], [1.0, f"D{i}", f"D{i}"], [0.5, f"D{i}", f"a{i}"]]}
@@ -242,7 +247,7 @@ def test_delayed_row_equilibrium_is_insensitive_to_the_least_squares_cutoff():
 
 # ---------------------------------------------------------------- second round: validation and guards
 @pytest.mark.parametrize("edit, match", [
-    (lambda d: d["horizon"].update(unit=0.5, unit_range=8.0), "unit_range"),
+    (lambda d: d["numerics"].update(unit=0.5, unit_range=8.0), "unit_range"),
     (lambda d: d["numerics"].update(nodes=12.7), "must be an integer"),
     (lambda d: d["agents"]["player1"]["signals"]["y1"].update(delay=3.0), "not below the window"),
     (lambda d: d["states"]["X"]["drift"].update({"D1@3.5": 0.1}), "not below the window"),
@@ -275,7 +280,7 @@ def test_wrong_grid_warm_start_is_an_error_on_every_engine():
     d = _ch3(nodes=12); r = ns.solve(d); d.setdefault("numerics", {})["nodes"] = 16
     with pytest.raises(ValueError, match="different grid"):
         ns.StationarySolver(ns.Model.from_dict(d)).solve(init=r.maps)
-    dc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); dc["horizon"]["kind"] = "finite_cells"; dc.setdefault("numerics", {})["nodes"] = 8
+    dc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); dc.setdefault("numerics", {}).update(nodes=8, engine="cells")
     rc = ns.solve(dc); dc.setdefault("numerics", {})["nodes"] = 16
     with pytest.raises(ValueError, match="different grid"):
         ns.FiniteSolver(ns.Model.from_dict(dc)).solve(init=rc.maps)
@@ -287,7 +292,7 @@ def test_jump_flag_is_quiet_on_a_geometric_sweep():
 
 
 def test_refine_on_cells_reports_without_a_verdict():
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"]["kind"] = "finite_cells"; d.setdefault("numerics", {})["nodes"] = 12
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {}).update(nodes=12, engine="cells")
     r = ns.solve(d); r.refine()
     assert r.refinement["resolved"] is None and "NOT RESOLVED" not in r.summary() and r.refinement["nodes"] == 24
 
@@ -303,11 +308,11 @@ def test_delayed_rows_with_mixed_panels_and_non_dyadic_units():
     coarser panels beyond (the map's panels must be a union of the action's shifted panels in both
     directions), and a delay of 0.3 on a 0.3 unit grid, where the shifted nodes land 1e-16 off the
     breakpoints and must still read the right side."""
-    d = _ch3(window=6.0, nodes=8); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.5; d["horizon"].update(unit=0.25)
+    d = _ch3(window=6.0, nodes=8); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.5; d["numerics"].update(unit=0.25)
     d["agents"]["player1"]["loss"].append([0.05, "D1", "X@0.25"])
     r = ns.solve(d).check()
     assert r.representation_error["player2"] < 1e-9 and np.abs(r.kernel("D2")[r.ages < 0.5 - 1e-12]).max() == 0.0
-    d = _ch3(window=12.0, nodes=8); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.3; d["horizon"].update(unit=0.3, unit_range=2.4)
+    d = _ch3(window=12.0, nodes=8); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.3; d["numerics"].update(unit=0.3, unit_range=2.4)
     r = ns.solve(d).check()
     assert r.representation_error["player2"] < 1e-9 and np.abs(r.kernel("D2")[r.ages < 0.3 - 1e-12]).max() == 0.0
 

@@ -60,6 +60,6 @@ def test_defective_state_matrix_is_handled():
 
 
 def test_misaligned_delay_is_rejected_by_the_spectral_engine():
-    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d["horizon"]["breakpoints"] = [0, 0.3, 1.0]
+    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d.setdefault("numerics", {})["breakpoints"] = [0, 0.3, 1.0]
     with pytest.raises(ValueError, match="not a breakpoint"):
         ns.solve(ns.Model.from_dict(d))

@@ -5,7 +5,7 @@ transitions, sweeps, the guards, the settings, the error contract and the CLI.  
 
 | page | holds |
 |---|---|
-| [model_file.md](model_file.md) | every key of a model file: type, meaning, default, the deprecated keys marked; the prose on atoms, states, definitions, signals, losses, ties, horizon and numerics |
+| [model_file.md](model_file.md) | every key of a model file: type, meaning, default; the prose on atoms, states, definitions, signals, losses, ties, horizon and numerics |
 | [payload.md](payload.md) | every key of `to_dict()` and the CLI's JSON, with its meaning and shape |
 | [transitions.md](transitions.md) | a regime change from a stationary past: the construction, the result's fields, the identities that pin it, the two examples |
 | [guards.md](guards.md) | the checks a result carries, the flag text each prints, its threshold and advice |

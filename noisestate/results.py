@@ -1,7 +1,7 @@
 """Results returned by the engines: one Result, three grids.
 
     res.converged, res.residual, res.message     outcome of the outer solve
-    res.evaluations                              best-response evaluations made (res.iterations, deprecated, warns)
+    res.evaluations                              best-response evaluations made
     res.status                                   {"ok", "flags", "rows"}: the verdict, the failing checks' flags, diagnose()'s rows
     res.check()                                  raise ConvergenceError unless converged
     res.axes                                     the coordinate arrays of kernel(): {"age": ages} (stationary), {"time", "age",
@@ -11,7 +11,7 @@
     res.times                                    the time nodes of the paths (None on the stationary engine)
     res.paths                                    {"means": {name: path}} over res.times on a finite horizon; a transition adds
                                                  "loss" ({agent: E[loss(t)]}) and "belief_error" (a callable (agent, name) -> path)
-    res.world                                    the closed-loop kernels of every primary on the shocks (res.Z, deprecated, warns)
+    res.world                                    the closed-loop kernels of every primary on the shocks
     res.extra                                    engine-specific extras: window_tail (stationary); past, continuation, settled
                                                  (a transition), old_flows, new_flows, excess_costs, representation_parts
     res.numerics                                 the resolved Numerics the result was solved with
@@ -40,7 +40,6 @@ Kernel layout by engine:
 """
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -105,28 +104,6 @@ class Result:
     MEAN_ZERO = tunable("mean_zero")          # below this a mean is round-off (the mean system is solved only when something drives it)
 
     # ----------------------------------------------------------- the common surface (C and E of the API design)
-    @property
-    def iterations(self) -> int:
-        """Deprecated name of evaluations (removed in 0.6): a DeprecationWarning on every read."""
-        warnings.warn("res.iterations is deprecated, read res.evaluations (res.iterations goes in 0.6)", DeprecationWarning, stacklevel=2)
-        return self.evaluations
-
-    @iterations.setter
-    def iterations(self, value: int) -> None:
-        warnings.warn("res.iterations is deprecated, set res.evaluations (res.iterations goes in 0.6)", DeprecationWarning, stacklevel=2)
-        self.evaluations = int(value)
-
-    @property
-    def Z(self) -> np.ndarray:
-        """Deprecated name of world (removed in 0.6): a DeprecationWarning on every read."""
-        warnings.warn("res.Z is deprecated, read res.world (res.Z goes in 0.6)", DeprecationWarning, stacklevel=2)
-        return self.world
-
-    @Z.setter
-    def Z(self, value: np.ndarray) -> None:
-        warnings.warn("res.Z is deprecated, set res.world (res.Z goes in 0.6)", DeprecationWarning, stacklevel=2)
-        self.world = value
-
     @property
     def times(self) -> Optional[np.ndarray]:
         """The time nodes of the paths; None on the stationary engine (its means are constants)."""

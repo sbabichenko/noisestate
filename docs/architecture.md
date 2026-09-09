@@ -34,7 +34,7 @@ page says which module holds what, and follows one best response and one transit
 | `numerics.py` | 124 | `Numerics`: how a model is solved (engine, nodes, unit, unit_range, breakpoints, continuation_nodes, tol, damping, max_newton, variable, settings), laid over the model's own block |
 | `engines.py` | 64 | `stationary`, `spectral`, `cells`, `ENGINES` by engine name and `build`: the power user's namespace, and where `solve()` builds the engine and the default start |
 | `schema.py` | 263 | JSON Schema (draft 2020-12) for the model file and the payload; `validate` lists the violations with their paths, through `jsonschema` when importable, else the module's own validator |
-| `cli.py`, `__init__.py` | 192, 141 | the command line (solve, validate, schema, transition, plot); `solve`, `load`, the exports, the deprecated names |
+| `cli.py`, `__init__.py` | 192, 141 | the command line (solve, validate, schema, transition, plot); `solve`, `load`, the exports |
 
 The engines never import each other: `finite_spectral` reaches the stationary engine through `noisestate.solve`
 for a `continuation="stationary"` only.

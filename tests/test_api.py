@@ -9,23 +9,23 @@ from noisestate import Numerics
 EX = os.path.join(os.path.dirname(__file__), "..", "examples")
 
 
-def test_numerics_block_and_the_deprecated_nesting_agree():
-    """A numerics: block and the old keys under horizon: build the same model, the old form with a note;
-    a nested key that disagrees with the block is an error; kind finite_cells is engine cells."""
+def test_the_numerics_block_is_the_only_place_the_grid_is_sized():
+    """The grid lives in numerics: alone.  The spellings 0.5 nested under horizon: were removed in 0.6 and
+    each is refused by the name that replaced it; the cell engine is numerics.engine, not a horizon kind."""
     d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml"))
     assert d["numerics"] == {"nodes": 24} and "nodes" not in d["horizon"]
     m = ns.Model.from_dict(d)
     assert m.numerics == Numerics(nodes=24) and m.numerics.engine is None and not m.deprecations
     old = {**d, "horizon": {**d["horizon"], "nodes": 24}}; del old["numerics"]
-    mo = ns.Model.from_dict(old)
-    assert mo.horizon.nodes == 24 and any("deprecated: horizon.nodes" in n for n in mo.notes)
-    assert mo.to_dict()["numerics"] == {"nodes": 24} and "nodes" not in mo.to_dict()["horizon"]
-    with pytest.raises(ValueError, match="disagree"):
-        ns.Model.from_dict({**d, "horizon": {**d["horizon"], "nodes": 8}})
+    with pytest.raises(ValueError, match="moved under numerics"):
+        ns.Model.from_dict(old)
     f = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); f["horizon"]["kind"] = "finite_cells"
-    mc = ns.Model.from_dict(f)
-    assert mc.horizon.kind == "finite" and mc.numerics.engine == "cells" and any("finite_cells" in n for n in mc.notes)
-    assert mc.to_dict()["horizon"]["kind"] == "finite" and mc.to_dict()["numerics"]["engine"] == "cells"
+    with pytest.raises(ValueError, match="numerics.engine 'cells'"):
+        ns.Model.from_dict(f)
+    fc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
+    fc.setdefault("numerics", {}).update(nodes=8, engine="cells")
+    mc = ns.Model.from_dict(fc)
+    assert mc.horizon.kind == "finite" and mc.numerics.engine == "cells" and not mc.deprecations
     with pytest.raises(ValueError, match="numerics.engine 'cells'"):
         ns.Model.from_dict({**d, "numerics": {"nodes": 8, "engine": "cells"}})
 
@@ -37,10 +37,9 @@ def test_solve_takes_a_numerics_and_names_the_field_of_a_stray_keyword():
     assert r.to_dict()["options"]["numerics"]["nodes"] == 12 and r.model.horizon.nodes == 12 and m.horizon.nodes == 24
     r2 = ns.solve(m, {"nodes": 12}, tol=1e-6)                     # a dict; the keyword tol over the numerics'
     assert r2.numerics.tol == 1e-6 and r2.solve_kw["tol"] == 1e-6
-    with pytest.warns(DeprecationWarning):                          # the aliases (until 0.6)
-        assert ns.solve(m, nodes=12).compiled.N == 12
-    with pytest.warns(DeprecationWarning):
-        assert ns.solve(m, settings={"anderson_m": 5}).settings.anderson_m == 5
+    assert ns.solve(m, Numerics(nodes=12, settings={"anderson_m": 5})).settings.anderson_m == 5
+    with pytest.raises(TypeError, match=r"Numerics\(nodes=\.\.\.\)"):        # no bare aliases since 0.6
+        ns.solve(m, nodes=12)
     with pytest.raises(TypeError, match=r"Numerics\(unit_range=\.\.\.\)"):
         ns.solve(m, unit_range=2.0)
     with pytest.raises(TypeError, match="unknown option"):
@@ -77,10 +76,7 @@ def test_one_result_reads_the_same_on_every_engine(numerics):
     assert "time" in node_axes and "shock_time" in node_axes and r.times is not None and len(r.times) == len(r.paths["means"]["X"])
     assert r.axes["maps"]["player1"]["y1"]["map_time"].shape[0] == r.maps["player1"].shape[2]
     assert isinstance(r, ns.Result) and isinstance(r, ns.BaseResult)
-    with pytest.warns(DeprecationWarning, match="res.iterations"):
-        assert r.evaluations == r.iterations
-    with pytest.warns(DeprecationWarning, match="res.Z"):
-        assert r.world is r.Z
+    assert not hasattr(r, "Z") and not hasattr(r, "iterations")      # the 0.5 spellings, removed in 0.6
     assert r.status["ok"] is True and r.status["flags"] == [] and r.status["rows"] == r.diagnose()
     assert r.cost_kind.startswith("discounted") and set(r.cost_parts["player1"]) == {"variance", "mean"}
     p = r.to_dict()
@@ -103,7 +99,10 @@ def test_schema_accepts_the_shipped_files_and_names_the_path_of_an_error():
     from noisestate.cli import main
     for f in sorted(glob.glob(os.path.join(EX, "*.yaml"))):
         assert ns.schema.validate(ns.read_yaml(f), "model") == [], f
-    s = ns.schema("model"); assert s["$schema"].endswith("2020-12/schema") and s["properties"]["horizon"]["properties"]["nodes"]["deprecated"] is True
+    s = ns.schema("model")
+    assert s["$schema"].endswith("2020-12/schema")
+    assert "nodes" not in s["properties"]["horizon"]["properties"]          # the grid lives in numerics: alone
+    assert s["properties"]["numerics"]["properties"]["nodes"]["type"] == "integer"
     bad = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); bad["numerics"]["nodes"] = 1; bad["agents"]["player1"]["extra"] = 1
     errs = ns.schema.validate(bad, "model")
     assert any(e.startswith("numerics.nodes:") for e in errs) and any(e.startswith("agents.player1.extra:") for e in errs)

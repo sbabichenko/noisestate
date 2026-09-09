@@ -54,14 +54,14 @@ def example_dict(name):
 def stationary(m, nodes, window=None):
     """`m` solved stationary at `nodes` per panel and checked: the past (and continuation) of a same-model
     transition.  With `window` the horizon is set to kind stationary at that window (the finite examples)."""
-    hz = dict(nodes=nodes) if window is None else dict(kind="stationary", window=window, nodes=nodes)
-    return ns.solve(m.with_horizon(**hz)).check()
+    hz = {} if window is None else dict(kind="stationary", window=window)
+    return ns.solve(m.with_horizon(**hz).with_numerics(nodes=nodes)).check()
 
 
 def same_model_solver(m, stat, T, nodes, continuation=True, settings=None, **hz):
     """The spectral finite engine on the strip [0, T] at `nodes` with `stat` (m's stationary equilibrium) as the
-    past and, unless continuation=False, as the continuation; `hz` goes to with_horizon (unit, unit_range)."""
-    return ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T, nodes=nodes, **hz), settings=settings,
+    past and, unless continuation=False, as the continuation; `hz` goes to with_numerics (unit, unit_range)."""
+    return ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T).with_numerics(nodes=nodes, **hz), settings=settings,
                                    past=stat, continuation=stat if continuation else None)
 
 
@@ -130,7 +130,7 @@ def prior_model(rho=0.5, nodes=12):
     return {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": A1, "D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": H1}, "noise": {"w1": 1.0}}},
                              "loss": [[1.0, "X", "X"], [R1, "D", "D"]]}},
-            "horizon": {"kind": "finite", "window": T1, "nodes": nodes, "discount": rho}}
+            "horizon": {"kind": "finite", "window": T1, "discount": rho}, "numerics": {"nodes": nodes}}
 
 
 # ------------------------------------------------ the record of a solve

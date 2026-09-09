@@ -17,8 +17,6 @@ moderate change, a few best responses from the answer.
 from __future__ import annotations
 
 import time
-import warnings
-from dataclasses import replace
 from typing import Callable, Dict, Optional
 
 import numpy as np
@@ -60,7 +58,7 @@ def _past_block(old, past: Past) -> dict:
     return {"initial": [sh.to_dict() for sh in past.initial]}
 
 
-def _transition_model(old, new, T: float, num: Numerics, continuation, stationary=None):
+def _transition_model(old, new, T: float, num: Numerics, continuation):
     """(model, past, continuation): the new model rewritten to horizon kind transition on [0, T] with the past's
     block and the numerics laid over (the shared construction of transition() and transition_gap())."""
     past = Past.of(old)
@@ -84,22 +82,7 @@ def _transition_model(old, new, T: float, num: Numerics, continuation, stationar
               continuation=continuation if isinstance(continuation, str) else "stationary")
     for k in ("stationary", "settle"):
         hz.pop(k, None)
-    if stationary and stationary.get("window") is not None:
-        hz["stationary"] = {"window": stationary["window"]}
     return Model.from_dict(d), past, continuation
-
-
-def _numerics_of(numerics, nodes, stationary) -> Numerics:
-    num = Numerics.of(numerics)
-    if nodes is not None:
-        warnings.warn("transition(nodes=) is deprecated, pass Numerics(nodes=) (the alias goes in 0.6)", DeprecationWarning, stacklevel=3)
-        num = replace(num, nodes=int(nodes))
-    if stationary is not None:
-        warnings.warn("transition(stationary=) is deprecated, pass Numerics(continuation_nodes=) and horizon.stationary.window "
-                      "(the alias goes in 0.6)", DeprecationWarning, stacklevel=3)
-    if stationary and stationary.get("nodes") is not None:
-        num = replace(num, continuation_nodes=int(stationary["nodes"]))
-    return num
 
 
 def gap_passes(S, maps: Dict[str, np.ndarray], ranges: Dict[str, tuple]) -> Dict[str, Dict[str, float]]:
@@ -334,7 +317,7 @@ def march_model(model: Model, numerics=None, past=None, continuation=None, **sol
     return march(lambda T: model.with_horizon(window=float(T), settle=None), past, continuation, hz.settle, numerics, **solve_kw)
 
 
-def transition(old, new, T: Optional[float] = None, numerics=None, continuation="stationary", nodes=None, stationary=None,
+def transition(old, new, T: Optional[float] = None, numerics=None, continuation="stationary",
                settle: Optional[float] = None, step: Optional[float] = None, max_window: Optional[int] = None, **solve_kw):
     """The transition from the stationary regime `old` (a converged StationaryResult, a Past, or a stationary
     Model / ModelBuilder / dict / path solved on the fly; a list of initial shocks is accepted, with the game
@@ -345,8 +328,7 @@ def transition(old, new, T: Optional[float] = None, numerics=None, continuation=
     new model's stationary equilibrium (`continuation="stationary"`, solved on the past's window, or a
     converged StationaryResult of the new model; "end" ends the game at T).  Keyword arguments go to solve()
     (tol, max_evaluations, verbose, ...); the start is the new stationary maps unless `start` is given or the
-    game ends at T.  `nodes=` and `stationary={"nodes": m}` are accepted as aliases of the numerics fields
-    until 0.6, each with a DeprecationWarning.  Returns the Result with res.past and res.stationary attached.
+    game ends at T.  Returns the Result with res.past and res.stationary attached.
 
     Exactly one of `T` and `settle` is given.  With `settle`, the horizon is an output: the march in T of
     march() (start at the T = 0 pass of transition_gap on the smallest strip, one unit; the first solve at T = L
@@ -360,15 +342,15 @@ def transition(old, new, T: Optional[float] = None, numerics=None, continuation=
         raise ValueError("transition() takes exactly one of T (the horizon) and settle (the tolerance the horizon is found for)")
     if T is None and (continuation == "end" or continuation is None):
         raise ValueError("transition(settle=) needs a stationary continuation: the march measures the rules against it")
-    num = _numerics_of(numerics, nodes, stationary)
+    num = Numerics.of(numerics)
     if T is not None:
         if step is not None or max_window is not None:
             raise ValueError("step and max_window belong to the march: transition(old, new, settle=...)")
-        model, past, continuation = _transition_model(old, new, T, num, continuation, stationary)
+        model, past, continuation = _transition_model(old, new, T, num, continuation)
         from . import solve
         return solve(model, past=past, continuation=continuation, **solve_kw)      # start: solve()'s default, "stationary" with a continuation
     past = Past.of(old)
     if not past.window > 0:
         raise ValueError("transition(settle=) needs a past with a window (a stationary regime): the march starts from one unit")
-    return march(lambda T: _transition_model(old, new, T, num, continuation, stationary)[0], past, continuation, settle, None,
+    return march(lambda T: _transition_model(old, new, T, num, continuation)[0], past, continuation, settle, None,
                  step=step, max_window=max_window, **solve_kw)

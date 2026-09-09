@@ -102,7 +102,7 @@ terms `[coef, a, b]` (quadratic) and `[coef, a]` (linear); linear terms, constan
 states move the means only.  `ties` make agents share one strategy; `horizon` is the economics of time
 (`stationary` with `discount` and `window`, `finite` with `window` = T, `transition` with a `past` and a
 `continuation`); `numerics` is how it is solved.  Coefficients may be expressions in the parameters.  The
-full reference, every key with its type and default and the deprecated keys marked, is
+full reference, every key with its type and default, is
 [docs/model_file.md](docs/model_file.md); `noisestate schema model` prints the JSON Schema.
 
 ## Models as equations
@@ -294,7 +294,7 @@ as `error: ...` on stderr.  The JSON written by `-o` is `res.to_dict()`, documen
 
 ## Where things are
 
-* [docs/model_file.md](docs/model_file.md): every key of a model file, with type, default and the deprecated keys.
+* [docs/model_file.md](docs/model_file.md): every key of a model file, with its type and default.
 * [docs/payload.md](docs/payload.md): every key of `to_dict()` and the CLI's JSON.
 * [docs/transitions.md](docs/transitions.md): the transition engine in full, with the two examples.
 * [docs/guards.md](docs/guards.md): the checks, their flags, thresholds and advice.

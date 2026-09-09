@@ -76,7 +76,7 @@ def test_stationary_engine_matches_the_exact_delayed_solution():
     model = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
              "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": h}, "noise": {"w1": 1.0}, "delay": delta}},
                               "loss": [[1.0, "X", "X"], [r, "D", "D"]]}},
-             "horizon": {"kind": "stationary", "window": 10.0, "nodes": 16}}
+             "horizon": {"kind": "stationary", "window": 10.0}, "numerics": {"nodes": 16}}
     res = ns.solve(model).check()
     assert abs(res.costs["a"] - exact_cost) < 1e-8
     assert res.representation_error["a"] < 1e-10 and res.second_order["a"]["ok"]

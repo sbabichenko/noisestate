@@ -17,7 +17,7 @@ def test_same_model_loss_path_is_the_stationary_flow():
     res.costs to 3e-14 (the row quadrature integrates products of interpolants exactly)."""
     m = example("ch3_two_player")
     stat = stationary(m, 16)
-    res = ns.solve(m.with_horizon(kind="finite", window=6.0, nodes=16), past=stat, continuation=stat, start="stationary", tol=1e-10).check()
+    res = ns.solve(m.with_horizon(kind="finite", window=6.0).with_numerics(nodes=16), past=stat, continuation=stat, start="stationary", tol=1e-10).check()
     assert isinstance(res, TransitionResult) and res.kind == "transition" and res.evaluations <= 4
     assert res.times.shape == (res.compiled.Nt,) and res.times[0] == 0.0 and res.times[-1] == 9.0 and res.stationary is stat
     assert res.old_flows == stat.costs and res.new_flows == stat.costs
@@ -42,7 +42,7 @@ def test_regime_change_loss_path_runs_from_the_old_state_to_the_new_flow(tmp_pat
     time nodes; exact for a constant path); the plot writes."""
     m = example("ch3_two_player")
     old = ns.solve(m).check()
-    res = ns.solve(m.with_params(p1=10.0).with_horizon(kind="finite", window=9.0, nodes=12), past=old, continuation="stationary",
+    res = ns.solve(m.with_params(p1=10.0).with_horizon(kind="finite", window=9.0).with_numerics(nodes=12), past=old, continuation="stationary",
                    start="stationary").check()
     assert res.settled < 1e-5
     c = res.compiled; I, w = c.g.row_quadrature(0.0, +1)

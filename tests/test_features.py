@@ -38,7 +38,7 @@ def test_two_firm_cycle_market_ties_definitions_and_two_controls():
 def test_lagged_state_feedback_in_both_engines():
     d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml"))
     d["states"]["X"]["drift"]["X@0.5"] = -0.3                                  # delayed mean reversion
-    d["horizon"]["unit"] = 0.5
+    d.setdefault("numerics", {})["unit"] = 0.5
     ra = ns.solve(ns.Model.from_dict(d), {"variable": "actions"}).check()
     rm = ns.solve(ns.Model.from_dict(d), {"variable": "maps"}).check()
     # with lagged state feedback the two paths agree only to first order in the node count

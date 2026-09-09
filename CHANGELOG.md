@@ -1,6 +1,31 @@
 # Changelog
 
-## Unreleased
+## 0.6.9 (2026-09-09) -- the deprecated spellings are gone
+
+Everything 0.5 marked "until 0.6" is removed.  Each removal is refused by the name that replaced it
+rather than by a bare AttributeError or a generic unknown-key message:
+
+- `noisestate.StationaryResult`, `TriangleResult`, `TransitionResult`, `CellResult` -- every engine
+  returns `noisestate.Result`, and `isinstance(res, Result)` holds for every result.
+- `res.iterations`, `res.Z` -- `res.evaluations`, `res.world`.
+- `solve(nodes=, settings=)` and `transition(nodes=, stationary=)` -- pass a `Numerics`.
+- `horizon.nodes`, `horizon.unit`, `horizon.unit_range`, `horizon.breakpoints` -- the `numerics:` block
+  (the strict key check names the move).
+- `horizon.kind: finite_cells` -- `kind: finite` with `numerics.engine: cells`.  The *result* kind is
+  still `finite_cells`: that is what the cell engine reports, and it is not deprecated.
+- `horizon.stationary.nodes` -- `numerics.continuation_nodes`.
+
+The schema carries no deprecated entry, and `docs/model_file.md` documents the removals in place of the
+old rows.  The suite moved with the API (55 sites) and one internal caller went with it:
+`StationarySolver`'s window-edge embedding passed `breakpoints` to `with_horizon`, and a bare
+`except Exception: return None` around it turned the failure into a silently missing second-order
+verdict rather than an error.
+
+Checked rather than assumed: a plugin fingerprinted `to_dict(numeric=True)` for every model any engine
+is built on, over the whole suite, before and after.  Of 168 tests present in both, 160 build byte
+identical models and the other 8 differ only in an absolute path (a transition records its past model's
+path, and the two runs used different checkouts and different pytest tmpdirs); 5 tests exist on one side
+only, the deprecation tests deliberately rewritten as removal tests.
 
 - **A path's interpolation is written straight into the CSR arrays.**  A quadrature point lies in one piece
   and touches its nt x na nodes at ascending columns, so the row layout is known before anything is built:

@@ -32,7 +32,7 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `agents.<name>.myopic` | boolean |  | false |
 | `ties` | list of list of string | groups of agents sharing one strategy | none |
 | `horizon` | object | the economics of time: the kind, the discount, the window, a transition's past and continuation |  |
-| `horizon.kind` | `stationary` \| `finite` \| `transition` \| `finite_cells` | finite_cells is deprecated: kind finite with numerics.engine cells (read until 0.6) | `stationary` |
+| `horizon.kind` | `stationary` \| `finite` \| `transition` | | `stationary` |
 | `horizon.discount` | number or expression | a number, or an expression in the parameters | 0 |
 | `horizon.window` | number or expression | the lag window L (stationary) or the horizon T (finite, transition) | 8.0 (`ModelBuilder.stationary`), 1.0 (`finite`, `transition`) |
 | `horizon.past` | object | kind transition only |  |
@@ -45,11 +45,6 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `horizon.settle` | number or expression | kind transition only, in place of `window` (exactly one): the settle tolerance the horizon T is found for by the march in T ([transitions.md](transitions.md)) |  |
 | `horizon.stationary` | object | kind transition only: the continuation's stationary solve |  |
 | `horizon.stationary.window` | number or expression | must equal the past's window | the past's window |
-| `horizon.stationary.nodes` | integer >= 2 | **deprecated**: numerics.continuation_nodes (read until 0.6) |  |
-| `horizon.nodes` | integer >= 2 | **deprecated**: this key now lives under numerics: (read until 0.6) |  |
-| `horizon.unit` | number or expression | **deprecated**: this key now lives under numerics: (read until 0.6) |  |
-| `horizon.unit_range` | number or expression | **deprecated**: this key now lives under numerics: (read until 0.6) |  |
-| `horizon.breakpoints` | list of number or expression or null | **deprecated**: this key now lives under numerics: (read until 0.6) |  |
 | `numerics` | object | how the model is solved: the engine, the grid, the fixed point's options, the settings |  |
 | `numerics.engine` | `stationary` \| `spectral` \| `cells` | default from horizon.kind: stationary -> stationary, else spectral | `stationary` for kind stationary, else `spectral` |
 | `numerics.nodes` | integer >= 2 | nodes per panel (stationary) or per side of each piece (spectral); cells on the cell engine; default 16 | 16 (12 from `ModelBuilder.transition`, the CLI's `transition`) |
@@ -97,9 +92,7 @@ The fields of `numerics.settings` are those of `noisestate.Settings`: [settings.
   multiple of them), `unit`/`unit_range`/`breakpoints` (panels are aligned to the delays
   automatically), a transition's `continuation_nodes`, `tol`, `damping`, `max_newton`,
   `variable`, and `settings` ([settings.md](settings.md)).  `solve(model, numerics)` lays a `Numerics` (or a dict
-  of its fields) over the file's block.  The keys once nested under `horizon:` (`nodes`, `unit`,
-  `unit_range`, `breakpoints`, `stationary: {nodes}`, `kind: finite_cells`) are still read, with
-  a deprecation note in `model.notes`, until 0.6.
+  of its fields) over the file's block.
 * Coefficients may be numbers or expressions in the parameters (`"sqrt(p1)"`).
 
 The same structure can be written as equations (`Param`, `State`, `Control`, `Signal`, `Agent`, `shocks`,
@@ -109,9 +102,8 @@ compile to this file: `model.to_dict()` is the file, `model.save(path)` writes i
 `finite()` and `transition()` take the horizon and `nodes`, and `numerics(**fields)` sets the rest
 of the block.
 
-## Deprecated keys
+## Keys removed in 0.6
 
-The keys once nested under `horizon:` (`nodes`, `unit`, `unit_range`, `breakpoints`, `stationary: {nodes}`) and
-the kind `finite_cells` are still read and mapped onto the `numerics:` block, with one deprecation note each
-in `model.notes`, until 0.6; a nested key that disagrees with the block is an error.  `kind: finite_cells` is
-`kind: finite` with `numerics: {engine: cells}`.
+The keys once nested under `horizon:` (`nodes`, `unit`, `unit_range`, `breakpoints`, `stationary: {nodes}`) live
+under `numerics:`, and the kind `finite_cells` is `kind: finite` with `numerics: {engine: cells}`.  A file that
+still uses an old spelling is refused, and the error names the key that replaced it.

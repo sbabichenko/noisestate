@@ -16,7 +16,7 @@ def one_agent(a, r, theta, rho, L=16.0, nodes=16, const=0.0, unit=2.0):
     loss = [[1.0, "X", "X"], [r, "D", "D"]] + ([[-2.0 * theta, "X"]] if theta else [])
     return ns.Model.from_dict({"name": "target", "channels": ["w0", "w1"], "states": {"X": {"drift": drift, "noise": {"w0": 1.0}}},
                                "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.0}, "noise": {"w1": 1.0}}}, "loss": loss}},
-                               "horizon": {"kind": "stationary", "discount": rho, "window": L, "unit": unit, "unit_range": L, "nodes": nodes}})
+                               "horizon": {"kind": "stationary", "discount": rho, "window": L}, "numerics": {"unit": unit, "unit_range": L, "nodes": nodes}})
 
 
 def two_agents(p, a=1.0, r=1.0, theta=1.0, rho=0.5, L=12.0, nodes=16, opposite=True, tie=False):
@@ -26,7 +26,7 @@ def two_agents(p, a=1.0, r=1.0, theta=1.0, rho=0.5, L=12.0, nodes=16, opposite=T
          "states": {"X": {"drift": {"X": -a, "D1": 1.0, "D2": 1.0}, "noise": {"w0": 1.0}}},
          "agents": {f"a{i}": {"controls": [f"D{i}"], "signals": {f"y{i}": {"drift": {"X": float(np.sqrt(p))}, "noise": {f"w{i}": 1.0}}},
                               "loss": [[1.0, "X", "X"], [-2.0 * th[i - 1], "X"], [r, f"D{i}", f"D{i}"]]} for i in (1, 2)},
-         "horizon": {"kind": "stationary", "discount": rho, "window": L, "breakpoints": [0, 0.05, 0.15, 0.4, 1, 2, 4, 8, L], "nodes": nodes},
+         "horizon": {"kind": "stationary", "discount": rho, "window": L}, "numerics": {"breakpoints": [0, 0.05, 0.15, 0.4, 1, 2, 4, 8, L], "nodes": nodes},
          **({"ties": [["a1", "a2"]]} if tie else {})}
     return ns.Model.from_dict(d)
 
@@ -172,7 +172,7 @@ def test_validation_of_constants_and_singular_mean_systems():
     # a random walk driven by a control whose first-order condition never reads it: its mean is undetermined
     sing = {"name": "s", "channels": ["w0", "w1"], "states": {"V": {"drift": {"D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"V": 1.0}, "noise": {"w1": 1.0}}}, "loss": [[1.0, "D", "D"], [-2.0, "D"]]}},
-            "horizon": {"kind": "stationary", "window": 4.0, "nodes": 8}}
+            "horizon": {"kind": "stationary", "window": 4.0}, "numerics": {"nodes": 8}}
     with pytest.raises(ValueError, match="mean system is singular"):
         ns.solve(sing)
     # a random walk driven by a control whose target pins it: well posed, xbar = theta at any discount

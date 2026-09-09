@@ -16,7 +16,7 @@ def regime():
     """Chapter 3, p1 = 3 (the shipped file) to p1 = 10, T = 6, 8 nodes: the keyword form from zero and its inputs."""
     m = example("ch3_two_player")
     old = ns.solve(m).check()
-    new = m.with_params(p1=10.0).with_horizon(kind="finite", window=6.0, nodes=8)
+    new = m.with_params(p1=10.0).with_horizon(kind="finite", window=6.0).with_numerics(nodes=8)
     return {"m": m, "old": old, "new": new, "zero": ns.solve(new, past=old, continuation="stationary", start="zero")}
 
 
@@ -38,7 +38,7 @@ def test_file_form_equals_the_keyword_form_bit_for_bit(regime):
     other = ns.solve(m, past=regime["m"].with_params(p1=5.0), max_evaluations=2)
     assert not np.array_equal(other.world[:, :1], z.world[:, :1])
     # `stationary: {nodes: 6}` sizes the continuation's solve; its window must be the past's
-    d6 = dict(d); d6["horizon"] = {**d["horizon"], "stationary": {"nodes": 6}}
+    d6 = dict(d); d6["numerics"] = {**d.get("numerics", {}), "continuation_nodes": 6}
     r6 = ns.solve(d6, max_evaluations=1)
     assert r6.continuation.compiled.grid.n == 6
     with pytest.raises(ValueError, match="must equal the past's window"):
@@ -108,7 +108,8 @@ def test_transition_validation():
     with pytest.raises(ValueError, match="'stationary' or 'end'"):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "x.yaml"}, "continuation": "tail"}})
     with pytest.raises(ValueError, match="continuation_nodes"):
-        ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "x.yaml"}, "stationary": {"nodes": 1}}})
+        ns.Model.from_dict({**d, "numerics": {**d.get("numerics", {}), "continuation_nodes": 1},
+                            "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "x.yaml"}}})
     with pytest.raises(ValueError, match="unknown key"):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "x.yaml"}, "stationary": {"L": 3}}})
     with pytest.raises(ValueError, match="horizon.kind must be"):
