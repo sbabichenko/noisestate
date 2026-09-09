@@ -37,3 +37,7 @@ horizon:
 numerics:
   nodes: 12                           # per side of each piece of the strip
   continuation_nodes: 12              # the continuation's stationary solve (its window is the past's)
+# The summary flags three checks, each true of this configuration rather than a mistake:
+#   UNDER-RESOLVED (8.6e-04, at the band tip; the interior is 4.3e-05 and the buffer 9.9e-07),
+#   PAST WINDOW TOO SHORT -- inherited: the past is ch3_two_player at the dissertation's window 3,
+#   TRANSITION NOT SETTLED by T - L (4.8e-04 against 1e-04): raise horizon.window for a settled T.

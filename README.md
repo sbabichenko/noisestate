@@ -30,7 +30,8 @@ print(ns.load("examples/ch3_two_player.yaml").describe())         # the model it
 res = ns.solve("examples/ch3_two_player.yaml")                    # the model file's own numerics
 res = ns.solve("examples/ch3_two_player.yaml", ns.Numerics(nodes=32, tol=1e-12))   # a change of resolution, not of model
 print(res.summary())
-res.check()                  # raises ConvergenceError unless converged
+res.check()                  # raises ConvergenceError unless converged -- convergence only, not the guards
+res.status["ok"]             # False while any guard fails; res.status["flags"] says which
 res.costs["player1"]         # the cost of each agent (res.cost_kind says what it is)
 res.kernel("X")              # closed-loop kernel of a state, one column per channel (the last axis); res.axes gives its coordinates
 res.action_kernel("D1")      # closed-loop kernel of a control
@@ -41,6 +42,21 @@ res.status                   # {"ok", "flags", "rows"}: the verdict and the fail
 res.numerics                 # the resolved Numerics
 res.to_dict()                # the JSON-ready payload
 ```
+
+That first solve prints `WINDOW TOO SHORT`, and it is meant to: the example carries the dissertation's
+`window: 3.0`, where the state kernel is still 2.4% of its peak at the edge.  The guard is the answer to
+"is this number trustworthy", and reading it is the workflow:
+
+```python
+res = ns.solve(ns.load("examples/ch3_two_player.yaml").with_horizon(window=9.0).with_numerics(nodes=32))
+res.status["ok"]             # True: the tail is 5e-05 and the representation error 9e-12
+res.costs["player1"]         # 0.42729 against 0.42895 on the short window -- the truncation, not noise
+```
+
+Four of the seven shipped examples flag something, each for a reason noted in its own file: three are
+statements about the model (a non-convex best response, a representation error a small grid cannot reach)
+and one is the dissertation's window.  `res.check()` does not consult the guards -- it raises only when
+the fixed point did not converge -- so read `res.status` as well.
 
 Three objects: a `Model` (the economics, from a file, a dict or `ModelBuilder`), a `Numerics` (how it is
 solved: `engine`, `nodes`, `unit`, `unit_range`, `breakpoints`, `continuation_nodes`, `tol`, `damping`,
@@ -220,7 +236,13 @@ tenth of the window: raise horizon.window)`: the equilibrium solved is that of t
 `horizon.window`.  The Kyle-Back example with `rho: 0` is flagged (its kernels are window artefacts);
 it ships with `rho: 0.5`.
 
-**Second order.**  On undiscounted stationary and on every finite-horizon result the objective is a
+**Second order.**  A negative curvature is a claim about the model, and the grid can make the same claim
+falsely: `res.refine()` re-solves on a finer grid and records the curvature there
+(`res.refinement["second_order"]`), and one that shrinks towards zero overturns the verdict --- the
+direction is the quadrature's, not a strategy (on the triangle it sits on the diagonal `a = t` and
+alternates in sign between neighbouring age nodes).  `examples/kyle_back_prior.yaml` is the case: the
+smallest curvature runs -1.45e-02, -1.02e-02, -8.26e-03, -6.71e-03, -5.63e-03 at 8, 12, 16, 20 and 24
+nodes, about n^-0.85.  On undiscounted stationary and on every finite-horizon result the objective is a
 quadratic form in the agent's strategy, and a smallest curvature below -1e-4 of the largest prints
 `NOT A MINIMUM (the best response of 'trader1' is a saddle: its loss is not convex in its own
 strategy, smallest curvature -1.8e-03 of the largest)`.  A negative direction that is positive on a

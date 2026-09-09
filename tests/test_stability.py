@@ -24,3 +24,19 @@ def test_stability_of_the_chapter_3_game_and_finite_engine():
     df = example_dict("ch1_two_player_finite"); df.setdefault("numerics", {})["nodes"] = 6
     rf = ns.solve(ns.Model.from_dict(df)).check(); sf = rf.stability()
     assert sf["stable"] and sf["radius"] < 1.0
+
+
+def test_a_shrinking_negative_curvature_is_the_grid_not_a_saddle():
+    """kyle_back_prior reports NOT A MINIMUM on trader1 at every resolution while the number it reports
+    goes to zero (-1.45e-02 at 8 nodes to -5.63e-03 at 24, about n^-0.85): the offending direction sits
+    on the diagonal a = t and alternates in sign between neighbouring age nodes, so it is the quadrature's
+    and not a strategy.  refine() records the finer grid's curvature and a shrinking one clears the flag."""
+    import noisestate as ns
+    r = ns.solve(example_path("kyle_back_prior"))
+    assert not r.second_order["trader1"]["ok"] and r.second_order["trader1"]["min"] < -1e-3
+    assert any("NOT A MINIMUM" in f for f in r.status["flags"])
+    rep = r.refine()
+    cv = rep["second_order"]["trader1"]
+    assert cv["shrinking"] and cv["min"] < cv["fine_min"] < 0        # less negative on the finer grid
+    assert not any("NOT A MINIMUM" in f for f in r.status["flags"])  # the verdict is overturned
+    assert any(d["name"] == "second_order_grid:trader1" and d["ok"] for d in r.diagnose())

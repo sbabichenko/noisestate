@@ -40,3 +40,10 @@ horizon:
     initial:
       - {name: v0, loads: {V: "sqrt(Sigma0)"}, rows: {trader1.flow: 1.0}}
   continuation: end
+# The summary flags NOT A MINIMUM on trader1 (smallest curvature -1.0e-02 of the largest).  It reads
+# as a saddle but behaves like the discretisation: the curvature shrinks monotonically with the grid,
+# -1.45e-02, -1.02e-02, -8.26e-03, -6.71e-03, -5.63e-03 at 8, 12, 16, 20 and 24 nodes, about n^-0.85,
+# and the offending eigenvector sits on the diagonal a = t (the oldest observation each map reads),
+# alternating in sign between neighbouring age nodes -- a quadrature direction, not a strategy.
+# res.refine() settles it: it re-solves on a finer grid and records the curvature there, and a shrinking
+# one overturns the verdict, leaving the honest NOT RESOLVED at 12 nodes.

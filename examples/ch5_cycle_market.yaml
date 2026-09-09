@@ -344,3 +344,6 @@ numerics:
   nodes: 8
   unit: 0.5
   unit_range: 8.0
+# The summary flags UNDER-RESOLVED (representation error 1.3e-05 against a 1e-06 threshold).  The
+# example ships at 8 nodes so it solves in seconds; the flag stands at 10 and 12 nodes too (9.9 s,
+# 25 s), so clearing it costs more than an example should.  The costs are good to about 1e-05.

@@ -235,6 +235,22 @@ class Result:
         # first order and its change halves per doubling: no verdict, the numbers are the report
         rep["resolved"] = None if self.kind == "finite_cells" else bool(fine.converged and cost_change < self.REFINE_COST_TOL
                                                                         and kernel_change < self.REFINE_KERNEL_TOL)
+        # A saddle the second-order check reports is a claim about the model; a negative curvature that
+        # shrinks towards zero as the grid refines is a claim about the grid (a quadrature direction on the
+        # diagonal, alternating in sign between neighbouring age nodes, is the shape it takes).  The two read
+        # the same on one grid, so the refinement says which: `shrinking` is the finer grid's curvature being
+        # less negative.  The stationary engine settles the analogous question on the window with its own
+        # embedded-curvature hook; this is the finite engines' answer, and it costs the refinement, not a solve.
+        curvature = {}
+        for name, here in (self.second_order or {}).items():
+            there = (fine.second_order or {}).get(name)
+            if not (here and there) or here.get("min") is None or there.get("min") is None:
+                continue
+            if here["min"] < 0:
+                curvature[name] = {"min": float(here["min"]), "fine_min": float(there["min"]),
+                                   "nodes": n1, "shrinking": bool(there["min"] > here["min"])}
+        if curvature:
+            rep["second_order"] = curvature
         self.refinement = rep
         return rep
 
@@ -276,7 +292,12 @@ class Result:
             if so.get("converged") is False:
                 row(f"second_order:{a}", None, None, None, f"second-order check did not converge for {a!r}", so.get("message", ""))
             else:
-                row(f"second_order:{a}", so["min"], -self.settings.second_order_tol if self.solver_class is not None else None, so["ok"],
+                # a refinement that shows the curvature shrinking towards zero overturns the verdict, as the
+                # window's embedded curvature does: the direction is the quadrature's, not a strategy
+                grid = ((self.refinement or {}).get("second_order") or {}).get(a)
+                shrinks = bool(grid and grid["shrinking"])
+                row(f"second_order:{a}", so["min"], -self.settings.second_order_tol if self.solver_class is not None else None,
+                    so["ok"] or shrinks,
                     f"NOT A MINIMUM (the best response of {a!r} is a saddle: its loss is not convex in its own strategy, "
                     f"smallest curvature {so['min']:.1e} of the largest)", "the loss is not convex in the agent's own strategy")
                 if so.get("edge"):
@@ -290,6 +311,15 @@ class Result:
                 {"cost_change": self.REFINE_COST_TOL, "kernel_change": self.REFINE_KERNEL_TOL}, f["resolved"],
                 f"refinement to {f['nodes']} nodes moves costs by {f['cost_change']:.1e} and kernels by {f['kernel_change']:.1e}"
                 + ("" if f["resolved"] in (True, None) else " (NOT RESOLVED)"), "raise horizon.nodes")
+            for a, cv in (f.get("second_order") or {}).items():
+                row(f"second_order_grid:{a}", cv["fine_min"], None, bool(cv["shrinking"]),
+                    (f"the negative curvature of {a!r} shrinks with the grid ({cv['min']:.1e} here, "
+                     f"{cv['fine_min']:.1e} at {cv['nodes']} nodes): the quadrature, not a saddle"
+                     if cv["shrinking"] else
+                     f"the negative curvature of {a!r} holds under refinement ({cv['min']:.1e} here, "
+                     f"{cv['fine_min']:.1e} at {cv['nodes']} nodes): a saddle, not the grid"),
+                    "refine again to see the trend; a direction on the diagonal a = t that alternates in "
+                    "sign between neighbouring age nodes is the quadrature's, not a strategy")
         st = getattr(self, "stability_report", None)
         if st:
             row("stability", float(st["radius"]), 1.0, bool(st["stable"]),

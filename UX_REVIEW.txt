@@ -1,0 +1,113 @@
+NOISESTATE USER EXPERIENCE REVIEW
+Reviewed: 2026-09-09
+
+Scope
+-----
+This review covers the current working tree as a research-oriented Python library
+and command-line tool. The primary user journey is installing the package,
+defining or loading a model, solving it, interpreting the diagnostics, and
+recovering from errors.
+
+Overall assessment
+------------------
+The numerical user experience is strong, especially its diagnostics, validation,
+and candor about numerical limitations. The main weakness is onboarding: the
+documentation and API make the library feel harder to approach than it is.
+
+Findings, in priority order
+---------------------------
+
+1. check() does less than its name implies.
+
+   res.check() verifies convergence but ignores diagnostic guards. A result can
+   pass check() while res.status.ok is false and its numbers are flagged as
+   untrustworthy. The README has to warn users about this twice, which suggests
+   that the API does not match normal expectations.
+
+   Recommendation: make check() cover the complete result, or provide an
+   unmistakable check_convergence()/require_ok() split.
+
+   References: README.md lines 33 and 58; noisestate/results.py, check().
+
+2. The CLI reports success for diagnostically bad results.
+
+   noisestate solve exits with status 0 whenever the fixed point converges, even
+   if the result says WINDOW TOO SHORT, UNDER-RESOLVED, or NOT A MINIMUM. Scripts
+   and batch research commonly treat exit status 0 as a trustworthy result.
+
+   Recommendation: add a --require-ok option that returns a failure status when
+   any diagnostic guard fails, while preserving the existing default behavior.
+
+   Reference: noisestate/cli.py, the return from the solve command.
+
+3. The first successful experience is deliberately a warning.
+
+   The README's first solve prints WINDOW TOO SHORT. The explanation is good, but
+   it comes after the user's first result and weakens the initial payoff.
+
+   Recommendation: begin with a small model that finishes cleanly, then use the
+   current example as a separate "trusting your result" tutorial.
+
+   Reference: README.md, "A first solve."
+
+4. The opening assumes substantial domain knowledge immediately.
+
+   The first paragraph introduces noise-state kernels, raw strategies, physical
+   continuation, and information wedges before showing a concrete result.
+
+   Recommendation: lead with a short motivating example, such as two agents who
+   observe the same state with different precision and whose equilibrium controls
+   and costs noisestate computes. Introduce the precise vocabulary afterward.
+
+   Reference: README.md lines 3-11.
+
+5. The plot command performs an expensive hidden operation.
+
+   noisestate plot result.json out.pdf sounds like it renders stored data, but it
+   re-solves the complete model first. The help text discloses this, although the
+   command name still creates the wrong expectation.
+
+   Recommendation: plot the serialized result directly when possible, or rename
+   the operation so that it communicates the reproduced solve.
+
+   Reference: noisestate/cli.py, the plot command branch.
+
+6. The best model explanation is missing from the CLI.
+
+   Model.describe() produces equations and conventions and is prominently
+   recommended in Python. noisestate validate prints only counts and names.
+
+   Recommendation: add `noisestate describe model.yaml`.
+
+   References: README.md, first solve; noisestate/cli.py, validate command.
+
+7. Contributor setup conflicts with repository guidance.
+
+   The public README tells contributors to invoke pytest directly. CONTRIBUTING.md says
+   to always use ./run-tests because direct or concurrent runs distort timing.
+
+   Recommendation: change the README setup example to use ./run-tests.
+
+   References: README.md lines 13-18; CONTRIBUTING.md, opening section.
+
+What already works well
+-----------------------
+
+* Validation names the offending model element and usually gives the correction.
+* Result summaries lead with convergence, residual, evaluations, runtime, grid
+  details, and actionable guard advice.
+* Validation, JSON schemas, bounded solves, progress callbacks, and reproducible
+  payloads form a solid research workflow.
+* The documentation is technically precise and unusually candid about numerical
+  limitations.
+* The exercised CLI flow was fast and coherent: validation was immediate, and a
+  deliberately bounded three-evaluation solve returned a useful partial result in
+  0.1 seconds.
+
+Suggested first pass
+--------------------
+Focus first on the semantics of check() and the CLI exit status. Then restructure
+only the first 60-80 lines of the README. These changes would improve trust and
+approachability without touching the solver itself.
+
+No source-code changes were made as part of this review.
