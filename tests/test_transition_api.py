@@ -323,15 +323,19 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     assert main(["transition", str(tmp_path / "old.yaml"), str(tmp_path / "new.yaml"), "--settle", "5e-2", "--nodes", "6",
                  "--max-window", "1", "-o", str(tmp_path / "out.json")]) == 0          # converged (the exit code is convergence; the flag is in the summary)
     out = capsys.readouterr().out
-    assert "settle march: window 3 (max_window)" in out and "T = 0:" in out and "wrote" in out
+    assert "settle march: T = 3 (max_window)" in out and "T = 0:" in out and "wrote" in out
     with open(tmp_path / "out.json") as fh:
         payload = json.load(fh)
     assert payload["window"] == 3.0 and payload["march_stop"] == "max_window" and len(payload["march"]) == 2
     assert payload["march"][1]["unknowns"] == 144 and 2e-2 < max(payload["settle_floor"].values()) < 5e-2
     with pytest.raises(SystemExit):
         main(["transition", str(tmp_path / "old.yaml"), str(tmp_path / "new.yaml")])
+    with pytest.raises(SystemExit):                      # exactly one of --T and --settle
+        main(["transition", str(tmp_path / "old.yaml"), str(tmp_path / "new.yaml"), "--T", "6", "--settle", "1e-4"])
+    #  --window named the terminal time before 0.8 split T from the lag window.  It is refused by
+    #  name rather than re-pointed at horizon.window: a script that passed it meant T.
     with pytest.raises(SystemExit):
-        main(["transition", str(tmp_path / "old.yaml"), str(tmp_path / "new.yaml"), "--window", "6", "--settle", "1e-4"])
+        main(["transition", str(tmp_path / "old.yaml"), str(tmp_path / "new.yaml"), "--window", "6"])
 
 
 @slow()

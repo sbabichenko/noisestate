@@ -1,6 +1,6 @@
 """Command line: `noisestate solve model.yaml [-o out] [--plot] [--nodes N] [--engine E] [--param k=v ...]
 [--max-evaluations N] [--deadline S]`; `validate model.yaml` (the schema, then the model's own checks);
-`sweep model.yaml param v1,v2,... -o out.json`; `transition old.yaml new.yaml --window T | --settle TOL [-o out] [--nodes N]`;
+`sweep model.yaml param v1,v2,... -o out.json`; `transition old.yaml new.yaml --T VALUE | --settle TOL [-o out] [--nodes N]`;
 `schema {model|payload}`; `plot result.json out.pdf` (plots the saved result; `--re-solve` reproduces the solve
 under its recorded options first); `--version`.
 Exit status: 0 converged (a sweep: every point), 1 solved but not converged, 2 a usage error (a bad option, a
@@ -83,7 +83,10 @@ def main(argv=None) -> int:
     s.add_argument("--plot", help="write a kernel plot (.pdf/.png)")
     s.add_argument("--nodes", type=int, help="override numerics.nodes: per panel (stationary) or per side of each piece (finite)")
     s.add_argument("--engine", choices=("stationary", "spectral", "cells"), help="override numerics.engine")
-    s.add_argument("--window", type=float, help="override the lag window L")
+    s.add_argument("--window", type=float, metavar="L", help="override horizon.window, the lag-truncation length L "
+                   "(stationary and transition models; a finite horizon has none -- use --T)")
+    s.add_argument("--T", type=float, dest="T", metavar="T", help="override horizon.T, the terminal time "
+                   "(finite and transition models; a stationary model has none -- use --window)")
     s.add_argument("--param", action="append", default=[], help="override a parameter, k=v (repeatable)")
     s.add_argument("--tol", type=float, default=None, help="fixed-point tolerance (default: the engine's own, 1e-10 stationary, 1e-8 finite)")
     s.add_argument("--max-evaluations", type=int, metavar="N", help="stop after N best-response evaluations (the result is then not converged; exit 1)")
@@ -98,9 +101,13 @@ def main(argv=None) -> int:
     de.add_argument("model")
     t = sub.add_parser("transition", help="the transition from the stationary regime of old.yaml to the model of new.yaml on [0, T]")
     t.add_argument("old"); t.add_argument("new")
-    t.add_argument("--window", type=float, metavar="T", help="the horizon T of the transition (or --settle)")
+    t.add_argument("--T", type=float, dest="T", metavar="T", help="the terminal time T of the transition (or --settle)")
+    #  --window named the terminal time while --past-window and --continuation-window in the same
+    #  command named lag windows.  Python split the two in 0.8; the flag is refused by name rather
+    #  than re-pointed, because a script passing --window meant T and would now silently get L.
+    t.add_argument("--window", type=float, help=argparse.SUPPRESS)
     t.add_argument("--settle", type=float, metavar="TOL", help="find the horizon by the march in T: stop when the best-response rules "
-                   "on the last window are within TOL of the stationary ones (exactly one of --window and --settle)")
+                   "on the last window are within TOL of the stationary ones (exactly one of --T and --settle)")
     t.add_argument("--step", type=float, metavar="DT", help="the march's step in T (default one window of the past; a unit step "
                    "is available but cannot certify a first window and does not pay before the panels are reused)")
     t.add_argument("--max-window", type=int, metavar="K", help="the march stops at K windows (default 8)")
@@ -191,8 +198,11 @@ def _run(p, args) -> int:
             with open(path) as fh:
                 data = yaml.safe_load(fh)
             _schema_check(data, path); loaded.append(data)
-        if (args.window is None) == (args.settle is None):
-            p.error("transition takes exactly one of --window T and --settle TOL")
+        if args.window is not None:
+            p.error("--window meant the terminal time T here; it is now --T. The lag window of the "
+                    "old regime and of the continuation stay --past-window L and --continuation-window L.")
+        if (args.T is None) == (args.settle is None):
+            p.error("transition takes exactly one of --T and --settle TOL")
         if args.past_window is not None and args.continuation_window is not None and args.past_window != args.continuation_window:
             p.error("--past-window and --continuation-window must match: the transition buffer uses one shared lag window")
         stationary_window = args.past_window if args.past_window is not None else args.continuation_window
@@ -201,13 +211,13 @@ def _run(p, args) -> int:
             if stationary_window <= 0:
                 p.error("the stationary window must be positive")
             old = Model.from_dict(loaded[0], base_dir=os.path.dirname(os.path.abspath(args.old)))._patch_horizon(window=stationary_window)
-        if args.window is None:
+        if args.T is None:
             res = transition(old, args.new, settle=args.settle, step=args.step, max_window=args.max_window,
                              numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
-            print(f"settle march: window {res.extra['window']:g} ({res.march_stop}); " +
+            print(f"settle march: T = {res.extra['window']:g} ({res.march_stop}); " +
                   ", ".join(f"T = {r.T:g}: {max(r.gap.values()):.1e} in {r.evaluations} evaluations" for r in res.march))
         else:
-            res = transition(old, args.new, T=args.window, numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
+            res = transition(old, args.new, T=args.T, numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
         print(res.summary(diagnostics=False))
         print(res.diagnostics.summary(detailed=args.diagnostics))
         if args.out:
@@ -258,10 +268,13 @@ def _run(p, args) -> int:
             p.error(f"--param {k}: {v_!r} is not a number")
     if args.nodes is not None and args.nodes < 2:
         p.error("--nodes must be at least 2")
-    if args.window is not None:
-        if not args.window > 0:
-            p.error("--window must be positive")
-        d.setdefault("horizon", {})["window"] = args.window
+    for flag, key in (("window", "window"), ("T", "T")):
+        value = getattr(args, flag, None)
+        if value is None:
+            continue
+        if not value > 0:
+            p.error(f"--{flag} must be positive")
+        d.setdefault("horizon", {})[key] = value
     m = Model.from_dict(d, base_dir=base_dir)
     numerics = Numerics(nodes=args.nodes, engine=args.engine, tol=args.tol)
     res = _solve(m, numerics, verbose=args.verbose, refine=args.refine, stability=args.stability, **bounds)

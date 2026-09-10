@@ -264,7 +264,7 @@ def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
     with open(tmp_path / "new.yaml", "w") as fh:
         yaml.safe_dump(new, fh)
     out = tmp_path / "change.json"
-    code = main(["transition", os.path.join(EX, "ch3_two_player.yaml"), str(tmp_path / "new.yaml"), "--window", "6", "--nodes", "5",
+    code = main(["transition", os.path.join(EX, "ch3_two_player.yaml"), str(tmp_path / "new.yaml"), "--T", "6", "--nodes", "5",
                  "-o", str(out), "--max-evaluations", "2"])
     p = json.load(open(out))
     assert code == 1 and p["kind"] == "transition" and p["options"]["solve"]["start_policy"] == "stationary" and p["numerics"]["nodes"] == 5
