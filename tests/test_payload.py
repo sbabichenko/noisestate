@@ -14,7 +14,7 @@ def test_payload_round_trips_and_rebuilds_the_solve():
     assert d["params"] == {"p1": 3.0, "p2": 10.0, "r1": 1.0, "r2": 1.0}
     assert d["horizon"] == {"kind": "stationary", "discount": 0.0, "window": 3.0} and d["numerics"] == {"engine": "stationary", "nodes": 24, "tol": 1e-10, "damping": 0.6, "max_newton": 60, "variable": "actions"}
     assert d["payload_version"] == 1 and d["axes"]["age"] == d["grid"]["ages"] and d["times"] is None and d["assessment"]["accepted"] is False
-    assert d["options"]["solve"]["start"] == "zero" and d["options"]["solver"]["verbose"] is False
+    assert d["options"]["solve"]["start_policy"] == "zero" and d["options"]["solver"]["verbose"] is False
     assert d["agents"]["player2"] == {"controls": ["D2"], "signals": {"y2": {"delay": 0.0, "map_age": d["grid"]["ages"]}}}
     m2 = ns.Model.from_dict(d["model"]); assert m2.to_dict() == m.to_dict()
     again = engines.solver(m2, **d["options"]["solver"]).solve(**d["options"]["solve"])
@@ -40,11 +40,11 @@ def test_delayed_row_map_axes_place_the_map():
 
 def test_solve_kw_records_the_start_option_and_repeats_the_solve():
     S = engines.solver(ns.load(os.path.join(EX, "ch3_two_player.yaml")))
-    res = S.solve(start="coarse")
-    assert res.solve_kw["start"] == "coarse" and json.dumps(res.solve_kw) and "coarse start" in res.message
+    res = S.solve(start_policy="coarse")
+    assert res.solve_kw["start_policy"] == "coarse" and json.dumps(res.solve_kw) and "coarse start" in res.message
     again = S.solve(**res.solve_kw)
     assert again.evaluations == res.evaluations and again.message == res.message
-    assert S.solve().solve_kw["start"] == "zero"
+    assert S.solve().solve_kw["start_policy"] == "zero"
 
 
 def test_seconds_include_the_diagnostics(monkeypatch):

@@ -125,7 +125,7 @@ class EngineBase(MeanLayer):
         self.solver_kw = {"verbose": verbose, **options, **({"settings": changed} if changed else {})}   # so a result can rebuild the same engine
         self._rphys: Dict[str, np.ndarray] = {}             # agent -> physical impulse responses (all reactions off)
         self._second_order_cache: Dict[str, dict] = {}       # representative -> its second-order check, shared with tied agents
-        self._loss_forms: Dict[tuple, np.ndarray] = {}       # (agent, init) -> the loss form on the world (map-independent; built for the
+        self._loss_forms: Dict[tuple, np.ndarray] = {}       # (agent, start_from) -> the loss form on the world (map-independent; built for the
                                                             # tie representatives' second-order check in _finish and released there)
 
     # ------------------------------------------------------------ ties
@@ -176,25 +176,25 @@ class EngineBase(MeanLayer):
         return self._unpack(z, self.action_shapes)
 
     # ---------------------------------------------------------- checks
-    def init_kind(self, init: Dict[str, np.ndarray]) -> str:
+    def init_kind(self, start_from: Dict[str, np.ndarray]) -> str:
         """Classify a warm start as "actions" or "maps" by shape; a wrong or ambiguous shape is an error."""
         kinds = set()
         for a in self.model.agents:
-            if a.name not in init:
-                raise ValueError(f"init has no entry for agent {a.name}")
-            v = np.asarray(init[a.name]); sa, sm = self.action_shapes[a.name], tuple(self.shapes[a.name])
+            if a.name not in start_from:
+                raise ValueError(f"start_from has no entry for agent {a.name}")
+            v = np.asarray(start_from[a.name]); sa, sm = self.action_shapes[a.name], tuple(self.shapes[a.name])
             if v.shape == sa and v.shape != sm:
                 kinds.add("actions")
             elif v.shape == sm and v.shape != sa:
                 kinds.add("maps")
             elif v.shape == sa:
-                raise ValueError(f"init for {a.name}: shape {v.shape} could be action kernels or raw maps (N == nR == nW); "
+                raise ValueError(f"start_from for {a.name}: shape {v.shape} could be action kernels or raw maps (N == nR == nW); "
                                  "pass the other representation")
             else:
-                raise ValueError(f"init for {a.name}: shape {v.shape}; expected action kernels {sa} or raw maps {sm} "
+                raise ValueError(f"start_from for {a.name}: shape {v.shape}; expected action kernels {sa} or raw maps {sm} "
                                  "(a warm start from a different grid cannot be used directly)")
         if len(kinds) != 1:
-            raise ValueError("init mixes action kernels and raw maps across agents")
+            raise ValueError("start_from mixes action kernels and raw maps across agents")
         return kinds.pop()
 
     def same_grid(self, other) -> bool:
@@ -430,7 +430,7 @@ class EngineBase(MeanLayer):
         cost's own Gram matrix: J(delta) = 1/2 delta' M delta with M = T' G T, T the map from a
         strategy to the world it produces and G the loss form.  Its extreme eigenvalues come from
         Lanczos on matvecs.  With a past the world has the initial shocks' columns after the channels',
-        each under the point form of the line s = 0 (_loss_form(agent, init=True)), as expected_cost
+        each under the point form of the line s = 0 (_loss_form(agent, start_from=True)), as expected_cost
         integrates them.  Returns {"min", "max", "ok", "converged"} with min/max the eigenvalues
         of M scaled by max; None when the objective is not a quadratic form in the strategy (the
         stationary engine with rho > 0: the discounted objective is not one in the stationary kernel).
@@ -448,7 +448,7 @@ class EngineBase(MeanLayer):
         ncol = Gk.shape[0]                                                      # the channels, then a past's initial shocks
         forms = [(GAO, slice(0, nW))]                                           # (loss form, its columns of the world)
         if ncol > nW:
-            forms.append((self._loss_form(agent, init=True), slice(nW, ncol)))
+            forms.append((self._loss_form(agent, start_from=True), slice(nW, ncol)))
         idx = np.where(keep)[0]
         Nm = Gk.shape[2] // nR if nR else N                                     # a row's map block (N, plus discrete weights with a past)
 
@@ -547,17 +547,17 @@ class EngineBase(MeanLayer):
             return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
         return {"lo": lo, "hi": hi}
 
-    def _loss_form(self, agent: Agent, init: bool = False) -> np.ndarray:
+    def _loss_form(self, agent: Agent, start_from: bool = False) -> np.ndarray:
         """The loss form on the primary kernels, AO' kron(Q, mass) AO for the stacked atom operators AO,
         assembled block by block over the atoms' primary blocks (each atom reads one primary through one
         N x N block; an undelayed atom through the identity, whose products are skipped).  Map-independent,
-        cached per agent.  With init=True the form of a past's initial-shock column: the same atoms under
+        cached per agent.  With start_from=True the form of a past's initial-shock column: the same atoms under
         the point mass of the line s = 0 (_init_mass), as expected_cost integrates those columns."""
-        key = (agent.name, init)
+        key = (agent.name, start_from)
         if key not in self._loss_forms:
             c = self.c; N = c.N; n = len(c.prim) * N
             atoms, Q, q = c.loss[agent.name]
-            if init:
+            if start_from:
                 raise NotImplementedError("the form of an initial-shock column is the spectral finite engine's (finite_free)")
             mass = c.cost_mass()
             blocks = [[c.atom_block(at)] for at in atoms]
@@ -699,14 +699,14 @@ class EngineBase(MeanLayer):
     def interpolate_maps(self, coarse) -> Dict[str, np.ndarray]:
         """Hook (stationary, spectral): the raw maps of `coarse`, a result of the same engine on a
         grid of the same model with fewer nodes (coarse.maps, coarse.compiled), read at this grid's
-        nodes: every agent's maps in self.shapes.  coarse_start (solve(start="coarse")) and a
+        nodes: every agent's maps in self.shapes.  coarse_start (solve(start_policy="coarse")) and a
         result's refine() call it; refine() treats NotImplementedError as "no warm start" and
         starts from zero, coarse_start does not catch it (the cell engine, which does not override
         it, has no coarse start)."""
         raise NotImplementedError
 
     def stationary_start(self) -> Dict[str, np.ndarray]:
-        """Hook: the raw maps a solve with start="stationary" begins from (the spectral finite engine with a
+        """Hook: the raw maps a solve with start_policy="stationary" begins from (the spectral finite engine with a
         stationary continuation implements it)."""
         raise NotImplementedError("start='stationary' is for the spectral finite engine with a stationary continuation")
 
@@ -718,21 +718,21 @@ class EngineBase(MeanLayer):
         if n0 >= hz.nodes:
             return None
         coarse = type(self)(self.model.with_numerics(nodes=n0), **self.solver_kw)
-        res = coarse.solve(**{k: v for k, v in solve_kw.items() if k not in ("init", "start")})
+        res = coarse.solve(**{k: v for k, v in solve_kw.items() if k not in ("start_from", "start_policy")})
         self._coarse_evals, self._coarse_nodes = res.evaluations, n0
         return self.interpolate_maps(res)
 
-    def solve(self, init: Optional[Dict[str, np.ndarray]] = None, tol: Optional[float] = None, damping: Optional[float] = None,
-              max_newton: Optional[int] = None, variable: str = "actions", start: str = "zero", max_evaluations: Optional[int] = None,
+    def solve(self, start_from: Optional[Dict[str, np.ndarray]] = None, tol: Optional[float] = None, damping: Optional[float] = None,
+              max_newton: Optional[int] = None, variable: str = "actions", start_policy: str = "zero", max_evaluations: Optional[int] = None,
               deadline: Optional[float] = None, progress: Optional[Callable[[dict], None]] = None, diagnostics: bool = True):
         """Find the equilibrium: Anderson mixing on the fixed point of the best-response map (damping is
         the mixing weight), then a Newton-Krylov polish if it stalls.  variable="actions" iterates on
         the agents' action kernels, with the raw maps recovered by projection (better conditioned where
         strategies are weakly identified); "maps" iterates on the raw maps, which is also what happens
         with ties (tied agents' action kernels differ by a channel permutation) and on the cell engine.
-        init: action kernels or raw maps per agent, either is accepted.  start="coarse" (with no init)
+        start_from: action kernels or raw maps per agent, either is accepted.  start_policy="coarse" (with no start_from)
         solves first at half the nodes and starts from that equilibrium interpolated to this grid.
-        start="stationary" (the spectral finite engine with a stationary continuation) starts from the
+        start_policy="stationary" (the spectral finite engine with a stationary continuation) starts from the
         continuation's stationary maps read at every node's age (what noisestate.transition() does).
         max_evaluations bounds the best-response evaluations (Anderson mixing and the polish together, the
         count res.evaluations reports) and deadline the wall time of the solve in seconds; at least one
@@ -745,7 +745,7 @@ class EngineBase(MeanLayer):
         the second-order check and the representation error: res.foc and res.second_order stay empty,
         res.resolution_ok is None and the summary says so) and fills the costs only, for a preview.
         The options as given are recorded in res.solve_kw (the bounds and diagnostics=False when given; the
-        progress callable is not, nor is init), so solve(**res.solve_kw) repeats a solve that was not
+        progress callable is not, nor is start_from), so solve(**res.solve_kw) repeats a solve that was not
         warm-started (a sweep row after the first, or refine(), was: its record starts from zero)."""
         if max_evaluations is not None and max_evaluations < 1:
             raise ValueError(f"max_evaluations must be at least 1, not {max_evaluations}")
@@ -756,32 +756,32 @@ class EngineBase(MeanLayer):
         max_newton = self.MAX_NEWTON if max_newton is None else max_newton
         t0 = time.time(); evals = [0]
         coarse_evals = 0
-        if init is None and start == "coarse":
+        if start_from is None and start_policy == "coarse":
             # the coarse solve's checks are never read; it gets the same bounds (on its own count, on this clock)
-            init = self.coarse_start(tol=tol, damping=damping, max_newton=max_newton, variable=variable, diagnostics=False,
+            start_from = self.coarse_start(tol=tol, damping=damping, max_newton=max_newton, variable=variable, diagnostics=False,
                                      max_evaluations=max_evaluations, deadline=deadline, progress=None if progress is None else
                                      (lambda info: progress({**info, "phase": "coarse " + info["phase"], "seconds": time.time() - t0})))
             coarse_evals = getattr(self, "_coarse_evals", 0)
-        elif init is None and start == "stationary":
-            init = self.stationary_start()
-        elif start not in ("zero", "coarse", "stationary"):
-            raise ValueError(f"start must be 'zero', 'coarse' or 'stationary', not {start!r}")
+        elif start_from is None and start_policy == "stationary":
+            start_from = self.stationary_start()
+        elif start_policy not in ("zero", "coarse", "stationary"):
+            raise ValueError(f"start_policy must be 'zero', 'coarse' or 'stationary', not {start_policy!r}")
         if variable == "actions" and (self.model.ties or not self.ACTIONS):
             variable = "maps"
-        kind = self.init_kind(init) if init is not None else None
+        kind = self.init_kind(start_from) if start_from is not None else None
         if kind == "actions" and not self.ACTIONS:
-            raise ValueError("this engine iterates on raw maps: pass raw maps as init")
+            raise ValueError("this engine iterates on raw maps: pass raw maps as start_from")
         if variable == "actions":
             if kind is None:
                 x0 = {a.name: np.zeros(self.action_shapes[a.name]) for a in self.model.agents}
             else:
-                x0 = init if kind == "actions" else self.actions_from_maps(init)
+                x0 = start_from if kind == "actions" else self.actions_from_maps(start_from)
             pack, unpack, respond = self.pack_actions, self.unpack_actions, self.response_actions
         else:
             if kind is None:
                 x0 = self.zero_maps()
             else:
-                x0 = init if kind == "maps" else self.maps_from_actions(init)
+                x0 = start_from if kind == "maps" else self.maps_from_actions(start_from)
             pack, unpack, respond = self.pack, self.unpack, self.response_map
 
         z0 = pack(x0)
@@ -807,7 +807,7 @@ class EngineBase(MeanLayer):
         res = self.RESULT(model=self.model, compiled=self.c, maps=maps, world=Z, converged=converged, residual=resid,
                           evaluations=evals[0], seconds=0.0, message=message, solver_class=type(self),
                           solver_kw=self.solver_kw, settings=self.settings,
-                          solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start": start,
+                          solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start_policy": start_policy,
                                     **{k: v for k, v in (("max_evaluations", max_evaluations), ("deadline", deadline)) if v is not None},
                                     **({} if diagnostics else {"diagnostics": False})})
         if variable == "actions" and "actions" in getattr(res, "__dataclass_fields__", {}):

@@ -169,7 +169,7 @@ def _run(p, args) -> int:
         opts = payload["options"]
         solver_kw = {k: v for k, v in opts["solver"].items() if k in ("verbose", "naive_observers")}
         res = _solve(Model.from_dict(payload["model"]), opts["numerics"], **solver_kw,
-                     **{k: v for k, v in opts["solve"].items() if k in ("start", "max_evaluations", "deadline", "diagnostics")})
+                     **{k: v for k, v in opts["solve"].items() if k in ("start_policy", "max_evaluations", "deadline", "diagnostics")})
         res.plot(plot_path)
         print("wrote", plot_path)
         return _exit_code(res, args)

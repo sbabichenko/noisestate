@@ -46,7 +46,7 @@ def main(out=None):
     prev = ns.solve(ns.load(MODEL).with_stationary(12.0).with_numerics(nodes=NODES)).require_converged()
     for L in WINDOWS[1:]:
         wider = ns.load(MODEL).with_stationary(L).with_numerics(nodes=NODES)
-        r = ns.solve(wider, init=engines.stationary(wider).interpolate_maps(prev))
+        r = ns.solve(wider, start_from=engines.stationary(wider).interpolate_maps(prev))
         K = np.asarray(r.kernel("X")); a = np.asarray(r.ages)
         tail = float(np.abs(K[a > 0.95 * L]).max() / np.abs(K).max())
         print(f"{L:7.1f} {r.residual:10.1e} {tail:10.1e} {r.costs['player1']:10.4f}  "
@@ -55,7 +55,7 @@ def main(out=None):
             prev = r
     print()
     print("what separates the branches is best-response stability, not the residual:")
-    for label, kw in (("the equilibrium (warm)", {"init": engines.stationary(
+    for label, kw in (("the equilibrium (warm)", {"start_from": engines.stationary(
                            ns.load(MODEL).with_stationary(18.0).with_numerics(nodes=NODES)).interpolate_maps(prev)}),
                       ("the branch a cold start finds", {})):
         m18 = ns.load(MODEL).with_stationary(18.0).with_numerics(nodes=NODES)

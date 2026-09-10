@@ -108,7 +108,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         return continuation
 
     def stationary_start(self) -> Dict[str, np.ndarray]:
-        """The raw maps a solve with start="stationary" begins from: the continuation's stationary maps at every
+        """The raw maps a solve with start_policy="stationary" begins from: the continuation's stationary maps at every
         node's age (the frozen maps of the buffer, on the whole strip), zero weights on the initial shocks."""
         if self.c.cont is None:
             raise ValueError("start='stationary' needs a stationary continuation (continuation='stationary' or a StationaryResult): "

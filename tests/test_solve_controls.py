@@ -58,17 +58,17 @@ def test_progress_is_called_per_evaluation_and_can_cancel():
             raise Cancelled()
     with pytest.raises(Cancelled):
         ns.solve(_ch3(), progress=cancel)
-    log = []; res = ns.solve(_ch3(), start="coarse", progress=log.append)   # a coarse start reports its phase, on the one clock
+    log = []; res = ns.solve(_ch3(), start_policy="coarse", progress=log.append)   # a coarse start reports its phase, on the one clock
     phases = [x["phase"] for x in log]
     assert phases[0] == "coarse anderson" and phases[-1] == "anderson" and res.converged and "coarse start" in res.message
     assert all(log[i]["seconds"] <= log[i + 1]["seconds"] for i in range(len(log) - 1))
-    res = ns.solve(_ch3(), start="coarse", max_evaluations=2)                # both solves bounded
+    res = ns.solve(_ch3(), start_policy="coarse", max_evaluations=2)                # both solves bounded
     assert not res.converged and res.evaluations == 2 and res.message.startswith("coarse start: 2 evaluations")
 
 
 def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
     S = engines.solver(_ch3(nodes=96, window=10.0)); full = S.solve(); w = full.maps
-    off = S.solve(init=w, diagnostics=False)
+    off = S.solve(start_from=w, diagnostics=False)
     assert off.converged and off.second_order == {} and off.foc == {} and off.representation_error == {} and off.diagnostics.statuses["resolution"] is not Status.PASSED
     assert full.second_order and full.foc and (full.diagnostics.statuses["resolution"] is Status.PASSED)
     assert all(abs(off.costs[k] - full.costs[k]) < 1e-9 for k in full.costs) and off.solve_kw["diagnostics"] is False
@@ -83,8 +83,8 @@ def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
         calls.append(want_decomp)
         return best_response(self, agent, maps, want_decomp)
     monkeypatch.setattr(type(S), "best_response", counted)
-    r = S.solve(init=w, diagnostics=False); assert len(calls) == 2 * r.evaluations and not any(calls)
-    calls.clear(); r = S.solve(init=w); assert len(calls) == 2 * r.evaluations + 2 and calls[-2:] == [True, True]
+    r = S.solve(start_from=w, diagnostics=False); assert len(calls) == 2 * r.evaluations and not any(calls)
+    calls.clear(); r = S.solve(start_from=w); assert len(calls) == 2 * r.evaluations + 2 and calls[-2:] == [True, True]
     # the cell engine (no checks of its own) accepts the option as well
     d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite", "T": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 12}
     assert ns.solve(ns.Model.from_dict(d), diagnostics=False).converged

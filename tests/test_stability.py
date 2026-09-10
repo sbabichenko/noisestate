@@ -75,7 +75,7 @@ def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
     # the window reaches the equilibrium.  What separates them is best-response stability -- Anderson
     # and the Newton polish are root finders and will sit on a fixed point naive adjustment would flee.
     wider = base.with_stationary(18.0).with_numerics(nodes=64)
-    warm = ns.solve(wider, init=engines.stationary(wider).interpolate_maps(good)).require_ok()
+    warm = ns.solve(wider, start_from=engines.stationary(wider).interpolate_maps(good)).require_ok()
     assert abs(warm.costs["player1"] - 0.427295) < 1e-5
     assert warm.stability()["radius"] < 0.9 < 1.0 < spurious.stability()["radius"]
 

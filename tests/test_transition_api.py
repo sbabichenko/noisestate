@@ -18,7 +18,7 @@ def regime():
     m = example("ch3_two_player")
     old = ns.solve(m).require_converged()
     new = m.with_params(p1=10.0).with_finite(6.0).with_numerics(nodes=8)
-    return {"m": m, "old": old, "new": new, "zero": ns.solve(new, past=old, continuation="stationary", start="zero")}
+    return {"m": m, "old": old, "new": new, "zero": ns.solve(new, past=old, continuation="stationary", start_policy="zero")}
 
 
 def test_file_form_equals_the_keyword_form_bit_for_bit(regime):
@@ -29,12 +29,12 @@ def test_file_form_equals_the_keyword_form_bit_for_bit(regime):
     m = ns.Model.from_dict(d)
     assert m.horizon.kind == "transition" and m.horizon.past == {"model": EX + "ch3_two_player.yaml"} and m.horizon.continuation is None
     assert m.to_dict()["horizon"]["past"] == {"model": EX + "ch3_two_player.yaml"}
-    res = ns.solve(m, start="zero"); z = regime["zero"]                # the file form, from zero like z
+    res = ns.solve(m, start_policy="zero"); z = regime["zero"]                # the file form, from zero like z
     assert np.array_equal(res.world, z.world) and res.costs == z.costs and res.evaluations == z.evaluations and res.settled == z.settled
     assert res.past.provenance["name"] == "ch3_two_player" and res.continuation.compiled.grid.n == 8
     assert np.array_equal(res.continuation.world, z.continuation.world)
     # the keyword overrides the file block: another past changes the answer, the same one repeats it
-    same = ns.solve(m, past=regime["old"], start="zero")
+    same = ns.solve(m, past=regime["old"], start_policy="zero")
     assert np.array_equal(same.world, z.world)
     other = ns.solve(m, past=regime["m"].with_params(p1=5.0), max_evaluations=2)
     assert not np.array_equal(other.world[:, :1], z.world[:, :1])
@@ -52,14 +52,14 @@ def test_file_form_equals_the_keyword_form_bit_for_bit(regime):
 
 def test_transition_helper_starts_from_the_new_stationary_maps(regime):
     """transition(old, new, T, nodes) solves the past (a path) and the continuation, starts from the new
-    stationary maps (start="stationary") and returns the result with past and stationary attached: bit for
+    stationary maps (start_policy="stationary") and returns the result with past and stationary attached: bit for
     bit the keyword form with the same start, in fewer evaluations than from zero (21 against 23)."""
     m = regime["m"]; z = regime["zero"]
     res = ns.transition(EX + "ch3_two_player.yaml", m.with_params(p1=10.0), T=6.0, numerics={"nodes": 8})
     assert res.model.horizon.kind == "transition" and res.model.horizon.T == 6.0 and res.model.horizon.nodes == 8
-    assert res.model.horizon.past == {"model": EX + "ch3_two_player.yaml"} and res.solve_kw["start"] == "stationary"
+    assert res.model.horizon.past == {"model": EX + "ch3_two_player.yaml"} and res.solve_kw["start_policy"] == "stationary"
     assert res.past is not None and res.stationary is res.continuation and res.stationary.model.horizon.kind == "stationary"
-    kw = ns.solve(regime["new"], past=regime["old"], continuation="stationary", start="stationary")
+    kw = ns.solve(regime["new"], past=regime["old"], continuation="stationary", start_policy="stationary")
     assert np.array_equal(res.world, kw.world) and res.costs == kw.costs and res.evaluations == kw.evaluations
     assert res.evaluations < z.evaluations and res.converged
     assert np.abs(res.world - z.world).max() < 1e-6
@@ -67,10 +67,10 @@ def test_transition_helper_starts_from_the_new_stationary_maps(regime):
     r2 = ns.transition(regime["old"], m.with_params(p1=10.0), T=6.0, numerics={"nodes": 8}, max_evaluations=1)
     assert r2.model.horizon.past["model"]["name"] == "ch3_two_player" and r2.past.source is regime["old"]
     with pytest.raises(ValueError, match="start='stationary' needs a stationary continuation"):
-        ns.solve(regime["new"], past=regime["old"], start="stationary")
-    with pytest.raises(ValueError, match="start must be"):
-        ns.solve(regime["new"], past=regime["old"], start="warm")
-    assert z.solve_kw["start"] == "zero"                        # asked for; the default with a continuation is "stationary"
+        ns.solve(regime["new"], past=regime["old"], start_policy="stationary")
+    with pytest.raises(ValueError, match="start_policy must be"):
+        ns.solve(regime["new"], past=regime["old"], start_policy="warm")
+    assert z.solve_kw["start_policy"] == "zero"                        # asked for; the default with a continuation is "stationary"
 
 
 def test_builder_and_initial_shocks_in_the_file_form():
@@ -87,7 +87,7 @@ def test_builder_and_initial_shocks_in_the_file_form():
     res = ns.solve(b)
     assert np.array_equal(res.world, ref.world) and res.costs == ref.costs and res.shocks == ["w0", "w1", "xi"]
     h = ns.transition([shock], d, T=3.0, numerics={"nodes": 12})
-    assert np.array_equal(h.world, ref.world) and h.continuation is None and h.solve_kw["start"] == "zero"
+    assert np.array_equal(h.world, ref.world) and h.continuation is None and h.solve_kw["start_policy"] == "zero"
     with pytest.raises(ValueError, match="needs a past with a window"):
         ns.solve({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"initial": [shock]}, "continuation": "stationary"}})
 
@@ -314,8 +314,8 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "settle": -1.0}})
     with pytest.raises(ValueError, match="needs continuation 'stationary'"):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "continuation": "end"}})
-    with pytest.raises(ValueError, match="init and start do not apply"):
-        ns.solve(fm, start="zero")
+    with pytest.raises(ValueError, match="start_from and start_policy do not apply"):
+        ns.solve(fm, start_policy="zero")
     # the CLI
     shutil.copy(EX + "ch3_two_player.yaml", tmp_path / "old.yaml")
     with open(tmp_path / "new.yaml", "w") as fh:

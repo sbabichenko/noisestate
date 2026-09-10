@@ -333,11 +333,12 @@ class Result:
         n0 = int(self.model.horizon.nodes)
         n1 = 2 * n0 if self.kind == "finite_cells" else max(n0 + 2, int(math.ceil(n0 * factor)))   # cells: keep lags aligned
         # this solve's bounds and a skipped diagnostics pass are not the refinement's
-        kw = {k: v for k, v in self.solve_kw.items() if k not in ("init", "start", "max_evaluations", "deadline", "diagnostics")}
+        kw = {k: v for k, v in self.solve_kw.items()
+              if k not in ("start_from", "start_policy", "max_evaluations", "deadline", "diagnostics")}
         kw.update(solve_kw)
         solver = self._make_solver(self.model.with_numerics(nodes=n1))
         try:                                                  # start the fine solve from this equilibrium, interpolated
-            kw.setdefault("init", solver.interpolate_maps(self))
+            kw.setdefault("start_from", solver.interpolate_maps(self))
         except NotImplementedError:
             pass
         fine = solver.solve(**kw)

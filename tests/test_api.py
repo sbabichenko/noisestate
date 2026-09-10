@@ -263,7 +263,7 @@ def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
     code = main(["transition", os.path.join(EX, "ch3_two_player.yaml"), str(tmp_path / "new.yaml"), "--window", "6", "--nodes", "5",
                  "-o", str(out), "--max-evaluations", "2"])
     p = json.load(open(out))
-    assert code == 1 and p["kind"] == "transition" and p["options"]["solve"]["start"] == "stationary" and p["numerics"]["nodes"] == 5
+    assert code == 1 and p["kind"] == "transition" and p["options"]["solve"]["start_policy"] == "stationary" and p["numerics"]["nodes"] == 5
     assert ns.schema.validate(p, "payload") == []
     recovery = capsys.readouterr().out
     assert "Next: retry with" in recovery and "--past-window 6" in recovery
@@ -308,13 +308,13 @@ def test_the_zero_start_is_explicit_with_a_continuation():
     old = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8}).require_converged()
     new = old.model.with_params(p1=10.0).with_finite(6.0).with_numerics(nodes=5)
     d = ns.solve(new, past=old, continuation="stationary", max_evaluations=1)
-    z = ns.solve(new, past=old, continuation="stationary", max_evaluations=1, start="zero")
+    z = ns.solve(new, past=old, continuation="stationary", max_evaluations=1, start_policy="zero")
     e = ns.solve(new, past=old, continuation="end", max_evaluations=1)
-    assert d.solve_kw["start"] == "stationary" and z.solve_kw["start"] == "zero" and e.solve_kw["start"] == "zero"
+    assert d.solve_kw["start_policy"] == "stationary" and z.solve_kw["start_policy"] == "zero" and e.solve_kw["start_policy"] == "zero"
     assert d.residual != z.residual
     rows = ns.sweep(new.with_transition(6.0, past={"model": old.model.to_dict()}, continuation="stationary"), "p1",
                     [10.0], solve_kw={"max_evaluations": 1})
-    assert rows[0].result.solve_kw["start"] == "stationary"
+    assert rows[0].result.solve_kw["start_policy"] == "stationary"
 
 
 def test_a_saved_transition_keeps_its_past_beside_it():

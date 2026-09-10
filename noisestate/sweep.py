@@ -89,21 +89,21 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
         m = Model.from_dict(d)
         S = engines.solver(m, numerics, **solver_kw)
         t0 = time.time()
-        init = None
+        start_from = None
         if prev is not None and not S.same_grid(prev.compiled) and hasattr(S, "warm_maps_from"):
-            init = S.warm_maps_from(prev)                    # another grid of the same model (a sweep over T)
+            start_from = S.warm_maps_from(prev)                    # another grid of the same model (a sweep over T)
         if prev is not None and S.same_grid(prev.compiled):
             w1 = warm_start(prev)
             if prev2 is not None and S.same_grid(prev2.compiled):
                 w0 = warm_start(prev2); e1, e0 = built[-1]["value"], built[-2]["value"]
                 if abs(e1 - e0) > 0:
-                    init = {k: w1[k] + (w1[k] - w0[k]) * (float(v) - e1) / (e1 - e0) for k in w1}
-            if init is None:
-                init = w1
+                    start_from = {k: w1[k] + (w1[k] - w0[k]) * (float(v) - e1) / (e1 - e0) for k in w1}
+            if start_from is None:
+                start_from = w1
         kw = dict(solve_kw or {})
-        if init is None:
-            kw["start"] = default_start(S, kw.get("start"))
-        res = S.solve(init=init, **kw)
+        if start_from is None:
+            kw["start_policy"] = default_start(S, kw.get("start_policy"))
+        res = S.solve(start_from=start_from, **kw)
         change = None
         if prev is not None and S.same_grid(prev.compiled):
             a1, a0 = warm_start(res), warm_start(prev)

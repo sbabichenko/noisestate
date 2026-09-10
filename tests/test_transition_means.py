@@ -34,7 +34,7 @@ def test_same_model_means_are_the_stationary_constants():
     excess costs are 7e-11, and res.mean() reads the path beyond the window."""
     mt = with_target(1.0)
     stat = stationary(mt, 16)
-    res = ns.solve(mt.with_finite(6.0).with_numerics(nodes=16), past=stat, continuation=stat, start="stationary").require_converged()
+    res = ns.solve(mt.with_finite(6.0).with_numerics(nodes=16), past=stat, continuation=stat, start_policy="stationary").require_converged()
     assert res.evaluations <= 2 and res.mean_times.shape == (res.compiled.Nt,)
     buf = res.mean_times >= 6.0 + 1e-9
     for n in ("X", "D1", "D2"):
@@ -56,7 +56,7 @@ def test_target_change_runs_from_the_old_means_to_the_new():
     (a past shorter than T, no continuation) solves too, with the controls vanishing at T."""
     old = stationary(with_target(1.0), 12)
     res = ns.solve(with_target(2.0).with_finite(6.0).with_numerics(nodes=12), past=old, continuation="stationary",
-                   start="stationary").require_converged()
+                   start_policy="stationary").require_converged()
     new = res.continuation.means
     assert abs(old.means["X"] - 0.86621659) < 1e-7 and abs(new["X"] - 1.73243318) < 1e-7 and abs(new["D1"] - 3.59787014) < 1e-7
     c = res.compiled; on = np.arange(c.Nt) < c.P_T * c.g.nt              # the time nodes of [0, T]; the rest the buffer's

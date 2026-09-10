@@ -17,7 +17,7 @@ def test_same_model_loss_path_is_the_stationary_flow():
     res.costs to 3e-14 (the row quadrature integrates products of interpolants exactly)."""
     m = example("ch3_two_player")
     stat = stationary(m, 16)
-    res = ns.solve(m.with_finite(6.0).with_numerics(nodes=16), past=stat, continuation=stat, start="stationary", tol=1e-10).require_converged()
+    res = ns.solve(m.with_finite(6.0).with_numerics(nodes=16), past=stat, continuation=stat, start_policy="stationary", tol=1e-10).require_converged()
     assert isinstance(res, TransitionResult) and res.kind == "transition" and res.evaluations <= 4
     assert res.times.shape == (res.compiled.Nt,) and res.times[0] == 0.0 and res.times[-1] == 9.0 and res.stationary is stat
     assert res.old_flows == stat.costs and res.new_flows == stat.costs
@@ -43,7 +43,7 @@ def test_regime_change_loss_path_runs_from_the_old_state_to_the_new_flow(tmp_pat
     m = example("ch3_two_player")
     old = ns.solve(m).require_converged()
     res = ns.solve(m.with_params(p1=10.0).with_finite(9.0).with_numerics(nodes=12), past=old, continuation="stationary",
-                   start="stationary").require_converged()
+                   start_policy="stationary").require_converged()
     assert res.settled < 1e-5
     c = res.compiled; I, w = c.g.row_quadrature(0.0, +1)
     K = res.kernel("X"); Ko = old.kernel("X")
@@ -91,10 +91,10 @@ def test_sweeps_over_the_horizon_and_over_the_change_size():
     m = example("ch3_two_player")
     d = m.with_params(p1=10.0).to_dict()
     d["horizon"] = {"kind": "transition", "T": 6.0, "past": {"model": EX + "ch3_two_player.yaml"}}; d["numerics"] = {"nodes": 8}
-    rows = ns.sweep(d, "horizon.T", [6.0, 9.0], solve_kw={"start": "stationary"})
+    rows = ns.sweep(d, "horizon.T", [6.0, 9.0], solve_kw={"start_policy": "stationary"})
     assert [r.value for r in rows] == [6.0, 9.0] and all(r.converged for r in rows) and rows[1].change is None
     assert rows[0].result.past is rows[1].result.past and rows[1].result.model.horizon.T == 9.0
-    alone = ns.solve({**d, "horizon": {**d["horizon"], "T": 9.0}}, start="stationary")
+    alone = ns.solve({**d, "horizon": {**d["horizon"], "T": 9.0}}, start_policy="stationary")
     assert rows[1].evaluations < alone.evaluations // 2 and np.abs(alone.world - rows[1].result.world).max() < 1e-6
     rows = ns.sweep(d, "p1", [7.0, 10.0])
     assert rows[0].result.past is rows[1].result.past and rows[1].change is not None and all(r.converged for r in rows)

@@ -137,15 +137,18 @@ def _radius_when_the_window_fails(res, asked: bool) -> None:
         pass
 
 
-def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluations=None, deadline=None,
+def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None, max_evaluations=None, deadline=None,
           progress=None, diagnostics: bool = True, refine: bool = False, stability: bool = False, verbose: bool = False,
           naive_observers=None, past=None, continuation=None, **unknown) -> Result:
     """Solve a model (a Model, a ModelBuilder, a dict, or a path to a YAML file) under `numerics` (a Numerics or
     a dict of its fields, laid over the model's own: engine, nodes, unit, unit_range, breakpoints,
     continuation_nodes, tol, damping, max_newton, variable, settings).  The other options are the solve's:
-    init (action kernels or raw maps per agent to start from), start ("zero", "coarse", or "stationary": the
-    continuation's stationary maps; the default is "stationary" wherever a continuation is given, on the file
-    form and the keyword form alike, else "zero"), tol (over the numerics'), max_evaluations and deadline (the bounds; past
+    start_from (an OBJECT: action kernels or raw maps per agent to begin at), start_policy (a NAME:
+    "zero", "coarse", or "stationary", the continuation's stationary maps; the default is "stationary"
+    wherever a continuation is given, on the file form and the keyword form alike, else "zero").  They are
+    two arguments because they are two different things, and supplying BOTH is an error rather than a
+    precedence rule: a rule would silently discard one of the two things the caller asked for, and the
+    caller could not tell which was used.  tol (over the numerics'), max_evaluations and deadline (the bounds; past
     either the best iterate is returned not converged), progress (a callable on {"evaluation", "residual",
     "phase", "seconds"} after every evaluation), diagnostics (False skips the checks at the end), refine (re-solve
     on a finer grid and report the change, res.refinement), stability (add res.stability(); it is also
@@ -153,6 +156,10 @@ def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluati
     naive_observers ({agent: [observers]}, the stationary engine); past and continuation (a transition's, on the
     spectral engine; on a model of kind "transition" each overrides the file's block).  Unknown options are a
     TypeError naming the Numerics or Settings field they belong to.  res.numerics is the resolved Numerics."""
+    if start_from is not None and start_policy is not None:
+        raise TypeError("solve() takes start_from OR start_policy, not both: start_from is an explicit "
+                        "starting point (kernels or maps) and start_policy is the name of a strategy that "
+                        "generates one. A precedence rule would discard one of them silently.")
     model = as_model(model)
     if unknown:
         bad = sorted(unknown)
@@ -163,9 +170,9 @@ def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluati
         raise TypeError(f"unknown option(s) {bad} for solve()" + (hint or "; see help(noisestate.solve)"))
     if model.horizon.kind == "transition" and model.horizon.settle is not None:      # the horizon is the march's output
         from .transition import march_model
-        if init is not None or start is not None:
+        if start_from is not None or start_policy is not None:
             raise ValueError("a transition with horizon.settle is solved by the march in T, which starts every point itself; "
-                             "init and start do not apply")
+                             "start_from and start_policy do not apply")
         res = march_model(model, numerics, past=past, continuation=continuation, verbose=verbose, tol=tol, max_evaluations=max_evaluations,
                           deadline=deadline, progress=progress, diagnostics=diagnostics)
         if refine:
@@ -179,7 +186,7 @@ def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluati
     kw = num.solve_kw()
     if tol is not None:
         kw["tol"] = tol
-    res = S.solve(init=init, start=engines.default_start(S, start), max_evaluations=max_evaluations, deadline=deadline, progress=progress,
+    res = S.solve(start_from=start_from, start_policy=engines.default_start(S, start_policy), max_evaluations=max_evaluations, deadline=deadline, progress=progress,
                   diagnostics=diagnostics, **kw)
     if refine:
         res.refine()

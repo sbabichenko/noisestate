@@ -55,7 +55,7 @@ def test_same_model_stationary_past_reproduces_the_stationary_kernels():
     [T - 2L, T - L), 1 at T (the control vanishes there)."""
     m = example("ch3_two_player"); L, T = 3.0, 12.0
     stat = stationary(m, 16)
-    res = ns.solve(m.with_finite(T).with_numerics(nodes=16), past=stat, tol=1e-10, start="coarse").require_converged()
+    res = ns.solve(m.with_finite(T).with_numerics(nodes=16), past=stat, tol=1e-10, start_policy="coarse").require_converged()
     g = res.grid; gs = stat.compiled.grid
     assert g.L == L and g.T == T and int(g.upper.sum()) == 256 and res.compiled.N == 1280
     worst = {"interior": 0.0, "next": 0.0, "end": 0.0}
@@ -171,7 +171,7 @@ def test_same_model_continuation_is_exact_on_the_whole_region():
         gm, out = solver.best_response(a, maps)
         dev = np.abs(gm - maps[a.name]).max(axis=(0, 1)) / np.abs(maps[a.name]).max()
         assert dev.max() < 5e-8 and dev[last].max() < 5e-9, (a.name, dev.max(), dev[last].max())
-    res = solver.solve(init=maps, tol=1e-10).require_converged()
+    res = solver.solve(start_from=maps, tol=1e-10).require_converged()
     assert res.evaluations <= 4 and res.settled < 1e-8 and res.continuation is stat
     for name in c.prim:
         dev = np.abs(res.kernel(name) - gs.interp(g.a) @ stat.kernel(name)).max(axis=1) / np.abs(stat.kernel(name)).max()
@@ -238,7 +238,7 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     assert all(np.array_equal(res8.maps[k], res2.maps[k]) for k in res8.maps)
     assert res.evaluate("X", "w0", np.array([1.0, 1.0]), np.array([-1.0, 0.5])).shape == (2,)
     assert res.second_order["player1"]["ok"] and res.solver_kw["past"] is res.past
-    short = ns.solve(new.with_stationary(3.0), past=old, continuation=cont).require_converged()
+    short = ns.solve(new.with_finite(3.0), past=old, continuation=cont).require_converged()   # a shorter T
     assert short.settled > 0.5 and "TRANSITION NOT SETTLED" in short.summary()
 
 
@@ -321,7 +321,7 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
     stat = stationary(m, 6, L)
     solver = same_model_solver(m, stat, T, 6)
     c = solver.c; g = c.g
-    res = solver.solve(init=c.frozen, tol=1e-10).require_converged()
+    res = solver.solve(start_from=c.frozen, tol=1e-10).require_converged()
     assert res.evaluations <= 6 and res.settled < 5e-6
     for name in c.prim:
         dev = np.abs(res.kernel(name) - stationary_on_strip(stat, g, name)).max() / np.abs(stat.kernel(name)).max()
@@ -473,14 +473,14 @@ def test_same_model_identity_holds_below_the_window(T):
     fast (4 s); T = 1, whose unit-cut strip has four panels, is gated (13 s)."""
     m = example("ch3_two_player")
     stat = stationary(m, 8)
-    ref = same_model_solver(m, stat, 6.0, 8); rdev = one_shot_deviation(ref); rres = ref.solve(start="stationary")
+    ref = same_model_solver(m, stat, 6.0, 8); rdev = one_shot_deviation(ref); rres = ref.solve(start_policy="stationary")
     solver = same_model_solver(m, stat, T, 8); c = solver.c; g = c.g
     assert c.T == T and g.L == 3.0 and c.buffer.any() and (g.upper & c.buffer).any()          # old shocks alive on the buffer
     assert [float(b) for b in g.bp] == ([0.0, 1.0, 2.0, 3.0, 4.0] if T == 1.0 else [0.0, 1.5, 3.0, 4.5])
     dev = one_shot_deviation(solver)
     for a in dev:
         assert dev[a].max() < 1.5 * rdev[a].max(), (a, dev[a].max(), rdev[a].max())
-    res = solver.solve(start="stationary")
+    res = solver.solve(start_policy="stationary")
     assert res.converged and res.evaluations <= 12 and res.settled < 1.5 * max(rdev[a].max() for a in rdev)
     for name in ("X", "D1", "D2"):
         S = stationary_on_strip(stat, g, name); Sr = stationary_on_strip(stat, ref.c.g, name)

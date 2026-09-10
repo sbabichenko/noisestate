@@ -75,7 +75,7 @@ def test_vectorised_path_matches_the_per_node_quadrature():
         d = example_dict("ch1_delayed_finite"); d.setdefault("numerics", {})["nodes"] = 8
         ns.solve(ns.Model.from_dict(d))
         m3 = example("ch3_two_player"); stat = stationary(m3, 6)
-        same_model_solver(m3, stat, 6.0, 6).solve(start="stationary")
+        same_model_solver(m3, stat, 6.0, 6).solve(start_policy="stationary")
     finally:
         triangle.TriangleGrid.path = orig
     assert len(calls) >= 12

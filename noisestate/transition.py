@@ -300,14 +300,14 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
                 stop = "floor"
                 res = _stationary_result(S, gap0, kw, diagnostics); break
             t0 = time.time()
-            res = S.solve(start="stationary", diagnostics=False, **kw)
+            res = S.solve(start_policy="stationary", diagnostics=False, **kw)
         else:
-            init = S.warm_maps_from(prev)
-            act = S.warm_actions_from(prev, init)
+            start_from = S.warm_maps_from(prev)
+            act = S.warm_actions_from(prev, start_from)
             t_lo = max(0.0, prev.compiled.T - L)
             bp = S.c.g.bp[S.c.g.bp <= t_lo + eps]
-            S.freeze_before(float(bp[-1]) if len(bp) else 0.0, init, actions=act)
-            res = S.solve(init=act, diagnostics=False, **kw)
+            S.freeze_before(float(bp[-1]) if len(bp) else 0.0, start_from, actions=act)
+            res = S.solve(start_from=act, diagnostics=False, **kw)
         gap = gap_pass(S, res.maps, T - L, T)
         rows.append(MarchPoint(T=float(T), gap=gap, evaluations=int(res.evaluations),
                                seconds=time.time() - t0, monitor="[T - L, T]", unknowns=unknowns(S)))
@@ -327,8 +327,8 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
         # maps the whole strip's fixed point to the solve tolerance again (one to three evaluations)
         t0 = time.time()
         S.freeze_before(0.0)
-        init = res.actions if res.actions is not None else res.maps
-        polished = S.solve(init=init, diagnostics=False, **kw)
+        start_from = res.actions if res.actions is not None else res.maps
+        polished = S.solve(start_from=start_from, diagnostics=False, **kw)
         polished.actions = polished.actions if polished.actions is not None else res.actions
         #  a frozen point is replaced, not patched: the polish pass's count and the time it took
         rows[-1] = dataclasses.replace(rows[-1], polish=int(polished.evaluations),
