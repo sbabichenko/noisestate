@@ -1,5 +1,91 @@
 # Changelog
 
+## 0.8.0 (2026-09-10) -- the contracts, decided rather than discovered
+
+A redesign written down before it was implemented (docs/api_spec.txt) and reviewed against the
+source at each step.  The 0.7 spellings are GONE rather than deprecated: nothing outside this
+repository imports noisestate, so no transition was owed.
+
+DIAGNOSTICS: STATUS IS NOT ACCEPTANCE
+
+A status describes one CHECK; a policy names which checks a USE requires; an assessment is what
+they produce together, and is never a single status.  Before this, require_ok() raised only when
+a flag was set, and a check that never ran set no flag -- so it promised "no applicable check
+failed" rather than "all required checks passed".  Two consequences, both demonstrated:
+solve(diagnostics=False) then require_ok() PASSED with no guards run, and the cell engine passed
+the whole verdict while performing two fewer checks than the others.
+
+Status has six values.  NOT_APPLICABLE is a property of the MODEL (nothing is missing);
+UNSUPPORTED is a property of the ENGINE (something is).  Merging them is what let an engine pass
+because it could not test.  Capability is declared per engine AND model: the second-order check
+cannot be built on the stationary engine at a positive discount, which is UNSUPPORTED rather than
+inapplicable -- the condition is meaningful, this method cannot reach it.
+
+Under Policy.PUBLICATION the cell engine therefore cannot produce an accepted result.  That is the
+honest report.  Policy.EXPLORATORY is legitimate and must be named.
+
+ConvergenceError and DiagnosticsError are now SIBLINGS under ResultValidationError.  A converged
+result can fail diagnostics, so `except ConvergenceError` must not catch that.
+
+STABILITY IS A CLAIM ABOUT A VERIFIED EQUILIBRIUM
+
+compare() classified response dynamics for scenarios that never converged, dropping the
+fixed_point_residual that would have shown it.  stability() now always returns the spectrum -- the
+Jacobian at a non-fixed point is a legitimate object -- and withholds only the INTERPRETATION,
+which appears when the point is verified: the residual under an explicit tolerance AND a mandatory
+minimum of checks a caller's policy may strengthen and can never weaken.
+
+Equilibrium validity and response stability are separate findings.  An equilibrium may be unstable
+under best-response iteration; that bears on the dynamics, not on validity.
+
+D4 is open -- the residual's norm, scaling and threshold are numerical work -- so nothing is
+verified today and no classification appears.  The evidence fields are populated and serialised
+regardless, which is the point of separating them.
+
+THE HORIZON CARRIED TWO QUANTITIES IN ONE FIELD
+
+`window: float = 8.0  # L for stationary; T for finite and transition`.  The cost was not the name:
+the lag window then had nowhere to live on a transition, so the same quantity sat in
+horizon.stationary["window"] there and horizon.window on a stationary model.
+
+Now `window` is the lag-truncation length L, `T` the terminal time, and `extent` a derived accessor
+that SELECTS between them.  Three horizon types express which quantities a kind has; accessing the
+other raises AttributeError rather than answering None.  with_horizon takes an OBJECT and replaces
+the horizon, which deletes the rule about what carries over.
+
+Seven places held the conflation, each locally consistent: the dataclass, the example files (one
+with a comment explaining it), _transition_model, the expression classes (Finite SUBCLASSED
+Stationary), the JSON schema, ModelBuilder, and about fifteen test fixtures -- two of which were
+building models they did not describe.
+
+CONTAINERS, SOLVERS, WARM STARTS, SIGNALS
+
+SweepPoint, ScenarioResult and MarchPoint are frozen dataclasses sharing conventions and not
+identity.  MarchPoint is new: the march rows were SweepPoints, possible only because that was a
+dict subclass, and the two share no fields.  Being frozen forced `jump` and `polish` to be computed
+rather than patched in afterwards.  refine() returns a Refinement carrying the finer Result in full.
+
+Four routes to the same three engine classes became two: solve() and the engines namespace.
+
+Warm starts are start_from (an OBJECT) and start_policy (a NAME).  Supplying both is an error, not
+a precedence rule: a rule discards one of them silently.
+
+with_signal takes a Signal -- the same object the expression form's Agent takes -- as well as the
+file-form blocks, and without_signal is its inverse down to the noise channels.
+
+SERIALISATION
+
+payload_version 2.  means_t -> mean_times, status -> assessment, resolution_ok gone,
+options.solve.start -> start_policy, stability carrying and REQUIRING its evidence, refinement a
+dict.  options.solve and options.solver enumerate their keys and refuse the rest: five of those six
+changes would have validated silently under version 1's open schema.
+
+WHAT IS RECORDED RATHER THAN FIXED
+
+docs/design/api_residue.txt lists nine inconsistencies the redesign did not reach, with the
+evidence and how each was found.  The largest: ns.Result does not declare 22 of its own members, so
+anything introspecting the class sees a partial API.
+
 ## 0.7.0 (2026-09-09) -- the names line up
 
 Fifteen public names were renamed.  None of them was wrong; all of them were inconsistent with the
