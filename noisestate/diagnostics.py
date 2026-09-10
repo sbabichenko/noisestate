@@ -169,3 +169,128 @@ def assess(statuses: Mapping[str, Status], policy: Policy, model,
                               if not s.computed and s is not Status.NOT_APPLICABLE))
     return Assessment(accepted=not blocking, policy=policy.name, blocking=blocking,
                       statuses=dict(statuses), uncomputed=uncomputed)
+
+
+@dataclass(frozen=True)
+class Stability:
+    """The best-response Jacobian at a point, and -- only if that point is a verified equilibrium --
+    what its spectrum means for response dynamics.
+
+    The Jacobian at a NON-fixed point is a legitimate object and is always returned: radius,
+    eigenvalues, method and the residual are computed whatever the point.  What is withheld is the
+    INTERPRETATION.  Labelling the spectrum at a non-equilibrium "equilibrium stability" is the
+    error, not computing it.
+
+    The classification fields are always PRESENT and are None when `verified` is False.  Removing
+    them conditionally would make attribute access depend on the data, which is worse than a
+    documented None.
+
+    EQUILIBRIUM VALIDITY AND RESPONSE STABILITY ARE SEPARATE FINDINGS.  An equilibrium may be
+    unstable under best-response iteration, and distinct equilibria may have distinct costs;
+    neither observation bears on whether a point is an equilibrium.
+    """
+    radius: float
+    eigenvalues: Tuple[complex, ...]
+    method: str
+    fixed_point_residual: float
+    residual_norm: str                       # which norm, and how it is scaled
+    residual_tolerance: Optional[float]      # None until D4 is settled
+    verified: bool
+    unverified_reasons: Tuple[str, ...]      # empty iff verified
+    full_response: Optional[str]
+    adjusted_response: Optional[str]
+    adjusted_radius_bound: Optional[float]
+    adjustment: Optional[float]
+    untied: bool = False
+    evaluations: int = 0
+
+    @property
+    def stable(self) -> bool:
+        """Whether the spectral radius is inside the unit circle.  A statement about the DYNAMICS,
+        true or false regardless of whether the point is a verified equilibrium."""
+        return self.radius < 1.0
+
+    def to_dict(self) -> dict:
+        return {"radius": self.radius, "eigenvalues": [[z.real, z.imag] for z in self.eigenvalues],
+                "method": self.method, "stable": self.stable,
+                "fixed_point_residual": self.fixed_point_residual,
+                "residual_norm": self.residual_norm, "residual_tolerance": self.residual_tolerance,
+                "verified": self.verified, "unverified_reasons": list(self.unverified_reasons),
+                "full_response": self.full_response, "adjusted_response": self.adjusted_response,
+                "adjusted_radius_bound": self.adjusted_radius_bound, "adjustment": self.adjustment,
+                "untied": self.untied, "evaluations": self.evaluations}
+
+    #  dict access, so code written against the old report keeps working within this package
+    def __getitem__(self, key):
+        return self.to_dict()[key]
+
+    def get(self, key, default=None):
+        return self.to_dict().get(key, default)
+
+
+#  D4 is not settled: the norm and scaling that make a residual comparable across grids and model
+#  scales are numerical work, not API work.  The FIELDS are specified and populated from the start
+#  so the evidence is carried and serialised now; only the CLASSIFICATION waits.
+RESIDUAL_NORM = "relative: ||F(z) - z|| / scale, the solver's own scaling"
+RESIDUAL_TOLERANCE = None
+UNDEFINED_CRITERION = "equilibrium residual criterion not yet defined (api_spec D4)"
+
+
+def verification(statuses: Mapping[str, Status], policy: Policy, model,
+                 residual: float) -> Tuple[bool, Tuple[str, ...]]:
+    """Whether a point is a verified equilibrium, and if not, why not.
+
+        required = applicable(MINIMUM | policy.required, model)
+        verified = residual_passed and all(statuses[c] is PASSED for c in required)
+
+    The UNION is what makes both halves true at once.  A WEAK policy cannot lower the bar, because
+    MINIMUM is always in the union; it also does not by itself cause rejection, since a policy that
+    adds nothing simply adds nothing.  A STRONG policy's additional required checks must also pass.
+    """
+    reasons = []
+    if RESIDUAL_TOLERANCE is None:
+        reasons.append(UNDEFINED_CRITERION)
+    elif not residual <= RESIDUAL_TOLERANCE:
+        reasons.append(f"fixed-point residual {residual:.2e} above {RESIDUAL_TOLERANCE:.2e}")
+    for check in sorted(applicable(MINIMUM | policy.required, model)):
+        status = statuses.get(check, Status.MISSING)
+        if status is not Status.PASSED:
+            reasons.append(f"{check} is {status}, not passed")
+    return (not reasons), tuple(reasons)
+
+
+def classify(eigenvalues, radius: float, method: str, adjustment: float = 0.5) -> dict:
+    """The response-dynamics classification of a VERIFIED equilibrium's spectrum.
+
+    Only ever called for a verified point (Result.stability gates it), because the words it
+    produces -- "converges", "oscillates" -- are claims about equilibrium dynamics.
+
+    The damped bound is sound by the triangle inequality: an Arnoldi run returns the leading Ritz
+    values, and an omitted mode mu has |mu| <= min|lambda returned|, so its damped image satisfies
+    |1 - a + a*mu| <= (1 - a) + a*min|lambda|.  When that cannot be bounded the result says
+    "not certified" rather than guessing.
+    """
+    import numpy as np
+    vals = np.asarray([complex(v) for v in eigenvalues])
+    dominant = vals[int(np.argmax(np.abs(vals)))]
+    damped = (1.0 - adjustment) + adjustment * vals
+    sampled = float(np.max(np.abs(damped)))
+    stable = radius < 1.0
+    if stable:
+        full = "converges"
+    elif abs(dominant.imag) <= 1e-8 * max(1.0, abs(dominant.real)) and dominant.real < -1:
+        full = "oscillates"
+    else:
+        full = "diverges"
+    bound = None
+    if method == "zero":
+        bound = sampled
+    elif stable:
+        bound = max(sampled, 1.0 - adjustment + adjustment * radius)
+    elif method == "arnoldi" and float(np.min(np.abs(vals))) < 1.0:
+        bound = max(sampled, 1.0 - adjustment + adjustment * float(np.min(np.abs(vals))))
+    adjusted = ("diverges" if sampled >= 1 else
+                "converges" if bound is not None and bound < 1 else "not certified")
+    return {"full_response": full, "adjusted_response": adjusted,
+            "adjusted_radius_bound": None if bound is None else float(bound),
+            "adjustment": float(adjustment), "dominant_eigenvalue": dominant}

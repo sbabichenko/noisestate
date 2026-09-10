@@ -146,14 +146,20 @@ def test_compare_keeps_results_and_separates_costs_from_dynamics():
     study = ns.compare({"base": base, "more information": more}, baseline="base", stability=True)
     assert study["base"].result.model is base
     assert study["base"].total_change == 0 and study["more information"].cost_changes["a"]["value"] == study["more information"].result.costs["a"]
-    assert study["base"].dynamics["full_response"] == "converges"
-    assert study["base"].dynamics["adjusted_response"] == "converges"
-    assert study["base"].dynamics["adjusted_radius_bound"] < 1
+    #  The classification is gated on VERIFICATION, not on convergence.  While D4 is open no point
+    #  is verified, so the words are withheld -- and the EVIDENCE is carried in their place, which
+    #  is the whole difference from the old behaviour of classifying whatever it was handed.
+    dyn = study["base"].dynamics
+    assert dyn["verified"] is False and dyn["full_response"] is None
+    assert any("residual criterion" in why for why in dyn["unverified_reasons"])
+    assert dyn["fixed_point_residual"] >= 0 and dyn["residual_norm"] and dyn["residual_tolerance"] is None
+    assert dyn["radius"] < 1 and dyn["stable"] is True      # the spectrum itself is still reported
     payload = study.to_dict(include_results=False)
     assert payload["baseline"] == "base" and len(payload["scenarios"]) == 2
     import json
     json.dumps(study.to_dict())
     assert "scenario" in study.summary() and "not checked" not in study.summary()
+    assert "not verified" in study.summary()               # stability ran; the point is not established
     with pytest.raises(ValueError, match="incompatible"):
         ns.compare({"stationary": base, "finite": base.with_finite(4)})
 

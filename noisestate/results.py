@@ -48,8 +48,9 @@ import numpy as np
 
 from .accel import ConvergenceError, DiagnosticsError
 from ._settings import DEFAULT, Settings, tunable
-from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, MINIMUM, Assessment, Policy, Status,
-                          applicable, assess)
+from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, MINIMUM, RESIDUAL_NORM, RESIDUAL_TOLERANCE,
+                          Assessment, Policy, Stability, Status, applicable, assess, classify,
+                          verification)
 from .kernel import Kernel, AttrDict
 from .spec import Model
 
@@ -551,7 +552,8 @@ class Result:
     STABILITY_MAX_EVALUATIONS = tunable("stability_max_evaluations")
     STABILITY_FALLBACK = tunable("stability_fallback")     # of those evaluations, the rounds kept for the power iteration when Arnoldi does not settle
 
-    def stability(self, untied: bool = True) -> dict:
+    def stability(self, untied: bool = True, policy: Policy = Policy.PUBLICATION,
+                  adjustment: float = 0.5) -> "Stability":
         """Stability of this equilibrium under best-response dynamics: the eigenvalues of largest
         modulus of the Jacobian of the best-response map at the equilibrium, by Arnoldi iteration on
         finite differences.  A spectral radius below one means small deviations by any agent die out
@@ -612,9 +614,20 @@ class Result:
                     v = w / nw
                 vals = np.array([lam])
         radius = float(np.max(np.abs(vals)))
-        rep = {"radius": radius, "eigenvalues": [complex(x) for x in np.asarray(vals)], "stable": bool(radius < 1.0),
-               "evaluations": int(count[0]), "untied": bool(untied and self.model.ties), "method": method,
-               "fixed_point_residual": float(np.linalg.norm(F0 - z0) / scale)}
+        residual = float(np.linalg.norm(F0 - z0) / scale)
+        #  The classification is gated on VERIFICATION, not on convergence: a converged solve is
+        #  not by itself an equilibrium, and the spectrum of a Jacobian at a non-fixed point is a
+        #  legitimate object that simply must not be called equilibrium stability.
+        ok, reasons = verification(self.diagnostics.statuses, policy, self.model, residual)
+        rep = Stability(
+            radius=radius, eigenvalues=tuple(complex(x) for x in np.asarray(vals)), method=method,
+            fixed_point_residual=residual, residual_norm=RESIDUAL_NORM,
+            residual_tolerance=RESIDUAL_TOLERANCE, verified=ok, unverified_reasons=reasons,
+            **({k: v for k, v in classify(vals, radius, method, adjustment).items()
+                if k != "dominant_eigenvalue"} if ok else
+               {"full_response": None, "adjusted_response": None,
+                "adjusted_radius_bound": None, "adjustment": None}),
+            untied=bool(untied and self.model.ties), evaluations=int(count[0]))
         self.stability_report = rep
         return rep
 
@@ -667,8 +680,9 @@ class Result:
             out["window_tail"] = float(tail)
         rep = getattr(self, "stability_report", None)
         if rep:
-            out["stability"] = {"radius": rep["radius"], "stable": rep["stable"], "untied": rep["untied"], "method": rep["method"],
-                                "eigenvalues": [[x.real, x.imag] for x in rep["eigenvalues"]]}
+            #  the whole Stability, so the payload carries the EVIDENCE as well as the verdict:
+            #  the residual, its norm and tolerance, and the reasons when the point is unverified
+            out["stability"] = rep.to_dict()
         for name in c.prim:
             out["kernels"][name] = {ch: self.kernel(name, ch).tolist() for ch in self.channels}
         for a in self.model.agents:

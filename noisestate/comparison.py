@@ -11,11 +11,6 @@ from .results import Result
 from .spec import Model
 
 
-def _complex(z) -> dict:
-    z = complex(z)
-    return {"real": float(z.real), "imag": float(z.imag)}
-
-
 @dataclass
 class ScenarioResult:
     """One named model and its ordinary solver result inside a comparison."""
@@ -49,36 +44,16 @@ class ScenarioResult:
 
     @property
     def dynamics(self) -> Optional[dict]:
+        """The response dynamics of this scenario, or None when stability() was not run.
+
+        The classification is gated at the source (Result.stability): it appears only for a
+        VERIFIED equilibrium, and the evidence -- the residual, its norm and tolerance, and the
+        reasons when unverified -- travels with it.  This property no longer decides anything; it
+        reports.  It used to compute a classification for any scenario, including one that never
+        converged, and to drop the fixed_point_residual that would have revealed it.
+        """
         rep = getattr(self.result, "stability_report", None)
-        if not rep:
-            return None
-        vals = np.asarray([complex(v) for v in rep["eigenvalues"]])
-        dominant = vals[int(np.argmax(np.abs(vals)))]
-        adjusted = (1.0 - self.adjustment) + self.adjustment * vals
-        sampled_radius = float(np.max(np.abs(adjusted)))
-        if rep["stable"]:
-            full = "converges"
-        elif abs(dominant.imag) <= 1e-8 * max(1.0, abs(dominant.real)) and dominant.real < -1:
-            full = "oscillates"
-        else:
-            full = "diverges"
-        bound = None
-        if rep["method"] == "zero":
-            bound = sampled_radius
-        elif rep["stable"]:
-            bound = max(sampled_radius, 1.0 - self.adjustment + self.adjustment * float(rep["radius"]))
-        elif rep["method"] == "arnoldi" and float(np.min(np.abs(vals))) < 1.0:
-            # Arnoldi returned the largest-modulus modes.  Every omitted mode is
-            # within the smallest returned disk, which bounds its damped image.
-            omitted = 1.0 - self.adjustment + self.adjustment * float(np.min(np.abs(vals)))
-            bound = max(sampled_radius, omitted)
-        adjusted_response = ("diverges" if sampled_radius >= 1 else
-                             "converges" if bound is not None and bound < 1 else "not certified")
-        return {"radius": float(rep["radius"]), "dominant_eigenvalue": _complex(dominant),
-                "full_response": full, "adjustment": float(self.adjustment),
-                "sampled_adjusted_radius": sampled_radius,
-                "adjusted_radius_bound": None if bound is None else float(bound),
-                "adjusted_response": adjusted_response}
+        return None if rep is None else rep.to_dict()
 
     def to_dict(self, *, include_result: bool = True) -> dict:
         # solve_ok reads `converged` rather than the "solve" category, which holds that one check:
@@ -118,6 +93,17 @@ class ComparisonResult:
     HEAD = ("scenario", "total cost", "vs baseline", "solve", "assessment", "full response")
     ALIGN = "<>><<<"           # the name left, the two numbers right, the verdicts left
 
+    @staticmethod
+    def _response(dyn) -> str:
+        """The response column.  A classification only exists for a VERIFIED equilibrium, so the
+        column distinguishes three things a single word used to conflate: not run at all, run but
+        the point is not established as an equilibrium, and the actual classification."""
+        if dyn is None:
+            return "not checked"
+        if not dyn["verified"]:
+            return "not verified"
+        return dyn["full_response"]
+
     def summary(self, policy=None) -> str:
         """The comparison as a table: cost, change against the baseline, and the verdicts apart.
 
@@ -137,7 +123,7 @@ class ComparisonResult:
             rows.append((name, f"{case.total_cost:.5f}",
                          "baseline" if name == self.baseline else f"{case.total_change_fraction:+.2%}",
                          "ok" if data["solve_ok"] else "failed", assessed,
-                         data["dynamics"]["full_response"] if data["dynamics"] else "not checked"))
+                         self._response(data["dynamics"])))
         width = [max(len(h), *(len(r[i]) for r in rows)) if rows else len(h)
                  for i, h in enumerate(self.HEAD)]
         def line(cells):

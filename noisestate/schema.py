@@ -166,7 +166,11 @@ def payload_schema() -> dict:
                 "second_order": by_name({"type": "object"}),
                 "notes": {"type": "array", "items": {"type": "string"}},
                 "refinement": {"type": "object"}, "window_tail": {"type": "number"},
-                "stability": {"type": "object", "required": ["radius", "stable"]},
+                #  verified is required because the evidence is the point: a payload that carried a
+                #  radius without saying whether the point is an equilibrium invited the reader to
+                #  treat the spectrum as equilibrium stability.
+                "stability": {"type": "object", "required": ["radius", "stable", "verified",
+                                                            "fixed_point_residual", "residual_norm"]},
                 "past": {"type": "object"}, "settled": {"type": ["number", "null"]}, "continuation": {"type": "object"},
                 "loss_path": by_name(numbers), "belief_error": by_name(by_name(numbers)),
                 "excess_costs": by_name({"type": "number"}),

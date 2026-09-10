@@ -136,3 +136,71 @@ def test_the_verification_minimum_is_not_a_policy_and_cannot_be_weakened_by_one(
     assert not MINIMUM <= Policy.EXPLORATORY.required        # a weak policy does not shrink it
     m = model()
     assert applicable(MINIMUM | Policy.EXPLORATORY.required, m) == applicable(MINIMUM, m)
+
+
+# ------------------------------------------------------------------ stability: PART 4
+
+def test_the_spectrum_is_always_computed_only_the_interpretation_is_gated():
+    """The Jacobian at a non-fixed point is a legitimate object.  Labelling its spectrum
+    "equilibrium stability" is the error, not computing it."""
+    res = ns.solve(example("ch3_two_player"))
+    st = res.stability()
+    assert st.radius > 0 and st.eigenvalues and st.method            # always computed
+    assert st.fixed_point_residual >= 0 and st.residual_norm         # the evidence, always
+    assert st.verified is False                                      # while D4 is open
+    assert (st.full_response, st.adjusted_response, st.adjusted_radius_bound) == (None, None, None)
+
+
+def test_the_classification_fields_are_present_and_none_never_absent():
+    """Removing them conditionally would make attribute access depend on the data."""
+    st = ns.solve(example("ch3_two_player")).stability()
+    for field in ("full_response", "adjusted_response", "adjusted_radius_bound", "adjustment"):
+        assert hasattr(st, field)
+
+
+def test_verification_names_every_failing_condition_not_only_the_first():
+    """ch3_two_player fails the window guard AND waits on D4, so it is unverified twice over.
+    Even once D4 lands, that model stays unclassified until its window is fixed."""
+    st = ns.solve(example("ch3_two_player")).stability()
+    assert len(st.unverified_reasons) >= 2
+    assert any("residual criterion" in r for r in st.unverified_reasons)
+    assert any("window" in r for r in st.unverified_reasons)
+
+
+def test_a_weak_policy_cannot_lower_the_verification_bar():
+    """verified uses applicable(MINIMUM | policy.required, model).  The union is what stops
+    Policy.EXPLORATORY producing verified=True on weaker evidence under the same label."""
+    res = ns.solve(example("ch3_two_player"))
+    lenient = res.stability(policy=Policy.EXPLORATORY)
+    assert lenient.verified is False
+    assert any("window" in r for r in lenient.unverified_reasons)     # not in EXPLORATORY.required
+    assert lenient.full_response is None
+
+
+def test_the_payload_carries_the_verification_evidence_not_just_the_radius():
+    """A radius with no statement about whether the point is an equilibrium invites the reader to
+    treat the spectrum as equilibrium stability, which is the misreading PART 4 exists to prevent."""
+    res = ns.solve(example("ch3_two_player"))
+    res.stability()
+    block = res.to_dict()["stability"]
+    assert set(block) >= {"radius", "verified", "fixed_point_residual", "residual_norm",
+                          "residual_tolerance", "unverified_reasons"}
+    assert block["verified"] is False and block["residual_tolerance"] is None
+    assert ns.schema.validate(res.to_dict(), "payload") == []
+
+
+def test_compare_reports_the_dynamics_rather_than_deciding_them():
+    """dynamics used to classify any scenario, including one that never converged, and dropped the
+    fixed_point_residual that would have revealed it.  It now reports what stability() produced."""
+    m = example("ch3_two_player").with_numerics(nodes=6)
+    study = ns.compare({"a": m}, baseline="a", stability=True)
+    dyn = study["a"].dynamics
+    assert dyn["verified"] is False and dyn["full_response"] is None
+    assert dyn["fixed_point_residual"] is not None            # the evidence it used to drop
+    assert "not verified" in study.summary()                  # distinct from "not checked"
+
+    #  "not checked" is the third case: stability never ran.  A model whose window guard fails has
+    #  its radius computed unasked (noisestate._radius_when_the_window_fails), so the model here is
+    #  a finite one, which carries no window check at all.
+    quiet = example("ch1_two_player_finite")
+    assert "not checked" in ns.compare({"a": quiet}, baseline="a").summary()
