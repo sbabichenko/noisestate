@@ -7,6 +7,7 @@ stays the reference; a note here is an argument with its numbers attached.
 | note | what it holds |
 |---|---|
 | [best-response-jacobian.html](best-response-jacobian.html) | why `res.stability()`'s spectral radius is `rho(D^-1 O)`, read off the first-order condition, and why the second-order check cannot see what it sees |
+| [who-should-be-seen.html](who-should-be-seen.html) | three asymmetric players on a triangle: where the information wedge lives, why a public order-flow signal hurts unless it exposes exactly one player, and where a fixed precision budget should go |
 
 `_template.html` is that page with the content taken out: the tokens, the type scale and the
 components, with the constraints written into the comment at the top.  Copy it, change the
@@ -30,4 +31,6 @@ components, with the constraints written into the comment at the top.  Copy it, 
 
 Every figure in a note is measured, and the note says where from.  The Jacobian note's numbers come
 from `extras/tools/ch3_long_window_branch.py` and a direct assembly of the 48x48 Jacobian described
-in its own footer; `docs/limits.md` carries the same table in prose.
+in its own footer; `docs/limits.md` carries the same table in prose.  The triangle note's model is
+`examples/triangle_game.py` and its simplex maps are `extras/tools/precision_simplex.py`, which also
+carries the resolution check the note's last table reports.
