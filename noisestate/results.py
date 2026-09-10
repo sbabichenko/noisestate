@@ -50,7 +50,7 @@ from .accel import ConvergenceError, DiagnosticsError
 from ._settings import DEFAULT, Settings, tunable
 from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, MINIMUM, RESIDUAL_NORM, RESIDUAL_TOLERANCE,
                           Assessment, Policy, Stability, Status, applicable, assess, classify,
-                          verification)
+                          curvature_is_obtainable, verification)
 from .kernel import Kernel, AttrDict
 from .spec import Model
 
@@ -209,9 +209,17 @@ class Result:
     #  never merely absent -- the distinction the cell engine used to fall through.
     SUPPORTED_CHECKS = frozenset(CHECKS)
 
-    @classmethod
-    def supported_checks(cls) -> frozenset:
-        return cls.SUPPORTED_CHECKS
+    def supported_checks(self) -> frozenset:
+        """Which checks THIS engine can compute for THIS model.
+
+        Capability is a property of the pair, not of the class alone: the second-order check is
+        built as an exact quadratic form and cannot be built at all on the stationary engine with a
+        positive discount, whatever the engine otherwise supports.
+        """
+        out = set(self.SUPPORTED_CHECKS)
+        if not curvature_is_obtainable(self.model):
+            out.discard("second_order")
+        return frozenset(out)
 
     @property
     def diagnostics(self) -> "Diagnostics":

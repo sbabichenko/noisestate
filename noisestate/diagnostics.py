@@ -55,13 +55,20 @@ def _is_transition(model) -> bool:
     return model.horizon.kind == "transition"
 
 
-def _objective_is_quadratic_in_the_strategy(model) -> bool:
-    """Whether a second-order check has anything to test.
+def curvature_is_obtainable(model) -> bool:
+    """Whether THIS package can compute the second-order check for `model`.
 
-    On the stationary engine with a positive discount the discounted objective is NOT a quadratic
-    form in the stationary kernel, so there is no form whose curvature could be taken -- the check
-    is meaningless for the model rather than absent from the run.  Engine._second_order says so and
-    returns None; treating that as a missing record would report a defect where there is none.
+    A capability question, not an applicability one.  Second-order optimality of a best response is
+    meaningful for every model here: the agent's problem has a second-order condition whether or
+    not its objective is quadratic.  What is narrower is the method -- Engine._second_order builds
+    the curvature as an exact quadratic form M = T' G T and returns None when the objective is not
+    one in the strategy, which is the stationary engine with a positive discount (the discounted
+    objective is not a quadratic form in the stationary kernel).
+
+    So the check APPLIES and the engine CANNOT RUN IT: that is UNSUPPORTED, and it blocks under a
+    policy that requires it.  Calling it NOT_APPLICABLE would claim the condition has no meaning
+    for the model, which is a mathematical claim this package has not established and does not
+    need -- and it would let a result be accepted for a check nothing performed.
     """
     return not (model.horizon.kind == "stationary" and float(model.horizon.discount) > 0.0)
 
@@ -69,7 +76,7 @@ def _objective_is_quadratic_in_the_strategy(model) -> bool:
 CHECKS = {
     "converged": lambda model: True,
     "resolution": lambda model: True,
-    "second_order": _objective_is_quadratic_in_the_strategy,
+    "second_order": lambda model: True,      # applies everywhere; see curvature_is_obtainable
     "window": _carries_lag_window,
     "settled": _is_transition,
 }

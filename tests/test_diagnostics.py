@@ -79,14 +79,23 @@ def test_the_window_check_applies_to_a_transition_too_not_only_a_stationary_mode
     assert "window" not in applicable(CHECKS, example("ch3_two_player").with_finite(1.0))
 
 
-def test_a_check_with_no_form_to_test_is_not_applicable_rather_than_missing():
-    """The stationary engine with a positive discount has no quadratic form in the strategy, so
-    Engine._second_order returns None.  Reporting that as MISSING would claim a defect in the
-    package where the check simply cannot mean anything for the model."""
+def test_a_check_this_engine_cannot_build_is_unsupported_not_inapplicable():
+    """Engine._second_order builds the curvature as an exact quadratic form and returns None on the
+    stationary engine with a positive discount.  That is a limit of the METHOD, not of the
+    question: second-order optimality is meaningful for the model whether or not its objective is
+    quadratic, so the check APPLIES and the engine cannot run it.
+
+    Calling it NOT_APPLICABLE -- as an earlier commit did -- would assert that the condition has no
+    meaning here, a mathematical claim this package has not established, and would let the result
+    be accepted for a check nothing performed."""
     kb = ns.solve(example("ch4_kyle_back"))
     assert kb.model.horizon.discount > 0 and kb.model.horizon.kind == "stationary"
-    assert kb.diagnostics.statuses["second_order"] is Status.NOT_APPLICABLE
-    assert kb.require_ok() is kb
+    assert kb.diagnostics.statuses["second_order"] is Status.UNSUPPORTED
+    with pytest.raises(ns.DiagnosticsError, match="second_order"):
+        kb.require_ok()
+    assert kb.require_ok(Policy.EXPLORATORY) is kb          # a weaker use, named
+    #  and it is the MODEL that decides, not the engine class: rho = 0 on the same engine is fine
+    assert ns.solve(example("ch3_two_player")).diagnostics.statuses["second_order"] is Status.PASSED
 
 
 # ------------------------------------------------------------------ the aggregate is not a status

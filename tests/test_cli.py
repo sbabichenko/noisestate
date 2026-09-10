@@ -54,7 +54,13 @@ def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
     assert r.require_converged() is r and not r.diagnostics.assess().accepted
     with pytest.raises(ns.DiagnosticsError, match="converged, but"):
         r.require_ok()
-    assert ns.solve(os.path.join(EX, "ch4_kyle_back.yaml")).require_ok().diagnostics.assess().accepted
+    #  a model whose every required check actually RAN and passed
+    assert ns.solve(os.path.join(EX, "ch1_two_player_finite.yaml")).require_ok().diagnostics.assess().accepted
+    #  and one where a required check could not be run at all: the second-order curvature is built
+    #  as an exact quadratic form, which the stationary engine with a positive discount does not
+    #  have.  Nothing performed the check, so the result is not accepted for it.
+    with pytest.raises(ns.DiagnosticsError, match="second_order"):
+        ns.solve(os.path.join(EX, "ch4_kyle_back.yaml")).require_ok()
     assert main(["solve", os.path.join(EX, "ch3_two_player.yaml")]) == 0
     capsys.readouterr()
     assert main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--require-ok"]) == 1
@@ -65,7 +71,11 @@ def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
     assert main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--diagnostics"]) == 0
     detailed = capsys.readouterr().out
     assert "meaning: Whether stationary kernels" in detailed and "suggested: --window 6" in detailed
-    assert main(["solve", os.path.join(EX, "ch4_kyle_back.yaml"), "--require-ok"]) == 0
+    #  the CLI splits the same way: a model whose required checks all ran and passed exits 0, and
+    #  ch4_kyle_back exits 1 because nothing could perform its second-order check
+    assert main(["solve", os.path.join(EX, "ch1_two_player_finite.yaml"), "--require-ok"]) == 0
+    capsys.readouterr()
+    assert main(["solve", os.path.join(EX, "ch4_kyle_back.yaml"), "--require-ok"]) == 1
 
 
 def test_describe_prints_the_model_as_equations():
