@@ -19,7 +19,6 @@ import yaml
 
 from .expr import SweepPoint
 from .spec import Model, ModelBuilder
-from .numerics import Numerics
 from .past import Past
 from .results import TriangleResult
 from . import engines

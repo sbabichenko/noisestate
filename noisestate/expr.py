@@ -30,7 +30,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from . import spec as _spec
-from .kernel import AttrDict
 
 Number = Union[int, float]
 
@@ -1082,5 +1081,5 @@ class using_settings:
 
 
 __all__ = ["Param", "Coef", "shocks", "Shock", "State", "Control", "define", "Definition", "Quantity", "Linear", "Quad",
-           "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint", "settings",
+           "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint", "using_settings",
            "sqrt", "exp", "log", "sin", "cos", "tanh"]

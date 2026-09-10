@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterator, Mapping, Optional
 
-import numpy as np
 
 from .numerics import Numerics
 from .results import Result

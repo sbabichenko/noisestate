@@ -4,11 +4,8 @@ These are the things a person meets in the first ten minutes -- the first exampl
 prints, what dir() shows, what the CLI calls the horizon -- and each one here was wrong at some point
 without a test noticing.
 """
-import json
 import os
 import re
-import subprocess
-import sys
 
 import pytest
 

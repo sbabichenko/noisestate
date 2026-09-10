@@ -17,7 +17,7 @@ import numpy as np
 import yaml
 
 from . import __version__, solve as _solve
-from .results import plot_payload, plot_sweep_payload
+from .plotting import plot_payload, plot_sweep_payload
 from .spec import Model
 from .numerics import Numerics
 from .sweep import sweep

@@ -279,12 +279,24 @@ def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
         json.dump(r.to_dict(), fh)
     assert main(["plot", str(tmp_path / "res.json"), str(tmp_path / "res.png")]) == 1 and (tmp_path / "res.png").exists()
 
-    from noisestate.results import plot_payload
+    from noisestate.plotting import plot_payload
     stationary = r.to_dict()
     stationary["kernels"]["D1"] = {ch: [0.0] * len(stationary["axes"]["age"]) for ch in stationary["channels"]}
     fig = plot_payload(stationary, str(tmp_path / "zero.png"))
     assert any(ax.get_title().startswith("D1:") for ax in fig.axes)       # a zero kernel remains visible
     assert "WARNING: failed checks" in fig._suptitle.get_text()           # an under-resolved plot cannot look authoritative
+
+    #  The plain finite TRIANGLE, which is the default engine for a finite model and what the
+    #  README's first workflow produces.  The suite plotted a stationary, a cells and a transition
+    #  payload and never this one, so plot_payload read horizon["window"] for its time axis -- a key
+    #  a finite horizon stopped carrying when 0.8 split T from the lag window -- and raised KeyError
+    #  for every finite payload.  The transition case hid it by short-circuiting on kind first.
+    tri = ns.solve(os.path.join(EX, "ch1_two_player_finite.yaml"), {"nodes": 6}, max_evaluations=1).to_dict()
+    assert "window" not in tri["horizon"] and tri["horizon"]["T"] == 1.0
+    fig = plot_payload(tri, str(tmp_path / "triangle.png"))
+    kernel_axes = [ax for ax in fig.axes if " on " in ax.get_title()]
+    assert kernel_axes and all(ax.lines for ax in kernel_axes)            # curves drawn, not an empty frame
+    assert (tmp_path / "triangle.png").exists()
 
     cells = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
     cells["numerics"] = {"engine": "cells", "nodes": 6}

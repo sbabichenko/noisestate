@@ -34,7 +34,10 @@ import re
 import warnings
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union, overload
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union, overload
+
+if TYPE_CHECKING:                       # the overloads below name it; the runtime imports it lazily
+    from .expr import Signal
 
 Number = Union[int, float, str]
 Atom = Tuple[str, float]          # (primary name, lag); lag > 0 past, < 0 future
