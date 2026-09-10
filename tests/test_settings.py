@@ -2,6 +2,7 @@
 through settings=, with the older class-attribute names kept as aliases."""
 import json, os, pytest
 import noisestate as ns
+from noisestate import engines
 from noisestate.diagnostics import Status
 from noisestate import Settings
 from noisestate.results import StationaryResult
@@ -15,18 +16,18 @@ def test_defaults_aliases_and_the_dict_form():
     # every older name reads the same field, on the class (the defaults) and on an instance (its settings)
     aliases = {(EngineBase, "FOC_RCOND"): "foc_rcond", (EngineBase, "ANDERSON_M"): "anderson_m",
                (EngineBase, "SECOND_ORDER_TOL"): "second_order_tol", (EngineBase, "SECOND_ORDER_DENSE"): "second_order_dense",
-               (ns.SpectralFiniteSolver, "MAP_RIDGE"): "map_ridge", (ns.SpectralFiniteSolver, "MEAN_RCOND"): "mean_rcond",
-               (ns.StationarySolver, "MEAN_RCOND"): "mean_rcond", (ns.Result, "RESOLUTION_TOL"): "resolution_tol",
+               (engines.spectral, "MAP_RIDGE"): "map_ridge", (engines.spectral, "MEAN_RCOND"): "mean_rcond",
+               (engines.stationary, "MEAN_RCOND"): "mean_rcond", (ns.Result, "RESOLUTION_TOL"): "resolution_tol",
                (ns.Result, "WINDOW_TAIL_TOL"): "window_tail_tol", (ns.Result, "MEAN_ZERO"): "mean_zero",
                (ns.Result, "STABILITY_MAX_EVALUATIONS"): "stability_max_evaluations", (ns.Result, "STABILITY_FALLBACK"): "stability_fallback",
                (ns.Result, "REFINE_COST_TOL"): "refine_cost_tol", (ns.Result, "REFINE_KERNEL_TOL"): "refine_kernel_tol"}
     for (cls, name), field in aliases.items():
         assert getattr(cls, name) == getattr(DEFAULT, field)
-    assert (EngineBase.FOC_RCOND, ns.Result.STABILITY_MAX_EVALUATIONS, ns.SpectralFiniteSolver.MAP_RIDGE) == (1e-10, 200, 1e-13)
+    assert (EngineBase.FOC_RCOND, ns.Result.STABILITY_MAX_EVALUATIONS, engines.spectral.MAP_RIDGE) == (1e-10, 200, 1e-13)
     m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
-    S = ns.StationarySolver(m, settings={"foc_rcond": 1e-8})
+    S = engines.stationary(m, settings={"foc_rcond": 1e-8})
     assert S.FOC_RCOND == S.settings.foc_rcond == 1e-8 and S.solver_kw["settings"] == {"foc_rcond": 1e-8}
-    assert S.c.LEAD_WEIGHT_WARN == DEFAULT.lead_weight_warn and "settings" not in ns.StationarySolver(m).solver_kw
+    assert S.c.LEAD_WEIGHT_WARN == DEFAULT.lead_weight_warn and "settings" not in engines.stationary(m).solver_kw
     with pytest.raises(TypeError, match="unknown settings"):
         Settings.of({"nope": 1})
     with pytest.raises(TypeError):
@@ -55,7 +56,7 @@ def test_settings_reach_the_checks_and_are_recorded():
     # recorded in the payload, JSON-ready, and the engine a result rebuilds carries them
     d = r.to_dict(); json.dumps(d)
     assert d["options"]["solver"]["settings"] == s.changed()
-    assert ns.solver(m, **d["options"]["solver"]).settings == s and r._make_solver(m).settings == s
+    assert engines.solver(m, **d["options"]["solver"]).settings == s and r._make_solver(m).settings == s
     assert r._make_solver(m).RESULT is StationaryResult
 
 
@@ -67,5 +68,5 @@ def test_settings_reach_the_best_response_and_the_solve():
     r = ns.solve(m, {"settings": Settings(anderson_iters=2)})                    # two Anderson iterations, then the Newton polish
     assert "anderson: 3 evaluations" in r.message and "newton polish" in r.message
     assert r.converged and abs(r.costs["player1"] - r0.costs["player1"]) < 1e-9
-    assert ns.SpectralFiniteSolver(m, settings=Settings(map_ridge=1e-9)).MAP_RIDGE == 1e-9
-    assert ns.FiniteSolver(m.with_finite(m.horizon.extent).with_numerics(nodes=8, engine="cells"), settings={"cell_dense_max": 1}).settings.cell_dense_max == 1
+    assert engines.spectral(m, settings=Settings(map_ridge=1e-9)).MAP_RIDGE == 1e-9
+    assert engines.cells(m.with_finite(m.horizon.extent).with_numerics(nodes=8, engine="cells"), settings={"cell_dense_max": 1}).settings.cell_dense_max == 1

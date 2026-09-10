@@ -113,8 +113,15 @@ def test_cell_engine_mean_solve_refuses_a_singular_mean_system():
 #  Deleted rather than aliased: nothing outside this repository imports noisestate, so no
 #  transition was owed.  Each removed name still explains itself, as the 0.6 removals do.
 
-RENAMED_07 = [("ENGINES", "ENGINE_CLASSES"), ("make_solver", "solver"),
-              ("BaseResult", "Result"), ("settings", "using_settings")]
+#  the 0.7 renames whose replacement is still a top-level name
+RENAMED_07 = [("BaseResult", "Result"), ("settings", "using_settings")]
+#  and those whose replacement has since MOVED to the engines namespace (0.8): the old spelling
+#  still reports the 0.7 rename, and the name it names is itself no longer on the package
+RENAMED_07_THEN_MOVED = [("ENGINES", "ENGINE_CLASSES"), ("make_solver", "solver")]
+#  0.8: four routes to the same three classes became one entry point and one namespace
+MOVED_08 = [("StationarySolver", "engines.stationary"), ("SpectralFiniteSolver", "engines.spectral"),
+            ("FiniteSolver", "engines.cells"), ("ENGINE_CLASSES", "engines.ENGINE_CLASSES"),
+            ("solver", "engines.solver")]
 GONE_ON_RESULT = ["check", "diagnose", "category_verdict", "action_kernel", "grid_info",
                   "means_driven", "means_t"]
 GONE_ON_MODEL = ["finite", "stationary", "owner", "means_driven"]
@@ -125,6 +132,24 @@ def test_the_renamed_top_level_names_are_gone_and_name_the_replacement(old, new)
     with pytest.raises(AttributeError, match=f"renamed noisestate.{new} in 0.7"):
         getattr(ns, old)
     assert getattr(ns, new) is not None
+
+
+@pytest.mark.parametrize("old,new", RENAMED_07_THEN_MOVED)
+def test_a_name_renamed_then_moved_still_reports_the_rename(old, new):
+    """The 0.7 message stands even though its replacement has since left the package: a reader
+    arriving with the oldest spelling is walked forward one step at a time."""
+    with pytest.raises(AttributeError, match=f"renamed noisestate.{new} in 0.7"):
+        getattr(ns, old)
+    with pytest.raises(AttributeError, match="moved to noisestate.engines"):
+        getattr(ns, new)
+
+
+@pytest.mark.parametrize("old,new", MOVED_08)
+def test_the_solver_routes_moved_to_the_engines_namespace(old, new):
+    from noisestate import engines
+    with pytest.raises(AttributeError, match=f"moved to noisestate.{new}"):
+        getattr(ns, old)
+    assert getattr(engines, new.split(".", 1)[1]) is not None
 
 
 def test_the_settings_submodule_was_renamed_so_the_hook_can_see_the_old_name():

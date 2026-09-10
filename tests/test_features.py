@@ -54,7 +54,7 @@ def test_lagged_state_feedback_in_both_engines():
 def test_sweep_and_finite_discounting():
     from noisestate.sweep import sweep
     rows = sweep(os.path.join(EX, "ch3_two_player.yaml"), "p1", [3.0, 4.0, 5.0])
-    assert all(r["converged"] for r in rows)
+    assert all(r.converged for r in rows)
     df = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); df.setdefault("numerics", {})["nodes"] = 8; df["horizon"]["discount"] = 0.5
     r = ns.solve(ns.Model.from_dict(df)).require_converged()
     assert 0 < r.costs["player1"] < 0.3969      # 0.2926, below the undiscounted 0.39690577; the closed form is in test_finite_discount.py

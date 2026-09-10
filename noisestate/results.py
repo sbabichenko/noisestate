@@ -49,7 +49,7 @@ import numpy as np
 from .accel import ConvergenceError, DiagnosticsError
 from ._settings import DEFAULT, Settings, tunable
 from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, MINIMUM, RESIDUAL_NORM, RESIDUAL_TOLERANCE,
-                          Assessment, Policy, Stability, Status, applicable, assess, classify,
+                          Assessment, Policy, Refinement, Stability, Status, applicable, assess, classify,
                           curvature_is_obtainable, verification)
 from .kernel import Kernel, AttrDict
 from .spec import Model
@@ -147,7 +147,7 @@ class Result:
     message: str = ""
     representation_error: Dict[str, float] = field(default_factory=dict)   # agent -> relative residual; the resolution check
     representation_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> where it sits (transition: interior / band tip / last window)
-    refinement: Optional[dict] = None          # filled by refine(): change of costs/kernels under a finer grid
+    refinement: Optional[object] = None        # filled by refine(): a Refinement, with the finer Result
     solver_class: object = None                # the engine that produced this result, with its options, so that
     solver_kw: dict = field(default_factory=dict)      # refine()/stability() rebuild the same solver
     solve_kw: dict = field(default_factory=dict)
@@ -251,7 +251,7 @@ class Result:
     def _make_solver(self, model: Model):
         """The engine that produced this result, with the same constructor options, on `model`."""
         if self.solver_class is None:
-            from .sweep import solver
+            from .engines import solver
             return solver(model)
         return self.solver_class(model, **self.solver_kw)
 
@@ -324,10 +324,11 @@ class Result:
     def cost_kind(self) -> str:
         return "stationary flow loss per unit time" if self.kind == "stationary" else "discounted integral over [0, T]"
 
-    def refine(self, factor: float = 1.5, **solve_kw) -> dict:
+    def refine(self, factor: float = 1.5, **solve_kw) -> "Refinement":
         """Re-solve on a finer grid (nodes x factor) and report the relative change of every agent's
         cost and of the kernels, the honest test of resolution (window, corner and product errors alike).
-        Stored in self.refinement and shown by summary()."""
+        Stored in self.refinement and shown by summary().  Returns a Refinement, which carries the
+        finer Result itself rather than only numbers taken from it."""
         import math
         n0 = int(self.model.horizon.nodes)
         n1 = 2 * n0 if self.kind == "finite_cells" else max(n0 + 2, int(math.ceil(n0 * factor)))   # cells: keep lags aligned
@@ -363,10 +364,11 @@ class Result:
             if here["min"] < 0:
                 curvature[name] = {"min": float(here["min"]), "fine_min": float(there["min"]),
                                    "nodes": n1, "shrinking": bool(there["min"] > here["min"])}
-        if curvature:
-            rep["second_order"] = curvature
-        self.refinement = rep
-        return rep
+        out = Refinement(coarse=self, fine=fine, nodes=n1, cost_change=float(cost_change),
+                         kernel_change=float(kernel_change), converged=bool(fine.converged),
+                         resolved=rep["resolved"], curvature=curvature)
+        self.refinement = out
+        return out
 
     def _kernel_change(self, fine) -> float:
         raise NotImplementedError
@@ -1085,9 +1087,7 @@ class TransitionResult(TriangleResult):
                                   "windows": [list(w) for w in self.excess_tail["windows"]]}
         out["window"] = float(self.compiled.T) if self.march_window is None else float(self.march_window)
         if self.march is not None:
-            out["march"] = [{"T": r["T"], "gap": {k: float(v) for k, v in r["gap"].items()}, "evaluations": int(r["evaluations"]),
-                             "seconds": float(r["seconds"]), "monitor": r["monitor"], "unknowns": int(r.get("unknowns", 0)),
-                             **({"polish": int(r["polish"])} if "polish" in r else {})} for r in self.march]
+            out["march"] = [r.to_dict() for r in self.march]      # MarchPoint serialises itself
             out["march_stop"] = self.march_stop; out["march_settle"] = self.march_settle
             out["settle_floor"] = None if self.march_floor is None else {k: float(v) for k, v in self.march_floor.items()}
         return out
@@ -1403,7 +1403,11 @@ def plot_payload(payload: dict, path: str):
 
 
 def plot_sweep_payload(rows: list, path: str):
-    """Plot the main decision measures from the JSON list written by the sweep CLI."""
+    """Plot the main decision measures from the JSON list written by the sweep CLI.
+
+    `rows` are the DICTS in that file, not SweepPoints: this reads a payload, and a
+    payload that has been through JSON has no attributes.
+    """
     if not rows:
         raise ValueError("a sweep plot needs at least one row")
     plt = _pyplot()

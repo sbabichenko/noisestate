@@ -9,6 +9,7 @@ import json, os
 import numpy as np, pytest
 from scipy.integrate import solve_ivp
 import noisestate as ns
+from noisestate import engines
 from noisestate.cli import main
 from noisestate.finite_spectral import SpectralFiniteSolver
 from noisestate.finite_free import RespOps
@@ -162,7 +163,7 @@ def test_targets_scale_the_means_and_leave_the_kernels_and_the_examples():
     r1 = ns.solve(ch1_targets(3.0, nodes=8)).require_converged(); r2 = ns.solve(ch1_targets(3.0, nodes=8, b=(2.0, -2.0))).require_converged()
     assert np.abs(r2.means["D1"] - 2 * r1.means["D1"]).max() < 1e-12 and abs(r2.cost_parts["player1"]["mean"] - 4 * r1.cost_parts["player1"]["mean"]) < 1e-12
     assert np.array_equal(r1.world, r2.world) and r1.cost_parts["player1"]["variance"] == r2.cost_parts["player1"]["variance"]
-    off = ns.solver(ch1_targets(3.0, nodes=8)).solve(diagnostics=False)
+    off = engines.solver(ch1_targets(3.0, nodes=8)).solve(diagnostics=False)
     assert np.array_equal(off.means["D1"], r1.means["D1"]) and off.costs == r1.costs and off.mean_times.shape == (8,)
     for f, costs in (("ch1_two_player_finite.yaml", {"player1": 0.396905768985999, "player2": 0.396905768985999}),
                      ("ch1_delayed_finite.yaml", {"player1": 0.4838242662682089, "player2": 0.476678011994978})):

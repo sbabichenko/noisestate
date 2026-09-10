@@ -11,6 +11,7 @@ N 9408 -> 3168 (588 -> 198 pieces).  A delayed row without a past keeps its map 
 the delay, read node to node on every piece, so unit_range below the window is refused there."""
 import numpy as np, pytest
 import noisestate as ns
+from noisestate import engines
 from helpers import example, delayed_stationary, same_model_solver, one_shot_deviation, slow
 
 
@@ -67,9 +68,9 @@ def test_unit_range_on_a_transition_keeps_the_identity_within_the_measured_floor
 def test_unit_range_guards_and_kind_change():
     m = example("ch1_delayed_finite")
     with pytest.raises(ValueError, match="shifted by the delay"):
-        ns.SpectralFiniteSolver(m.with_finite(2.0).with_numerics(nodes=4, unit_range=0.5))
+        engines.spectral(m.with_finite(2.0).with_numerics(nodes=4, unit_range=0.5))
     with pytest.raises(ValueError, match="below the largest lag"):
-        ns.SpectralFiniteSolver(undelayed(T=2.0, nodes=4, unit=0.125, unit_range=0.125))
+        engines.spectral(undelayed(T=2.0, nodes=4, unit=0.125, unit_range=0.125))
     s = m.with_stationary(3.0).with_numerics(nodes=4, unit_range=2.0)
     assert s.with_finite(2.0).horizon.unit_range is None            # a stationary sizing is not a finite one
     assert s.with_finite(2.0).with_numerics(unit_range=1.0).horizon.unit_range == 1.0

@@ -11,14 +11,34 @@ from .results import Result
 from .spec import Model
 
 
-@dataclass
+@dataclass(frozen=True)
 class ScenarioResult:
-    """One named model and its ordinary solver result inside a comparison."""
+    """One scenario of a comparison: a named model, its result, and its cost against the baseline.
+
+    A COMPARISON scenario, not a continuation point -- it carries baseline-relative costs, which
+    only mean anything against a named baseline, and it has no predictor or branch fields because
+    the scenarios are solved independently rather than along a path.  It shares CONVENTIONS with
+    SweepPoint, not identity: both are frozen dataclasses, both carry result / seconds /
+    evaluations / converged under those names, and both expose to_dict().
+    """
     name: str
     model: Model
     result: Result
     baseline_costs: Mapping[str, float]
     adjustment: float = 0.5
+
+    #  the fields shared with SweepPoint, read from the result rather than stored twice
+    @property
+    def seconds(self) -> float:
+        return float(self.result.seconds)
+
+    @property
+    def evaluations(self) -> int:
+        return int(self.result.evaluations)
+
+    @property
+    def converged(self) -> bool:
+        return bool(self.result.converged)
 
     @property
     def total_cost(self) -> float:
@@ -56,11 +76,12 @@ class ScenarioResult:
         return None if rep is None else rep.to_dict()
 
     def to_dict(self, *, include_result: bool = True) -> dict:
-        # solve_ok reads `converged` rather than the "solve" category, which holds that one check:
-        # the attribute is always there, while the check is absent when the solve ran diagnostics off.
+        #  `converged` is read from the result rather than from the "solve" diagnostic category:
+        #  the attribute is always there, while the check is absent when the solve ran with
+        #  diagnostics off.
         out = {"name": self.name, "total_cost": self.total_cost, "total_change": self.total_change,
                "total_change_fraction": self.total_change_fraction, "costs": self.cost_changes,
-               "solve_ok": bool(self.result.converged),
+               "converged": self.converged, "seconds": self.seconds, "evaluations": self.evaluations,
                "assessment": self.result.diagnostics.assess().to_dict(),
                "dynamics": self.dynamics}
         if include_result:
@@ -122,7 +143,7 @@ class ComparisonResult:
                         else f"{verdict.blocking[0].status}: {verdict.blocking[0].check}")
             rows.append((name, f"{case.total_cost:.5f}",
                          "baseline" if name == self.baseline else f"{case.total_change_fraction:+.2%}",
-                         "ok" if data["solve_ok"] else "failed", assessed,
+                         "ok" if data["converged"] else "failed", assessed,
                          self._response(data["dynamics"])))
         width = [max(len(h), *(len(r[i]) for r in rows)) if rows else len(h)
                  for i, h in enumerate(self.HEAD)]

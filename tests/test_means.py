@@ -6,6 +6,7 @@ import json, os, sys
 import numpy as np, pytest
 from scipy.optimize import fsolve
 import noisestate as ns
+from noisestate import engines
 from noisestate.cli import main
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
 
@@ -129,7 +130,7 @@ def test_tied_agents_and_the_cycle_market_get_identical_means():
 
 
 def test_means_are_part_of_the_answer_payload_and_cli(tmp_path):
-    m = one_agent(1.0, 1.0, 1.0, 0.0); S = ns.solver(m)
+    m = one_agent(1.0, 1.0, 1.0, 0.0); S = engines.solver(m)
     off = S.solve(diagnostics=False); assert abs(off.means["D"] - 0.5) < 1e-6 and off.cost_parts["a"]["mean"] < 0
     d = json.loads(json.dumps(off.to_dict()))
     assert d["means"] == off.means and d["cost_parts"]["a"]["mean"] == off.cost_parts["a"]["mean"] and d["costs"]["a"] == off.costs["a"]

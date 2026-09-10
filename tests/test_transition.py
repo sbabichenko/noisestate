@@ -19,6 +19,7 @@ import os
 import numpy as np, pytest
 from scipy.integrate import solve_ivp
 import noisestate as ns
+from noisestate import engines
 from noisestate.diagnostics import Status
 from noisestate.past import Past
 from helpers import (IVP, A1, H1, R1, T1, P0, prior_model as model, slow, slow_param, example, stationary,
@@ -37,7 +38,7 @@ def test_zero_past_is_the_finite_engine_bit_for_bit(name):
     assert np.array_equal(r0.world, r1.world)
     assert all(np.array_equal(r0.maps[a], r1.maps[a]) for a in r0.maps)
     assert r0.costs == r1.costs and r0.evaluations == r1.evaluations
-    assert r1.grid is r0.grid and ns.SpectralFiniteSolver(m, past=None).c.g is r0.grid
+    assert r1.grid is r0.grid and engines.spectral(m, past=None).c.g is r0.grid
     assert r1.past is None and r1.settled is None and "past" not in r1.to_dict()
 
 
@@ -413,27 +414,27 @@ def test_past_validation():
     other = m.to_dict(); other["channels"] = ["w0", "w1", "w9"]
     other["agents"]["player2"]["signals"]["y2"]["noise"] = {"w9": 1.0}
     with pytest.raises(ValueError, match="channels"):
-        ns.SpectralFiniteSolver(ns.Model.from_dict(other).with_finite(3.0).with_numerics(nodes=6), past=stat)
+        engines.spectral(ns.Model.from_dict(other).with_finite(3.0).with_numerics(nodes=6), past=stat)
     with pytest.raises(ValueError, match="not a state"):
-        ns.SpectralFiniteSolver(m.with_finite(3.0).with_numerics(nodes=6), past=[{"name": "v", "loads": {"V": 1.0}}])
+        engines.spectral(m.with_finite(3.0).with_numerics(nodes=6), past=[{"name": "v", "loads": {"V": 1.0}}])
     delayed = example("ch1_delayed_finite")
     dpast = stationary(delayed, 6, 1.0)
     with pytest.raises(ValueError, match="differ from the model's .* \\(agent, row, delay\\)"):
-        ns.SpectralFiniteSolver(delayed, past=dpast, continuation=ns.solve(ns.Model.from_dict({**delayed.to_dict(), "agents": {
+        engines.spectral(delayed, past=dpast, continuation=ns.solve(ns.Model.from_dict({**delayed.to_dict(), "agents": {
             **delayed.to_dict()["agents"], "player2": {**delayed.to_dict()["agents"]["player2"], "signals": {"y2": {"drift": {"X": "sqrt(p2)"}, "noise": {"w2": 1.0}}}}}}).with_stationary(1.0).with_numerics(nodes=6)).require_converged())
     fin = m.with_finite(3.0).with_numerics(nodes=6)
     with pytest.raises(TypeError, match="StationaryResult"):
-        ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(fin))
+        engines.spectral(fin, past=stat, continuation=ns.solve(fin))
     with pytest.raises(ValueError, match="window"):
-        ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(m.with_stationary(2.0).with_numerics(nodes=6)).require_converged())
-    short = ns.SpectralFiniteSolver(m.with_finite(2.0).with_numerics(nodes=6), past=stat, continuation=stat)   # T < L builds
+        engines.spectral(fin, past=stat, continuation=ns.solve(m.with_stationary(2.0).with_numerics(nodes=6)).require_converged())
+    short = engines.spectral(m.with_finite(2.0).with_numerics(nodes=6), past=stat, continuation=stat)   # T < L builds
     assert [float(b) for b in short.c.g.bp] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0] and int((short.c.g.upper & short.c.buffer).sum()) == 36
     with pytest.raises(ValueError, match="needs a past with a window"):
-        ns.SpectralFiniteSolver(fin, past=[{"name": "v", "loads": {"X": 1.0}}], continuation=stat)
+        engines.spectral(fin, past=[{"name": "v", "loads": {"X": 1.0}}], continuation=stat)
     with pytest.raises(ValueError, match="'stationary', 'end' or a StationaryResult"):
-        ns.SpectralFiniteSolver(fin, past=stat, continuation="tail")
+        engines.spectral(fin, past=stat, continuation="tail")
     with pytest.raises(ValueError, match="channels"):
-        ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(ns.Model.from_dict(other).with_numerics(nodes=6)).require_converged())
+        engines.spectral(fin, past=stat, continuation=ns.solve(ns.Model.from_dict(other).with_numerics(nodes=6)).require_converged())
     from noisestate.triangle import TriangleGrid
     with pytest.raises(ValueError, match="age panels shifted"):
         TriangleGrid([0.0, 1.0, 2.0, 3.5], 4, 4, T=3.5, window=1.0, buffer=2.0)

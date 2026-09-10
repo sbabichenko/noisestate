@@ -234,6 +234,10 @@ class Stability:
     def get(self, key, default=None):
         return self.to_dict().get(key, default)
 
+    def __contains__(self, key):
+        #  without this, `key in obj` falls back to iterating __getitem__ with 0, 1, 2 ...
+        return key in self.to_dict()
+
 
 #  D4 is not settled: the norm and scaling that make a residual comparable across grids and model
 #  scales are numerical work, not API work.  The FIELDS are specified and populated from the start
@@ -301,3 +305,45 @@ def classify(eigenvalues, radius: float, method: str, adjustment: float = 0.5) -
     return {"full_response": full, "adjusted_response": adjusted,
             "adjusted_radius_bound": None if bound is None else float(bound),
             "adjustment": float(adjustment), "dominant_eigenvalue": dominant}
+
+
+@dataclass(frozen=True)
+class Refinement:
+    """What a finer grid says about a result, and the finer result itself.
+
+    `fine` is the whole Result, not a summary of it: a caller who wants to run the diagnostics
+    contract on the refined solve, or read its kernels, can.  refine() used to return a dict of
+    numbers and throw the solve away.
+
+    cost_change is ONE number, not a mapping per agent, and that is deliberate: it is normalised by
+    a single scale over all agents, so that an agent whose cost is near zero is not reported as
+    unresolved for a change that is tiny in absolute terms.  Per-agent figures under per-agent
+    scales would invite exactly that comparison.  (The specification's draft asked for a mapping;
+    the implementation's own comment explains why it does not.)
+    """
+    coarse: object                      # the Result refine() was called on
+    fine: object                        # the finer solve, in full
+    nodes: int
+    cost_change: float                  # relative, max over agents, on one scale
+    kernel_change: float
+    converged: bool
+    resolved: Optional[bool]            # None where no verdict follows (the cell engine is first order)
+    curvature: Mapping[str, dict]       # per agent, only where the coarse grid saw a negative one
+
+    def to_dict(self) -> dict:
+        out = {"nodes": self.nodes, "converged": self.converged, "cost_change": self.cost_change,
+               "kernel_change": self.kernel_change, "resolved": self.resolved}
+        if self.curvature:
+            out["second_order"] = {k: dict(v) for k, v in self.curvature.items()}
+        return out
+
+    #  dict access for the payload and the diagnostic rows, which read it as data
+    def __getitem__(self, key):
+        return self.to_dict()[key]
+
+    def get(self, key, default=None):
+        return self.to_dict().get(key, default)
+
+    def __contains__(self, key):
+        #  without this, `key in obj` falls back to iterating __getitem__ with 0, 1, 2 ...
+        return key in self.to_dict()

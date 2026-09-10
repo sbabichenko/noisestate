@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 import noisestate as ns
+from noisestate import engines
 from noisestate.diagnostics import Status
 from noisestate import Numerics
 
@@ -166,15 +167,15 @@ def test_compare_keeps_results_and_separates_costs_from_dynamics():
 
 def test_engines_namespace_and_the_cell_engine_by_numerics():
     from noisestate import engines
-    assert engines.stationary is ns.StationarySolver and engines.spectral is ns.SpectralFiniteSolver and engines.cells is ns.FiniteSolver
-    assert set(ns.ENGINE_CLASSES) == {"stationary", "spectral", "cells"}
+    assert engines.stationary is engines.stationary and engines.spectral is engines.spectral and engines.cells is engines.cells
+    assert set(engines.ENGINE_CLASSES) == {"stationary", "spectral", "cells"}
     m = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml"))
-    S, num = engines.build(m, {"engine": "cells", "nodes": 8})
-    assert isinstance(S, ns.FiniteSolver) and num.engine == "cells" and S.solve().kind == "finite_cells"
+    S, num = engines.build(m, {"engine": "cells", "nodes": 8})   # the two-value internal form
+    assert isinstance(S, engines.cells) and num.engine == "cells" and S.solve().kind == "finite_cells"
     with pytest.raises(TypeError, match="cell engine"):
-        engines.build(m, {"engine": "cells"}, past=[])
+        engines.solver(m, {"engine": "cells"}, past=[])
     rows = ns.sweep(m, "p1", [3.0, 4.0], numerics={"nodes": 6})
-    assert all(r["result"].compiled.g.nt == 6 for r in rows)
+    assert all(r.result.compiled.g.nt == 6 for r in rows)
 
 
 @pytest.mark.parametrize("numerics", [{"engine": "spectral", "nodes": 12}, {"engine": "cells", "nodes": 12}])
@@ -313,7 +314,7 @@ def test_the_zero_start_is_explicit_with_a_continuation():
     assert d.residual != z.residual
     rows = ns.sweep(new.with_transition(6.0, past={"model": old.model.to_dict()}, continuation="stationary"), "p1",
                     [10.0], solve_kw={"max_evaluations": 1})
-    assert rows[0]["result"].solve_kw["start"] == "stationary"
+    assert rows[0].result.solve_kw["start"] == "stationary"
 
 
 def test_a_saved_transition_keeps_its_past_beside_it():

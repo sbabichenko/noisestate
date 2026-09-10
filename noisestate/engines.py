@@ -21,7 +21,7 @@ from .finite import FiniteSolver as cells
 
 ENGINE_CLASSES = {"stationary": stationary, "spectral": spectral, "cells": cells}
 
-__all__ = ["stationary", "spectral", "cells", "ENGINE_CLASSES", "build", "default_start"]
+__all__ = ["stationary", "spectral", "cells", "ENGINE_CLASSES", "solver", "build", "default_start"]
 
 
 def default_start(S, start=None) -> str:
@@ -62,3 +62,17 @@ def build(model: Model, numerics=None, *, verbose: bool = False, naive_observers
         elif past is not None or continuation is not None:
             raise TypeError("the cell engine has no past or continuation; use numerics.engine 'spectral'")
     return ENGINE_CLASSES[num.engine](model, **kw), num
+
+
+def solver(model: Model, numerics=None, **kw):
+    """The engine `model`'s numerics select, constructed and returned.
+
+    THE PUBLIC FACTORY.  build() below it is the internal two-value form -- it returns the engine
+    AND the resolved Numerics, which the solve path needs and a caller constructing an engine by
+    hand does not.  The specification named build() for both; they are different functions, and
+    this is the one to reach for.  `settings` is accepted as an alias of numerics.settings.
+    """
+    if "settings" in kw:
+        numerics = Numerics.of(numerics).merged(Numerics(settings=kw.pop("settings")))
+    return build(model, numerics, **kw)[0]
+

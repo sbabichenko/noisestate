@@ -222,17 +222,15 @@ def _run(p, args) -> int:
     if args.cmd == "sweep":
         rows = sweep(d, args.param, [float(x) for x in args.values.split(",")], solve_kw=bounds, verbose=args.verbose)
         with open(args.out, "w") as fh:
-            json.dump([{"param": r["param"], "value": r["value"], "converged": r["converged"], "evaluations": r["evaluations"],
-                        "seconds": r["seconds"], "change": r["change"], "jump": r["jump"],
-                        "result": r["result"].to_dict()} for r in rows], fh)
+            json.dump([r.to_dict() for r in rows], fh)
         print(f"{'value':>12}  {'status':<13} {'residual':>10} {'evals':>6} {'seconds':>8} {'change':>10}  jump")
         for r in rows:
-            change = "—" if r["change"] is None else f"{r['change']:.2e}"
-            status = "ok" if r["converged"] else "NOT converged"
-            print(f"{r['value']:12g}  {status:<13} {r['result'].residual:10.2e} {r['evaluations']:6d} "
-                  f"{r['seconds']:8.2f} {change:>10}  {'yes' if r['jump'] else ''}")
-        print("wrote", args.out, f"({len(rows)} points, {sum(r['seconds'] for r in rows):.1f}s)")
-        return 0 if all(r["converged"] for r in rows) else 1
+            change = "—" if r.change is None else f"{r.change:.2e}"
+            status = "ok" if r.converged else "NOT converged"
+            print(f"{r.value:12g}  {status:<13} {r.result.residual:10.2e} {r.evaluations:6d} "
+                  f"{r.seconds:8.2f} {change:>10}  {'yes' if r.jump else ''}")
+        print("wrote", args.out, f"({len(rows)} points, {sum(r.seconds for r in rows):.1f}s)")
+        return 0 if all(r.converged for r in rows) else 1
     if args.cmd == "describe":
         print(Model.from_dict(d, base_dir=base_dir).describe())
         return 0

@@ -16,7 +16,8 @@ def test_cli_validate_solve_sweep_on_every_engine(tmp_path, capsys):
         assert plot.stat().st_size > 1000
     sw = tmp_path / "sw.json"
     assert main(["sweep", os.path.join(EX, "ch3_two_player.yaml"), "p2", "3,5", "-o", str(sw)]) == 0
-    sw_rows = json.load(open(sw)); assert len(sw_rows) == 2 and all(r["param"] == "p2" and r["result"]["params"]["p2"] == r["value"] for r in sw_rows)
+    sw_rows = json.load(open(sw))        # JSON: dicts, not SweepPoints
+    assert len(sw_rows) == 2 and all(r["param"] == "p2" and r["result"]["params"]["p2"] == r["value"] for r in sw_rows)
     assert all("change" in r and "jump" in r for r in sw_rows)
     table = capsys.readouterr().out
     assert "residual" in table and "change" in table and "NOT converged" not in table

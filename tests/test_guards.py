@@ -33,8 +33,8 @@ def test_window_tail_flag():
 def test_sweep_reports_continuity():
     from noisestate.sweep import sweep
     rows = sweep(os.path.join(EX, "ch3_two_player.yaml"), "p2", [3.0, 4.0, 5.0, 6.0])
-    assert rows[0]["change"] is None and all(r["change"] is not None for r in rows[1:])
-    assert not any(r["jump"] for r in rows)
+    assert rows[0].change is None and all(r.change is not None for r in rows[1:])
+    assert not any(r.jump for r in rows)
 
 
 def test_unreferenced_parameter_is_an_error_and_notes_exist():

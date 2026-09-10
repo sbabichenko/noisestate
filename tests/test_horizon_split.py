@@ -93,7 +93,7 @@ def test_a_sweep_moves_whichever_length_is_named():
     """They are separate parameters because they are separate quantities."""
     rows = ns.sweep(example("ch3_two_player").with_numerics(nodes=6), "horizon.window", [3.0, 4.0],
                     solve_kw={"max_evaluations": 2, "diagnostics": False})
-    assert [r["result"].model.horizon.window for r in rows] == [3.0, 4.0]
+    assert [r.result.model.horizon.window for r in rows] == [3.0, 4.0]
     with pytest.raises(ValueError, match="horizon.window"):
         ns.sweep(example("ch3_two_player"), "horizon.nonsense", [1.0])
 

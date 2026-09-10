@@ -10,7 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..",
 def test_sweep_over_a_model_object_actually_sweeps():
     m = ns.load(os.path.join(EX, "ch4_kyle_back.yaml"))
     rows = sweep(m, "eps", [0.2, 0.1])
-    assert abs(rows[0]["result"].costs["trader1"] - rows[1]["result"].costs["trader1"]) > 1e-3
+    assert abs(rows[0].result.costs["trader1"] - rows[1].result.costs["trader1"]) > 1e-3
     with pytest.raises(ValueError, match="not a parameter"):
         sweep(m, "epsilon", [0.2])
 

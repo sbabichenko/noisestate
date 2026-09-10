@@ -2,7 +2,7 @@
 
     from noisestate import sweep
     rows = sweep("examples/ch4_kyle_back.yaml", "eps", [0.2, 0.1, 0.05, 0.02])
-    rows[0]["result"].summary(); rows[0]["result"].to_dict(); rows[0]["seconds"]
+    rows[0].result.summary(); rows[0].result.to_dict(); rows[0].seconds
 
 Each point starts from the previous point's equilibrium (raw maps for the stationary engine,
 action kernels for the spectral finite engine), which is what makes a slider in an interactive
@@ -22,6 +22,7 @@ from .spec import Model, ModelBuilder
 from .numerics import Numerics
 from .past import Past
 from .results import TriangleResult
+from . import engines
 from .engines import build, default_start
 
 
@@ -43,13 +44,6 @@ def _load_dict(model: Union[str, dict, Model]) -> dict:
     return copy.deepcopy(model)
 
 
-def solver(model: Model, numerics=None, **kw):
-    """The engine the model's numerics select (noisestate.engines.build), constructed with `kw` (verbose,
-    naive_observers, past, continuation; `settings` is accepted as an alias of numerics.settings)."""
-    if "settings" in kw:
-        numerics = Numerics.of(numerics).merged(Numerics(settings=kw.pop("settings")))
-    return build(model, numerics, **kw)[0]
-
 
 def warm_start(prev) -> Optional[dict]:
     """The object the next solve should start from, for a previous result of the same engine."""
@@ -62,7 +56,7 @@ def warm_start(prev) -> Optional[dict]:
 
 
 def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iterable[float], numerics=None,
-          solver_kw: Optional[dict] = None, solve_kw: Optional[dict] = None, verbose: bool = False) -> List[dict]:
+          solver_kw: Optional[dict] = None, solve_kw: Optional[dict] = None, verbose: bool = False) -> "List[SweepPoint]":
     """Solve the model at each value of `param` (a key of `params`, or "horizon.window" / "horizon.T": the
     stationary model, the horizon T of a finite one or of a transition, which then warm-starts each point from
     the previous maps read on the new grid, the stationary maps beyond it), warm-starting each point from
@@ -84,7 +78,7 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
     solver_kw = dict(solver_kw or {})
     if (base.get("horizon") or {}).get("kind") == "transition" and "past" not in solver_kw:
         solver_kw["past"] = Past.from_block(Model.from_dict(base).horizon.past)      # the past solved once for every point
-    rows: List[dict] = []
+    built: List[dict] = []
     prev = prev2 = None
     for v in values:
         d = copy.deepcopy(base)
@@ -93,7 +87,7 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
         else:
             d.setdefault("params", {})[param] = float(v)
         m = Model.from_dict(d)
-        S = solver(m, numerics, **solver_kw)
+        S = engines.solver(m, numerics, **solver_kw)
         t0 = time.time()
         init = None
         if prev is not None and not S.same_grid(prev.compiled) and hasattr(S, "warm_maps_from"):
@@ -101,7 +95,7 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
         if prev is not None and S.same_grid(prev.compiled):
             w1 = warm_start(prev)
             if prev2 is not None and S.same_grid(prev2.compiled):
-                w0 = warm_start(prev2); e1, e0 = rows[-1]["value"], rows[-2]["value"]
+                w0 = warm_start(prev2); e1, e0 = built[-1]["value"], built[-2]["value"]
                 if abs(e1 - e0) > 0:
                     init = {k: w1[k] + (w1[k] - w0[k]) * (float(v) - e1) / (e1 - e0) for k in w1}
             if init is None:
@@ -115,18 +109,21 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
             a1, a0 = warm_start(res), warm_start(prev)
             num = max(np.abs(a1[k] - a0[k]).max() for k in a1); den = max(max(np.abs(a0[k]).max() for k in a0), 1e-12)
             change = float(num / den)
-        rows.append(SweepPoint({"param": param, "value": float(v), "result": res, "seconds": time.time() - t0, "evaluations": int(res.evaluations),
-                                "converged": bool(res.converged), "change": change}))
+        built.append(dict(param=param, value=float(v), result=res, seconds=time.time() - t0,
+                          evaluations=int(res.evaluations), converged=bool(res.converged), change=change))
         if verbose:
             print(f"{param} = {v:g}: {'ok' if res.converged else 'NOT converged'} in {res.evaluations} evaluations, {time.time()-t0:.1f}s", flush=True)
         prev2, prev = prev, res
     # continuity: a point whose change from its predecessor is far above the sweep's typical change is a
     # candidate branch jump (the change per point, not per unit of parameter: a geometric sweep moves
-    # the same amount per point)
-    changes = [r["change"] for r in rows if r["change"] is not None]
+    # the same amount per point).  It is computed BEFORE the points are built: a SweepPoint is frozen,
+    # so a field cannot be patched in afterwards, which is what the mutable rows used to do.
+    changes = [b["change"] for b in built if b["change"] is not None]
     med = float(np.median(changes)) if changes else 0.0
-    for r in rows:
-        r["jump"] = bool(r["change"] is not None and med > 0 and r["change"] > 5 * med)
-        if verbose and r["jump"]:
-            print(f"  {param} = {r['value']:g}: change {r['change']:.2g} against a typical {med:.2g}: possible branch jump", flush=True)
+    rows = [SweepPoint(**b, jump=bool(b["change"] is not None and med > 0 and b["change"] > 5 * med))
+            for b in built]
+    if verbose:
+        for r in rows:
+            if r.jump:
+                print(f"  {param} = {r.value:g}: change {r.change:.2g} against a typical {med:.2g}: possible branch jump", flush=True)
     return rows

@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 import noisestate as ns
+from noisestate import engines
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EX = os.path.join(HERE, "..", "examples") + os.sep
@@ -64,7 +65,7 @@ def stationary(m, nodes, window=None):
 def same_model_solver(m, stat, T, nodes, continuation=True, settings=None, **hz):
     """The spectral finite engine on the strip [0, T] at `nodes` with `stat` (m's stationary equilibrium) as the
     past and, unless continuation=False, as the continuation; `hz` goes to with_numerics (unit, unit_range)."""
-    return ns.SpectralFiniteSolver(m.with_finite(T).with_numerics(nodes=nodes, **hz), settings=settings,
+    return engines.spectral(m.with_finite(T).with_numerics(nodes=nodes, **hz), settings=settings,
                                    past=stat, continuation=stat if continuation else None)
 
 

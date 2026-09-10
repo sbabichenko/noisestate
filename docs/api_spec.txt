@@ -559,6 +559,13 @@
  T10 Supplying both start_from and start_policy raises.                                  8.2
  T11 Adding a duplicate signal name raises and names the agent and the row.              8.1
  T12 The payload round-trips every check status and the policy name.                     7
+ T13 A horizon type does not carry the length its kind has no use for: accessing it     2.2
+     raises AttributeError rather than answering None.
+ T14 with_horizon takes a horizon OBJECT; the keyword form raises and names the         2.2
+     replacement.  _patch_horizon refuses a kind change not stating both lengths.
+ T15 A kind change keeps the length the new kind has and drops the other: a stationary  2.2
+     lag window never survives as a finite horizon's terminal time.
+ T16 A transition's continuation takes the PAST's window, and carries no terminal time. 2.2
 
 
 ================================================================================================
@@ -613,7 +620,7 @@
  4.  Horizon split (PART 2) -- reaches the schema, the engines and every example.
  5.  Containers, refine, solver exposure, signals, warm starts (PARTS 5, 6, 8).
  6.  Serialization and the schema version (PART 7), last, so it records the settled shape.
- 7.  The T1-T12 tests; regenerate docs/api.md and docs/glossary.txt from the settled surface.
+ 7.  The T1-T16 tests; regenerate docs/api.md and docs/glossary.txt from the settled surface.
      THE REFERENCE STATES THE SETTLED CONTRACTS DIRECTLY.  Every "Draft N said X, which was
      wrong" note in this file is drafting history: it earns its place here, where the contracts
      are still being argued, and does not belong in a reference someone reads to use the package.

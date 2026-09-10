@@ -1,6 +1,7 @@
 """Regressions from the pre-release adversarial test and code review (0.2.3)."""
 import os, json, numpy as np, pytest
 import noisestate as ns
+from noisestate import engines
 from noisestate.diagnostics import Status
 from noisestate.stationary import StationarySolver
 from helpers import slow
@@ -163,12 +164,12 @@ def test_linear_terms_are_noted_and_builder_is_accepted():
     b = (ModelBuilder("b", p=2.0).channel("w0", "w1").state("X", drift={"D": 1.0}, noise={"w0": 1.0})
          .agent("a", ["D"], [[1.0, "X", "X"], ["p", "D", "D"]]).stationary(window=4.0, nodes=8))
     b.signal("a", "y", drift={"X": 1.0}, noise={"w1": 1.0})
-    assert ns.solve(b).converged and ns.sweep(b, "p", [2.0, 3.0])[1]["converged"]
+    assert ns.solve(b).converged and ns.sweep(b, "p", [2.0, 3.0])[1].converged
 
 
 def test_wrong_kind_warm_start_is_an_error_and_right_kinds_are_converted():
     d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
-    r = ns.solve(d).require_converged(); S = ns.SpectralFiniteSolver(ns.Model.from_dict(d))
+    r = ns.solve(d).require_converged(); S = engines.spectral(ns.Model.from_dict(d))
     assert S.solve(init=r.maps).converged                                     # raw maps are accepted and converted
     with pytest.raises(ValueError, match="expected action kernels"):
         S.solve(init={k: v[:, :, :5] for k, v in r.maps.items()})
@@ -251,7 +252,7 @@ def test_delayed_row_equilibrium_is_insensitive_to_the_least_squares_cutoff():
     try:
         for rc in (1e-9, 1e-6):
             np.linalg.lstsq = lambda A, b, rcond=None, _o=orig, _rc=rc: _o(A, b, rcond=_rc)
-            costs[rc] = ns.StationarySolver(m).solve().require_converged().costs["player2"]
+            costs[rc] = engines.stationary(m).solve().require_converged().costs["player2"]
     finally:
         np.linalg.lstsq = orig
     assert abs(costs[1e-9] - costs[1e-6]) < 1e-6
@@ -285,22 +286,22 @@ def test_naive_observers_are_validated():
     for bad, exc in (({"trader1": ["playr2"]}, ValueError), ({"playr1": ["market_maker"]}, ValueError),
                      ({"trader1": "market_maker"}, TypeError), ({"trader1": ["trader1"]}, ValueError)):
         with pytest.raises(exc):
-            ns.StationarySolver(kb, naive_observers=bad)
+            engines.stationary(kb, naive_observers=bad)
 
 
 def test_wrong_grid_warm_start_is_an_error_on_every_engine():
     d = _ch3(nodes=12); r = ns.solve(d); d.setdefault("numerics", {})["nodes"] = 16
     with pytest.raises(ValueError, match="different grid"):
-        ns.StationarySolver(ns.Model.from_dict(d)).solve(init=r.maps)
+        engines.stationary(ns.Model.from_dict(d)).solve(init=r.maps)
     dc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); dc.setdefault("numerics", {}).update(nodes=8, engine="cells")
     rc = ns.solve(dc); dc.setdefault("numerics", {})["nodes"] = 16
     with pytest.raises(ValueError, match="different grid"):
-        ns.FiniteSolver(ns.Model.from_dict(dc)).solve(init=rc.maps)
+        engines.cells(ns.Model.from_dict(dc)).solve(init=rc.maps)
 
 
 def test_jump_flag_is_quiet_on_a_geometric_sweep():
     rows = ns.sweep(_ch3(), "r1", [2.0 / 2 ** k for k in range(7)])
-    assert not any(r["jump"] for r in rows) and all(r["converged"] for r in rows)
+    assert not any(r.jump for r in rows) and all(r.converged for r in rows)
 
 
 def test_refine_on_cells_reports_without_a_verdict():
@@ -332,7 +333,7 @@ def test_delayed_rows_with_mixed_panels_and_non_dyadic_units():
 def test_coarse_start_reaches_the_same_equilibrium_with_fewer_fine_evaluations():
     for path in ("ch3_two_player.yaml", "ch1_two_player_finite.yaml"):
         m = ns.load(os.path.join(EX, path))
-        cold = ns.solver(m).solve().require_converged(); warm = ns.solver(m).solve(start="coarse").require_converged()
+        cold = engines.solver(m).solve().require_converged(); warm = engines.solver(m).solve(start="coarse").require_converged()
         assert warm.evaluations < cold.evaluations and "coarse start" in warm.message
         assert max(np.abs(cold.maps[k] - warm.maps[k]).max() for k in cold.maps) < 1e-7
     r = ns.solve(os.path.join(EX, "ch3_two_player.yaml")); r.refine()

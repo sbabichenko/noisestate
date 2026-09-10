@@ -2,6 +2,7 @@
 the stability budget, the Newton-Krylov inner budget, and a non-finite residual."""
 import json, os, warnings, numpy as np, pytest
 import noisestate as ns
+from noisestate import engines
 from noisestate.diagnostics import Status
 from noisestate.accel import solve_fixed_point
 from noisestate.cli import main
@@ -66,7 +67,7 @@ def test_progress_is_called_per_evaluation_and_can_cancel():
 
 
 def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
-    S = ns.solver(_ch3(nodes=96, window=10.0)); full = S.solve(); w = full.maps
+    S = engines.solver(_ch3(nodes=96, window=10.0)); full = S.solve(); w = full.maps
     off = S.solve(init=w, diagnostics=False)
     assert off.converged and off.second_order == {} and off.foc == {} and off.representation_error == {} and off.diagnostics.statuses["resolution"] is not Status.PASSED
     assert full.second_order and full.foc and (full.diagnostics.statuses["resolution"] is Status.PASSED)
@@ -149,8 +150,9 @@ def test_cli_and_sweep_forward_the_bounds(tmp_path, capsys):
     assert main(["solve", CH3, "--max-evaluations", "0"]) == 2
     out = tmp_path / "sw.json"
     assert main(["sweep", CH3, "p2", "3,5", "-o", str(out), "--max-evaluations", "2"]) == 1
-    rows = json.load(open(out)); assert [r["evaluations"] for r in rows] == [2, 2] and not any(r["converged"] for r in rows)
-    rows = sweep(CH3, "p2", [3.0, 5.0], solve_kw={"max_evaluations": 2}); assert all(r["evaluations"] == 2 and not r["converged"] for r in rows)
+    rows = json.load(open(out))          # JSON: dicts, not SweepPoints
+    assert [r["evaluations"] for r in rows] == [2, 2] and not any(r["converged"] for r in rows)
+    rows = sweep(CH3, "p2", [3.0, 5.0], solve_kw={"max_evaluations": 2}); assert all(r.evaluations == 2 and not r.converged for r in rows)
 
 
 def test_lead_term_under_a_discount_neither_overflows_nor_is_silent():
@@ -167,7 +169,7 @@ def test_lead_term_under_a_discount_neither_overflows_nor_is_silent():
     assert mild.converged and np.isfinite(mild.costs["player1"])
     d["horizon"]["discount"] = 300.0                                      # rho * window = 900, exp(rho tau) = 1e65
     with pytest.warns(UserWarning, match="lead X@-0.5 under the discount rate 300"):
-        S = ns.StationarySolver(ns.Model.from_dict(d))
+        S = engines.stationary(ns.Model.from_dict(d))
     agent = S.model.agents[0]; Ru = np.zeros((len(S.c.prim) * S.c.N, 1)); Ru[S.c.block("X")] = 1.0
     assert np.isfinite(S._lead_term(agent, Ru[:, 0], "X", -0.5)).all()
     with warnings.catch_warnings():

@@ -115,7 +115,7 @@ def test_target_script_pieces(tmp_path):
     assert k.at(0.7) == pytest.approx(float((eq.compiled.grid.interp([0.7]) @ np.asarray(k))[0]))
     assert eq.kernel("X").at([0.7, 0.9]).shape == (2, 3) and np.asarray(k.values).shape == k.shape
     rows = game.sweep(p1=[0.3, 1, 3])
-    assert [r.value for r in rows] == [0.3, 1.0, 3.0] and rows[0]["param"] == "p1" and rows[1].result.converged
+    assert [r.value for r in rows] == [0.3, 1.0, 3.0] and rows[0].param == "p1" and rows[1].result.converged
     assert rows[-1].jump is False and abs(rows[-1].result.costs["player1"] - eq.costs["player1"]) < 1e-8
     with pytest.raises(ValueError, match="exactly one parameter"):
         game.sweep(p1=[1], p2=[1])

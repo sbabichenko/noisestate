@@ -7,6 +7,7 @@ import shutil
 import numpy as np, pytest
 import yaml
 import noisestate as ns
+from noisestate import engines
 from noisestate.cli import main
 from helpers import EX, example, slow, prior_model as one_agent
 
@@ -119,7 +120,7 @@ def test_transition_validation():
     with pytest.raises(OSError):
         ns.solve(m)
     t = ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "x.yaml"}}})
-    for engine in (ns.FiniteSolver, ns.StationarySolver):
+    for engine in (engines.cells, engines.stationary):
         with pytest.raises(ValueError, match="spectral finite engine only"):
             engine(t)
     with pytest.raises(TypeError, match="horizon.kind 'finite'"):
@@ -209,14 +210,14 @@ def test_settle_march_finds_the_window_and_equals_the_explicit_solve(regime, mar
     res = marched; m = regime["m"]; old = regime["old"]
     assert res.kind == "transition" and res.march_stop == "settled" and res.extra["window"] == 9.0 and res.march_settle == 1e-4
     rows = res.march
-    assert [r["T"] for r in rows] == [0.0, 3.0, 6.0, 9.0] and rows[0]["evaluations"] == 0
+    assert [r["T"] for r in rows] == [0.0, 3.0, 6.0, 9.0] and rows[0].evaluations == 0
     assert all(r["monitor"] == "[T - L, T]" for r in rows[1:])
     assert 0.5 < max(rows[0]["gap"].values()) < 0.7
     gaps = [max(r["gap"].values()) for r in rows[1:]]
     assert 0.5 < gaps[0] < 0.7 and 5e-4 < gaps[1] < 2e-3 and 2e-7 < gaps[2] < 3e-6
     factors = [gaps[0] / gaps[1], gaps[1] / gaps[2]]
     assert 300 < factors[0] < 1500 and 300 < factors[1] < 3000, factors
-    assert rows[1]["evaluations"] > 2 * rows[2]["evaluations"] >= rows[3]["evaluations"] and 1 <= rows[3]["polish"] <= 3
+    assert rows[1].evaluations > 2 * rows[2].evaluations >= rows[3].evaluations and 1 <= rows[3]["polish"] <= 3
     assert [r["unknowns"] for r in rows] == [0, 576, 864, 576]
     assert res.settled < 1e-4 and all(r["ok"] for r in res.diagnostics.rows if r["name"] == "settled")
     assert 0.25 < gaps[2] / res.settled < 4
@@ -225,7 +226,7 @@ def test_settle_march_finds_the_window_and_equals_the_explicit_solve(regime, mar
     assert ex.compiled.g.nt == res.compiled.g.nt and ex.compiled.N == res.compiled.N and ex.compiled.T == res.compiled.T
     assert max(np.abs(ex.maps[k] - res.maps[k]).max() / np.abs(res.maps[k]).max() for k in res.maps) < 2e-7
     assert max(abs(ex.costs[k] - res.costs[k]) for k in ex.costs) < 1e-7 and abs(ex.settled - res.settled) < 1e-7
-    assert sum(r["evaluations"] for r in rows) < 2.5 * ex.evaluations
+    assert sum(r.evaluations for r in rows) < 2.5 * ex.evaluations
     e6 = ns.transition(old, m.with_params(p1=10.0), T=6.0, numerics={"nodes": 12}, continuation=res.continuation)
     assert ex.settled < 1e-4 < e6.settled and 0.25 < gaps[1] / e6.settled < 4, (e6.settled, ex.settled)
     d = res.to_dict()
@@ -302,7 +303,7 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     assert "settle" not in fm._patch_horizon(T=6.0, settle=None).to_dict()["horizon"]
     fr = ns.solve(fm, max_evaluations=40)
     hr = ns.transition(EX + "ch3_two_player.yaml", new, settle=5e-2, numerics={"nodes": 6}, max_evaluations=40)
-    assert fr.extra["window"] == hr.extra["window"] and np.array_equal(fr.world, hr.world) and [r["evaluations"] for r in fr.march] == [r["evaluations"] for r in hr.march]
+    assert fr.extra["window"] == hr.extra["window"] and np.array_equal(fr.world, hr.world) and [r.evaluations for r in fr.march] == [r.evaluations for r in hr.march]
     #  settle and T are the two ways to give a transition its terminal time; window is the
     #  continuation's L and coexists with either
     with pytest.raises(ValueError, match="exactly one of T"):

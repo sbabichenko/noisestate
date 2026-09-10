@@ -1,6 +1,7 @@
 """The JSON payload carries its provenance and says how delayed-row maps are indexed (2026-09-05 audit)."""
 import json, os, time, numpy as np, pytest
 import noisestate as ns
+from noisestate import engines
 from noisestate.cli import main
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
 
@@ -16,7 +17,7 @@ def test_payload_round_trips_and_rebuilds_the_solve():
     assert d["options"]["solve"]["start"] == "zero" and d["options"]["solver"]["verbose"] is False
     assert d["agents"]["player2"] == {"controls": ["D2"], "signals": {"y2": {"delay": 0.0, "map_age": d["grid"]["ages"]}}}
     m2 = ns.Model.from_dict(d["model"]); assert m2.to_dict() == m.to_dict()
-    again = ns.solver(m2, **d["options"]["solver"]).solve(**d["options"]["solve"])
+    again = engines.solver(m2, **d["options"]["solver"]).solve(**d["options"]["solve"])
     assert all(abs(again.costs[k] - res.costs[k]) < 1e-12 for k in res.costs)
 
 
@@ -38,7 +39,7 @@ def test_delayed_row_map_axes_place_the_map():
 
 
 def test_solve_kw_records_the_start_option_and_repeats_the_solve():
-    S = ns.solver(ns.load(os.path.join(EX, "ch3_two_player.yaml")))
+    S = engines.solver(ns.load(os.path.join(EX, "ch3_two_player.yaml")))
     res = S.solve(start="coarse")
     assert res.solve_kw["start"] == "coarse" and json.dumps(res.solve_kw) and "coarse start" in res.message
     again = S.solve(**res.solve_kw)
@@ -47,7 +48,7 @@ def test_solve_kw_records_the_start_option_and_repeats_the_solve():
 
 
 def test_seconds_include_the_diagnostics(monkeypatch):
-    S = ns.solver(ns.load(os.path.join(EX, "ch3_two_player.yaml")))
+    S = engines.solver(ns.load(os.path.join(EX, "ch3_two_player.yaml")))
     finish = type(S)._finish
     monkeypatch.setattr(type(S), "_finish", lambda self, res: (time.sleep(0.2), finish(self, res)))
     assert S.solve().seconds >= 0.2

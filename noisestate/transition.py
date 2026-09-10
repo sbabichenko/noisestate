@@ -16,8 +16,10 @@ moderate change, a few best responses from the answer.
 """
 from __future__ import annotations
 
+import dataclasses
 import time
-from typing import Callable, Dict, Optional
+from dataclasses import dataclass
+from typing import Callable, Dict, Mapping, Optional
 
 import numpy as np
 
@@ -25,7 +27,6 @@ from . import engines
 from .spec import Model, ModelBuilder
 from .numerics import Numerics
 from .past import Past
-from .expr import SweepPoint
 
 
 def _model_of(obj) -> Model:
@@ -56,6 +57,45 @@ def _past_block(old, past: Past) -> dict:
     if hasattr(src, "model") and hasattr(src, "world"):
         return {"model": src.model.to_dict()}
     return {"initial": [sh.to_dict() for sh in past.initial]}
+
+
+@dataclass(frozen=True)
+class MarchPoint:
+    """One step of a settle march: the transition solved at one terminal time, and what it took.
+
+    A THIRD container, and its own type.  It used to borrow SweepPoint, which was possible only
+    because that was a dict subclass and would take any keys -- and the fields do not overlap: a
+    march point has a terminal time and a gap where a sweep point has a parameter, a value and the
+    branch fields.  Making SweepPoint a dataclass is what surfaced this.
+
+    It shares the conventions the other two share: frozen, `seconds` and `evaluations` under those
+    names, and to_dict().
+    """
+    T: float
+    gap: Mapping[str, float]
+    evaluations: int
+    seconds: float
+    monitor: str
+    unknowns: int = 0
+    polish: Optional[int] = None        # the polish pass's evaluations, on the last row only
+
+    def to_dict(self) -> dict:
+        out = {"T": self.T, "gap": dict(self.gap), "evaluations": self.evaluations,
+               "seconds": self.seconds, "monitor": self.monitor, "unknowns": self.unknowns}
+        if self.polish is not None:
+            out["polish"] = self.polish
+        return out
+
+    #  the march rows are read as data by the CLI and the tests
+    def __getitem__(self, key):
+        return self.to_dict()[key]
+
+    def get(self, key, default=None):
+        return self.to_dict().get(key, default)
+
+    def __contains__(self, key):
+        #  without this, `key in obj` falls back to iterating __getitem__ with 0, 1, 2 ...
+        return key in self.to_dict()
 
 
 def _transition_model(old, new, T: float, num: Numerics, continuation):
@@ -245,8 +285,8 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
         t0 = time.time()
         if prev is None:
             gap0 = gap_pass(S, S.stationary_start(), 0.0, T)
-            rows.append(SweepPoint({"T": 0.0, "gap": gap0, "evaluations": 0, "seconds": time.time() - t0, "monitor": f"[0, {T:g}] from the stationary rules",
-                                    "unknowns": 0}))
+            rows.append(MarchPoint(T=0.0, gap=gap0, evaluations=0, seconds=time.time() - t0,
+                                   monitor=f"[0, {T:g}] from the stationary rules", unknowns=0))
             if verbose:
                 print(f"settle march: T = 0 (the stationary rules): gap {max(gap0.values()):.2e}, {time.time() - t0:.1f}s", flush=True)
             if max(gap0.values()) <= settle:
@@ -269,8 +309,8 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
             S.freeze_before(float(bp[-1]) if len(bp) else 0.0, init, actions=act)
             res = S.solve(init=act, diagnostics=False, **kw)
         gap = gap_pass(S, res.maps, T - L, T)
-        rows.append(SweepPoint({"T": float(T), "gap": gap, "evaluations": int(res.evaluations), "seconds": time.time() - t0,
-                                "monitor": "[T - L, T]", "unknowns": unknowns(S)}))
+        rows.append(MarchPoint(T=float(T), gap=gap, evaluations=int(res.evaluations),
+                               seconds=time.time() - t0, monitor="[T - L, T]", unknowns=unknowns(S)))
         if verbose:
             print(f"settle march: T = {T:g}: gap {max(gap.values()):.2e} on [T - L, T], {res.evaluations} evaluations, "
                   f"{rows[-1]['unknowns']} unknowns, {time.time() - t0:.1f}s", flush=True)
@@ -290,7 +330,9 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
         init = res.actions if res.actions is not None else res.maps
         polished = S.solve(init=init, diagnostics=False, **kw)
         polished.actions = polished.actions if polished.actions is not None else res.actions
-        rows[-1]["polish"] = int(polished.evaluations); rows[-1]["seconds"] += time.time() - t0
+        #  a frozen point is replaced, not patched: the polish pass's count and the time it took
+        rows[-1] = dataclasses.replace(rows[-1], polish=int(polished.evaluations),
+                                       seconds=rows[-1].seconds + time.time() - t0)
         if verbose:
             print(f"settle march: polish on the whole strip at T = {T:g}: {polished.evaluations} evaluations, {time.time() - t0:.1f}s", flush=True)
         res = polished

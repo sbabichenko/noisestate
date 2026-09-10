@@ -2,6 +2,7 @@
 and the eliminated solves, for the full world and for every agent's passive world."""
 import numpy as np
 import noisestate as ns
+from noisestate import engines
 from noisestate.symmetry import find_cyclic_symmetry
 from make_ch5_cycle_market import build
 from helpers import example, example_dict, slow
@@ -18,7 +19,7 @@ def test_detection():
 
 def test_symmetric_closed_loop_matches_dense_and_eliminated():
     for Nf in (2, 3):
-        m = build(N=Nf, nodes=5).build(); S = ns.StationarySolver(m); c = S.c
+        m = build(N=Nf, nodes=5).build(); S = engines.stationary(m); c = S.c
         g, _ = S.best_response(m.agents[0], S.zero_maps()); maps = {a.name: g.copy() for a in m.agents}
         for a in [None] + list(m.agents):
             kw = {} if a is None else {"excluded": a.name, "impulse_controls": a.controls}
@@ -31,11 +32,11 @@ def test_symmetric_closed_loop_matches_dense_and_eliminated():
 
 @slow("slow (5 s; the symmetric closed loop is pinned to 1e-12 above at 5 nodes); set NOISESTATE_SLOW=1")
 def test_solve_uses_the_symmetric_path_and_reproduces_the_equilibrium():
-    m = build(N=3, nodes=6).build(); S = ns.StationarySolver(m); calls = [0]
+    m = build(N=3, nodes=6).build(); S = engines.stationary(m); calls = [0]
     orig = S.c.closed_loop_symmetric
     def counted(*a, **k):
         calls[0] += 1; return orig(*a, **k)
     S.c.closed_loop_symmetric = counted
     r = S.solve().require_converged(); assert calls[0] > 0
-    S2 = ns.StationarySolver(m); S2.c.sym = None; r2 = S2.solve().require_converged()          # the general path
+    S2 = engines.stationary(m); S2.c.sym = None; r2 = S2.solve().require_converged()          # the general path
     assert abs(r.costs["firm0"] - r2.costs["firm0"]) < 1e-9 and np.abs(r.maps["firm0"] - r2.maps["firm0"]).max() < 1e-8
