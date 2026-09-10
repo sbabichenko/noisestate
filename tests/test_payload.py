@@ -66,3 +66,35 @@ def test_version_is_the_source_tree_s():
     import re
     text = open(os.path.join(HERE, "..", "pyproject.toml")).read()
     assert ns.__version__ == re.search(r'^version = "([^"]+)"', text, re.M).group(1) != "unknown"
+
+
+def test_a_refined_payload_json_encodes():
+    """A gap the suite had: 26 places encoded a payload and 10 called refine(), and no test did
+    both -- so to_dict() putting the Refinement OBJECT into the payload went unnoticed.  A
+    dataclass is not JSON-serialisable however many dict methods it carries, so nothing was
+    covering for it; the encoding simply never ran with a refinement present."""
+    res = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8})
+    res.refine()
+    payload = res.to_dict()
+    assert isinstance(payload["refinement"], dict)          # data, not the object
+    #  allow_nan=False: json.dumps otherwise emits bare NaN/Infinity, which are not valid JSON
+    #  and which no conforming parser will read back.  A payload of numerical results is exactly
+    #  where they arise -- an unconverged solve, a zero scale, an empty maximum.
+    round_tripped = json.loads(json.dumps(payload, allow_nan=False))
+    assert round_tripped["refinement"]["nodes"] > 8
+    assert ns.schema.validate(round_tripped, "payload") == []
+
+
+def test_a_payload_with_stability_and_a_march_json_encodes():
+    """The same gap for the other two dataclasses the payload carries."""
+    path = os.path.join(EX, "ch3_two_player.yaml")
+    old = ns.solve(path, {"nodes": 6}).require_converged()
+    #  a settle march, so the payload actually carries MarchPoints; a fixed T has none
+    res = ns.transition(old, ns.load(path).with_params(p1=10.0), settle=5e-2,
+                        numerics={"nodes": 6}, max_evaluations=30)
+    res.stability()
+    payload = json.loads(json.dumps(res.to_dict(), allow_nan=False))
+    assert isinstance(payload["stability"], dict) and payload["stability"]["verified"] in (True, False)
+    assert isinstance(payload["march"], list) and isinstance(payload["march"][0], dict)
+    assert {"T", "gap", "evaluations", "seconds", "monitor"} <= set(payload["march"][0])
+    assert ns.schema.validate(payload, "payload") == []
