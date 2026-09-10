@@ -1,0 +1,210 @@
+================================================================================================
+ noisestate -- API RESIDUE
+ Naming and shape inconsistencies surviving the 0.8 redesign.  Findings, not a work plan.
+================================================================================================
+
+ WHAT THIS IS
+
+ The 0.8 work settled the CONTRACTS -- what a call promises, what a status means, which quantity a
+ field holds.  It was less systematic about applying the resulting rules to members that predate
+ them.  This file records what is left, with the evidence for each, so that a later pass has
+ something to work from and so that nobody re-derives the same list.
+
+ Nothing here is a defect.  Every item is live, tested and documented.  They are places where the
+ surface is harder to predict than it needs to be.
+
+ Each item states HOW IT WAS FOUND, because several of them are invisible to reading and only
+ appear when the surface is queried.  Measured 2026-09-10 against the tree at that date.
+
+
+================================================================================================
+ 1.  Result does not declare 22 of its own members                            [the largest one]
+================================================================================================
+
+ dir(ns.Result) omits members that every result HAS.  Two separate causes:
+
+   SEVENTEEN are dataclass fields with no class-level default, so they exist on instances and not
+   on the class: compiled, converged, cost_parts, costs, evaluations, foc, maps, means, model,
+   representation_error, representation_parts, residual, second_order, seconds, solve_kw,
+   solver_kw, world.
+
+       hasattr(ns.Result, "costs")  ->  False
+
+   FIVE are defined only on the engine subclasses, which are internal: ages, plot, summary,
+   window_tail, window_tail_extrapolation.
+
+       hasattr(ns.Result, "summary")  ->  False
+
+ WHY IT MATTERS.  ns.Result is the one public result type and isinstance(res, ns.Result) holds for
+ every engine, but the type does not advertise its own core data.  Anything that introspects the
+ CLASS -- a documentation generator, an IDE, a static checker, an audit like this one -- sees a
+ partial API.  Several of this session's own audits missed members for exactly this reason and had
+ to be re-run against an instance.
+
+ FOUND BY comparing dir(instance) against dir(ns.Result).
+
+ WORTH NOTING that summary() and plot() differing by engine is deliberate and correct -- their
+ signatures and return types are identical across the four subclasses, only the contents differ.
+ What is accidental is that the base class does not declare them at all.
+
+
+================================================================================================
+ 2.  Three no-argument data members are methods; their equivalents are properties
+================================================================================================
+
+     Model.all_lags()             method     34.0 ms / 1000 calls
+     Result.grid_summary()        method      1.2 ms / 1000
+     Result.supported_checks()    method      0.4 ms / 1000
+
+     Result.axes                  property    4.2 ms / 1000
+     Result.times                 property    0.1 ms / 1000
+     Model.state_names            property    0.2 ms / 1000
+
+ R2 says properties expose data and methods perform operations or PARAMETERIZED queries.  These
+ three take no arguments and perform nothing.
+
+ The usual defence -- expensive work stays a method -- does not hold here: two of the three are
+ CHEAPER than an existing property, so cost is not what the split is tracking.
+
+ FOUND BY listing every public no-argument callable that returns data, then timing it against the
+ properties beside it.
+
+
+================================================================================================
+ 3.  Parameterized queries are named two ways
+================================================================================================
+
+     Model.owner_of(control)      -- reads as a lookup
+     Model.constant(expr)         -- reads as a property until the argument appears
+     Model.expand(expr)           -- a verb, which is a third shape
+
+ All three are pure queries on the model.  Result's are consistent among themselves --
+ kernel(name, channel), strategy_kernel(control, channel), map_axes(delay) are all noun-shaped
+ parameterized queries, which R2 explicitly allows.
+
+ FOUND BY listing every public method taking arguments that is not a with_/without_/to_/require_.
+
+
+================================================================================================
+ 4.  The containers share four field NAMES but not their shapes
+================================================================================================
+
+ 0eab8b4 claims SweepPoint and ScenarioResult "both carry result / seconds / evaluations /
+ converged under those names".  True at the ACCESS level; not true structurally, and not true of
+ the other three containers at all:
+
+                    result      seconds     evaluations  converged
+     SweepPoint     field       field       field        field
+     ScenarioResult field       property    property     property
+     MarchPoint     --          field       field        --
+     Stability      --          --          field        --
+     Refinement     --          --          --           field
+
+ So a caller writing generic code over "a solved thing" finds `seconds` on three of five, and on
+ one of those it is a property reading through to the result.
+
+ Some of this is correct: a Stability has no `seconds` because it is not a solve.  What is not
+ obviously correct is MarchPoint carrying evaluations and seconds but not converged, and Refinement
+ carrying converged but neither of the others.
+
+ to_dict() IS uniform across all six containers, which is the part that matters most.
+
+ FOUND BY collecting dataclasses.fields() for each container and cross-tabulating.
+
+
+================================================================================================
+ 5.  Result.extra is a grab-bag
+================================================================================================
+
+     res.extra["window"]      -- a transition's settled window
+     res.extra                -- {} on engines that have none
+
+ The name says "miscellaneous"; the contents are engine-specific results that callers index by
+ string.  A transition's settled window is a first-class output -- tests assert on it and
+ transition() takes it back as T -- reached through a dict whose keys are documented nowhere in
+ the type.
+
+ Any better name is per-engine, which is the actual difficulty: `extra` is a weak name for a real
+ problem, not a lazy name for a simple one.
+
+ FOUND BY grepping for `.extra[` and reading what the keys are.
+
+
+================================================================================================
+ 6.  Model.source is public and is provenance
+================================================================================================
+
+ to_dict() deliberately omits source, remarks and deprecations as provenance -- correct for a file
+ format.  But `source` is a public attribute, used outside the package only as `past.source` (a
+ Past's originating object, a different thing wearing the same name).
+
+ Two unrelated meanings of `source` on two types, one of them internal machinery that with_params
+ depends on.
+
+ FOUND BY grepping `.source` across the tree and reading each hit.
+
+
+================================================================================================
+ 7.  transition_gap is the only underscored top-level verb phrase
+================================================================================================
+
+     solve  sweep  compare  transition  load  schema  shocks  define  clear_grid_cache
+     transition_gap
+
+ Every other top-level function is one word or an obvious utility.  transition_gap is a noun phrase
+ naming a specific measurement (the T = 0 pass), which reads as a variant of transition() rather
+ than as the distinct thing it is.
+
+ FOUND BY listing the module-level functions.
+
+
+================================================================================================
+ 8.  The with_signal overload is expressed by optional parameters
+================================================================================================
+
+     Model.with_signal(signal=None, *, name=None, drift=None, noise=None,
+                       audience="all", delay=0.0)
+
+ The signature admits calls the contract forbids -- with_signal() with nothing, or a Signal plus a
+ drift -- and the method raises for each.  The specification writes it as two @overload signatures,
+ which is what a reader and a type checker want; the runtime cannot express that in one def.
+
+ This is the shape that produced a real error during implementation: the first version was written
+ from the first overload alone and rejected a positional name, breaking every existing caller.
+
+ FOUND BY comparing the runtime signature against the specification's PART 8.1.
+
+
+================================================================================================
+ 9.  Error messages have no shared opening convention
+================================================================================================
+
+ 284 raise sites across the package:
+
+     36   open by naming the method            "with_signals(): rows must be ..."
+     38   open by naming the key or field      "horizon.window is the lag-truncation length L ..."
+     210  open some other way
+
+ The best messages in the package are excellent -- they name the quantity, give the measurement and
+ state the fix ("a kernel still moves by 2.4% of its peak ...: raise horizon.window").  There is
+ simply no rule about which of the three openings a new message should use.
+
+ FOUND BY regexing every `raise SomeError(` and classifying the first 58 characters.
+
+
+================================================================================================
+ NOT INCLUDED, AND WHY
+================================================================================================
+
+ Deliberate distinctions that look like inconsistencies and are not:
+
+   drives_means (Model) vs has_means (Result)   capability against realisation
+   kernel() vs strategy_kernel()                closed loop against strategy
+   window vs T vs extent                        two quantities and a selector
+   NOT_APPLICABLE vs UNSUPPORTED                the model's property against the engine's
+   ConvergenceError vs DiagnosticsError         siblings; a converged result can fail diagnostics
+   ModelBuilder.finite() vs Model.with_finite() one mutates, one copies
+
+ Each is recorded in docs/api_spec.txt PART 9 as a distinction that must survive.
+
+================================================================================================

@@ -1,6 +1,6 @@
 # The API, by what you are trying to do
 
-Everything `import noisestate as ns` gives you, grouped by the job it does.  `ns.__all__` has 44
+Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 43
 names; this page covers all of them, plus the methods on the objects they return.
 
 The shortest useful path is three calls:
@@ -8,234 +8,254 @@ The shortest useful path is three calls:
 ```python
 import noisestate as ns
 res = ns.solve("examples/ch1_two_player_finite.yaml")   # solve
-res.require_ok()                                        # refuse it unless every guard passed
+res.require_ok()                                        # refuse it unless every required check passed
 res.costs, res.kernel("D1")                             # read it
 ```
 
-Everything else is a variation on getting the model in, or getting more out.
-
-The middle line is the one worth keeping.  A solve can converge to its tolerance and still not be
-a number you should quote, and `require_ok()` is what tells them apart:
+The middle line is the one worth keeping. A solve can converge to its tolerance and still not be a
+number you should quote:
 
 ```python
 >>> ns.solve("examples/ch3_two_player.yaml").require_ok()
-ConvergenceError: ch3_two_player: converged, but WINDOW TOO SHORT (a kernel still moves by
-2.4% of its peak over the last tenth of the window: raise horizon.window)
+DiagnosticsError: ch3_two_player: converged, but window [failed] WINDOW TOO SHORT
+(a kernel still moves by 2.4% of its peak over the last tenth of the window: raise horizon.window)
 ```
 
-That solve converged.  `res.converged` is `True` and `res.require_converged()` passes; only `require_ok()`
-refuses it, and the fix is in the message.  See [guards.md](guards.md) for every such check.
+That solve converged — `res.converged` is `True` and `res.require_converged()` passes. Only
+`require_ok()` refuses it, and the fix is in the message.
 
 ## 1. Getting a model in
 
-A model is a `Model`.  Four spellings produce one, and `solve()` accepts any of them directly, so
-these matter when you want the model object itself.
-
 | call | use it when |
 |---|---|
-| `ns.load(path)` | you have a YAML model file.  A relative `horizon.past.model` resolves from that file's directory |
-| `ns.Model.load(path)` | the same thing spelled as a classmethod |
-| `ns.Model.from_dict(d)` | you have the file structure as a Python dict — generated models, tests, anything programmatic |
+| `ns.load(path)` | you have a YAML model file. A relative `horizon.past.model` resolves from that file's directory |
+| `ns.Model.from_dict(d)` | you have the file structure as a dict — generated models, tests, anything programmatic |
 | `ns.Model(name=..., states=..., agents=..., horizon=...)` | you built the pieces with the expression API below |
-| `ns.ModelBuilder(name, **params)` | you want the fluent form producing the same structure as the file |
+| `ns.ModelBuilder(name, **params)` | the fluent form. Its `.finite()`/`.stationary()` **mutate the builder**, unlike the `Model` methods of similar name, which return a copy |
 
 ### The expression API
 
-For writing a model as equations instead of a dict.  Build the pieces, then hand them to `ns.Model`.
-
 | call | use it when |
 |---|---|
-| `ns.Param(name, value)` / `ns.Param.many(**kw)` | a named parameter you will later sweep or override.  Arithmetic on it stays symbolic, so the file keeps the expression |
-| `ns.shocks("w0", "w1")` | the Brownian channels, as a namespace: `w = shocks("w0"); w.w0`.  Channel order is the order given here |
+| `ns.Param(name, value)` / `ns.Param.many(**kw)` | a named parameter you will sweep or override. Arithmetic on it stays symbolic, so the saved file keeps `sqrt(p1)` rather than `1.732…` |
+| `ns.shocks("w0", "w1")` | the Brownian channels as a namespace. The order given here is the model's channel order |
 | `ns.State("X")`, then `X.drift = D + sigma * w.w0` | a state and its law of motion |
 | `ns.Control("D")` | a control; it belongs to whichever `Agent` lists it |
-| `ns.Signal("y", sqrt(p) * X + w.w1, delay=0.0)` | one observed row.  `delay` makes it an observation lag |
-| `ns.Agent(name, controls, signals, loss, myopic=False, naive_observers=None)` | an agent's controls, information and quadratic loss.  `myopic` ignores its own continuation effects; `naive_observers` is the stationary engine's option |
-| `ns.define(name, expr)` | a named linear expression you want reported as its own kernel, e.g. an index of several prices |
-| `ns.sqrt exp log sin cos tanh` | these functions of a `Param` expression, kept symbolic (plain numbers when given numbers) |
-| `ns.Stationary(window, discount)` | an infinite-horizon problem: lag window `L`, discount 0 meaning average cost |
-| `ns.Finite(T, discount)` | a finite horizon `[0, T]` |
-| `ns.Transition(T, past, continuation, discount, window)` | a regime change on `[0, T]` from a past stationary model to this one |
+| `ns.Signal(name, expr, delay=0.0)` | one observed row. The same object `with_signal()` takes |
+| `ns.Agent(name, controls, signals, loss, myopic=False, naive_observers=None)` | an agent's controls, information and quadratic loss |
+| `ns.define(name, expr)` | a named linear expression reported as its own kernel |
+| `ns.sqrt exp log sin cos tanh` | these functions of a `Param` expression, kept symbolic |
+
+### The horizon: two quantities, three types
+
+**`window` is the lag-truncation length L. `T` is the terminal time.** They are different objects
+and are never aliased — one field used to hold both, which left a transition's lag window with
+nowhere to live.
+
+| type | carries | `extent` |
+|---|---|---|
+| `ns.Stationary(window, discount)` | `window` only | the window |
+| `ns.Finite(T, discount)` | `T` only | `T` |
+| `ns.Transition(T, past, continuation, discount, window)` | **both** — `window` is the continuation's L, defaulting to the past's | `T` |
+
+`horizon.extent` is the length of the primary computational axis: it *selects* whichever of the two
+an operation needs. Grid construction and the lag bounds want it; a transition's continuation wants
+`window` and must never take `extent`, which there is `T`. Accessing the length a kind does not have
+raises `AttributeError` rather than answering `None`.
 
 ## 2. Understanding a model you did not write
 
 | call | use it when |
 |---|---|
-| `model.describe()` | you want the whole model as equations, delays, losses and the conventions that apply, with no solve.  Renders as HTML in a notebook, plain text elsewhere |
-| `model.notes` | just the conventions that are easy to misread for this particular model |
-| `model.validate()` | every structural rule, checked in a fixed order.  `from_dict` already runs it; call it after hand-editing |
-| `model.to_dict(numeric=False)` | the file structure back out.  `numeric=True` resolves parameter expressions to numbers — the form to fingerprint when you want to prove two models are identical |
-| `model.state_names`, `.control_names`, `.def_names`, `.channels` | the names, for building something over them |
+| `model.describe()` | the whole model as equations, delays, losses and the conventions that apply, with no solve. HTML in a notebook, text elsewhere |
+| `model.notes` | just the conventions that are easy to misread here |
+| `model.validate()` | every structural rule, in a fixed order. Raises. `from_dict` already runs it |
+| `model.to_dict(numeric=False)` | the file structure back out. Carries everything a solve depends on, including definitions and ties; omits only provenance (`source`, `remarks`, `deprecations`). `numeric=True` resolves parameter expressions to numbers |
+| `model.state_names` / `.control_names` / `.def_names` / `.channels` | the names |
 | `model.owner_of(control)` | which agent owns a control |
-| `model.all_lags()` | every distinct positive lag or observation delay, e.g. to check a window covers them |
-| `model.drives_means` | whether anything moves the means at all (a linear loss term, a drift constant).  If false, only second moments matter |
-| `model.expand(expr)`, `model.constant(expr)` | expanding an expression into primary atoms, and reading off its constant term |
+| `model.all_lags()` | every distinct positive lag or observation delay |
+| `model.drives_means` | whether anything moves the means at all — a **bool** |
+| `model.expand(expr)` / `.constant(expr)` | expanding an expression into primary atoms; its constant term |
 
 ## 3. Changing a model without rewriting it
 
-Every one returns a **new** model and leaves the original alone.  This is how you run an experiment:
-build one model, then vary one thing.
+Every one returns a **new** model, shares no mutable structure with it, and leaves it unchanged.
 
 | call | use it when |
 |---|---|
-| `model.with_params(**values)` | a different parameter value.  The other parameters keep their expressions and are re-evaluated |
-| `model.with_horizon(**fields)` | a different window, horizon, discount, past or continuation |
-| `model.with_finite(T)` / `model.with_stationary(window)` | the two horizon changes you make most, spelled directly.  `ModelBuilder` keeps plain `.finite()`/`.stationary()`: those mutate the builder, these return a copy, and the `with_` prefix is what marks the difference |
-| `model.with_numerics(numerics_or_fields)` | a different grid, engine or tolerance.  The problem is unchanged; only how it is solved |
-| `model.with_signal(name, drift=, noise=, audience="all", delay=0)` | an information experiment: add one observed row.  New noise channels are added for you; `audience` is `"all"`, an agent name, or a list |
-| `model.with_signals(rows, audience="all")` | several rows at once |
-| `model.save(path)` | write it back out as YAML, parameter expressions intact |
+| `model.with_params(**values)` | different parameter values; the others keep their expressions |
+| `model.with_horizon(horizon)` | a different horizon, **as an object**: `with_horizon(Finite(T=1.0))`. The horizon is replaced, not patched, so nothing carries over by accident |
+| `model.with_stationary(window)` / `.with_finite(T)` / `.with_transition(T, past, window=None)` | the three kinds, spelled directly |
+| `model.with_numerics(numerics_or_fields)` | a different grid, engine or tolerance |
+| `model.with_signal(signal)` or `model.with_signal(name, drift=, noise=, audience="all", delay=0)` | add one observed row. Takes a `Signal` **or** the file-form blocks. New noise channels are added for you |
+| `model.with_signals(signals)` or `model.with_signals(rows)` | several at once, in either form |
+| `model.without_signal(name, audience="all")` | remove a row, and the noise channels it alone loaded. The inverse of adding one |
+| `model.save(path)` | write it back as YAML, parameter expressions intact |
+
+Adding a row an agent already has is an **error**, never a silent replacement — use
+`without_signal()` first.
 
 ## 4. Solving
 
 | call | use it when |
 |---|---|
-| `ns.solve(model, numerics=None, **kw)` | the normal entry point.  Takes a `Model`, a `ModelBuilder`, a dict or a path |
-| `model.solve(numerics=None, **kw)` | the same, as a method.  An expression model's `naive_observers` are passed along for you |
-| `ns.Numerics(engine=, nodes=, tol=, ...)` | the numerical choices, separately from the model.  Every field is optional and `None` means "keep the model's own" |
-| `ns.using_settings(**overrides)` | a context manager replacing the solver's defaults for a block: `with ns.using_settings(second_order_tol=1e-3): ...` |
-| `ns.Settings(...)` | the full frozen tunable set, when you want to hold one rather than a context |
-| `ns.solver(model, numerics, **kw)` | you want the engine object itself rather than a result — stepping it by hand, or reusing it |
-| `ns.ENGINE_CLASSES`, `ns.engines` | the three engines by name, when selecting one programmatically: `stationary` &rarr; `StationarySolver`, `spectral` &rarr; `SpectralFiniteSolver`, `cells` &rarr; `FiniteSolver` |
-| `ns.StationarySolver(model, ...)` | construct the infinite-horizon engine directly, when `ns.solver` is more indirection than you want |
-| `ns.SpectralFiniteSolver(model, ...)` | the finite-horizon spectral engine, directly.  It also takes `past` and `continuation` |
-| `ns.FiniteSolver(model, ...)` | the cell engine, directly (`numerics.engine="cells"`) |
-| `ns.clear_grid_cache()` | free the cached grids.  Relevant when measuring memory, not in normal use |
+| `ns.solve(model, numerics=None, **kw)` | the standard entry point. Returns a `Result`; it does **not** raise when the solve fails to converge |
+| `model.solve(numerics=None, **kw)` | the same as a method |
+| `ns.Numerics(engine=, nodes=, tol=, …)` | the numerical choices. Every field optional; `None` keeps the model's own |
+| `ns.using_settings(**overrides)` | a context manager replacing the solver's defaults for a block |
+| `ns.Settings(...)` | the full frozen tunable set |
+| `ns.engines` | the advanced namespace: `engines.stationary`, `engines.spectral`, `engines.cells`, and `engines.solver(model, numerics, **kw)` to construct one directly |
+| `ns.clear_grid_cache()` | free the cached grids. For measuring memory |
 
-Useful `solve()` keywords: `init` and `start` (warm starts), `tol`, `max_evaluations`, `deadline`
-(bounds), `diagnostics=False` (skip the guards when you are solving thousands of times),
-`refine=True` (also solve on a finer grid and report the change), `stability=True` (compute the
-best-response spectrum during the solve), `naive_observers`, `past` and `continuation` (engine
-options), and `verbose` / `progress` for a running commentary.
+**Warm starts are two arguments because they are two things.** `start_from` takes an **object**
+(action kernels or raw maps); `start_policy` takes a **name** (`"zero"`, `"coarse"`,
+`"stationary"`). Supplying both raises — a precedence rule would silently discard one of them.
+
+Other keywords: `tol`, `max_evaluations`, `deadline`, `diagnostics=False`, `refine=True`,
+`stability=True`, `naive_observers`, `past`, `continuation`, `verbose`, `progress`.
 
 ## 5. Reading a result
 
-Every engine returns a `ns.Result`, so `isinstance(res, ns.Result)` holds whatever solved it.
-The concrete class per engine is an
-internal detail, but it is where `summary()` and `plot()` are actually implemented, which is why
-those two differ in what they show from one engine to the next.
-
-Most of what you want are attributes, not calls.
+Every engine returns a `ns.Result`. The concrete class per engine is internal, but it is where
+`summary()` and `plot()` are implemented, so those differ in *contents* between engines while their
+signatures and return types do not.
 
 | attribute | use it when |
 |---|---|
-| `res.costs` | the equilibrium cost per agent — usually the number you came for.  `res.cost_parts` splits it |
-| `res.kernel(name, channel=None)` | the closed-loop response of a state, control or definition to a shock, as a `Kernel` |
-| `res.strategy_kernel(control, channel=None)` | the strategy itself rather than the closed-loop outcome |
-| `res.means`, `res.mean_times`, `res.paths`, `res.times` | where the state actually sits, and its path over time on a finite horizon.  `res.has_means` says whether any of it is nonzero |
-| `res.foc[agent][control]` | the first-order condition split into `physical` (what it would be if nobody reacted) and `wedge` (what remains because they do).  The wedge is the strategic correction |
-| `res.axes` | the coordinate arrays the kernels are indexed by |
-| `res.maps`, `res.world` | the raw solved objects, for warm starts and for code that works below the kernel level |
-| `res.converged`, `res.residual`, `res.evaluations`, `res.seconds`, `res.message` | what the solve did |
-| `res.numerics` | the grid and tolerances it actually ran with, resolved |
-| `res.summary()` | all of the above as readable text |
-| `res.plot(path)` | the standard figures for this engine (matplotlib) |
-| `res.to_dict()` | a JSON-serialisable view, with provenance: version, parameter values, the model |
+| `res.costs` | the equilibrium cost per agent. `res.cost_parts` splits it; `res.cost_kind` names the convention |
+| `res.kernel(name, channel=None)` | the **closed-loop** response to a shock, as a `Kernel` |
+| `res.strategy_kernel(control, channel=None)` | the **strategy** itself |
+| `res.means` / `.mean_times` | the means and the time nodes they sit on. `res.has_means` is a bool |
+| `res.paths` / `.times` | paths over time on a finite horizon, and their nodes |
+| `res.foc[agent][control]` | the FOC split into `physical` (if nobody reacted) and `wedge` (because they do) |
+| `res.axes` / `.map_axes(delay)` | what the kernel indices mean; where a delayed row's map values belong |
+| `res.maps` / `.world` | the raw solved objects |
+| `res.converged` / `.residual` / `.evaluations` / `.seconds` / `.message` | what the solve did |
+| `res.numerics` / `.grid_summary()` | the grid and tolerances it ran with |
+| `res.summary()` / `.plot(path)` / `.to_dict()` | readable text, figures, JSON-ready data |
 
-A `Kernel` is an ndarray with four additions: `.axes` (what its indices mean), `.at(*coords)`
-(interpolated at a point, using the engine's own interpolation), `.plot(path)`, and `.values` for
-the plain array.
+`ns.Kernel` is an ndarray with four additions: `.axes`, `.at(*coords)`, `.plot(path)`, `.values`.
 
 ## 6. Deciding whether to believe it
 
-The distinction this package cares about most.  A solve that converged is not the same as a solve
-you should quote.
+The distinction this package cares about most. **A status describes one check; a policy says which
+checks a use requires; an assessment is what the two produce together.**
+
+`ns.Status` has six values, and the distinctions are load-bearing:
+
+| status | means |
+|---|---|
+| `PASSED` / `FAILED` | it ran, and the model met it / did not |
+| `SKIPPED` | this engine can compute it here; it was not run (`diagnostics=False`) |
+| `UNSUPPORTED` | this engine **cannot** compute it — a property of the engine |
+| `NOT_APPLICABLE` | the check has no meaning for this model — a property of the model |
+| `MISSING` | applicable and supported, was to run, produced no record — a package defect |
+
+`NOT_APPLICABLE` and `UNSUPPORTED` are never merged: the first means nothing is missing, the second
+means something is.
 
 | call | use it when |
 |---|---|
-| `res.require_converged()` | returns `res`, or raises `ConvergenceError` if it did not reach tolerance.  Convergence only |
-| `res.require_ok()` | returns `res`, or raises if it did not converge **or any guard failed**.  This is the one to use before quoting a number |
-| `res.status` | `{"ok": ..., "flags": [...]}` without raising |
-| `res.diagnostic_rows()` | every check as a row: `{name, value, threshold, ok, flag, advice}` |
-| `res.diagnostic_records()` | the same rows with presentation fields added (`category`, `severity`, `meaning`, `action`, `suggested_options`) |
-| `res.diagnostic_summary(detailed=False)` | those rows grouped and readable |
-| `res.diagnostic_verdict(category, exclude=())` | one category (`"solve"`, `"numerics"`, `"equilibrium"`) collapsed to `True` / `False` / `None`.  `exclude` matches the root of a name, before any `:` |
-| `res.resolution_ok` | the single question "is this grid too coarse for the answer it reports" |
-| `res.refine(factor=1.5)` | re-solve finer and report the relative change.  A guard standing while its number shrinks means the grid, not the model |
-| `res.stability(untied=True)` | the spectral radius of the best-response Jacobian.  Above 1 the equilibrium is not reachable by best-response dynamics — often the finding, not a defect |
+| `res.diagnostics.rows` | every emitted check with its presentation fields |
+| `res.diagnostics.statuses` | every applicable check by root name, with its `Status` |
+| `res.diagnostics.assess(policy)` | an `Assessment`: `accepted`, `policy`, `blocking`, `statuses`, `uncomputed` |
+| `res.diagnostics.summary(detailed=False)` | those rows grouped and readable |
+| `res.diagnostics.flags` | the flag text of the checks that failed |
+| `res.require_converged()` | returns `res`, or raises `ConvergenceError`. Convergence only |
+| `res.require_ok(policy=Policy.PUBLICATION)` | returns `res`, or raises. **Every required, applicable check must have PASSED** |
+| `res.refine(factor=1.5)` | a `Refinement` carrying the finer `Result` in full |
+| `res.stability(untied=True, policy=…)` | a `Stability` — see below |
 
-`ConvergenceError` is raised only by `require_converged()` and `require_ok()`.  `solve()` itself returns a
-result with `converged=False`, so a loop over many models does not abort on one bad case.
+`Policy.PUBLICATION` requires `converged`, `resolution`, `window`, `second_order`, `settled`;
+`Policy.EXPLORATORY` requires only `converged`. A weaker policy is legitimate and must be *named*:
+under `PUBLICATION` the cell engine cannot produce an accepted result, because it computes neither a
+representation error nor a second-order form. That is the honest report, not a defect to route
+around.
 
-## 7. Families of solves
+**Exceptions are siblings, not nested:**
+
+```
+ResultValidationError          a result is not fit for the use asked of it
+├── ConvergenceError           the solve did not reach its tolerance
+└── DiagnosticsError           it converged, and the assessment was still not accepted
+```
+
+A converged result can fail diagnostics, so `except ConvergenceError` must not catch that.
+
+## 7. Stability: a classification of a *verified* equilibrium
+
+`res.stability()` always returns the spectrum — `radius`, `eigenvalues`, `method`,
+`fixed_point_residual`, `residual_norm`. The Jacobian at a non-fixed point is a legitimate object.
+What is withheld is the **interpretation**: `full_response`, `adjusted_response` and
+`adjusted_radius_bound` are present but `None` unless `verified` is true, and `unverified_reasons`
+says why.
+
+```
+verified = residual_passed and all(statuses[c] is PASSED
+                                   for c in applicable(MINIMUM | policy.required, model))
+```
+
+`MINIMUM` is `converged, resolution, second_order, window`. A policy may **strengthen** it and can
+never weaken it, so "verified" means one thing regardless of who asked.
+
+**Equilibrium validity and response stability are separate findings.** An equilibrium may be
+unstable under best-response iteration, and distinct equilibria may have distinct costs; neither
+bears on whether a point *is* an equilibrium.
+
+*Open:* the residual tolerance is not yet defined (`docs/api_spec.txt` D4), so nothing is verified
+today and no classification appears. The evidence fields are populated and serialised regardless.
+
+## 8. Families of solves
 
 | call | use it when |
 |---|---|
-| `ns.sweep(model, param, values, ...)` | one parameter along a path.  Warm-starts each point from a secant predictor of the last two, which is what makes it robust at hard points.  Returns `SweepPoint` rows with `result`, `seconds`, `evaluations`, `converged`, `change` and a `jump` flag for a possible branch change |
-| `model.sweep(p1=[0.3, 1, 3])` | the same, as a method with the parameter as a keyword |
-| `ns.compare({name: model, ...}, baseline=, stability=)` | several **structurally different** models against one baseline.  Requires the same agents, horizon kind, discount and window, so the cost changes compare like with like |
-| `ns.transition(old, new, T)` | the path from one stationary regime to another over `[0, T]` |
-| `ns.transition_gap(old, new)` | the `T = 0` case: every agent applies the new regime's stationary rules from date zero, inheriting the old regime's state and observations, with no transition solved.  The benchmark a real transition is measured against |
+| `ns.sweep(model, param, values, …)` | one parameter along a path, warm-started from a secant predictor. Returns `SweepPoint`s |
+| `model.sweep(p1=[0.3, 1, 3])` | the same, as a method |
+| `ns.compare({name: model, …}, baseline=, stability=)` | several **structurally different** models against one baseline |
+| `ns.transition(old, new, T)` | the path from one stationary regime to another |
+| `ns.transition_gap(old, new)` | the `T = 0` case: everyone applies the new rules at once, inheriting the old state |
 
-`compare()` returns a `ComparisonResult`: index it by name (`study["balanced"]`), iterate it for the
-names, `study.summary()` for the table, `study.to_dict(include_results=False)` for a compact payload.
-Each entry is a `ScenarioResult` with `.result` (the ordinary result, nothing hidden), `.total_cost`,
-`.total_change`, `.total_change_fraction`, `.cost_changes` (per agent against the baseline) and
-`.dynamics` (the response classification when `stability=True`).
+`compare()` returns a `ns.ComparisonResult`: index it by name (`study["balanced"]`), iterate it for
+the names, `study.summary()` for the table, `study.to_dict(include_results=False)` for a compact
+payload.
 
-## 8. Getting data out
+The containers share conventions, not identity — all are frozen dataclasses carrying `result`,
+`seconds`, `evaluations`, `converged` and `to_dict()`:
+
+| type | is | carries besides |
+|---|---|---|
+| `ns.SweepPoint` | a continuation point | `param`, `value`, `change`, `jump` |
+| `ns.ScenarioResult` | a comparison scenario | `total_cost`, `total_change`, `cost_changes`, `dynamics` |
+| `MarchPoint` | a settle-march step, on a transition result`s `.march` | `T`, `gap`, `monitor`, `unknowns`, `polish` |
+
+**Which of the three do I want?** `sweep` moves *one* model along a parameter path. `compare` solves
+*several* structurally different models independently against a baseline. `transition` is *two*
+models and the path between them.
+
+## 9. Getting data out
 
 | call | use it when |
 |---|---|
-| `res.to_dict()` | the result as JSON-ready data |
+| `res.to_dict()` | the result as JSON-ready data, `payload_version` 2 |
 | `model.to_dict()` / `model.save(path)` | the model as data, or back to a file |
-| `ns.schema("model")` / `ns.schema("payload")` | the JSON Schema of either, for validating generated files or typing a front end |
-| `ns.read_yaml(path)`, `ns.read_json(path)` | read either without building a model |
+| `ns.schema("model")` / `ns.schema("payload")` | the JSON Schema of either |
+| `ns.read_yaml(path)` / `ns.read_json(path)` | read either without building a model |
 
-## 9. The command line
+The payload's `options.solve` and `options.solver` enumerate their keys and refuse the rest, so a
+key change is a version bump rather than something nobody notices.
 
-Installed as `noisestate`.  Every subcommand takes `--help`.
+## 10. The command line
+
+Installed as `noisestate`; every subcommand takes `--help`.
 
 | command | use it when |
 |---|---|
 | `noisestate solve model.yaml` | solve a file; `-o out.json` writes the payload |
-| `noisestate validate model.yaml` | check a file against the schema and the model's own rules, and print its structure |
-| `noisestate describe model.yaml` | the model as equations and conventions, no solve |
-| `noisestate sweep ...` | solve along one parameter with warm starts, writing a JSON list |
+| `noisestate validate model.yaml` | check against the schema and the model's own rules |
+| `noisestate describe model.yaml` | the model as equations, no solve |
+| `noisestate sweep …` / `plot` / `plot-sweep` | a parameter path; plots from a saved payload |
 | `noisestate transition old.yaml new.yaml` | the transition between two regimes |
-| `noisestate plot result.json` | plot from a saved payload rather than re-solving |
-| `noisestate plot-sweep sweep.json` | costs, residuals, strategy changes and runtime from a sweep |
 | `noisestate schema` | print either JSON Schema |
 
-`solve` and `transition` take `--require-ok`, which makes a failed guard a non-zero exit status
-rather than only a failed solve — the form to use in a script or a CI job.
-
-## Which of these three do I want?
-
-The three ways to run many solves are easy to confuse:
-
-- **`sweep`** — *one* model, one parameter moving along a path.  Warm starts make it cheap; the
-  `jump` flag warns you when the equilibrium may have changed branch.
-- **`compare`** — *several* models that differ structurally (different information, different
-  visibility), each solved independently, costs measured against a named baseline.
-- **`transition`** — *two* models and the path between them, as a dynamic problem in its own right.
-
-
-## Appendix: the 0.7 renames
-
-Names that were correct but inconsistent were renamed in 0.7, and the old spellings are **gone** --
-nothing outside this repository imports noisestate, so no transition was owed. Each removed
-top-level name raises an `AttributeError` naming its replacement rather than a bare one.
-
-| old | new |
-|---|---|
-| `ns.ENGINES` | `ns.ENGINE_CLASSES` |
-| `ns.settings(...)` | `ns.using_settings(...)` |
-| `ns.make_solver` | `ns.solver` |
-| `ns.BaseResult` | `ns.Result` |
-| `res.check()` | `res.require_converged()` |
-| `res.diagnose()` | `res.diagnostic_rows()` |
-| `res.category_verdict()` | `res.diagnostic_verdict()` |
-| `res.action_kernel()` | `res.strategy_kernel()` |
-| `res.grid_info()` | `res.grid_summary()` |
-| `res.means_driven` | `res.has_means` |
-| `res.means_t` | `res.mean_times` |
-| `model.means_driven` | `model.drives_means` |
-| `model.finite(T)` | `model.with_finite(T)` |
-| `model.stationary(w)` | `model.with_stationary(window)` |
-| `model.owner(c)` | `model.owner_of(c)` |
-
-The `noisestate.settings` submodule was renamed `noisestate._settings` to free the name, so the
-removed `ns.settings` can explain itself; `from noisestate import Settings` is unaffected.
-
-The payload key `means_t` is still unchanged, and is addressed in `docs/api_spec.txt` PART 7.
+`solve` and `transition` take `--require-ok`, which makes a failed **guard** a non-zero exit status
+rather than only a failed solve.
