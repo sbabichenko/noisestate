@@ -34,7 +34,7 @@ import re
 import warnings
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union, overload
 
 Number = Union[int, float, str]
 Atom = Tuple[str, float]          # (primary name, lag); lag > 0 past, < 0 future
@@ -278,6 +278,36 @@ class Model:
         self.definitions = list(definitions or []); self.ties = list(ties or [])
         self.params = params if params is not None else {}
         self.source = source; self.deprecations = list(deprecations or []); self.remarks = list(remarks or [])
+
+    def __repr__(self) -> str:
+        """One line: the name, the horizon with its own lengths, and what the model holds.
+
+        The generated dataclass repr expands every state, agent, signal row and loss term, which is
+        the whole model file on one line in a notebook.  describe() is the readable long form and
+        to_dict() the exact one; this is for the cell that just names a model.
+        """
+        hz = self.horizon
+        parts = [hz.kind]
+        if hz.kind == "stationary" and hz.window is not None:
+            parts.append(f"window={hz.window:g}")            # L, the lag-truncation length
+        else:
+            if hz.T is not None:
+                parts.append(f"T={hz.T:g}")
+            elif hz.settle is not None:
+                parts.append(f"settle={hz.settle:g}")        # T is the march's output, not yet known
+            if hz.window is not None:
+                parts.append(f"window={hz.window:g}")
+        if hz.discount:
+            parts.append(f"discount={hz.discount:g}")
+        def _plural(n, word):
+            return f"{n} {word}" + ("" if n == 1 else "s")
+        held = [_plural(len(self.states), "state"), _plural(len(self.agents), "agent"),
+                _plural(len(self.channels), "channel")]
+        if self.definitions:
+            held.append(_plural(len(self.definitions), "definition"))
+        if self.ties:
+            held.append(_plural(len(self.ties), "tie"))
+        return f"<Model {self.name!r} {' '.join(parts)}: {', '.join(held)}>"
 
     # ------------------------------------------------------------ the expression form's conveniences
     def describe(self):
@@ -943,6 +973,18 @@ class Model:
         for k, v in values.items():
             d["params"][k] = float(v)
         return self._rebuilt(d)
+
+    #  Three calling forms, spelled out for a reader and for a type checker.  The single
+    #  implementation signature admits combinations none of them allows (a Signal AND a drift), and
+    #  the runtime rejects those; these say which calls are actually meant.
+    @overload
+    def with_signal(self, signal: "Signal", *, audience: Union[str, Iterable[str]] = "all") -> "Model": ...
+    @overload
+    def with_signal(self, signal: str, *, drift: Mapping[str, Any], noise: Mapping[str, Any],
+                    audience: Union[str, Iterable[str]] = "all", delay: float = 0.0) -> "Model": ...
+    @overload
+    def with_signal(self, *, name: str, drift: Mapping[str, Any], noise: Mapping[str, Any],
+                    audience: Union[str, Iterable[str]] = "all", delay: float = 0.0) -> "Model": ...
 
     def with_signal(self, signal=None, *, name=None, drift=None, noise=None, audience="all", delay=0.0) -> "Model":
         """Return a copy with one observation row added to the selected agents.

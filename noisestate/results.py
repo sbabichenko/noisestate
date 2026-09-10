@@ -321,6 +321,43 @@ class Result:
     def grid_summary(self) -> dict:
         raise NotImplementedError
 
+    #  summary() and plot() are DECLARED here, though every engine overrides them, because a reader
+    #  looking at noisestate.Result -- help(), dir(), an editor's completion -- has only this class
+    #  to look at: the subclasses are internal.  A method that exists on every result but appears on
+    #  none of the public surface is one a user finds by accident or not at all.
+    def summary(self, diagnostics: bool = True) -> str:
+        """One block of text: convergence, residual, evaluations, runtime, the grid, each agent's cost,
+        and (with `diagnostics`) the checks that failed.  print(res.summary()) is the usual first look
+        at a result; res.diagnostics.summary() is the checks alone."""
+        raise NotImplementedError
+
+    def plot(self, path: str) -> None:
+        """Write a figure of the result's kernels to `path` (.pdf or .png; matplotlib required).
+        res.kernel(name, channel).plot(path) draws one kernel instead of all of them."""
+        raise NotImplementedError
+
+    def __repr__(self) -> str:
+        """One line: what was solved, whether it converged, and whether it is accepted.
+
+        The generated dataclass repr ran to about 79,000 characters -- the compiled engine, every
+        kernel and every map -- which is what a notebook prints when the last line of a cell is a
+        result.  The detail is still one explicit call away: summary(), to_dict(), or the field.
+        """
+        state = "converged" if self.converged else "NOT converged"
+        try:
+            costs = ", ".join(f"{a}={v:.5g}" for a, v in list(self.costs.items())[:3])
+            if len(self.costs) > 3:
+                costs += ", ..."
+        except Exception:
+            costs = ""
+        try:
+            verdict = "accepted" if self.diagnostics.assess().accepted else "not accepted"
+        except Exception:                       # a repr must not raise, whatever the result holds
+            verdict = "?"
+        return (f"<{type(self).__name__} {self.model.name!r} {self.kind}: {state} "
+                f"(residual {self.residual:.2e}, {self.evaluations} evaluations, {self.seconds:.1f}s); "
+                f"costs {costs or 'none'}; publication: {verdict}>")
+
     @property
     def cost_kind(self) -> str:
         return "stationary flow loss per unit time" if self.kind == "stationary" else "discounted integral over [0, T]"
@@ -466,7 +503,9 @@ class Result:
         if name == "window":
             options["window"] = 2 * float(self.model.horizon.window)
         elif name == "settled":
-            options["window"] = 2 * float(self.compiled.T)
+            #  the settled guard wants a longer TERMINAL TIME, not a longer lag window: under the
+            #  old shared name it printed "--window", which the transition command no longer takes.
+            options["T"] = 2 * float(self.compiled.T)
         elif name == "past window":
             options["past_window"] = 2 * float(self.past.window)
         elif name == "continuation window":
@@ -710,7 +749,7 @@ class Result:
 
 
 
-@dataclass
+@dataclass(repr=False)
 class StationaryResult(Result):
     kind: str = "stationary"
     MAP_CONVENTION = ("maps[agent][u][row][n] is the weight the control puts on the increment of the row as the agent "
@@ -834,7 +873,7 @@ class StationaryResult(Result):
         return "\n".join(lines)
 
 
-@dataclass
+@dataclass(repr=False)
 class TriangleResult(Result):
     kind: str = "finite"
     past: object = None                     # the Past a transition started from (None: the game starts at rest)
@@ -1013,7 +1052,7 @@ class TriangleResult(Result):
         return "\n".join(lines)
 
 
-@dataclass
+@dataclass(repr=False)
 class TransitionResult(TriangleResult):
     """A transition from a known past: the kernels on the strip (s < 0 on the band), the loss paths E[loss(t)] on
     res.times ([0, T] and the buffer), the excess costs over the new stationary flow, the belief errors on
@@ -1111,7 +1150,7 @@ class TransitionResult(TriangleResult):
         return "\n".join(lines)
 
 
-@dataclass
+@dataclass(repr=False)
 class CellResult(Result):
     kind: str = "finite_cells"
 
