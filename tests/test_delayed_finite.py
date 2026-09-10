@@ -74,3 +74,55 @@ def test_lag_off_the_panel_unit_is_rejected_with_the_unit_to_set():
         c = SpectralCompiled(ns.Model.from_dict(d))
     with pytest.raises(ValueError, match="not closed under the lag 0.3"):
         c.map_shift(0.3)
+    #  the sparse builder refuses it identically.  It used to reach this message by CALLING
+    #  map_shift(), allocating a dense N x N array for the side effect of raising; both now raise
+    #  from the traversal they share.
+    with pytest.raises(ValueError, match="not closed under the lag 0.3"):
+        c.map_shift_sparse(0.3)
+
+
+def _delayed_transition(T, **num):
+    """A stationary two-player model with a delayed row, run as a transition from itself: the buffer
+    pieces and the triangles cut by its diagonal are what exercise the shift geometry."""
+    b = ns.ModelBuilder("sd", r=0.5)
+    b.channel("w", "v1", "v2")
+    b.state("X", drift={"D1": 1.0, "D2": 1.0}, noise={"w": 1.0})
+    b.agent("p1", controls=["D1"], loss=[[1.0, "X", "X"], ["r", "D1", "D1"]])
+    b.signal("p1", "y1", drift={"X": 1.0}, noise={"v1": 1.0})
+    b.agent("p2", controls=["D2"], loss=[[1.0, "X", "X"], ["r", "D2", "D2"]])
+    b.signal("p2", "y2", drift={"X": 1.0}, noise={"v2": 1.0}, delay=0.5)
+    b.stationary(discount=0.0, window=3.0, nodes=5)
+    old = b.build()
+    return old.with_transition(T, past={"model": old.to_dict()}), num
+
+
+@pytest.mark.parametrize("case", ["finite", "buffer", "coarse"])
+def test_the_dense_and_sparse_map_shifts_are_the_same_operator(case):
+    """map_shift and map_shift_sparse are one operator in two containers, and nothing asserted it.
+
+    They are built from one traversal (Compiled._shift_ops) precisely because the geometry is the
+    subtle part -- a buffer piece shifted back into [0, T] lands node to node as a rectangle and is
+    interpolated as a triangle; a piece beyond unit_range is not aligned at all -- and it used to be
+    written out once per container.  Each case below reaches a different one of those branches.
+    """
+    if case == "finite":
+        model, num = ns.Model.from_dict(_finite("ch1_delayed_finite.yaml", nodes=6)), None
+    elif case == "buffer":
+        model, num = _delayed_transition(3.0, nodes=5)
+    else:
+        model, num = _delayed_transition(4.0, nodes=5, unit_range=2.0)
+    c = ns.engines.solver(model, num).c
+    assert c.coarse is (case == "coarse")
+    if case != "finite":
+        assert sum(1 for pc in c.g.pieces if pc.p >= c.g.P_T) > 0     # buffer pieces present
+        assert sum(1 for pc in c.g.pieces if pc.triangle) > 0         # and triangles among them
+    checked = 0
+    for delay in (0.25, 0.5, 1.0, 1.5, 2.0):
+        try:
+            dense = c.map_shift(delay)
+        except ValueError:
+            continue                                                   # not a breakpoint of these panels
+        sparse = c.map_shift_sparse(delay).toarray()
+        assert np.array_equal(dense, sparse), f"delay {delay}: the two builders disagree"
+        checked += 1
+    assert checked >= 2, "the case exercised too few delays to mean anything"

@@ -537,31 +537,52 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         triangle's degenerate bottom row distinct, so no map node is left unread."""
         key = round(float(delay), 12)
         if key not in self._map_shifts:
-            g = self.g; k = self.panel_shift(delay); S = np.zeros((self.N, self.N))
-            for pc in g.pieces:
-                if pc.p - k < 0 or pc.q - k < 0:
-                    continue
-                if pc.p >= g.P_T and pc.p - k < g.P_T:
-                    # a buffer piece shifted back into [0, T]: a rectangle lands on the rectangle (p - k, q - k) node to
-                    # node; a triangle (cut by a diagonal of the buffer) lands inside that rectangle and is interpolated
-                    if pc.triangle:
-                        idx = pc.offset + np.arange(pc.n)
-                        S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx], side_d=g.side_ds[idx])
-                        continue
-                    tgt = g._piece_by_pq.get((pc.p - k, pc.q - k))
+            g = self.g; S = np.zeros((self.N, self.N))
+            for pc, tgt, idx in self._shift_ops(delay):
+                if tgt is None:
+                    S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx],
+                                      side_a=g.side_a[idx], side_d=g.side_ds[idx])
                 else:
-                    tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq).get((pc.p - k, pc.q - k))
-                if not self._shift_aligned(pc, tgt, delay):
-                    if not self.coarse:
-                        raise ValueError(f"the time panels {[float(b) for b in g.bp]} are not closed under the lag {delay}: the panel "
-                                         f"[{pc.t0:g}, {pc.t1:g}] shifted back by the lag is not a panel; drop horizon.breakpoints, "
-                                         f"or set horizon.unit to a common divisor of the lags and of the window {self.T}")
-                    idx = pc.offset + np.arange(pc.n)               # beyond unit_range: the read is interpolated
-                    S[idx] = g.interp(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx], side_d=g.side_ds[idx])
-                    continue
-                S[pc.offset + np.arange(pc.n), tgt.offset + np.arange(pc.n)] = 1.0
+                    S[idx, tgt.offset + np.arange(pc.n)] = 1.0
             self._map_shifts[key] = S
         return self._map_shifts[key]
+
+    def _shift_ops(self, delay: float):
+        """Where each piece's nodes read from under a shift by `delay`, decided once for both builders.
+
+        Yields (piece, target, idx): `target` is the piece the nodes copy from ONE TO ONE, or None
+        when the read has to be interpolated; `idx` is the piece's node indices.  The geometry is the
+        subtle part -- a buffer piece shifted back into [0, T] lands node to node if it is a
+        rectangle and inside that rectangle if it is a TRIANGLE cut by a diagonal of the buffer; a
+        piece beyond unit_range is not aligned at all and is interpolated -- and it was written out
+        twice, once to fill a dense array and once to append coo triples.  Only the filling differed.
+
+        Raises when a panel shifted back by the lag is not a panel and the grid is not coarse.  The
+        sparse builder used to reach that message by calling map_shift(), which built an entire dense
+        N x N matrix for the side effect of raising.
+        """
+        g = self.g; k = self.panel_shift(delay)
+        for pc in g.pieces:
+            if pc.p - k < 0 or pc.q - k < 0:
+                continue
+            idx = pc.offset + np.arange(pc.n)
+            if pc.p >= g.P_T and pc.p - k < g.P_T:
+                # a buffer piece shifted back into [0, T]: a rectangle lands on the rectangle (p - k, q - k) node to
+                # node; a triangle (cut by a diagonal of the buffer) lands inside that rectangle and is interpolated
+                if pc.triangle:
+                    yield pc, None, idx
+                    continue
+                tgt = g._piece_by_pq.get((pc.p - k, pc.q - k))
+            else:
+                tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq).get((pc.p - k, pc.q - k))
+            if not self._shift_aligned(pc, tgt, delay):
+                if not self.coarse:
+                    raise ValueError(f"the time panels {[float(b) for b in g.bp]} are not closed under the lag {delay}: the panel "
+                                     f"[{pc.t0:g}, {pc.t1:g}] shifted back by the lag is not a panel; drop horizon.breakpoints, "
+                                     f"or set horizon.unit to a common divisor of the lags and of the window {self.T}")
+                yield pc, None, idx                            # beyond unit_range: the read is interpolated
+                continue
+            yield pc, tgt, idx
 
     def _shift_aligned(self, pc, tgt, delay: float) -> bool:
         """Whether the piece pc shifted back by the delay is the piece tgt node to node (the same panel widths
@@ -673,30 +694,15 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         from scipy.sparse import csr_matrix
         key = ("shift", round(float(delay), 12))
         if key not in self._sparse:
-            g = self.g; k = self.panel_shift(delay)
+            g = self.g
             rows, cols, vals = [], [], []
-            for pc in g.pieces:
-                if pc.p - k < 0 or pc.q - k < 0:
-                    continue
-                if pc.p >= g.P_T and pc.p - k < g.P_T:
-                    if pc.triangle:
-                        idx = pc.offset + np.arange(pc.n)
-                        I = g.interp_sparse(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx],
-                                            side_d=g.side_ds[idx]).tocoo()
-                        rows.append(idx[I.row]); cols.append(I.col); vals.append(I.data)
-                        continue
-                    tgt = g._piece_by_pq.get((pc.p - k, pc.q - k))
-                else:
-                    tgt = (g._upper_by_pq if pc.upper else g._piece_by_pq).get((pc.p - k, pc.q - k))
-                if not self._shift_aligned(pc, tgt, delay):
-                    if not self.coarse:
-                        self.map_shift(delay)                   # raises with the message of the dense form
-                    idx = pc.offset + np.arange(pc.n)               # beyond unit_range: the read is interpolated
+            for pc, tgt, idx in self._shift_ops(delay):
+                if tgt is None:
                     I = g.interp_sparse(g.t[idx] - delay, g.a[idx] - delay, side_t=g.side_t[idx], side_a=g.side_a[idx],
                                         side_d=g.side_ds[idx]).tocoo()
                     rows.append(idx[I.row]); cols.append(I.col); vals.append(I.data)
-                    continue
-                rows.append(pc.offset + np.arange(pc.n)); cols.append(tgt.offset + np.arange(pc.n)); vals.append(np.ones(pc.n))
+                else:
+                    rows.append(idx); cols.append(tgt.offset + np.arange(pc.n)); vals.append(np.ones(pc.n))
             if rows:
                 M = csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(self.N, self.N))
             else:
