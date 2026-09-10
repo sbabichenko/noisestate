@@ -327,11 +327,43 @@ class Result:
     #  looking at noisestate.Result -- help(), dir(), an editor's completion -- has only this class
     #  to look at: the subclasses are internal.  A method that exists on every result but appears on
     #  none of the public surface is one a user finds by accident or not at all.
+    #  What every engine's summary says, and where each one differs.  The three implementations
+    #  repeated the header and the cost loop verbatim and diverged only in the grid line, the cost
+    #  label and precision, and how the means are shown -- so a change to the header had to be made
+    #  three times, and the formats drifted apart (one prints costs to 8 figures, two to 6).
+    COST_LABEL = "cost"                 # what the number is called, per engine
+    COST_FIGURES = 6                    # decimal places; the triangle carries more
+
+    def _grid_line(self) -> str:
+        """Hook: the engine's grid, ending the header line (`grid 1 panels x 24 nodes on [0, 3.0], rho=0`)."""
+        raise NotImplementedError
+
+    def _means_line(self) -> str:
+        """Hook: how this engine shows the means; reached only when has_means."""
+        raise NotImplementedError
+
+    def _agent_lines(self, agent) -> list:
+        """Hook: whatever an engine adds under an agent's cost ({} for most)."""
+        return []
+
     def summary(self, diagnostics: bool = True) -> str:
         """One block of text: convergence, residual, evaluations, runtime, the grid, each agent's cost,
         and (with `diagnostics`) the checks that failed.  print(res.summary()) is the usual first look
         at a result; res.diagnostics.summary() is the checks alone."""
-        raise NotImplementedError
+        f = self.COST_FIGURES
+        lines = [f"{self.model.name}: {self._status(compact=not diagnostics)} residual {self.residual:.2e} "
+                 f"in {self.evaluations} evaluations, {self.seconds:.1f}s; {self._grid_line()}"]
+        for a in self.model.agents:
+            parts = self.cost_parts.get(a.name)
+            lines.append(f"  {a.name}: {self.COST_LABEL} = {self.costs.get(a.name, float('nan')):+.{f}f}"
+                         + (f" (variance {parts['variance']:+.{f}f}, mean {parts['mean']:+.{f}f})"
+                            if parts and parts["mean"] != 0.0 else "")
+                         + (f" + continuation {parts['continuation']:+.{f}f} on the buffer"
+                            if parts and "continuation" in parts else ""))
+            lines.extend(self._agent_lines(a))
+        if self.has_means:
+            lines.append(self._means_line())
+        return "\n".join(lines)
 
     def plot(self, path: str) -> None:
         """Write a figure of the result's kernels to `path` (.pdf or .png; matplotlib required).
@@ -847,20 +879,23 @@ class StationaryResult(Result):
         return {"kind": "stationary", "breakpoints": [float(b) for b in g.breakpoints], "nodes_per_panel": g.n,
                 "ages": g.nodes.tolist()}
 
-    def summary(self, diagnostics: bool = True) -> str:
+    COST_LABEL = "flow loss"
+
+    def _grid_line(self) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {self._status(compact=not diagnostics)} residual {self.residual:.2e} in {self.evaluations} evaluations, "
-                 f"{self.seconds:.1f}s; grid {c.grid.P} panels x {c.grid.n} nodes on [0, {c.grid.L}], rho={c.rho}"]
-        for a in self.model.agents:
-            parts = self.cost_parts.get(a.name)
-            lines.append(f"  {a.name}: flow loss = {self.costs.get(a.name, float('nan')):+.6f}"
-                         + (f" (variance {parts['variance']:+.6f}, mean {parts['mean']:+.6f})" if parts and parts["mean"] != 0.0 else ""))
-            for u in a.controls:
-                k = self.kernel(u)
-                lines.append(f"    {u}(0+) on channels: " + ", ".join(f"{ch}={k[0, j]:+.4f}" for j, ch in enumerate(self.channels)))
-        if self.has_means:
-            lines.append("  means: " + ", ".join(f"{n}={self._mz(self.means[n]):+.6f}" for n in c.prim))
-        return "\n".join(lines)
+        return f"grid {c.grid.P} panels x {c.grid.n} nodes on [0, {c.grid.L}], rho={c.rho}"
+
+    def _agent_lines(self, agent) -> list:
+        """The stationary engine shows each control's weight on the newest shock, which is the number
+        a reader compares across channels."""
+        out = []
+        for u in agent.controls:
+            k = self.kernel(u)
+            out.append(f"    {u}(0+) on channels: " + ", ".join(f"{ch}={k[0, j]:+.4f}" for j, ch in enumerate(self.channels)))
+        return out
+
+    def _means_line(self) -> str:
+        return "  means: " + ", ".join(f"{n}={self._mz(self.means[n]):+.6f}" for n in self.compiled.prim)
 
 
 @dataclass(repr=False)
@@ -1021,21 +1056,21 @@ class TriangleResult(Result):
                     out["kernels"][name][ch] = self.kernel(name, ch).tolist()
         return out
 
-    def summary(self, diagnostics: bool = True) -> str:
+    COST_LABEL = "discounted cost"
+    COST_FIGURES = 8
+
+    def _grid_line(self) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {self._status(compact=not diagnostics)} residual {self.residual:.2e} in {self.evaluations} evaluations, "
-                 f"{self.seconds:.1f}s; triangle grid {c.g.P} panels, {len(c.g.pieces)} pieces x {c.g.nt}x{c.g.na} nodes "
-                 f"= {c.N} nodes on [0, {c.T}]" + (f" and the buffer [{c.T}, {c.g.T}] (maps frozen at the stationary ones)"
-                                                  if self.continuation is not None else "") + f", rho={c.rho}"]
-        for a in self.model.agents:
-            parts = self.cost_parts.get(a.name)
-            lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.8f}"
-                         + (f" (variance {parts['variance']:+.8f}, mean {parts['mean']:+.8f})" if parts and parts["mean"] != 0.0 else "")
-                         + (f" + continuation {parts['continuation']:+.8f} on the buffer" if parts and "continuation" in parts else ""))
-        if self.has_means:
-            at = np.array([0.0, 0.5 * c.T, c.T])
-            lines.append("  means at t = 0, T/2, T: " + ", ".join(f"{n}=" + "/".join(f"{self._mz(v):+.4f}" for v in self.mean(n, at)) for n in c.prim))
-        return "\n".join(lines)
+        return (f"triangle grid {c.g.P} panels, {len(c.g.pieces)} pieces x {c.g.nt}x{c.g.na} nodes "
+                f"= {c.N} nodes on [0, {c.T}]"
+                + (f" and the buffer [{c.T}, {c.g.T}] (maps frozen at the stationary ones)"
+                   if self.continuation is not None else "") + f", rho={c.rho}")
+
+    def _means_line(self) -> str:
+        c = self.compiled
+        at = np.array([0.0, 0.5 * c.T, c.T])
+        return "  means at t = 0, T/2, T: " + ", ".join(
+            f"{n}=" + "/".join(f"{self._mz(v):+.4f}" for v in self.mean(n, at)) for n in c.prim)
 
 
 @dataclass(repr=False)
@@ -1191,14 +1226,13 @@ class CellResult(Result):
         from .plotting import plot_cells
         plot_cells(self, path)
 
-    def summary(self, diagnostics: bool = True) -> str:
+    COST_LABEL = "discounted cost"
+
+    def _grid_line(self) -> str:
         c = self.compiled
-        lines = [f"{self.model.name}: {self._status(compact=not diagnostics)} residual {self.residual:.2e} in {self.evaluations} evaluations, "
-                 f"{self.seconds:.1f}s; {c.N} cells on [0, {c.T}], rho={c.rho}"]
-        for a in self.model.agents:
-            parts = self.cost_parts.get(a.name)
-            lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.6f}"
-                         + (f" (variance {parts['variance']:+.6f}, mean {parts['mean']:+.6f})" if parts and parts["mean"] != 0.0 else ""))
-        if self.has_means:
-            lines.append("  means at t = 0, T/2: " + ", ".join(f"{n}={self._mz(self.means[n][0]):+.4f}/{self._mz(self.means[n][c.N // 2]):+.4f}" for n in c.prim))
-        return "\n".join(lines)
+        return f"{c.N} cells on [0, {c.T}], rho={c.rho}"
+
+    def _means_line(self) -> str:
+        c = self.compiled
+        return "  means at t = 0, T/2: " + ", ".join(
+            f"{n}={self._mz(self.means[n][0]):+.4f}/{self._mz(self.means[n][c.N // 2]):+.4f}" for n in c.prim)
