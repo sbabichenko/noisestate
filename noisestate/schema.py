@@ -108,8 +108,26 @@ def model_schema() -> dict:
                 "numerics": numerics_schema()}}
 
 
+PAYLOAD_VERSION = 2          # see payload_schema()'s docstring for what changed
+
+
 def payload_schema() -> dict:
-    """The result payload (Result.to_dict()), payload_version 1."""
+    """The result payload (Result.to_dict()), payload_version 2.
+
+    VERSION 2 (0.8) changed six things, and a consumer written against version 1 will not read it:
+
+        means_t                 -> mean_times, matching the Python attribute
+        status {ok, flags}      -> assessment {policy, accepted, statuses, blocking, uncomputed}
+        resolution_ok           -> gone; the resolution check's status is in assessment.statuses
+        options.solve.start     -> start_policy
+        stability               -> carries verified, fixed_point_residual, residual_norm and the
+                                   reasons, and requires them: a radius with no statement about
+                                   whether the point is an equilibrium invites the misreading
+        refinement              -> the Refinement's to_dict(), not the object
+
+    options.solve and options.solver enumerate their keys and refuse the rest, which is what makes
+    the next such change a version bump rather than something nobody notices.
+    """
     numbers = {"type": "array", "items": {"type": "number"}}
     by_name = lambda inner: {"type": "object", "additionalProperties": inner}   # noqa: E731
     row = {"type": "object", "required": ["name", "value", "threshold", "ok", "flag", "advice"],
@@ -123,10 +141,10 @@ def payload_schema() -> dict:
             "type": "object",
             "required": ["payload_version", "version", "name", "engine", "kind", "converged", "residual", "evaluations", "seconds",
                          "message", "params", "model", "horizon", "numerics", "axes", "times", "options", "grid", "discount", "channels",
-                         "agents", "map_convention", "kernels", "maps", "foc", "costs", "cost_parts", "means", "means_t",
+                         "agents", "map_convention", "kernels", "maps", "foc", "costs", "cost_parts", "means", "mean_times",
                          "representation_error", "diagnostics", "assessment", "cost_kind", "second_order", "notes"],
             "properties": {
-                "payload_version": {"const": 1},
+                "payload_version": {"const": PAYLOAD_VERSION},
                 "version": {"type": "string", "description": "the package version that wrote it"},
                 "name": {"type": "string"},
                 "engine": {"enum": list(ENGINE_NAMES)},
@@ -139,8 +157,30 @@ def payload_schema() -> dict:
                 "numerics": {"$ref": "#/$defs/numerics", "description": "the resolved numerics"},
                 "axes": by_name(numbers),
                 "times": {"anyOf": [numbers, {"type": "null"}], "description": "the time nodes of the paths; null on the stationary engine"},
+                #  The two option blocks ENUMERATE their keys and refuse anything else.  Declaring
+                #  them as bare objects meant a rename inside them validated silently: `start`
+                #  became `start_policy` and nothing noticed, which is the opposite of what a
+                #  schema on a wire format is for.  additionalProperties is what does the
+                #  refusing -- listing properties alone accepts an obsolete key beside them.
                 "options": {"type": "object", "required": ["numerics", "solver", "solve"],
-                            "properties": {"numerics": {"$ref": "#/$defs/numerics"}, "solver": {"type": "object"}, "solve": {"type": "object"}}},
+                            "additionalProperties": False,
+                            "properties": {
+                                "numerics": {"$ref": "#/$defs/numerics"},
+                                "solver": {"type": "object", "additionalProperties": False,
+                                           "properties": {"verbose": {"type": "boolean"},
+                                                          "naive_observers": {"type": ["object", "null"]},
+                                                          "past": {},
+                                                          "continuation": {}}},
+                                "solve": {"type": "object", "additionalProperties": False,
+                                          "properties": {"start_from": {},
+                                                         "start_policy": {"type": ["string", "null"]},
+                                                         "tol": {"type": ["number", "null"]},
+                                                         "damping": {"type": ["number", "null"]},
+                                                         "max_newton": {"type": ["integer", "null"]},
+                                                         "variable": {"type": ["string", "null"]},
+                                                         "max_evaluations": {"type": ["integer", "null"]},
+                                                         "deadline": {"type": ["number", "null"]},
+                                                         "diagnostics": {"type": "boolean"}}}}},
                 "grid": {"type": "object", "required": ["kind"]},
                 "discount": {"type": "number"},
                 "channels": {"type": "array", "items": {"type": "string"}},
@@ -156,7 +196,7 @@ def payload_schema() -> dict:
                 "costs": by_name({"type": "number"}),
                 "cost_parts": by_name(by_name({"type": "number"})),
                 "means": by_name({"anyOf": [{"type": "number"}, numbers]}),
-                "means_t": {"anyOf": [numbers, {"type": "null"}]},
+                "mean_times": {"anyOf": [numbers, {"type": "null"}]},
                 "representation_error": by_name({"type": "number"}),
                 "representation_parts": by_name(by_name({"type": "number"})),
                 "diagnostics": {"type": "array", "items": row},

@@ -251,7 +251,7 @@ def test_initial_state_spec_payload_and_cli(tmp_path):
         m.with_stationary(4.0)
     res = ns.solve(m).require_converged()
     d = json.loads(json.dumps(res.to_dict()))
-    assert d["means"]["X"] == res.means["X"].tolist() and d["means_t"] == res.mean_times.tolist() and d["cost_parts"]["a"]["mean"] == res.cost_parts["a"]["mean"]
+    assert d["means"]["X"] == res.means["X"].tolist() and d["mean_times"] == res.mean_times.tolist() and d["cost_parts"]["a"]["mean"] == res.cost_parts["a"]["mean"]
     assert ns.Model.from_dict(d["model"]).states[0].initial == 0.7
     path = tmp_path / "lq.yaml"; out = tmp_path / "lq.json"
     import yaml

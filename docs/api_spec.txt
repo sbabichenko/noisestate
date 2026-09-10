@@ -479,11 +479,20 @@
 
  8.1  SIGNALS  [I]
 
+     @overload
      Model.with_signal(signal: Signal, *, audience: str | Sequence[str] = "all") -> Model
+     @overload
      Model.with_signal(name: str, *, drift: Mapping[str, float], noise: Mapping[str, float],
                        audience: str | Sequence[str] = "all", delay: float = 0.0) -> Model
+     @overload
      Model.with_signals(signals: Sequence[Signal], *, audience = "all") -> Model
+     @overload
      Model.with_signals(rows: Mapping[str, dict], *, audience = "all") -> Model
+
+     BOTH OVERLOADS ARE PART OF THE CONTRACT.  This was implemented from the first line alone,
+     which rejected a positional name and broke every existing caller.  The failure was not that a
+     signature block cannot express two calling shapes -- typing.overload does, and both were
+     already written here, adjacent -- it was reading one of them.
 
  [I] Both forms are retained and overloaded on the first argument: a Signal, or a name plus the
      file-form blocks.  The dict form exists because a model loaded from a file has no Signal

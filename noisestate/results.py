@@ -48,6 +48,7 @@ import numpy as np
 
 from .accel import ConvergenceError, DiagnosticsError
 from ._settings import DEFAULT, Settings, tunable
+from .schema import PAYLOAD_VERSION      # the format's version lives with the format
 from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, MINIMUM, RESIDUAL_NORM, RESIDUAL_TOLERANCE,
                           Assessment, Policy, Refinement, Stability, Status, applicable, assess, classify,
                           curvature_is_obtainable, verification)
@@ -651,7 +652,7 @@ class Result:
         from . import __version__
         c = self.compiled; m = self.model
         num = self.numerics
-        out = {"payload_version": 1, "version": __version__, "name": m.name, "engine": num.engine, "kind": self.kind,
+        out = {"payload_version": PAYLOAD_VERSION, "version": __version__, "name": m.name, "engine": num.engine, "kind": self.kind,
                "converged": bool(self.converged),
                "residual": float(self.residual), "evaluations": int(self.evaluations), "seconds": float(self.seconds),
                "message": self.message, "params": {k: float(v) for k, v in m.params.items()}, "model": m.to_dict(),
@@ -669,7 +670,7 @@ class Result:
                "costs": {k: float(v) for k, v in self.costs.items()},
                "cost_parts": {a: {k: float(v) for k, v in p.items()} for a, p in self.cost_parts.items()},
                "means": {k: (v.tolist() if isinstance(v, np.ndarray) else float(v)) for k, v in self.means.items()},
-               "means_t": None if self.mean_times is None else self.mean_times.tolist()}
+               "mean_times": None if self.mean_times is None else self.mean_times.tolist()}
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
         if self.representation_parts:
             out["representation_parts"] = {a: {k: float(v) for k, v in p.items()} for a, p in self.representation_parts.items()}
@@ -1337,7 +1338,7 @@ def plot_payload(payload: dict, path: str):
         dates = np.unique([available[np.abs(available - x).argmin()] for x in targets]) if len(available) else available
         transition = payload["kind"] == "transition"
         agents = list(payload["agents"]); states = list(payload["model"].get("states", {}))
-        means = payload.get("means_t") is not None and any(np.any(np.asarray(v, dtype=float)) for v in payload.get("means", {}).values())
+        means = payload.get("mean_times") is not None and any(np.any(np.asarray(v, dtype=float)) for v in payload.get("means", {}).values())
         extra_rows = (2 if transition else 0) + (1 if means else 0)
         ncol = max(len(chans), len(agents) if transition else 0, 1)
         fig, axs = plt.subplots(len(names) + extra_rows, ncol,
@@ -1390,7 +1391,7 @@ def plot_payload(payload: dict, path: str):
             if settled is not None:
                 suffix += f", settled {settled:.1e}"
         if means:
-            mt = np.asarray(payload["means_t"], dtype=float); ax = axs[row, 0]
+            mt = np.asarray(payload["mean_times"], dtype=float); ax = axs[row, 0]
             for name in names:
                 if name in payload["means"]:
                     ax.plot(mt, payload["means"][name], lw=1, label=name)

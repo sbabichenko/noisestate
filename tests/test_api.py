@@ -1,10 +1,12 @@
 """The API stage's surface: Numerics apart from the model, the explicit solve(), the engines namespace."""
+import json
 import os
 
 import numpy as np
 import pytest
 
 import noisestate as ns
+from noisestate.schema import PAYLOAD_VERSION
 from noisestate import engines
 from noisestate.diagnostics import Status
 from noisestate import Numerics
@@ -213,7 +215,7 @@ def test_one_result_reads_the_same_on_every_engine(numerics):
     assert diagnostic["severity"] == "ok" and diagnostic["meaning"] and "suggested_options" in diagnostic
     assert r.cost_kind.startswith("discounted") and set(r.cost_parts["player1"]) == {"variance", "mean"}
     p = r.to_dict()
-    assert p["payload_version"] == 1 and p["engine"] == numerics["engine"] and set(p["axes"]) == set(node_axes)
+    assert p["payload_version"] == PAYLOAD_VERSION and p["engine"] == numerics["engine"] and set(p["axes"]) == set(node_axes)
     assert p["assessment"]["accepted"] is verdict.accepted and p["assessment"]["policy"] == "publication"
 
 
@@ -382,7 +384,12 @@ def test_removing_a_row_is_the_inverse_of_adding_one():
     added = m.with_signal("flow", drift={"X": 1.0}, noise={"wf": 1.0})
     assert "wf" in added.channels and "wf" not in m.channels
     back = added.without_signal("flow")
-    assert back.to_dict(numeric=True) == m.to_dict(numeric=True)     # byte-identical round trip
+    #  BOTH forms: numeric=True resolves the parameter expressions to numbers, so on its own it
+    #  would pass even if the round trip had lost `sqrt(p1)` and left 1.732... in its place.  The
+    #  plain to_dict() is the one that says the SYMBOLIC model came back.
+    assert back.to_dict(numeric=True) == m.to_dict(numeric=True)
+    assert back.to_dict() == m.to_dict()
+    assert "sqrt(p1)" in json.dumps(back.to_dict())                  # the expression, not its value
     assert "wf" not in back.channels
 
     with pytest.raises(ValueError, match="already has a signal"):

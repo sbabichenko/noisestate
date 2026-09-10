@@ -1,6 +1,7 @@
 """The JSON payload carries its provenance and says how delayed-row maps are indexed (2026-09-05 audit)."""
 import json, os, time, numpy as np, pytest
 import noisestate as ns
+from noisestate.schema import PAYLOAD_VERSION
 from noisestate import engines
 from noisestate.cli import main
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
@@ -13,7 +14,7 @@ def test_payload_round_trips_and_rebuilds_the_solve():
     assert d["version"] == ns.__version__ and d["name"] == "ch3_two_player" and d["engine"] == "stationary"
     assert d["params"] == {"p1": 3.0, "p2": 10.0, "r1": 1.0, "r2": 1.0}
     assert d["horizon"] == {"kind": "stationary", "discount": 0.0, "window": 3.0} and d["numerics"] == {"engine": "stationary", "nodes": 24, "tol": 1e-10, "damping": 0.6, "max_newton": 60, "variable": "actions"}
-    assert d["payload_version"] == 1 and d["axes"]["age"] == d["grid"]["ages"] and d["times"] is None and d["assessment"]["accepted"] is False
+    assert d["payload_version"] == PAYLOAD_VERSION and d["axes"]["age"] == d["grid"]["ages"] and d["times"] is None and d["assessment"]["accepted"] is False
     assert d["options"]["solve"]["start_policy"] == "zero" and d["options"]["solver"]["verbose"] is False
     assert d["agents"]["player2"] == {"controls": ["D2"], "signals": {"y2": {"delay": 0.0, "map_age": d["grid"]["ages"]}}}
     m2 = ns.Model.from_dict(d["model"]); assert m2.to_dict() == m.to_dict()
@@ -98,3 +99,20 @@ def test_a_payload_with_stability_and_a_march_json_encodes():
     assert isinstance(payload["march"], list) and isinstance(payload["march"][0], dict)
     assert {"T", "gap", "evaluations", "seconds", "monitor"} <= set(payload["march"][0])
     assert ns.schema.validate(payload, "payload") == []
+
+
+def test_the_payload_version_is_pinned_by_the_schema():
+    """The version and the format move together: the schema pins payload_version as a const, so a
+    key change that forgets to bump it fails validation here rather than in whatever reads the
+    file.  Version 2 (0.8) renamed means_t to mean_times, replaced status with assessment, dropped
+    resolution_ok, renamed options.solve.start, extended stability with its evidence, and made
+    refinement a dict -- five of those six validated silently under version 1's open schema."""
+    res = ns.solve(os.path.join(EX, "ch1_two_player_finite.yaml"), {"nodes": 8})
+    d = res.to_dict()
+    assert d["payload_version"] == PAYLOAD_VERSION and PAYLOAD_VERSION == 2
+    assert "mean_times" in d and "means_t" not in d          # the attribute's name, not the old key
+    assert "assessment" in d and "status" not in d and "resolution_ok" not in d
+    assert "start_policy" in d["options"]["solve"] and "start" not in d["options"]["solve"]
+
+    stale = json.loads(json.dumps(d)); stale["payload_version"] = 1
+    assert any("payload_version" in e for e in ns.schema.validate(stale, "payload"))
