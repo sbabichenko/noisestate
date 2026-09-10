@@ -75,7 +75,7 @@ player2 = Agent("player2", controls=[D2], signals=[Signal("y2", p2**0.5 * X + w.
 game = ns.Model("ch1", states=[X], agents=[player1, player2], horizon=ns.Stationary(window=3.0))
 eq = game.solve()
 eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
-eq.status.ok; eq.costs["player1"]; eq.cost_parts["player1"]; eq.means["X"]
+eq.diagnostics.assess().accepted; eq.costs["player1"]; eq.cost_parts["player1"]; eq.means["X"]
 k = eq.kernel("X", "w0"); k.values; k.axes; k.at(0.7)
 for point in game.sweep(p1=[0.3, 1, 3, 10]): point.value, point.result, point.jump
 old = game.solve(); new = game.with_params(p1=10.0).with_finite(T=6.0); path = new.solve(past=old)
@@ -93,7 +93,7 @@ def test_target_script_runs(tmp_path, monkeypatch):
     assert src != TARGET
     env = {}
     exec(compile(src, "target", "exec"), env)
-    assert env["eq"].status["ok"] in (True, False) and (tmp_path / "ch1.yaml").exists()
+    assert env["eq"].diagnostics.assess().accepted in (True, False) and (tmp_path / "ch1.yaml").exists()
     assert isinstance(env["k"].values, np.ndarray) and not isinstance(env["k"].values, ns.Kernel)
     assert env["path"].kind == "transition"
 
@@ -107,7 +107,8 @@ def test_target_script_pieces(tmp_path):
     assert game.to_dict()["agents"]["player2"]["loss"] == [[1, "X", "X"], [-2, "X"], ["r2", "D2", "D2"]]
     assert any("constant 1" in n for n in game.notes)
     eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
-    assert eq.status["ok"] is True and eq.status.ok is True
+    verdict = eq.diagnostics.assess()
+    assert verdict.accepted is True and verdict.policy == "publication" and verdict.blocking == ()
     k = eq.kernel("X", "w0")
     assert isinstance(k, np.ndarray) and isinstance(k, ns.Kernel) and k.shape == (len(eq.axes["age"]),)
     assert list(k.axes) == ["age"] and np.array_equal(k.axes["age"], eq.axes["age"])

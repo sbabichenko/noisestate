@@ -13,7 +13,7 @@ import dataclasses
 
 from .spec import Model, ModelBuilder
 from .numerics import Numerics
-from .accel import ConvergenceError
+from .accel import ConvergenceError, DiagnosticsError, ResultValidationError
 from ._settings import Settings
 from .results import Result
 from .stationary import StationarySolver
@@ -23,6 +23,7 @@ from . import engines
 from .engines import ENGINE_CLASSES
 from .sweep import sweep, solver
 from .comparison import compare, ComparisonResult, ScenarioResult
+from .diagnostics import Assessment, Policy, Status
 from .grid_cache import clear as clear_grid_cache
 from .transition import transition, transition_gap
 from .schema import schema
@@ -30,9 +31,9 @@ from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationa
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
 
-__all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "Result", "StationarySolver",
+__all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "StationarySolver",
            "FiniteSolver", "SpectralFiniteSolver", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_yaml", "read_json",
-           "solver", "compare", "ComparisonResult", "ScenarioResult", "ENGINE_CLASSES", "clear_grid_cache", "schema",
+           "solver", "compare", "ComparisonResult", "ScenarioResult", "Assessment", "Policy", "Status", "ENGINE_CLASSES", "clear_grid_cache", "schema",
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
            "using_settings", "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh"]
 
@@ -121,7 +122,7 @@ def _radius_when_the_window_fails(res, asked: bool) -> None:
     """
     if asked or getattr(res, "stability_report", None) is not None:
         return
-    if not res.converged or not any(d["name"] == "window" and d["ok"] is False for d in res.diagnostic_rows()):
+    if not res.converged or not any(d["name"] == "window" and d["ok"] is False for d in res.diagnostics.rows):
         return
     try:
         res.stability()

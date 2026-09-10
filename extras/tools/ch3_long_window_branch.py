@@ -33,9 +33,9 @@ def main(out=None):
     for L, r in rows:
         K = np.asarray(r.kernel("X")); a = np.asarray(r.ages)
         tail = float(np.abs(K[a > 0.95 * L]).max() / np.abs(K).max())
-        verdict = "converged, ok" if r.status["ok"] else ("converged, FLAGGED" if r.converged else "NOT converged")
+        verdict = "converged, ok" if r.diagnostics.assess().accepted else ("converged, FLAGGED" if r.converged else "NOT converged")
         print(f"{L:7.1f} {r.residual:10.1e} {tail:10.1e} {r.costs['player1']:10.4f}  {verdict}")
-        if r.converged and not r.status["ok"]:
+        if r.converged and not r.diagnostics.assess().accepted:
             try:
                 r.require_ok()
             except ns.ConvergenceError as exc:
@@ -49,7 +49,7 @@ def main(out=None):
         K = np.asarray(r.kernel("X")); a = np.asarray(r.ages)
         tail = float(np.abs(K[a > 0.95 * L]).max() / np.abs(K).max())
         print(f"{L:7.1f} {r.residual:10.1e} {tail:10.1e} {r.costs['player1']:10.4f}  "
-              f"{'converged, ok' if r.status['ok'] else 'FLAGGED'}")
+              f"{'converged, ok' if r.diagnostics.assess().accepted else 'FLAGGED'}")
         if r.converged:
             prev = r
     print()
@@ -75,8 +75,8 @@ def main(out=None):
             if np.abs(K[:, k]).max() > 1e-12:
                 ax.plot(a, K[:, k], lw=1.2, label=ch)
         ax.axhline(0, color="k", lw=0.4)
-        ax.set_title(f"L={L:g}  cost {r.costs['player1']:.4f}  {'OK' if r.status['ok'] else 'FLAGGED'}",
-                     fontsize=10, color=("green" if r.status["ok"] else "crimson"))
+        ax.set_title(f"L={L:g}  cost {r.costs['player1']:.4f}  {'OK' if r.diagnostics.assess().accepted else 'FLAGGED'}",
+                     fontsize=10, color=("green" if r.diagnostics.assess().accepted else "crimson"))
         ax.set_xlabel("shock age"); ax.legend(fontsize=7, frameon=False)
     for ax in axs.ravel()[len(shown):]:
         ax.axis("off")

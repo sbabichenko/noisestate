@@ -51,10 +51,10 @@ def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
     the exit status would otherwise take a WINDOW TOO SHORT result as sound."""
     import pytest
     r = ns.solve(os.path.join(EX, "ch3_two_player.yaml"))
-    assert r.require_converged() is r and not r.status["ok"]
-    with pytest.raises(ns.ConvergenceError, match="converged, but"):
+    assert r.require_converged() is r and not r.diagnostics.assess().accepted
+    with pytest.raises(ns.DiagnosticsError, match="converged, but"):
         r.require_ok()
-    assert ns.solve(os.path.join(EX, "ch4_kyle_back.yaml")).require_ok().status["ok"]
+    assert ns.solve(os.path.join(EX, "ch4_kyle_back.yaml")).require_ok().diagnostics.assess().accepted
     assert main(["solve", os.path.join(EX, "ch3_two_player.yaml")]) == 0
     capsys.readouterr()
     assert main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--require-ok"]) == 1

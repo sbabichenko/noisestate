@@ -30,8 +30,9 @@ def _exit_code(res, args) -> int:
     exit status would otherwise take an UNDER-RESOLVED or WINDOW TOO SHORT result as sound."""
     if not res.converged:
         return 1
-    if getattr(args, "require_ok", False) and res.status["flags"]:
-        failed = [row["name"] for row in res.status["rows"] if row["ok"] is False]
+    verdict = res.diagnostics.assess()
+    if getattr(args, "require_ok", False) and not verdict.accepted:
+        failed = [b.check for b in verdict.blocking]
         print("not ok: failed diagnostic checks: " + ", ".join(failed) + " (see summary)", file=sys.stderr)
         return 1
     return 0
@@ -208,7 +209,7 @@ def _run(p, args) -> int:
         else:
             res = transition(old, args.new, T=args.window, numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
         print(res.summary(diagnostics=False))
-        print(res.diagnostic_summary(detailed=args.diagnostics))
+        print(res.diagnostics.summary(detailed=args.diagnostics))
         if args.out:
             save_result(res, args.out); print("wrote", args.out)
         if args.plot:
@@ -267,7 +268,7 @@ def _run(p, args) -> int:
     numerics = Numerics(nodes=args.nodes, engine=args.engine, tol=args.tol)
     res = _solve(m, numerics, verbose=args.verbose, refine=args.refine, stability=args.stability, **bounds)
     print(res.summary(diagnostics=False))
-    print(res.diagnostic_summary(detailed=args.diagnostics))
+    print(res.diagnostics.summary(detailed=args.diagnostics))
     if args.out:
         save_result(res, args.out)
         print("wrote", args.out)

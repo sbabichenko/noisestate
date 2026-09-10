@@ -86,8 +86,7 @@ class ScenarioResult:
         out = {"name": self.name, "total_cost": self.total_cost, "total_change": self.total_change,
                "total_change_fraction": self.total_change_fraction, "costs": self.cost_changes,
                "solve_ok": bool(self.result.converged),
-               "numerics_ok": self.result.diagnostic_verdict("numerics"),
-               "equilibrium_ok": self.result.diagnostic_verdict("equilibrium", exclude=("stability",)),
+               "assessment": self.result.diagnostics.assess().to_dict(),
                "dynamics": self.dynamics}
         if include_result:
             out["result"] = self.result.to_dict()
@@ -116,27 +115,28 @@ class ComparisonResult:
         return {"baseline": self.baseline,
                 "scenarios": [case.to_dict(include_result=include_results) for case in self.cases.values()]}
 
-    HEAD = ("scenario", "total cost", "vs baseline", "solve", "numerics", "equilibrium", "full response")
-    ALIGN = "<>><<<<"          # the name left, the two numbers right, the verdicts left
+    HEAD = ("scenario", "total cost", "vs baseline", "solve", "assessment", "full response")
+    ALIGN = "<>><<<"           # the name left, the two numbers right, the verdicts left
 
-    @staticmethod
-    def _word(verdict) -> str:
-        return "not checked" if verdict is None else "ok" if verdict else "check"
+    def summary(self, policy=None) -> str:
+        """The comparison as a table: cost, change against the baseline, and the verdicts apart.
 
-    def summary(self) -> str:
-        """The comparison as a table: cost, change against the baseline, and the verdicts separately.
-
-        numerics and equilibrium are kept apart because they fail for different reasons, and the
-        response dynamics are a column of their own rather than part of either: an unstable best
-        response is usually the finding, not a fault in the numbers.
+        The assessment column names the first blocking check rather than collapsing the checks to
+        a word: "unsupported: resolution" and "failed: resolution" call for different actions, and
+        a single verdict word cannot say which happened.  Response dynamics are a column of their
+        own -- an unstable best response is usually the finding, not a fault in the numbers.
         """
+        from .diagnostics import Policy
+        policy = policy or Policy.PUBLICATION
         rows = []
         for name, case in self.cases.items():
             data = case.to_dict(include_result=False)
+            verdict = case.result.diagnostics.assess(policy)
+            assessed = ("ok" if verdict.accepted
+                        else f"{verdict.blocking[0].status}: {verdict.blocking[0].check}")
             rows.append((name, f"{case.total_cost:.5f}",
                          "baseline" if name == self.baseline else f"{case.total_change_fraction:+.2%}",
-                         "ok" if data["solve_ok"] else "failed",
-                         self._word(data["numerics_ok"]), self._word(data["equilibrium_ok"]),
+                         "ok" if data["solve_ok"] else "failed", assessed,
                          data["dynamics"]["full_response"] if data["dynamics"] else "not checked"))
         width = [max(len(h), *(len(r[i]) for r in rows)) if rows else len(h)
                  for i, h in enumerate(self.HEAD)]

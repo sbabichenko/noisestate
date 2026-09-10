@@ -217,7 +217,7 @@ def test_settle_march_finds_the_window_and_equals_the_explicit_solve(regime, mar
     assert 300 < factors[0] < 1500 and 300 < factors[1] < 3000, factors
     assert rows[1]["evaluations"] > 2 * rows[2]["evaluations"] >= rows[3]["evaluations"] and 1 <= rows[3]["polish"] <= 3
     assert [r["unknowns"] for r in rows] == [0, 576, 864, 576]
-    assert res.settled < 1e-4 and all(r["ok"] for r in res.diagnostic_rows() if r["name"] == "settled")
+    assert res.settled < 1e-4 and all(r["ok"] for r in res.diagnostics.rows if r["name"] == "settled")
     assert 0.25 < gaps[2] / res.settled < 4
     # the explicit solve at the same T, grid and closure
     ex = ns.transition(old, m.with_params(p1=10.0), T=9.0, numerics={"nodes": 12}, continuation=res.continuation)
@@ -277,13 +277,13 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     fl = ns.transition(old, new, settle=1e-4, numerics={"nodes": 8})
     assert fl.march_stop == "floor" and fl.extra["window"] == 0.0 and len(fl.march) == 1 and fl.evaluations == 0
     assert 2e-3 < max(fl.march_floor.values()) < 4e-3
-    row = next(r for r in fl.diagnostic_rows() if r["name"] == "settle floor")
+    row = next(r for r in fl.diagnostics.rows if r["name"] == "settle floor")
     assert not row["ok"] and "nothing was marched" in row["flag"] and row["advice"] == "raise numerics.nodes"
     cap = ns.transition(old, new, settle=3e-3, max_window=1, numerics={"nodes": 8})
     assert cap.march_stop == "max_window" and cap.extra["window"] == 3.0 and cap.settled > 1e-4 and [r["T"] for r in cap.march] == [0.0, 3.0]
-    row = next(r for r in cap.diagnostic_rows() if r["name"] == "settled")
+    row = next(r for r in cap.diagnostics.rows if r["name"] == "settled")
     assert not row["ok"] and "stopped at max_window" in row["flag"] and row["advice"] == "raise max_window"
-    assert "TRANSITION NOT SETTLED" in cap.summary() or not cap.status["ok"]
+    assert "TRANSITION NOT SETTLED" in cap.summary() or not cap.diagnostics.assess().accepted
     # validation
     with pytest.raises(ValueError, match="exactly one of T"):
         ns.transition(old, new, T=6.0, settle=1e-4)
@@ -376,10 +376,10 @@ def test_excess_cost_tail_and_the_floor_stop(regime):
     fl = ns.transition(old, new, settle=1e-6, numerics={"nodes": 8})
     assert fl.march_stop == "floor" and fl.extra["window"] == 0.0 and [r["T"] for r in fl.march] == [0.0] and fl.settled == 0.0
     assert 2e-3 < max(fl.march_floor.values()) < 4e-3 and fl.evaluations == 0
-    row = next(r for r in fl.diagnostic_rows() if r["name"] == "settle floor")
+    row = next(r for r in fl.diagnostics.rows if r["name"] == "settle floor")
     assert row["ok"] is False and "SETTLE BELOW THE GRID'S FLOOR" in row["flag"] and row["advice"] == "raise numerics.nodes" and "8 nodes" in row["flag"]
     assert "SETTLE BELOW THE GRID'S FLOOR" in fl.summary() and fl.excess_tail["source"] == "loss path"
-    assert "settle floor" not in [r["name"] for r in ex.diagnostic_rows()]
+    assert "settle floor" not in [r["name"] for r in ex.diagnostics.rows]
 
 
 @slow()

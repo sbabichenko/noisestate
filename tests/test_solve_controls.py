@@ -2,6 +2,7 @@
 the stability budget, the Newton-Krylov inner budget, and a non-finite residual."""
 import json, os, warnings, numpy as np, pytest
 import noisestate as ns
+from noisestate.diagnostics import Status
 from noisestate.accel import solve_fixed_point
 from noisestate.cli import main
 from noisestate.sweep import sweep
@@ -18,7 +19,7 @@ def test_evaluation_budget_returns_the_best_iterate_unconverged():
     res = ns.solve(_ch3(), max_evaluations=3)
     assert not res.converged and res.evaluations == 3 and "evaluation budget" in res.message and "max_evaluations=3" in res.message
     assert "NOT converged" in res.summary() and "evaluation budget" in res.summary()
-    row = [d for d in res.diagnostic_rows() if d["name"] == "converged"][0]; assert row["ok"] is False and "evaluation budget" in row["advice"]
+    row = [d for d in res.diagnostics.rows if d["name"] == "converged"][0]; assert row["ok"] is False and "evaluation budget" in row["advice"]
     assert res.solve_kw["max_evaluations"] == 3 and np.isfinite(res.costs["player1"])
     with pytest.raises(ns.ConvergenceError):
         res.require_converged()
@@ -67,11 +68,11 @@ def test_progress_is_called_per_evaluation_and_can_cancel():
 def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
     S = ns.solver(_ch3(nodes=96, window=10.0)); full = S.solve(); w = full.maps
     off = S.solve(init=w, diagnostics=False)
-    assert off.converged and off.second_order == {} and off.foc == {} and off.representation_error == {} and off.resolution_ok is None
-    assert full.second_order and full.foc and full.resolution_ok
+    assert off.converged and off.second_order == {} and off.foc == {} and off.representation_error == {} and off.diagnostics.statuses["resolution"] is not Status.PASSED
+    assert full.second_order and full.foc and (full.diagnostics.statuses["resolution"] is Status.PASSED)
     assert all(abs(off.costs[k] - full.costs[k]) < 1e-9 for k in full.costs) and off.solve_kw["diagnostics"] is False
-    assert "diagnostics skipped" in off.summary() and any(d["name"] == "diagnostics" and d["ok"] is None for d in off.diagnostic_rows())
-    assert "diagnostics skipped" not in full.summary() and "diagnostics" not in [d["name"] for d in full.diagnostic_rows()]
+    assert "diagnostics skipped" in off.summary() and any(d["name"] == "diagnostics" and d["ok"] is None for d in off.diagnostics.rows)
+    assert "diagnostics skipped" not in full.summary() and "diagnostics" not in [d["name"] for d in full.diagnostics.rows]
     assert json.loads(json.dumps(off.to_dict()))["options"]["solve"]["diagnostics"] is False
     # the checks are the best responses after the fixed point (one per agent, with the decomposition, which
     # halves the time of this warm-started solve); with diagnostics=False none is made

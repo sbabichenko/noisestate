@@ -134,7 +134,7 @@ class Kernel(np.ndarray):
                 ax.text(0.5, 0.5, "zero on causal cells", transform=ax.transAxes, ha="center", va="center", fontsize=8)
             ax.set_xlabel("shock time"); ax.set_ylabel("time"); ax.set_title(label)
         if self.result is not None:
-            failed = [row["name"] for row in self.result.status["rows"] if row.get("ok") is False]
+            failed = [row["name"] for row in self.result.diagnostics.rows if row.get("ok") is False]
             if failed:
                 fig.suptitle("WARNING: failed checks — " + ", ".join(failed), fontsize=10)
         fig.tight_layout()

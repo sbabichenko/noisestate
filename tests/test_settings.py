@@ -2,6 +2,7 @@
 through settings=, with the older class-attribute names kept as aliases."""
 import json, os, pytest
 import noisestate as ns
+from noisestate.diagnostics import Status
 from noisestate import Settings
 from noisestate.results import StationaryResult
 from noisestate.engine import EngineBase
@@ -38,7 +39,7 @@ def test_settings_reach_the_checks_and_are_recorded():
     m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
     r0 = ns.solve(m).require_converged()
     lo, hi = sorted(so["min"] for so in r0.second_order.values())          # both positive: the checks pass by default
-    assert lo > 0 and r0.resolution_ok and all(so["ok"] for so in r0.second_order.values())
+    assert lo > 0 and (r0.diagnostics.statuses["resolution"] is Status.PASSED) and all(so["ok"] for so in r0.second_order.values())
     # the thresholds of the checks: a curvature tolerance between the two agents' minima (a negative one, so a
     # positive curvature can fail it), a resolution tolerance below the representation error, a stability budget
     s = Settings(second_order_tol=-0.5 * (lo + hi), resolution_tol=1e-20, stability_max_evaluations=5)
@@ -47,10 +48,10 @@ def test_settings_reach_the_checks_and_are_recorded():
                                                                           "stability_max_evaluations": 5}
     assert r.costs == r0.costs and all((r.maps[a] == r0.maps[a]).all() for a in r.maps)      # the checks' thresholds do not touch the numbers
     assert [so["ok"] for so in r.second_order.values()].count(False) == 1 and "NOT A MINIMUM" in r.summary()
-    assert r.resolution_ok is False and "UNDER-RESOLVED" in r.summary()
+    assert r.diagnostics.statuses["resolution"] is Status.FAILED and "UNDER-RESOLVED" in r.summary()
     assert r.stability_report["evaluations"] <= 5 and "evaluation budget" in r.stability_report["method"]
-    assert [d["threshold"] for d in r.diagnostic_rows() if d["name"] == "resolution"] == [1e-20]
-    assert [d["threshold"] for d in r.diagnostic_rows() if d["name"].startswith("second_order:")] == [0.5 * (lo + hi)] * 2
+    assert [d["threshold"] for d in r.diagnostics.rows if d["name"] == "resolution"] == [1e-20]
+    assert [d["threshold"] for d in r.diagnostics.rows if d["name"].startswith("second_order:")] == [0.5 * (lo + hi)] * 2
     # recorded in the payload, JSON-ready, and the engine a result rebuilds carries them
     d = r.to_dict(); json.dumps(d)
     assert d["options"]["solver"]["settings"] == s.changed()

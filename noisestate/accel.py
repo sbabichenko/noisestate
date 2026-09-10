@@ -71,8 +71,30 @@ def anderson(F: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, tol: float =
     return best_x, best_rn, evals, best_rn < tol, False
 
 
-class ConvergenceError(RuntimeError):
-    """Raised by Result.require_converged() and require_ok() when a result is not usable."""
+class ResultValidationError(RuntimeError):
+    """A result is not fit for the use asked of it.  The two reasons are siblings, never nested:
+
+        ConvergenceError   the solve did not reach its tolerance
+        DiagnosticsError   it converged, and the assessment was still not accepted
+
+    A converged result can fail diagnostics, so DiagnosticsError must not be a ConvergenceError --
+    `except ConvergenceError` would then catch failures with nothing to do with convergence.
+    A caller wanting either writes `except ResultValidationError`.
+    """
+
+
+class ConvergenceError(ResultValidationError):
+    """The solve did not reach its tolerance.  Raised by require_converged(), and by require_ok()
+    when the `converged` check is the one that blocked."""
+
+
+class DiagnosticsError(ResultValidationError):
+    """It converged, and require_ok()'s assessment was still not accepted.  Carries the
+    Assessment as .assessment."""
+
+    def __init__(self, message, assessment=None):
+        super().__init__(message)
+        self.assessment = assessment
 
 
 class _Stop(Exception):

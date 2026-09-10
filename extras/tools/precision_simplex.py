@@ -49,7 +49,7 @@ def sweep(regime, n=GRID, out=None):
                 res = ns.solve(tg.model(cfg["kind"], 3.0, cfg["nodes"], p=p, r=cfg["r"]))
                 pts.append(dict(p=list(p), cost=float(sum(res.costs.values())),
                                 per=[float(res.costs[a.name]) for a in res.model.agents],
-                                conv=bool(res.converged), ok=bool(res.status["ok"])))
+                                conv=bool(res.converged), ok=bool(res.diagnostics.assess().accepted)))
             except Exception as exc:
                 pts.append(dict(p=list(p), cost=None, conv=False, ok=False, err=type(exc).__name__))
     report(regime, pts, time.perf_counter() - t0)

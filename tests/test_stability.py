@@ -1,4 +1,5 @@
 import noisestate as ns
+from noisestate.diagnostics import Status
 from helpers import example_path, example_dict
 
 def test_resolution_flag_and_stability_on_the_two_firm_market():
@@ -7,7 +8,7 @@ def test_resolution_flag_and_stability_on_the_two_firm_market():
     computed at a genuine fixed point."""
     from make_ch5_cycle_market import build
     coarse = ns.solve(build(N=2, L=6.0, nodes=6, unit_range=3.0).build(), tol=1e-8).require_converged()
-    assert not coarse.resolution_ok and "UNDER-RESOLVED" in coarse.summary()
+    assert coarse.diagnostics.statuses["resolution"] is Status.FAILED and "UNDER-RESOLVED" in coarse.summary()
     d = build(N=2, L=6.0, nodes=14, unit_range=3.0).to_dict(); d["ties"] = []
     ra = ns.solve(ns.Model.from_dict(d), tol=1e-8).require_converged(); rm = ns.solve(ns.Model.from_dict(d), {"variable": "maps"}, tol=1e-8).require_converged()
     assert abs(ra.costs["firm0"] - rm.costs["firm0"]) < 1e-3
@@ -15,7 +16,7 @@ def test_resolution_flag_and_stability_on_the_two_firm_market():
     # the two-firm market's negative curvature is the window's truncation of the lagged loss terms (README): the
     # same direction is positive on a window longer by two lags, so the check passes and reports the edge
     so = rm.second_order["firm0"]; assert so["ok"] and so["edge"] and so["min"] < -1e-4 and so["embedded"] > 0 and "NOT A MINIMUM" not in rm.summary()
-    assert "window edge" in rm.summary() and any(d["name"] == "second_order_edge:firm0" for d in rm.diagnostic_rows())
+    assert "window edge" in rm.summary() and any(d["name"] == "second_order_edge:firm0" for d in rm.diagnostics.rows)
 
 
 def test_stability_of_the_chapter_3_game_and_finite_engine():
@@ -34,12 +35,12 @@ def test_a_shrinking_negative_curvature_is_the_grid_not_a_saddle():
     import noisestate as ns
     r = ns.solve(example_path("kyle_back_prior"))
     assert not r.second_order["trader1"]["ok"] and r.second_order["trader1"]["min"] < -1e-3
-    assert any("NOT A MINIMUM" in f for f in r.status["flags"])
+    assert any("NOT A MINIMUM" in f for f in r.diagnostics.flags)
     rep = r.refine()
     cv = rep["second_order"]["trader1"]
     assert cv["shrinking"] and cv["min"] < cv["fine_min"] < 0        # less negative on the finer grid
-    assert not any("NOT A MINIMUM" in f for f in r.status["flags"])  # the verdict is overturned
-    assert any(d["name"] == "second_order_grid:trader1" and d["ok"] for d in r.diagnostic_rows())
+    assert not any("NOT A MINIMUM" in f for f in r.diagnostics.flags)  # the verdict is overturned
+    assert any(d["name"] == "second_order_grid:trader1" and d["ok"] for d in r.diagnostics.rows)
 
 
 def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
@@ -53,7 +54,7 @@ def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
 
     good = ns.solve(base.with_horizon(window=15.0).with_numerics(nodes=64))
     a = np.asarray(good.ages); K = np.asarray(good.kernel("X"))
-    assert good.status["ok"] and abs(good.costs["player1"] - 0.427295) < 1e-5
+    assert good.diagnostics.assess().accepted and abs(good.costs["player1"] - 0.427295) < 1e-5
     assert np.abs(K[a > 0.95 * 15.0]).max() / np.abs(K).max() < 1e-6      # decayed by the edge
 
     spurious = ns.solve(base.with_horizon(window=18.0).with_numerics(nodes=64))
@@ -61,8 +62,12 @@ def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
     assert spurious.costs["player1"] > 3.0                                # and to the wrong thing
     Ks = np.asarray(spurious.kernel("X")); asp = np.asarray(spurious.ages)
     assert np.abs(Ks[asp > 0.95 * 18.0]).max() / np.abs(Ks).max() > 0.5   # a closed loop that does not stabilise
-    assert not spurious.status["ok"] and any("WINDOW TOO SHORT" in f for f in spurious.status["flags"])
-    with pytest.raises(ns.ConvergenceError, match="converged, but"):
+    assert not spurious.diagnostics.assess().accepted and any("WINDOW TOO SHORT" in f for f in spurious.diagnostics.flags)
+    #  a guard failure is NOT a convergence failure: the solve converged.  The two are siblings,
+    #  so `except ConvergenceError` must not catch this one.
+    assert not issubclass(ns.DiagnosticsError, ns.ConvergenceError)
+    assert issubclass(ns.DiagnosticsError, ns.ResultValidationError)
+    with pytest.raises(ns.DiagnosticsError, match="converged, but"):
         spurious.require_ok()
 
     # both fixed points exist at L = 18: a cold start lands on the spurious one, and continuation in

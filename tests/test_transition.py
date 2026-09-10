@@ -19,6 +19,7 @@ import os
 import numpy as np, pytest
 from scipy.integrate import solve_ivp
 import noisestate as ns
+from noisestate.diagnostics import Status
 from noisestate.past import Past
 from helpers import (IVP, A1, H1, R1, T1, P0, prior_model as model, slow, slow_param, example, stationary,
                      same_model_solver, same_model_setup, two_firm_market, strip_maps, stationary_on_strip,
@@ -129,7 +130,7 @@ def test_prior_start_matches_the_discounted_closed_form(rho, informed):
     res = ns.solve(model(rho, 16), past=[shock]).require_converged()
     assert res.shocks == ["w0", "w1", "xi"] and res.maps["a"].shape == (1, 1, res.compiled.N + res.compiled.Nt)
     assert abs(res.costs["a"] - J) < 1e-7, (res.costs["a"], J)
-    assert res.resolution_ok
+    assert (res.diagnostics.statuses["resolution"] is Status.PASSED)
     for name in ("X", "D"):
         assert np.abs(res.evaluate(name, "xi", T0, np.zeros_like(T0)) - kernel(name, "xi", T0, np.zeros_like(T0))).max() < 1e-5, name
         for ch in ("w0", "w1"):
@@ -177,7 +178,7 @@ def test_same_model_continuation_is_exact_on_the_whole_region():
     parts = res.cost_parts["player1"]
     assert set(parts) == {"variance", "mean", "continuation"} and abs(parts["continuation"] - 3 * stat.costs["player1"]) < 1e-6
     assert res.costs["player1"] == parts["variance"] and 0 < res.costs["player1"] < 2 * parts["continuation"]
-    rows = {r["name"]: r for r in res.diagnostic_rows()}
+    rows = {r["name"]: r for r in res.diagnostics.rows}
     assert rows["settled"]["ok"] and rows["settled"]["threshold"] == 1e-4 and "continuation window" in rows and "past window" in rows
     assert res.to_dict()["continuation"]["window_tail"] == res.past.provenance["window_tail"] and res.grid_summary()["buffer"] == [6.0, 9.0]
     if not os.environ.get("NOISESTATE_SLOW"):
@@ -211,7 +212,7 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     res = ns.solve(new, past=old, continuation="stationary").require_converged()
     assert abs(res.costs["player1"] - 2.55448876) < 1e-6 and abs(res.costs["player2"] - 2.55908247) < 1e-6, res.costs
     assert abs(res.cost_parts["player1"]["continuation"] - 1.26523081) < 1e-6
-    assert 4e-4 < res.settled < 6e-4 and not next(r for r in res.diagnostic_rows() if r["name"] == "settled")["ok"], res.settled
+    assert 4e-4 < res.settled < 6e-4 and not next(r for r in res.diagnostics.rows if r["name"] == "settled")["ok"], res.settled
     assert "TRANSITION NOT SETTLED" in res.summary() and "against settled_tol 0.0001" in res.summary()
     cont = res.continuation
     assert cont.model.horizon.kind == "stationary" and cont.compiled.grid.L == 3.0 and cont.compiled.grid.n == 12
@@ -222,7 +223,7 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     p2 = res.representation_parts["player2"]
     assert p2["band tip"] > 10 * max(p2["interior"], p2["last window"], p2["buffer"]) and p2["band tip"] > 5e-4, p2
     assert res.representation_parts["player1"]["interior"] < 1e-4
-    flag = next(r for r in res.diagnostic_rows() if r["name"] == "resolution")["flag"]
+    flag = next(r for r in res.diagnostics.rows if r["name"] == "resolution")["flag"]
     assert "band tip" in flag and "last window" in flag and "interior" in flag
     assert "representation_parts" in res.to_dict()
     g = res.grid; at0 = g.upper & (g.t < 1e-12)

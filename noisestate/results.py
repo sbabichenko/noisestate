@@ -46,14 +46,87 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from .accel import ConvergenceError
+from .accel import ConvergenceError, DiagnosticsError
 from ._settings import DEFAULT, Settings, tunable
+from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, MINIMUM, Assessment, Policy, Status,
+                          applicable, assess)
 from .kernel import Kernel, AttrDict
 from .spec import Model
 
 
 class _StabilityBudget(Exception):
     """Raised by stability()'s matvec at its evaluation budget, so ARPACK unwinds to the fallback."""
+
+
+class Diagnostics:
+    """The checks a result carries, and what a policy makes of them.
+
+    Replaces diagnostic_rows(), diagnostic_records(), diagnostic_summary(), diagnostic_verdict(),
+    status and resolution_ok, which overlapped and disagreed about what a missing check meant.
+    """
+
+    def __init__(self, result: "Result"):
+        self._res = result
+
+    @property
+    def rows(self) -> tuple:
+        """Every emitted check, with its presentation and automation fields."""
+        return tuple(self._res._diagnostic_record(d) for d in self._res._check_rows())
+
+    @property
+    def flags(self) -> tuple:
+        """The flag text of every check that FAILED -- what a reader is shown, and what a test that
+        cares about the wording matches on.  Acceptance is assess().accepted, not this."""
+        return tuple(r["flag"] for r in self.rows if r["ok"] is False and r["flag"])
+
+    def by_category(self, category: str) -> tuple:
+        return tuple(r for r in self.rows if r.get("category") == category)
+
+    @property
+    def statuses(self) -> dict:
+        """Every APPLICABLE check by root name, with the status of each.
+
+        Computed from the model and the engine's capability, not from the rows that were emitted:
+        a check that applies and produced nothing still appears, under the reason it produced
+        nothing.
+        """
+        res, model = self._res, self._res.model
+        emitted: dict = {}
+        for r in self._res._check_rows():
+            root = r["name"].split(":", 1)[0]
+            ok = r["ok"]
+            if root in emitted and emitted[root] is False:
+                continue                                  # one failing row fails the root
+            emitted[root] = ok if root not in emitted or ok is False else emitted[root]
+        supported = res.supported_checks()
+        skipped_off = res.solve_kw.get("diagnostics") is False
+        out = {}
+        applies = applicable(CHECKS, model)
+        for check in sorted(CHECKS):
+            if check not in applies:
+                out[check] = Status.NOT_APPLICABLE      # considered, and meaningless for this model
+            elif check not in supported:
+                out[check] = Status.UNSUPPORTED
+            elif skipped_off and check in DIAGNOSTIC_ONLY:
+                out[check] = Status.SKIPPED
+            elif check not in emitted or emitted[check] is None:
+                out[check] = Status.MISSING
+            else:
+                out[check] = Status.PASSED if emitted[check] else Status.FAILED
+        return out
+
+    def assess(self, policy: Policy = Policy.PUBLICATION) -> Assessment:
+        detail = {}
+        for r in self._res._check_rows():
+            if r["ok"] is False and r["flag"]:
+                detail.setdefault(r["name"].split(":", 1)[0], r["flag"])
+        return assess(self.statuses, policy, self._res.model, detail)
+
+    def summary(self, detailed: bool = False) -> str:
+        return self._res._diagnostic_summary(detailed)
+
+    def __repr__(self) -> str:
+        return f"<Diagnostics {self.assess()}>"
 
 
 @dataclass
@@ -71,7 +144,7 @@ class Result:
     seconds: float
     costs: Dict[str, float] = field(default_factory=dict)
     message: str = ""
-    representation_error: Dict[str, float] = field(default_factory=dict)   # agent -> relative residual, see resolution_ok
+    representation_error: Dict[str, float] = field(default_factory=dict)   # agent -> relative residual; the resolution check
     representation_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> where it sits (transition: interior / band tip / last window)
     refinement: Optional[dict] = None          # filled by refine(): change of costs/kernels under a finer grid
     solver_class: object = None                # the engine that produced this result, with its options, so that
@@ -131,14 +204,18 @@ class Result:
             return {}
         return {"means": {k: np.asarray(v, dtype=float) for k, v in self.means.items()}}
 
+    #  Which checks this engine CAN compute.  A check that applies and is not here is UNSUPPORTED,
+    #  never merely absent -- the distinction the cell engine used to fall through.
+    SUPPORTED_CHECKS = frozenset(CHECKS)
+
+    @classmethod
+    def supported_checks(cls) -> frozenset:
+        return cls.SUPPORTED_CHECKS
+
     @property
-    def status(self) -> dict:
-        """{"ok": converged and no check failed, "flags": the flags of the failing checks (and of the checks
-        without a verdict, when they carry one), "rows": diagnose()'s rows}; a dict whose keys are also
-        attributes (res.status.ok)."""
-        rows = self.diagnostic_rows()
-        failed = [d["flag"] for d in rows if d["ok"] is False and d["flag"]]
-        return AttrDict({"ok": bool(self.converged) and not failed, "flags": failed, "rows": rows})
+    def diagnostics(self) -> "Diagnostics":
+        """The checks this result carries, and what a policy makes of them (see Diagnostics)."""
+        return Diagnostics(self)
 
     @property
     def extra(self) -> dict:
@@ -155,10 +232,9 @@ class Result:
         return float(v) if abs(float(v)) > self.MEAN_ZERO else 0.0
 
     @property
-    def resolution_ok(self) -> Optional[bool]:
-        """False when the grid is too coarse for the equilibrium it reports (representation error of a
-        best response on the raw rows above RESOLUTION_TOL); raise horizon.nodes and re-solve.  None
-        when the engine does not compute the representation error (the cell engine)."""
+    def _resolution_ok(self) -> Optional[bool]:
+        """Internal: the resolution row's raw verdict, None when nothing was computed.  Not public --
+        a three-valued answer under an *_ok name is what res.diagnostics.statuses replaced."""
         if not self.representation_error:
             return None
         return all(v <= self.RESOLUTION_TOL for v in self.representation_error.values())
@@ -190,16 +266,29 @@ class Result:
             raise ConvergenceError(f"{self.model.name}: residual {self.residual:.2e} ({self.message})")
         return self
 
-    def require_ok(self):
-        """Return self, or raise ConvergenceError if the solve did not converge *or* any guard failed.
+    def require_ok(self, policy: Policy = Policy.PUBLICATION):
+        """Return self, or raise when `policy`'s assessment is not accepted.
 
-        The whole verdict: what check() tests, and then `status["flags"]` empty.  Use it wherever a number
-        is going to be used rather than looked at."""
-        self.require_converged()
-        flags = self.status["flags"]
-        if flags:
-            raise ConvergenceError(f"{self.model.name}: converged, but " + "; ".join(flags))
-        return self
+        Accepted means every check the POLICY requires and the MODEL makes applicable has status
+        PASSED.  Nothing else grants it: not an absent record, not an empty category, not an
+        engine that cannot run the check.  Use this wherever a number is going to be used rather
+        than looked at.
+
+        WHICH exception follows the reason, so each one's contract stays true:
+            the `converged` check blocked   -> ConvergenceError
+            anything else blocked           -> DiagnosticsError
+        Both carry the Assessment as .assessment; both are ResultValidationError.
+        """
+        verdict = self.diagnostics.assess(policy)
+        if verdict.accepted:
+            return self
+        why = "; ".join(str(b) for b in verdict.blocking)
+        if any(b.check == "converged" for b in verdict.blocking):
+            err = ConvergenceError(f"{self.model.name}: {why}")
+        else:
+            err = DiagnosticsError(f"{self.model.name}: converged, but {why}", verdict)
+        err.assessment = verdict
+        raise err
 
     @property
     def channels(self) -> List[str]:
@@ -275,7 +364,7 @@ class Result:
 
     REFINE_COST_TOL, REFINE_KERNEL_TOL = tunable("refine_cost_tol"), tunable("refine_kernel_tol")
 
-    def diagnostic_rows(self) -> List[dict]:
+    def _check_rows(self) -> List[dict]:
         """Every check this result carries, as rows {name, value, threshold, ok, flag, advice}: ok is
         True/False, or None when the check gives no verdict (not computed, or not applicable).  The
         summary prints the rows that fail; to_dict() carries them all.  The thresholds are the class
@@ -295,7 +384,7 @@ class Result:
             for k, v in parts.items():
                 where[k] = max(where.get(k, 0.0), float(v))
         at = " (" + ", ".join(f"{k} {v:.1e}" for k, v in where.items()) + ")" if where else ""
-        row("resolution", rep, self.RESOLUTION_TOL, self.resolution_ok,
+        row("resolution", rep, self.RESOLUTION_TOL, self._resolution_ok,
             f"UNDER-RESOLVED (representation error {rep:.1e}{at}: raise horizon.nodes" + ("; an error only on the band tip or the last "
             "window is the geometry there, not the interior's resolution)" if where else ")") if rep is not None else "", "raise horizon.nodes")
         tail = getattr(self, "window_tail", None)
@@ -385,7 +474,7 @@ class Result:
             trend_source = self.continuation
         if trend_source is not None:
             trend = trend_source.window_tail_extrapolation()
-            if not trend_source.converged or trend_source.resolution_ok is False:
+            if not trend_source.converged or trend_source._resolution_ok is False:
                 trend["assessment"] = "inconclusive"
                 trend["reason"] = "the underlying stationary solve is unconverged or under-resolved"
         if trend is not None:
@@ -395,32 +484,9 @@ class Result:
                 out["suggested_options"] = {}
         return out
 
-    def diagnostic_records(self) -> List[dict]:
-        """diagnose() with the presentation and automation fields of _diagnostic_record added."""
-        return [self._diagnostic_record(d) for d in self.diagnostic_rows()]
-
-    def diagnostic_verdict(self, category: str, exclude=()) -> Optional[bool]:
-        """One category of diagnose() collapsed to a verdict: False if any check failed, True if any
-        passed and none failed, None if none of them ran.
-
-        ``exclude`` leaves checks out by the *root* of their name -- the part before any ``:``, which
-        is what the category itself is computed from -- so "second_order" covers the per-agent
-        "second_order:<agent>" rows, and an exclusion cannot silently lapse when a name gains a
-        suffix.  The use for it is "stability": it sits in the equilibrium category, but a
-        best-response-unstable equilibrium is often the finding rather than a defect in the numbers,
-        and a caller reporting it separately should not also have it condemn the solve.
-        """
-        group = [r for r in self.diagnostic_records()
-                 if r.get("category") == category and r["name"].split(":", 1)[0] not in exclude]
-        if any(r.get("ok") is False for r in group):
-            return False
-        if any(r.get("ok") is True for r in group):
-            return True
-        return None
-
-    def diagnostic_summary(self, detailed: bool = False) -> str:
+    def _diagnostic_summary(self, detailed: bool = False) -> str:
         """Compact grouped verdict, with full explanations when ``detailed`` is true."""
-        rows = self.diagnostic_records()
+        rows = [self._diagnostic_record(d) for d in self._check_rows()]
         judged = [d for d in rows if d["ok"] is not None]
         failed = [d for d in judged if d["ok"] is False]
         lines = [f"Diagnostics: {len(failed)} failed, {len(judged) - len(failed)} passed"]
@@ -468,7 +534,7 @@ class Result:
     def _status(self, compact: bool = False) -> str:
         """One line: the outcome, then every check that failed or has no verdict, and the informational
         rows (refinement, stability, a skipped diagnostics pass) whenever they were computed."""
-        rows = self.diagnostic_rows()
+        rows = self._check_rows()
         if compact:
             converged = next(d for d in rows if d["name"] == "converged")
             return "converged" if converged["ok"] else f"NOT converged ({converged['advice']})"
@@ -583,10 +649,14 @@ class Result:
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
         if self.representation_parts:
             out["representation_parts"] = {a: {k: float(v) for k, v in p.items()} for a, p in self.representation_parts.items()}
-        out["diagnostics"] = [{k: (None if v is None else v) for k, v in self._diagnostic_record(d).items()} for d in self.diagnostic_rows()]
-        out["resolution_ok"] = None if self.resolution_ok is None else bool(self.resolution_ok)
-        st = self.status
-        out["status"] = {"ok": st["ok"], "flags": st["flags"]}
+        out["diagnostics"] = [{k: (None if v is None else v) for k, v in self._diagnostic_record(d).items()} for d in self._check_rows()]
+        #  The payload carries the FULL status of every check and the policy that judged them, not
+        #  a single ok: "passed" and "could not be run" are the distinction the assessment exists
+        #  to make, and a boolean cannot express it.  (api_spec PART 7.)
+        verdict = self.diagnostics.assess()
+        out["assessment"] = verdict.to_dict()
+        for row in out["diagnostics"]:
+            row["status"] = str(verdict.statuses.get(row["name"].split(":", 1)[0], ""))
         out["cost_kind"] = self.cost_kind
         out["second_order"] = {a: dict(so) for a, so in self.second_order.items()}
         out["notes"] = self.model.notes
@@ -846,11 +916,11 @@ class TriangleResult(Result):
                 out["buffer"] = [float(c.T), float(g.T)]
         return out
 
-    def diagnostic_rows(self) -> List[dict]:
+    def _check_rows(self) -> List[dict]:
         """The common rows, then a transition's: the past's own window tail, and with a continuation the `settled`
         check (the maps on [T - L, T] against the stationary maps the buffer is frozen at, threshold
         settings.settled_tol) and the continuation's window tail."""
-        rows = super().diagnostic_rows()
+        rows = super()._check_rows()
 
         def row(name, value, threshold, ok, flag, advice=""):
             rows.append({"name": name, "value": value, "threshold": threshold, "ok": ok, "flag": flag, "advice": advice})
@@ -1020,6 +1090,12 @@ class TransitionResult(TriangleResult):
 @dataclass
 class CellResult(Result):
     kind: str = "finite_cells"
+
+    #  The cell engine computes neither a representation error nor a second-order form, so both
+    #  checks are UNSUPPORTED here -- not missing, and never silently absent.  A result must not
+    #  be accepted because the engine could not test it.
+    SUPPORTED_CHECKS = frozenset(CHECKS) - {"resolution", "second_order"}
+
     MAP_CONVENTION = ("maps[agent][u][row][i][v] is the weight the control in cell i (time grid.t[i]) puts on the increment "
                       "of the row as the agent sees it in cell v; that increment entered the raw row in cell v - delay / h "
                       "(time agents[agent].signals[row].map_shock_time[v] = grid.t[v] - delay), and cells v below the delay "
@@ -1100,7 +1176,7 @@ def _plot_title(name: str, residual: float, rows, suffix: str = "") -> str:
 
 
 def _result_plot_title(res, suffix: str = "") -> str:
-    return _plot_title(res.model.name, res.residual, res.diagnostic_rows(), suffix)
+    return _plot_title(res.model.name, res.residual, res.diagnostics.rows, suffix)
 
 
 def _plot_transition(res, path: str) -> None:

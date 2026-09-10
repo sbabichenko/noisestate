@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 import noisestate as ns
+from noisestate.diagnostics import Status
 from noisestate import Numerics
 
 EX = os.path.join(os.path.dirname(__file__), "..", "examples")
@@ -105,18 +106,16 @@ def test_category_verdict_excludes_by_root_not_by_full_name():
         "horizon": {"kind": "stationary", "window": 4}, "numerics": {"nodes": 8}})
     res = ns.solve(m)
     res.stability()
-    names = [r["name"] for r in res.diagnostic_records() if r["category"] == "equilibrium"]
+    names = [r["name"] for r in res.diagnostics.rows if r["category"] == "equilibrium"]
     assert "stability" in names and any(n.startswith("second_order:") for n in names)
 
-    assert res.diagnostic_verdict("equilibrium") is not None
-    assert res.diagnostic_verdict("equilibrium", exclude=("second_order",)) is not None   # stability left
-    # both roots gone leaves the category empty, so the verdict is "not checked" rather than a bool.
-    # Matching on the full name would leave second_order:a behind and return True here.
-    assert res.diagnostic_verdict("equilibrium", exclude=("second_order", "stability")) is None
-    assert res.diagnostic_verdict("no such category") is None
+    # the per-agent rows collapse to their ROOT, which is what a policy names and a status keys on
+    assert res.diagnostics.statuses["second_order"] is Status.PASSED
+    assert [r["name"] for r in res.diagnostics.by_category("equilibrium")] == names
+    assert res.diagnostics.by_category("no such category") == ()
 
 
-def test_compare_summary_keeps_numerics_equilibrium_and_dynamics_in_their_own_columns():
+def test_compare_summary_keeps_the_assessment_and_dynamics_in_their_own_columns():
     m = ns.Model.from_dict({
         "name": "cols", "channels": ["w0", "w1"],
         "states": {"X": {"drift": {"X": -1, "D": 1}, "noise": {"w0": 1}}},
@@ -127,7 +126,7 @@ def test_compare_summary_keeps_numerics_equilibrium_and_dynamics_in_their_own_co
         "public", drift={"X": 1}, noise={"wp": 1})}, baseline="base", stability=True)
     lines = study.summary().splitlines()
     head = lines[0]
-    for column in ("numerics", "equilibrium", "full response"):
+    for column in ("assessment", "full response"):
         assert column in head
     # every column starts under its own header, whatever the scenario names and verdict words are
     for column in study.HEAD[3:]:
@@ -183,21 +182,36 @@ def test_one_result_reads_the_same_on_every_engine(numerics):
     assert K.ndim == (2 if numerics["engine"] == "cells" else 1) and all(len(v) == K.shape[0] for v in node_axes.values())
     assert "time" in node_axes and "shock_time" in node_axes and r.times is not None and len(r.times) == len(r.paths["means"]["X"])
     assert r.axes["maps"]["player1"]["y1"]["map_time"].shape[0] == r.maps["player1"].shape[2]
-    assert isinstance(r, ns.Result) and isinstance(r, ns.Result)
+    #  one public type; the concrete class is the engine's and is not part of the API
+    assert isinstance(r, ns.Result) and type(r) is not ns.Result
     assert not hasattr(r, "Z") and not hasattr(r, "iterations")      # the 0.5 spellings, removed in 0.6
-    assert r.status["ok"] is True and r.status["flags"] == [] and r.status["rows"] == r.diagnostic_rows()
+    assert r.diagnostics.flags == ()
+    #  the rows carry the presentation fields; the statuses carry the verdict, keyed on the root
+    assert all({"code", "category", "severity", "meaning"} <= set(row) for row in r.diagnostics.rows)
+    assert r.diagnostics.statuses["converged"] is Status.PASSED
+    #  Acceptance is NOT the same on every engine, and must not be: the cell engine computes
+    #  neither a representation error nor a second-order form, so under PUBLICATION it reports
+    #  UNSUPPORTED and is refused.  An engine must not pass a verdict because it cannot test it.
+    verdict = r.diagnostics.assess()
+    if numerics["engine"] == "cells":
+        assert not verdict.accepted and verdict.uncomputed == ("resolution", "second_order")
+        assert {b.status for b in verdict.blocking} == {Status.UNSUPPORTED}
+        assert r.require_ok(ns.Policy.EXPLORATORY) is r          # a weaker use is legitimate, and named
+    else:
+        assert verdict.accepted is True and verdict.uncomputed == ()
     diagnostic = r.to_dict()["diagnostics"][0]
     assert diagnostic["code"] == "converged" and diagnostic["category"] == "solve"
     assert diagnostic["severity"] == "ok" and diagnostic["meaning"] and "suggested_options" in diagnostic
     assert r.cost_kind.startswith("discounted") and set(r.cost_parts["player1"]) == {"variance", "mean"}
     p = r.to_dict()
-    assert p["payload_version"] == 1 and p["engine"] == numerics["engine"] and set(p["axes"]) == set(node_axes) and p["status"]["ok"]
+    assert p["payload_version"] == 1 and p["engine"] == numerics["engine"] and set(p["axes"]) == set(node_axes)
+    assert p["assessment"]["accepted"] is verdict.accepted and p["assessment"]["policy"] == "publication"
 
 
 def test_the_stationary_result_and_a_transition_read_the_same_way():
     s = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8})
     assert list(s.axes) == ["age", "maps"] and s.times is None and s.paths == {} and "window_tail" in s.extra
-    assert s.kernel("X").shape == (len(s.axes["age"]), 3) and s.status["ok"] is False and any("WINDOW" in f for f in s.status["flags"])
+    assert s.kernel("X").shape == (len(s.axes["age"]), 3) and s.diagnostics.assess().accepted is False and any("WINDOW" in f for f in s.diagnostics.flags)
     t = ns.solve(os.path.join(EX, "ch3_precision_change.yaml"), {"nodes": 5, "continuation_nodes": 8}, max_evaluations=3)
     assert (t.axes["shock_time"] < 0).any() and set(t.paths) == {"means", "loss", "belief_error"}
     assert t.paths["loss"]["player1"].shape == t.times.shape and t.paths["belief_error"]("player2", "X").shape == t.times.shape

@@ -149,8 +149,8 @@ def test_the_renamed_model_members_are_gone(old):
 def test_the_new_names_all_work_and_warn_about_nothing(stat):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        stat.require_converged(); stat.diagnostic_rows(); stat.diagnostic_records()
-        stat.diagnostic_verdict("numerics"); stat.grid_summary(); stat.strategy_kernel("D1")
+        stat.require_converged(); stat.diagnostics.rows; stat.diagnostics.rows
+        stat.diagnostics.assess(); stat.grid_summary(); stat.strategy_kernel("D1")
         stat.has_means; stat.mean_times
         m = example("ch3_two_player")
         m.with_finite(2.0); m.with_stationary(4.0); m.owner_of("D1"); m.drives_means
@@ -165,5 +165,5 @@ def test_the_package_emits_no_deprecation_warning_in_normal_use():
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         res = ns.solve(m)
-        res.require_converged(); res.stability(); res.diagnostic_summary(); res.to_dict()
+        res.require_converged(); res.stability(); res.diagnostics.summary(); res.to_dict()
         assert dataclasses.replace(res, solver_class=None)._make_solver(m) is not None

@@ -1,6 +1,7 @@
 """Regressions from the pre-release adversarial test and code review (0.2.3)."""
 import os, json, numpy as np, pytest
 import noisestate as ns
+from noisestate.diagnostics import Status
 from noisestate.stationary import StationarySolver
 from helpers import slow
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
@@ -42,7 +43,8 @@ def test_one_agent_delayed_observation_costs_more_and_passes_second_order():
 def test_cell_engine_dense_branch_with_delays():
     d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d.setdefault("numerics", {}).update(nodes=16, engine="cells")
     r = ns.solve(d).require_converged()
-    assert r.resolution_ok is None and r.to_dict()["resolution_ok"] is None
+    assert r.diagnostics.statuses["resolution"] is Status.UNSUPPORTED          # the cell engine cannot compute it
+    assert r.to_dict()["assessment"]["statuses"]["resolution"] == "unsupported"
     r.refine(); assert r.refinement["nodes"] == 32                             # doubled: lags stay aligned
 
 
