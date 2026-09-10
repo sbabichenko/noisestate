@@ -590,7 +590,7 @@ class StationarySolver(EngineBase):
         ext = c.grid.L + 2.0 * max(lags)
         bp = [float(b) for b in c.grid.breakpoints] + [ext]
         try:
-            S2 = type(self)(self.model.with_horizon(window=ext).with_numerics(breakpoints=bp), **self.solver_kw)
+            S2 = type(self)(self.model._patch_horizon(window=ext).with_numerics(breakpoints=bp), **self.solver_kw)
         except Exception:
             return None
         c2 = S2.c; N2 = c2.N; g2 = c2.grid

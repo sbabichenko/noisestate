@@ -66,9 +66,9 @@ def test_the_old_model_file_spellings_name_what_replaced_them(horizon, message):
 def test_with_horizon_no_longer_takes_the_numerics_fields():
     m = example("ch3_two_player")
     with pytest.raises(ValueError, match="with_numerics"):
-        m.with_horizon(nodes=8)
+        m._patch_horizon(nodes=8)
     with pytest.raises(ValueError, match="engine='cells'"):
-        m.with_horizon(kind="finite_cells")
+        m._patch_horizon(kind="finite_cells")
 
 
 def test_the_schema_no_longer_carries_the_old_keys():

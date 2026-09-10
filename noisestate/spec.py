@@ -311,11 +311,11 @@ class Model:
 
     def with_finite(self, T: float, **fields) -> "Model":
         """The same model on the finite horizon [0, T].  T is the terminal time, not a lag window."""
-        return self.with_horizon(kind="finite", T=T, window=None, **fields)
+        return self._patch_horizon(kind="finite", T=T, window=None, **fields)
 
     def with_stationary(self, window: float, **fields) -> "Model":
         """The same model on a stationary horizon with lag-truncation length L = `window`."""
-        return self.with_horizon(kind="stationary", window=window, T=None, **fields)
+        return self._patch_horizon(kind="stationary", window=window, T=None, **fields)
 
     def with_transition(self, T: float, past, window: Optional[float] = None, **fields) -> "Model":
         """The same model as a transition on [0, T] from `past`.
@@ -325,7 +325,7 @@ class Model:
         transition without one has always used.
         """
         extra = {} if window is None else {"window": window}
-        return self.with_horizon(kind="transition", T=T, past=past, **extra, **fields)
+        return self._patch_horizon(kind="transition", T=T, past=past, window=extra.get("window"), **fields)
 
     def save(self, path: str) -> None:
         """Write the model file (to_dict() as YAML, the parameter expressions intact).
@@ -1005,32 +1005,63 @@ class Model:
                 signals[row_name] = copy.deepcopy(clean)
         return self._rebuilt(d)
 
-    def with_horizon(self, **fields) -> "Model":
-        """A new model with these horizon fields (kind, window, discount, past, continuation, stationary).  A
-        change of kind drops the panel sizing of the old kind (numerics.breakpoints, numerics.unit_range) unless
-        given, as transition() does: a stationary grid's unit_range is not a finite grid's.  The numerics keys
-        (nodes, breakpoints, unit, unit_range) go to with_numerics(), and the cell engine is
-        with_numerics(engine="cells")."""
+    def with_horizon(self, horizon=None, **fields) -> "Model":
+        """A new model on `horizon`: Stationary(...), Finite(...) or Transition(...).
+
+        The horizon's ECONOMICS are REPLACED, not patched.  That is the point of taking an object:
+        there is no rule about which of the old kind's quantities to retain, no way for a stationary
+        lag window to survive as a finite horizon's terminal time, and no way for a transition's
+        past to be carried into a kind that cannot hold one.  The type states which quantities
+        exist, so the question of what to keep does not arise.
+
+        The grid stays with with_numerics(); a change of kind drops the old kind's panel sizing
+        (numerics.breakpoints, unit_range, engine), which a stationary grid does not share with a
+        finite one.
+        """
+        from .expr import _Horizon
+        if fields or horizon is None:
+            raise TypeError(
+                "with_horizon() takes a horizon OBJECT and replaces the horizon: "
+                "with_horizon(Stationary(window=3.0)), with_horizon(Finite(T=1.0)), "
+                "with_horizon(Transition(T=1.0, past=...)). The keyword form was removed because it "
+                "had to guess which of the old kind's quantities still applied -- a lag-truncation "
+                "length and a terminal time are different things and neither carries over by "
+                "default. To change one field on the SAME kind, use with_stationary(window), "
+                "with_finite(T) or with_transition(T, past)."
+                + (f" Got keyword(s) {sorted(fields)}." if fields else ""))
+        if not isinstance(horizon, _Horizon):
+            raise TypeError("with_horizon() takes a horizon object -- Stationary(window=...), "
+                            "Finite(T=...) or Transition(T=..., past=...) -- not "
+                            f"{type(horizon).__name__}. To change one field on the same kind, use "
+                            "with_stationary(), with_finite() or with_transition().")
+        d = self.to_dict(); d.setdefault("numerics", {})
+        if horizon.kind != self.horizon.kind:
+            for k in ("breakpoints", "unit_range", "engine"):
+                d["numerics"].pop(k, None)
+        d["horizon"] = horizon.compile()
+        return self._rebuilt(d)
+
+    def _patch_horizon(self, **fields) -> "Model":
+        """Internal: change horizon fields, keeping the rest.
+
+        A kind change must state BOTH lengths, so the caller says what each becomes rather than
+        leaving the method to guess which of the old kind's quantities still apply.  That guess is
+        what with_horizon(**fields) used to make, and it is why with_horizon now takes an object.
+        """
         d = self.to_dict(); d.setdefault("horizon", {}); d.setdefault("numerics", {})
         bad = sorted(set(fields) - self._KEYS["horizon"])
         if bad:
             raise ValueError(f"unknown horizon field(s) {bad}; the numerics fields go to with_numerics()")
-        fields = dict(fields)
         if fields.get("kind") == "finite_cells":
             raise ValueError("horizon kind 'finite_cells' was removed in 0.6: "
-                             "with_horizon(kind='finite').with_numerics(engine='cells')")
-        if fields.get("kind") is not None and fields["kind"] != self.horizon.kind:
-            d["numerics"].pop("engine", None)             # the old kind's engine is not the new kind's
-            #  Drop only the length the NEW kind does not have.  A stationary L must not survive
-            #  into a finite horizon as its T -- that is the conflation the split ended -- but T
-            #  itself carries over from finite to transition, where it means the same thing, and a
-            #  transition's continuation window carries back to stationary.
-            keeps = {"stationary": {"window"}, "finite": {"T"}, "transition": {"T", "window"}}
-            for key in {"window", "T"} - keeps.get(fields["kind"], {"window", "T"}):
-                if key not in fields:
-                    d["horizon"].pop(key, None)
-        if fields.get("kind") is not None and fields["kind"] != self.horizon.kind:
-            for k in ("breakpoints", "unit_range"):
+                             "with_finite().with_numerics(engine='cells')")
+        changes_kind = fields.get("kind") is not None and fields["kind"] != self.horizon.kind
+        if changes_kind:
+            if not {"window", "T"} <= set(fields):
+                raise ValueError("a kind change must state both horizon.window and horizon.T (either may be "
+                                 "None): the lag-truncation length and the terminal time are different "
+                                 "quantities and neither carries over by default")
+            for k in ("breakpoints", "unit_range", "engine"):
                 if k not in fields:
                     d["numerics"].pop(k, None)
         d["horizon"].update({k: v for k, v in fields.items() if v is not None})

@@ -38,7 +38,7 @@ def test_kyle_back_prior_example():
     m = example("kyle_back_prior")
     assert m.horizon.past["initial"][0]["loads"] == {"V": 1.0} and m.with_params(eps=0.2).horizon.past["initial"][0]["loads"] == {"V": 1.0}
     assert m.with_params(Sigma0=4.0).horizon.past["initial"][0]["loads"] == {"V": 2.0}
-    res = {n: ns.solve(m.with_horizon().with_numerics(nodes=n)) for n in (8, 12)}
+    res = {n: ns.solve(m.with_numerics(nodes=n)) for n in (8, 12)}
     for n, r in res.items():
         assert r.converged and r.continuation is None and r.shocks == ["wZ", "v0"], n
         assert abs(lambda0(r) - 0.658872) < 2e-6, (n, lambda0(r))
@@ -55,7 +55,7 @@ def test_kyle_back_prior_martingale_identity():
     of V at T: at 12 nodes lambda = 0.614143 against sqrt((1 - Sigma_T)/2) = 0.614142 at eps 0.2 and 0.658872
     against 0.658865 at 0.1, pinned to 1e-4 (two solves, 2 s).  Back's eps = 0 limit is sqrt(Sigma0/T)/sigma_Z
     = 0.7071, which the eps sweep of docs/transitions.md approaches from below."""
-    m = example("kyle_back_prior").with_horizon().with_numerics(nodes=12)
+    m = example("kyle_back_prior").with_numerics(nodes=12)
     for eps, lam_ref in ((0.2, 0.614143), (0.1, 0.658872)):
         res = ns.solve(m.with_params(eps=eps))
         lam = lambda0(res); sig_T = res.belief_error("market_maker", "V")[-1]

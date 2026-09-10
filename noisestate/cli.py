@@ -200,7 +200,7 @@ def _run(p, args) -> int:
         if stationary_window is not None:
             if stationary_window <= 0:
                 p.error("the stationary window must be positive")
-            old = Model.from_dict(loaded[0], base_dir=os.path.dirname(os.path.abspath(args.old))).with_horizon(window=stationary_window)
+            old = Model.from_dict(loaded[0], base_dir=os.path.dirname(os.path.abspath(args.old)))._patch_horizon(window=stationary_window)
         if args.window is None:
             res = transition(old, args.new, settle=args.settle, step=args.step, max_window=args.max_window,
                              numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)

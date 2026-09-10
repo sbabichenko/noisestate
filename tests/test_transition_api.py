@@ -16,7 +16,7 @@ def regime():
     """Chapter 3, p1 = 3 (the shipped file) to p1 = 10, T = 6, 8 nodes: the keyword form from zero and its inputs."""
     m = example("ch3_two_player")
     old = ns.solve(m).require_converged()
-    new = m.with_params(p1=10.0).with_horizon(kind="finite", T=6.0).with_numerics(nodes=8)
+    new = m.with_params(p1=10.0).with_finite(6.0).with_numerics(nodes=8)
     return {"m": m, "old": old, "new": new, "zero": ns.solve(new, past=old, continuation="stationary", start="zero")}
 
 
@@ -299,7 +299,7 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     d["horizon"] = {"kind": "transition", "settle": 5e-2, "past": {"model": EX + "ch3_two_player.yaml"}}; d["numerics"] = {"nodes": 6}
     fm = ns.Model.from_dict(d)
     assert fm.horizon.settle == 5e-2 and fm.to_dict()["horizon"] == {"kind": "transition", "discount": 0.0, "settle": 5e-2, "past": d["horizon"]["past"]}
-    assert "settle" not in fm.with_horizon(T=6.0, settle=None).to_dict()["horizon"]
+    assert "settle" not in fm._patch_horizon(T=6.0, settle=None).to_dict()["horizon"]
     fr = ns.solve(fm, max_evaluations=40)
     hr = ns.transition(EX + "ch3_two_player.yaml", new, settle=5e-2, numerics={"nodes": 6}, max_evaluations=40)
     assert fr.extra["window"] == hr.extra["window"] and np.array_equal(fr.world, hr.world) and [r["evaluations"] for r in fr.march] == [r["evaluations"] for r in hr.march]

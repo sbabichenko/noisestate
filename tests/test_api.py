@@ -85,12 +85,12 @@ def test_model_transforms_keep_the_naive_observers_the_file_does_not_carry():
                     numerics={"nodes": 12})
     want = {"trader1": ["market_maker"]}
     assert game.naive_observers == want
-    for made in (game.with_horizon(window=6.0), game.with_numerics(nodes=10), game.with_params(eps=0.3),
+    for made in (game.with_stationary(6.0), game.with_numerics(nodes=10), game.with_params(eps=0.3),
                  game.with_signal("extra", drift={"V": 1}, noise={"we": 1}), game.with_finite(4.0),
-                 game.with_horizon(window=6.0).with_numerics(nodes=10)):
+                 game.with_stationary(6.0).with_numerics(nodes=10)):
         assert made.naive_observers == want
     # the field is only the mechanism; what matters is that the solver is still told
-    res = game.with_horizon(window=6.0).solve(max_evaluations=1, diagnostics=False)
+    res = game.with_stationary(6.0).solve(max_evaluations=1, diagnostics=False)
     assert res.solver_kw.get("naive_observers") == want
 
 
@@ -311,7 +311,7 @@ def test_the_zero_start_is_explicit_with_a_continuation():
     e = ns.solve(new, past=old, continuation="end", max_evaluations=1)
     assert d.solve_kw["start"] == "stationary" and z.solve_kw["start"] == "zero" and e.solve_kw["start"] == "zero"
     assert d.residual != z.residual
-    rows = ns.sweep(new.with_horizon(kind="transition", past={"model": old.model.to_dict()}, continuation="stationary"), "p1",
+    rows = ns.sweep(new.with_transition(6.0, past={"model": old.model.to_dict()}, continuation="stationary"), "p1",
                     [10.0], solve_kw={"max_evaluations": 1})
     assert rows[0]["result"].solve_kw["start"] == "stationary"
 
@@ -323,7 +323,7 @@ def test_a_saved_transition_keeps_its_past_beside_it():
     import shutil, tempfile, yaml
     d = tempfile.mkdtemp()
     ns.load(os.path.join(EX, "ch3_two_player.yaml")).save(os.path.join(d, "past.yaml"))
-    tr = ns.load(os.path.join(EX, "ch3_precision_change.yaml")).with_horizon(past={"model": os.path.join(d, "past.yaml")})
+    tr = ns.load(os.path.join(EX, "ch3_precision_change.yaml"))._patch_horizon(past={"model": os.path.join(d, "past.yaml")})
     tr.save(os.path.join(d, "tr.yaml"))
     assert yaml.safe_load(open(os.path.join(d, "tr.yaml")))["horizon"]["past"] == {"model": "past.yaml"}
 

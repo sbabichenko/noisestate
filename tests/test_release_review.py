@@ -73,7 +73,7 @@ def test_model_is_single_sourced():
     m.horizon.nodes = 30                                                       # horizon fields are read live
     r = ns.solve(m); assert r.compiled.N == 30 and m.to_dict()["numerics"]["nodes"] == 30
     r.refine(); assert r.refinement["nodes"] == 45
-    assert ns.solve(m.with_horizon().with_numerics(nodes=12)).compiled.N == 12
+    assert ns.solve(m.with_numerics(nodes=12)).compiled.N == 12
     with pytest.raises(ValueError, match="not parameters"):
         m.with_params(zzz=1.0)
 

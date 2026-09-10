@@ -24,7 +24,7 @@ MODEL = os.path.join(HERE, "..", "..", "examples", "ch3_two_player.yaml")
 def solve_all(model=MODEL, windows=WINDOWS, nodes=NODES):
     base = ns.load(model)
     for L in windows:
-        yield L, ns.solve(base.with_horizon(window=L).with_numerics(nodes=nodes))
+        yield L, ns.solve(base.with_stationary(L).with_numerics(nodes=nodes))
 
 
 def main(out=None):
@@ -42,9 +42,9 @@ def main(out=None):
                 print(f"{'':7} require_ok() refuses it: {str(exc)[:88]}")
     print()
     print("the same windows, each warm-started from the previous (continuation in L):")
-    prev = ns.solve(ns.load(MODEL).with_horizon(window=12.0).with_numerics(nodes=NODES)).require_converged()
+    prev = ns.solve(ns.load(MODEL).with_stationary(12.0).with_numerics(nodes=NODES)).require_converged()
     for L in WINDOWS[1:]:
-        wider = ns.load(MODEL).with_horizon(window=L).with_numerics(nodes=NODES)
+        wider = ns.load(MODEL).with_stationary(L).with_numerics(nodes=NODES)
         r = ns.solve(wider, init=ns.StationarySolver(wider).interpolate_maps(prev))
         K = np.asarray(r.kernel("X")); a = np.asarray(r.ages)
         tail = float(np.abs(K[a > 0.95 * L]).max() / np.abs(K).max())
@@ -55,9 +55,9 @@ def main(out=None):
     print()
     print("what separates the branches is best-response stability, not the residual:")
     for label, kw in (("the equilibrium (warm)", {"init": ns.StationarySolver(
-                           ns.load(MODEL).with_horizon(window=18.0).with_numerics(nodes=NODES)).interpolate_maps(prev)}),
+                           ns.load(MODEL).with_stationary(18.0).with_numerics(nodes=NODES)).interpolate_maps(prev)}),
                       ("the branch a cold start finds", {})):
-        m18 = ns.load(MODEL).with_horizon(window=18.0).with_numerics(nodes=NODES)
+        m18 = ns.load(MODEL).with_stationary(18.0).with_numerics(nodes=NODES)
         r = ns.solve(m18, **kw)
         st = r.stability()
         print(f"  L=18, {label:30s} cost {r.costs['player1']:8.4f}  spectral radius {st['radius']:.4f}"

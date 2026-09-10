@@ -151,7 +151,7 @@ def transition_gap(old, new, numerics=None, continuation="stationary") -> Dict[s
     model, past, continuation = _transition_model(old, new, past.window, num, continuation)
     u = _unit_of(model, past.window)
     if abs(u - past.window) > 1e-12:
-        model = model.with_horizon(T=float(u))          # the march is over the TERMINAL TIME
+        model = model._patch_horizon(T=float(u))          # the march is over the TERMINAL TIME
     S = engines.build(model, None, past=past, continuation=continuation)[0]
     return gap_pass(S, S.stationary_start(), 0.0, S.c.T)
 
@@ -310,14 +310,14 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
 
 def march_model(model: Model, numerics=None, past=None, continuation=None, **solve_kw):
     """The march for a model of kind transition with horizon.settle (the file form of solve()): the past from
-    its block (or the keyword), the model at each T by with_horizon(T=T)."""
+    its block (or the keyword), the model at each T by _patch_horizon(T=T)."""
     hz = model.horizon
     if past is None:
         past = Past.from_block(hz.past)
     past = Past.of(past)
     if continuation is None:
         continuation = hz.continuation or "stationary"
-    return march(lambda T: model.with_horizon(T=float(T), settle=None), past, continuation, hz.settle, numerics, **solve_kw)
+    return march(lambda T: model._patch_horizon(T=float(T), settle=None), past, continuation, hz.settle, numerics, **solve_kw)
 
 
 def transition(old, new, T: Optional[float] = None, numerics=None, continuation="stationary",

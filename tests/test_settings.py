@@ -60,7 +60,7 @@ def test_settings_reach_the_checks_and_are_recorded():
 
 
 def test_settings_reach_the_best_response_and_the_solve():
-    m = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).with_horizon().with_numerics(nodes=4)
+    m = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).with_numerics(nodes=4)
     r0 = ns.solve(m).require_converged()
     with pytest.raises(ValueError, match="singular"):                        # every system fails a condition threshold of 1
         ns.solve(m, {"settings": Settings(foc_rcond=1.0)})
@@ -68,4 +68,4 @@ def test_settings_reach_the_best_response_and_the_solve():
     assert "anderson: 3 evaluations" in r.message and "newton polish" in r.message
     assert r.converged and abs(r.costs["player1"] - r0.costs["player1"]) < 1e-9
     assert ns.SpectralFiniteSolver(m, settings=Settings(map_ridge=1e-9)).MAP_RIDGE == 1e-9
-    assert ns.FiniteSolver(m.with_horizon(kind="finite").with_numerics(nodes=8, engine="cells"), settings={"cell_dense_max": 1}).settings.cell_dense_max == 1
+    assert ns.FiniteSolver(m.with_finite(m.horizon.extent).with_numerics(nodes=8, engine="cells"), settings={"cell_dense_max": 1}).settings.cell_dense_max == 1

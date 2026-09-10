@@ -34,7 +34,7 @@ def test_same_model_means_are_the_stationary_constants():
     excess costs are 7e-11, and res.mean() reads the path beyond the window."""
     mt = with_target(1.0)
     stat = stationary(mt, 16)
-    res = ns.solve(mt.with_horizon(kind="finite", T=6.0).with_numerics(nodes=16), past=stat, continuation=stat, start="stationary").require_converged()
+    res = ns.solve(mt.with_finite(6.0).with_numerics(nodes=16), past=stat, continuation=stat, start="stationary").require_converged()
     assert res.evaluations <= 2 and res.mean_times.shape == (res.compiled.Nt,)
     buf = res.mean_times >= 6.0 + 1e-9
     for n in ("X", "D1", "D2"):
@@ -55,7 +55,7 @@ def test_target_change_runs_from_the_old_means_to_the_new():
     means settle more slowly than the maps, which are at 6.3e-7) is in `settled`; the game ending at T instead
     (a past shorter than T, no continuation) solves too, with the controls vanishing at T."""
     old = stationary(with_target(1.0), 12)
-    res = ns.solve(with_target(2.0).with_horizon(kind="finite", T=6.0).with_numerics(nodes=12), past=old, continuation="stationary",
+    res = ns.solve(with_target(2.0).with_finite(6.0).with_numerics(nodes=12), past=old, continuation="stationary",
                    start="stationary").require_converged()
     new = res.continuation.means
     assert abs(old.means["X"] - 0.86621659) < 1e-7 and abs(new["X"] - 1.73243318) < 1e-7 and abs(new["D1"] - 3.59787014) < 1e-7
@@ -72,7 +72,7 @@ def test_target_change_runs_from_the_old_means_to_the_new():
     assert abs(X[on][-1] - new["X"] + 7.7e-4) < 1e-5 and abs(res.mean("X", 6.0)[0] - new["X"]) < 1e-12
     assert 1.5e-4 < res.settled < 2.5e-4 and res.cost_parts["player1"]["mean"] > 0
     assert res.settled == max(res._make_solver(res.model).settled(res.maps), res._make_solver(res.model).settled_means(res.means))
-    end = ns.solve(with_target(1.0).with_horizon(kind="finite", T=6.0).with_numerics(nodes=12), past=old).require_converged()
+    end = ns.solve(with_target(1.0).with_finite(6.0).with_numerics(nodes=12), past=old).require_converged()
     assert isinstance(end, TransitionResult) and end.continuation is None
     assert abs(end.mean("X", 0.0)[0] - old.means["X"]) < 1e-12 and abs(end.mean("D1", 6.0)[0]) < 1e-12
     assert abs(end.mean("D1", 1.0)[0] - 1.7997) < 1e-3 and end.mean("D1", 5.0)[0] < 1.0

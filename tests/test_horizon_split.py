@@ -52,23 +52,28 @@ def test_a_kind_change_keeps_the_length_the_new_kind_has_and_drops_the_other():
     #  with_horizon DIRECTLY, without the explicit window=None that with_finite passes: this is the
     #  path where the kind-change rule is the only thing stopping the stationary L from riding
     #  along into a horizon that has no lag window at all.
-    fin = stat.with_horizon(kind="finite", T=6.0)
+    fin = stat.with_finite(6.0)
     assert fin.horizon.T == 6.0 and fin.horizon.window is None      # L = 3.0 did not survive
     assert "window" not in fin.to_dict()["horizon"]
     assert fin.with_finite(6.0).horizon.window is None              # and the convenience agrees
-    tr = fin.with_horizon(kind="transition", past={"model": EX + "ch3_two_player.yaml"},
-                          continuation="stationary")
+    tr = fin.with_transition(6.0, past={"model": EX + "ch3_two_player.yaml"}, continuation="stationary")
     assert tr.horizon.T == 6.0                                       # T carried over
 
 
 def test_the_expression_horizons_express_the_valid_combination_by_type():
     """Finite used to SUBCLASS Stationary and call super().__init__(T), which is how a terminal time
     came to live in a field named window."""
-    assert ns.Stationary(window=3.0).T is None
-    assert ns.Finite(T=2.0).window is None
+    #  ABSENT, not None.  A class attribute defaulting to None would be optional fields on a
+    #  catch-all with extra steps, and omitting a key from serialisation is not the same as
+    #  excluding a quantity by type.
+    with pytest.raises(AttributeError):
+        ns.Stationary(window=3.0).T
+    with pytest.raises(AttributeError):
+        ns.Finite(T=2.0).window
+    assert not hasattr(ns.Finite(T=2.0), "window") and not hasattr(ns.Stationary(window=3.0), "T")
     assert not issubclass(ns.Finite, ns.Stationary)
-    assert "window" not in ns.Finite(T=2.0).compile()
-    assert "T" not in ns.Stationary(window=3.0).compile()
+    assert ns.Finite(T=2.0).compile() == {"kind": "finite", "discount": 0.0, "T": 2.0}
+    assert ns.Stationary(window=3.0).compile() == {"kind": "stationary", "discount": 0.0, "window": 3.0}
 
 
 # ------------------------------------------------------------------ who reads which
@@ -103,3 +108,19 @@ def test_a_settle_template_defers_the_checks_that_need_a_length_but_not_the_othe
     assert m.horizon.T is None and not m.horizon.extent_known
     with pytest.raises(ValueError, match="horizon.kind must be"):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transitions"}})
+
+
+def test_with_horizon_replaces_rather_than_patches():
+    """The keyword form had to guess which of the old kind's quantities still applied.  Taking an
+    object removes the guess: the type states which exist, so nothing carries over by default."""
+    stat = example("ch3_two_player")
+    fin = stat.with_horizon(ns.Finite(T=6.0))
+    assert fin.horizon.T == 6.0 and fin.horizon.window is None
+    with pytest.raises(TypeError, match="takes a horizon OBJECT"):
+        stat.with_horizon(kind="finite", T=6.0)
+    with pytest.raises(TypeError, match="takes a horizon OBJECT"):
+        stat.with_horizon()
+    #  the internal patcher still refuses a kind change that does not say what each length becomes
+    with pytest.raises(ValueError, match="must state both"):
+        stat._patch_horizon(kind="finite", T=6.0)
+    assert stat._patch_horizon(kind="finite", T=6.0, window=None).horizon.window is None

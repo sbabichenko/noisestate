@@ -247,7 +247,7 @@ def test_initial_state_spec_payload_and_cli(tmp_path):
     with pytest.raises(ValueError, match="unknown key"):
         ns.Model.from_dict(b)
     with pytest.raises(ValueError, match="no meaning in a stationary model"):
-        m.with_horizon(kind="stationary", window=4.0)
+        m.with_stationary(4.0)
     res = ns.solve(m).require_converged()
     d = json.loads(json.dumps(res.to_dict()))
     assert d["means"]["X"] == res.means["X"].tolist() and d["means_t"] == res.mean_times.tolist() and d["cost_parts"]["a"]["mean"] == res.cost_parts["a"]["mean"]

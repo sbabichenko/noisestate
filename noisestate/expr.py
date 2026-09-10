@@ -767,26 +767,28 @@ class _Horizon:
     object -- a stationary model has no terminal time and a finite one has no lag window.
     """
     kind = "stationary"
-    window = None                # L, the lag-truncation length
-    T = None                     # the terminal time
+    #  Neither quantity is declared here.  Each subclass sets ONLY the one its kind has, so
+    #  Finite(...).window raises AttributeError rather than answering None: the valid combination is
+    #  expressed by the TYPE, and a class attribute defaulting to None would be optional fields on a
+    #  catch-all with extra steps -- exactly what the split replaced.
+    LENGTHS = ()                 # the length attributes this kind carries, in file order
 
     @property
     def extent(self):
-        """The length of the primary computational axis: T where there is one, else the window."""
+        """The length of the primary computational axis: T where the kind has one, else the window."""
         return self.window if self.kind == "stationary" else self.T
 
     def compile(self) -> dict:
         out = {"kind": self.kind, "discount": _coef_str(self.discount)}
-        if self.window is not None:
-            out["window"] = _coef_str(self.window)
-        if self.T is not None:
-            out["T"] = _coef_str(self.T)
+        for name in self.LENGTHS:
+            out[name] = _coef_str(getattr(self, name))
         return out
 
 
 class Stationary(_Horizon):
     """A stationary horizon: the lag-truncation length L and the discount rate (0 is average cost)."""
     kind = "stationary"
+    LENGTHS = ("window",)
 
     def __init__(self, window: float = 8.0, discount=0.0):
         self.window = window; self.discount = discount
@@ -795,6 +797,7 @@ class Stationary(_Horizon):
 class Finite(_Horizon):
     """A finite horizon [0, T].  T is the terminal time; a finite horizon has no lag window."""
     kind = "finite"
+    LENGTHS = ("T",)
 
     def __init__(self, T: float = 1.0, discount=0.0):
         self.T = T; self.discount = discount
@@ -805,6 +808,7 @@ class Transition(_Horizon):
     {name, loads, rows}) continued by "stationary" (the new model's equilibrium, its window the past's unless
     `window` is given) or "end"."""
     kind = "transition"
+    LENGTHS = ("T",)             # `window` there is the continuation's L and is optional
 
     def __init__(self, T: float = 1.0, past=None, continuation: str = "stationary", discount=0.0, window=None):
         #  a transition carries BOTH: T is when the game ends, `window` the continuation's L, which

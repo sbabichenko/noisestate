@@ -52,12 +52,12 @@ def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
     import numpy as np, pytest, noisestate as ns
     base = ns.load(example_path("ch3_two_player"))
 
-    good = ns.solve(base.with_horizon(window=15.0).with_numerics(nodes=64))
+    good = ns.solve(base.with_stationary(15.0).with_numerics(nodes=64))
     a = np.asarray(good.ages); K = np.asarray(good.kernel("X"))
     assert good.diagnostics.assess().accepted and abs(good.costs["player1"] - 0.427295) < 1e-5
     assert np.abs(K[a > 0.95 * 15.0]).max() / np.abs(K).max() < 1e-6      # decayed by the edge
 
-    spurious = ns.solve(base.with_horizon(window=18.0).with_numerics(nodes=64))
+    spurious = ns.solve(base.with_stationary(18.0).with_numerics(nodes=64))
     assert spurious.converged and spurious.require_converged() is spurious            # it really did converge
     assert spurious.costs["player1"] > 3.0                                # and to the wrong thing
     Ks = np.asarray(spurious.kernel("X")); asp = np.asarray(spurious.ages)
@@ -73,7 +73,7 @@ def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
     # both fixed points exist at L = 18: a cold start lands on the spurious one, and continuation in
     # the window reaches the equilibrium.  What separates them is best-response stability -- Anderson
     # and the Newton polish are root finders and will sit on a fixed point naive adjustment would flee.
-    wider = base.with_horizon(window=18.0).with_numerics(nodes=64)
+    wider = base.with_stationary(18.0).with_numerics(nodes=64)
     warm = ns.solve(wider, init=ns.StationarySolver(wider).interpolate_maps(good)).require_ok()
     assert abs(warm.costs["player1"] - 0.427295) < 1e-5
     assert warm.stability()["radius"] < 0.9 < 1.0 < spurious.stability()["radius"]
