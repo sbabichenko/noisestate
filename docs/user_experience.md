@@ -1,7 +1,13 @@
 # User experience: what a first session runs into
 
-A walk through the package as a new user, 2026-09-09 (0.6.9).  Each item is what was observed, what it
-cost, and what was done.  The measurements are reproducible from the commands quoted.
+> **A dated log, not a task list.**  Walked 2026-09-09 against **0.6.9**; the dispositions were
+> re-checked on 2026-09-10 against 0.8.0 and are marked inline.  Names in the quoted output are
+> those of 0.6.9: `check()`, `res.status` and `resolution_ok` were removed in 0.7 and 0.8 and are
+> reproduced here as they were said at the time.  The current spellings are in the
+> [README](../README.md) and [docs/api.md](api.md).
+
+A walk through the package as a new user.  Each item is what was observed, what it cost, and what was
+done.  The measurements are reproducible from the commands quoted.
 
 The short version: the diagnostics are the strength here.  The friction is that the shipped defaults
 trip them, and the one call that looks like "is this result sound?" does not consult them.
@@ -51,19 +57,23 @@ again in the environment.
 solve` exited 0 on the same result, and a script reading only the exit status would have taken it as
 sound.  `res.require_ok()` is now check() plus the guards, `noisestate solve --require-ok` is the same
 split on the command line, and `noisestate describe model.yaml` reaches the model explanation that was
-only available from Python.  (Found by an external review, `UX_REVIEW.txt`, which also notes that
+only available from Python.  (Found by an external review, [docs/design/reviews/2026-09-09-external-ux-review.txt](design/reviews/2026-09-09-external-ux-review.txt), which also notes that
 `noisestate plot` used to re-solve the model rather than plotting the stored payload --- the help text said
 so, but the name did not.  It now renders the saved kernels and transition paths directly; `--re-solve`
 asks explicitly for the old reproduction path.)
 
 ## Open, and deliberate
 
-### `check()` passes while `status["ok"]` is False
+### ~~`check()` passes while `status["ok"]` is False~~ --- RESOLVED in 0.8
 
-`res.require_converged()` raises only when the fixed point did not converge.  It says nothing about the guards, so on
-`ch3_two_player` it passes happily while `status["ok"]` is `False`.  It is the obvious call to reach for
-and the one most likely to be misread as "the result is sound".  Documented inline in the README for now;
-a `check(strict=True)` that consults the guards would close it properly.
+*As observed (0.6.9):* `res.require_converged()` raises only when the fixed point did not converge.  It
+says nothing about the guards, so on `ch3_two_player` it passes happily while `status["ok"]` is `False`.
+It is the obvious call to reach for and the one most likely to be misread as "the result is sound".
+
+*Now:* the two questions have two names and neither is the obvious-but-wrong one.  `require_converged()`
+says only what it says; `require_ok(policy)` is the full assessment and is the call the README puts in
+front of a reader.  `status` is gone: a collection of checks does not have one boolean, and
+`res.diagnostics.assess()` reports which checks blocked and why.
 
 ### Four of the seven shipped examples flag on their defaults
 
@@ -88,6 +98,8 @@ rather than tripping over it.  Deciding to raise the shipped windows anyway is a
 benchmark, not about the code.
 
 ## Open
+
+*Re-checked 2026-09-10 against 0.8.0: all three below are still open.*
 
 ### `res.second_order` does not expose the offending direction
 

@@ -14,3 +14,6 @@ with the code, the code and the pages above are current.
 | [size_brief.md](size_brief.md) | the size stage's brief |
 | [consolidation_plan.md](consolidation_plan.md) | the consolidation pass: the plan, 2026-09-06 |
 | [consolidation_api_design.md](consolidation_api_design.md) | the consolidation pass: the API memo |
+| [api_spec.txt](api_spec.txt) | the 0.8 API specification: what was decided, why, and the two items still open |
+| [api_residue.txt](api_residue.txt) | what the 0.8 redesign did not reach: nine leads, with the evidence for each |
+| [reviews/](reviews/) | dated reviews and superseded snapshots, kept for the reasoning.  Each carries its version and the disposition of its findings; they are history, not task lists |

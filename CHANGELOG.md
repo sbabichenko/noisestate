@@ -2,7 +2,7 @@
 
 ## 0.8.0 (2026-09-10) -- the contracts, decided rather than discovered
 
-A redesign written down before it was implemented (docs/api_spec.txt) and reviewed against the
+A redesign written down before it was implemented (docs/design/api_spec.txt) and reviewed against the
 source at each step.  The 0.7 spellings are GONE rather than deprecated: nothing outside this
 repository imports noisestate, so no transition was owed.
 

@@ -1,20 +1,29 @@
 ================================================================================================
- noisestate -- GLOSSARY OF CURRENT BEHAVIOUR
- What every public name does TODAY, and where today's behaviour is known to be wrong.
+ noisestate -- GLOSSARY OF BEHAVIOUR BEFORE THE 0.8 REDESIGN
+ What every public name did on 2026-09-10, BEFORE the redesign this file helped motivate.
+================================================================================================
+
+ SUPERSEDED -- THIS DESCRIBES THE OLD API.  It was the "before" snapshot taken to keep the
+ redesign honest, and PART 3 below is the list of defects it found.  Those four are now fixed.
+ Names used here as current -- res.status, res.resolution_ok, res.diagnostic_rows(),
+ res.diagnostic_verdict(), ns.StationarySolver, ns.ENGINE_CLASSES -- were REMOVED in 0.7 and 0.8.
+
+ For what the API is now: ../../api.md (the reference), ../../../README.md (the workflow),
+ ../api_spec.txt (what was decided and why).
 ================================================================================================
 
  WHAT THIS IS, AND WHAT IT IS NOT
  ------------------------------------------------------------------------------------------------
  This file describes the API AS IT IS, verified against the source on 2026-09-10.  The intended
  API -- the contracts being designed, and the decisions still open -- is a separate document,
- docs/api_spec.txt.  The two are deliberately split, because an earlier round of this work treated
+ docs/design/api_spec.txt.  The two are deliberately split, because an earlier round of this work treated
  inferences drawn from documentation as facts about the source and three of them were wrong.
 
      [V]  verified against the source or by running it; the method is stated with the claim
-     ->   a cross-reference to the section of docs/api_spec.txt that proposes a change
+     ->   a cross-reference to the section of docs/design/api_spec.txt that proposes a change
 
- Where this file and the specification disagree, the specification is the intent and this file is
- the present.  Nothing in the specification is implemented yet.
+ When this was written the specification was intent and this file was the present.  That has since
+ reversed: the specification was implemented in 0.8, and this file is the past.
 
  CONTENTS
      PART 1   WHAT THE NAMES FOLLOW TODAY .... the conventions that actually hold, with evidence
@@ -320,7 +329,7 @@
  PART 3   KNOWN GAPS IN CURRENT BEHAVIOUR
 ================================================================================================
 
- Four problems, each verified by running the code, each addressed by docs/api_spec.txt.
+ Four problems, each verified by running the code, each addressed by docs/design/api_spec.txt.
 
 
  3.1  VERDICTS THAT LOOK BOOLEAN ARE THREE-VALUED           -> api_spec PART 1 R3, PART 3

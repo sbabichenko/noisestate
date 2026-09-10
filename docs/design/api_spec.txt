@@ -3,6 +3,21 @@
  Exact signatures, return types, and behaviour tables.  Written before implementation.
 ================================================================================================
 
+ STATUS: IMPLEMENTED IN 0.8.  Steps 1-7 are done and the contracts below are the ones in the
+ code.  This file is kept as the record of what was decided and why; where it and the code
+ disagree, the code and docs/api.md are current.  An [I] marker means "intended when this was
+ written", and by now almost all of them are built -- do not read this file as a task list.
+
+ Genuinely still open, and blocking nothing:
+     D4  the equilibrium residual's norm, scaling and tolerance (numerical work).  Until it is
+         settled nothing is `verified` and no stability CLASSIFICATION is reported; the spectrum
+         and the evidence fields are populated regardless.
+     I1  cross-regime delayed observations -- an investigation, not a defect.
+
+ The drafting notes ("Draft 1 said X, which was wrong") are deliberate: they record why an
+ alternative was rejected, not how the code behaves.
+================================================================================================
+
  HOW TO READ THIS
  ------------------------------------------------------------------------------------------------
      [V]  VERIFIED   Checked against the source or by running it, on the date given.  The method is

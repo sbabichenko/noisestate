@@ -1,3 +1,31 @@
+================================================================================
+HISTORICAL REVIEW -- NOT A TASK LIST
+Reviewed 2026-09-09 against 0.6.9.  Kept for the reasoning; the findings below
+were acted on, and their "Recommendation" lines are NOT current instructions.
+
+Disposition as of 2026-09-10 (0.8.0), each checked against the code:
+
+  1. check() does less than its name implies      DONE.  check() is gone.
+     require_converged() is convergence alone; require_ok(policy) is the full
+     assessment.  0.8 made the second one a verdict over stated policies rather
+     than a boolean, so a check that never ran can no longer be read as passing.
+  2. CLI reports success for bad results          DONE.  `solve --require-ok`
+     exits 1 on a diagnostically unaccepted result (default behaviour unchanged).
+  3. First experience is deliberately a warning   DONE 2026-09-10.  The README
+     opens with ch1_two_player_finite, which converges and is accepted; the short
+     window is now the diagnostics tutorial that follows it.
+  4. The opening assumes domain knowledge         PARTLY.  The first workflow is
+     now concrete and comes early; the opening paragraph still states the
+     framework in its own vocabulary.  Deliberate -- it says what this solves.
+  5. plot performs an expensive hidden operation  DONE.  `noisestate plot` renders
+     the saved payload; `--re-solve` asks for the old reproduction path.
+  6. describe missing from the CLI                DONE.  `noisestate describe`.
+  7. Contributor setup conflicts with CONTRIBUTING.md   DONE 2026-09-10.  The README's
+     contributor section uses ./run-tests and says why.
+
+The line numbers and file references below are those of 0.6.9 and have moved.
+================================================================================
+
 NOISESTATE USER EXPERIENCE REVIEW
 Reviewed: 2026-09-09
 
