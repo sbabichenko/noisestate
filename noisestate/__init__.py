@@ -27,7 +27,7 @@ from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationa
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
 
-__all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_yaml", "read_json",
+__all__ = ["Model", "ModelBuilder", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_yaml", "read_json",
            "compare", "ComparisonResult", "ScenarioResult", "Assessment", "Policy", "Status", "clear_grid_cache", "schema",
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
            "using_settings", "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh"]
@@ -95,6 +95,38 @@ def read_json(path: str):
     import json
     with open(path) as fh:
         return json.load(fh)
+
+
+def examples() -> list:
+    """The names of the shipped model files, for ns.example()."""
+    import os
+    return sorted(f[:-5] for f in os.listdir(_examples_dir()) if f.endswith(".yaml"))
+
+
+def _examples_dir() -> str:
+    """Where the shipped model files are: inside the package on an installed wheel, the repository's
+    own examples/ in a checkout (pyproject maps the one to the other, so they are the same files)."""
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(here, "examples"), os.path.join(os.path.dirname(here), "examples")):
+        if os.path.isdir(cand):
+            return cand
+    raise FileNotFoundError("the shipped examples are not installed beside the package")
+
+
+def example(name: str) -> str:
+    """The path of a shipped model file, by name: ns.load(ns.example("ch4_kyle_back")).
+
+    The examples ship INSIDE the wheel, so this works from a pip install as well as a checkout --
+    the first line of the README needed the repository before it did.  A path rather than a Model
+    because a relative horizon.past.model resolves against the file's own directory, and because
+    the file is worth reading.
+    """
+    import os
+    path = os.path.join(_examples_dir(), name[:-5] if name.endswith(".yaml") else name) + ".yaml"
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"no shipped example named {name!r}; ns.examples() lists them: {examples()}")
+    return path
 
 
 def load(path: str) -> Model:

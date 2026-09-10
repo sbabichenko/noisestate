@@ -20,7 +20,17 @@ dev = ["pytest>=7", "pyflakes>=3", "matplotlib>=3.6"]
 noisestate = "noisestate.cli:main"
 
 [tool.setuptools]
-packages = ["noisestate"]
+packages = ["noisestate", "noisestate.examples"]
+
+#  The shipped model files install as noisestate/examples/ while staying at the top level of the
+#  repository: package-dir maps the one directory to the other, so examples/ch4_kyle_back.yaml is
+#  the same file for a reader of the checkout and for ns.example() on an installed wheel.  Before
+#  this the first line of the README could not run after a pip install.
+[tool.setuptools.package-dir]
+"noisestate.examples" = "examples"
+
+[tool.setuptools.package-data]
+"noisestate.examples" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 # A deprecation is an error in this suite: the spellings deprecated in 0.5 were still used by 55 test
