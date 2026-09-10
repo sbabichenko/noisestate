@@ -293,14 +293,11 @@ class TriangleGrid:
         given settle it (see _locate); side_a None reads from the right and, at a = L, the edge value."""
         t = np.atleast_1d(np.asarray(t, dtype=float))
         I = np.zeros((len(t), self.N))
-        inside, p, q, up, tc, ac = self._locate(t, a, side_t, side_a, side_d)
-        for pc in self.pieces:
-            sel = np.where(inside & (p == pc.p) & (q == pc.q) & (up == pc.upper))[0]
-            if len(sel) == 0:
-                continue
-            tt, xx = pc.local_coords(tc[sel], ac[sel])
-            Rt = _bary_rows(tt, pc.tn, pc.wt)                # (m, nt)
-            Rx = _bary_rows(xx, pc.xn, pc.wx)                # (m, na)
+        #  interp_factors is the traversal -- locating each point's piece and building its two
+        #  barycentric rows -- and interp_sparse already went through it while this method kept its
+        #  own copy of the same loop.  The outer product Rt Rx' is the row either way; only the sink
+        #  differs, a dense block here and coo triples there.
+        for pc, sel, Rt, Rx in self.interp_factors(t, a, side_t, side_a, side_d):
             I[np.ix_(sel, np.arange(pc.offset, pc.offset + pc.n))] = (Rt[:, :, None] * Rx[:, None, :]).reshape(len(sel), -1)
         return I
 

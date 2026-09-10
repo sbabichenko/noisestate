@@ -137,3 +137,42 @@ def test_vectorised_path_matches_the_per_node_quadrature():
         assert np.array_equal(lp.rows, rows) and np.array_equal(lp.r, r) and np.array_equal(lp.w, w)
         pt, pa = point_fn(lp.rows, lp.r)                                       # the vector call gives the per-node values
         assert np.array_equal(np.broadcast_to(pt, r.shape), pts[0]) and np.array_equal(np.broadcast_to(pa, r.shape), pts[1])
+
+
+import pytest
+
+
+@pytest.mark.parametrize("grid", ["plain", "delay panels", "window"])
+@pytest.mark.parametrize("side_d", [-1, +1])
+def test_interp_dense_and_sparse_are_the_same_rows(grid, side_d):
+    """interp() and interp_sparse() are one interpolation in two containers, and nothing compared them.
+
+    Both go through interp_factors -- which locates each point's piece and builds its two barycentric
+    rows -- and differ only in the sink: a dense block per piece, or coo triples.  interp() kept its
+    own copy of that loop until the traversal was shared, so this is what says the two agree.
+
+    The query sets matter more than the grids: points ON breakpoints and on the diagonal are where
+    the one-sided reads differ, and points outside the domain must give zero rows in both.
+    """
+    if grid == "plain":
+        g = TriangleGrid(TriangleGrid.breakpoints(2.0, []), nt=6, na=6)
+    elif grid == "delay panels":
+        g = TriangleGrid(TriangleGrid.breakpoints(2.0, [0.5]), nt=5, na=5)
+    else:
+        g = TriangleGrid(TriangleGrid.breakpoints(2.0, [0.5]), nt=5, na=5, window=1.0)
+    rng = np.random.default_rng(3)
+    queries = {
+        "the nodes themselves": (g.t.copy(), g.a.copy()),
+        "shifted off the nodes": (g.t - 0.5, g.a - 0.5),
+        "on the diagonal a = t": (np.linspace(0.1, 1.9, 40), np.linspace(0.1, 1.9, 40)),
+        "on a breakpoint": (np.full(30, 0.5), np.linspace(0, 0.5, 30)),
+        "random interior": (rng.uniform(0, 2, 200), rng.uniform(0, 2, 200)),
+        "outside the domain": (np.array([-1.0, 5.0, 1.0, 1.0]), np.array([0.5, 0.5, -1.0, 9.0])),
+    }
+    for label, (tq, aq) in queries.items():
+        dense = g.interp(tq, aq, side_d=side_d)
+        sparse = g.interp_sparse(tq, aq, side_d=side_d).toarray()
+        assert np.array_equal(dense, sparse), f"{grid}, side_d={side_d}, {label}: the two disagree"
+    #  a point outside the domain is in no piece at all, so its row is zero rather than extrapolated
+    outside = g.interp(np.array([5.0]), np.array([0.5]))
+    assert outside.shape == (1, g.N) and not outside.any()
