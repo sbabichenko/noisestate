@@ -50,7 +50,7 @@ def test_settings_reach_the_checks_and_are_recorded():
     assert r.costs == r0.costs and all((r.maps[a] == r0.maps[a]).all() for a in r.maps)      # the checks' thresholds do not touch the numbers
     assert [so["ok"] for so in r.second_order.values()].count(False) == 1 and "NOT A MINIMUM" in r.summary()
     assert r.diagnostics.statuses["resolution"] is Status.FAILED and "UNDER-RESOLVED" in r.summary()
-    assert r.stability_report["evaluations"] <= 5 and "evaluation budget" in r.stability_report["method"]
+    assert r.stability_report.evaluations <= 5 and "evaluation budget" in r.stability_report.method
     assert [d["threshold"] for d in r.diagnostics.rows if d["name"] == "resolution"] == [1e-20]
     assert [d["threshold"] for d in r.diagnostics.rows if d["name"].startswith("second_order:")] == [0.5 * (lo + hi)] * 2
     # recorded in the payload, JSON-ready, and the engine a result rebuilds carries them

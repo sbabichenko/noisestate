@@ -24,7 +24,7 @@ def test_evaluation_budget_returns_the_best_iterate_unconverged():
     assert res.solve_kw["max_evaluations"] == 3 and np.isfinite(res.costs["player1"])
     with pytest.raises(ns.ConvergenceError):
         res.require_converged()
-    assert res.refine()["converged"]                                     # the bound is this solve's, not the refinement's
+    assert res.refine().converged                                     # the bound is this solve's, not the refinement's
     # the budget counts the polish as well, and the best iterate comes back, not the last
     d = ns.read_yaml(CH3); d["params"]["p1"] = d["params"]["p2"] = 1e200        # Anderson stalls at 2.6e-7, then a long polish
     with warnings.catch_warnings():
@@ -136,10 +136,10 @@ def test_stability_budget_bounds_the_best_response_rounds(monkeypatch):
     res = ns.solve(_ch3()).require_converged()
     monkeypatch.setattr(ns.Result, "STABILITY_MAX_EVALUATIONS", 5)
     st = res.stability()
-    assert st["evaluations"] <= 5 and "evaluation budget" in st["method"] and 0 < st["radius"] < 1 and "power iteration" in res.summary()
+    assert st.evaluations <= 5 and "evaluation budget" in st.method and 0 < st.radius < 1 and "power iteration" in res.summary()
     monkeypatch.setattr(ns.Result, "STABILITY_MAX_EVALUATIONS", 200)
     full = res.stability()
-    assert full["method"] == "arnoldi" and full["evaluations"] < 200 and abs(full["radius"] - st["radius"]) < 0.1
+    assert full.method == "arnoldi" and full.evaluations < 200 and abs(full.radius - st.radius) < 0.1
 
 
 def test_cli_and_sweep_forward_the_bounds(tmp_path, capsys):

@@ -43,7 +43,7 @@ def test_one_agent_delayed_observation_costs_more_and_passes_second_order():
             "horizon": {"kind": "stationary", "window": 6.0}, "numerics": {"nodes": 12}}
     r = ns.solve(base).require_converged(); base["agents"]["a"]["signals"]["y"]["delay"] = 0.0; r0 = ns.solve(base).require_converged()
     assert r.costs["a"] > r0.costs["a"] and r.second_order["a"]["ok"]
-    assert r.stability()["radius"] == 0.0 and "stable" in r.summary()        # one agent: radius 0, not NaN
+    assert r.stability().radius == 0.0 and "stable" in r.summary()        # one agent: radius 0, not NaN
 
 
 def test_cell_engine_dense_branch_with_delays():
@@ -51,14 +51,14 @@ def test_cell_engine_dense_branch_with_delays():
     r = ns.solve(d).require_converged()
     assert r.diagnostics.statuses["resolution"] is Status.UNSUPPORTED          # the cell engine cannot compute it
     assert r.to_dict()["assessment"]["statuses"]["resolution"] == "unsupported"
-    r.refine(); assert r.refinement["nodes"] == 32                             # doubled: lags stay aligned
+    r.refine(); assert r.refinement.nodes == 32                             # doubled: lags stay aligned
 
 
 # ---------------------------------------------------------------- guards compare like with like
 def test_refine_and_stability_rebuild_the_same_solver():
     kb = os.path.join(EX, "ch4_kyle_back.yaml")
     r = ns.solve(kb, naive_observers={"trader1": ["market_maker"]}, refine=True)
-    assert r.refinement["cost_change"] < 1e-4                                 # not the naive-vs-full gap (1.1)
+    assert r.refinement.cost_change < 1e-4                                 # not the naive-vs-full gap (1.1)
     assert r.solver_class is StationarySolver and r.solver_kw["naive_observers"]
 
 
@@ -70,10 +70,10 @@ def test_model_is_single_sourced():
     assert m4.params["p1"] == 4.0 and abs(r4.costs["player1"] - base.costs["player1"]) > 1e-4
     fresh = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); fresh["params"]["p1"] = 4.0
     assert abs(r4.costs["player1"] - ns.solve(fresh).costs["player1"]) < 1e-12   # the same model as from a file
-    r4.refine(); assert r4.refinement["cost_change"] < 1e-8                    # refine compares like with like
+    r4.refine(); assert r4.refinement.cost_change < 1e-8                    # refine compares like with like
     m.horizon.nodes = 30                                                       # horizon fields are read live
     r = ns.solve(m); assert r.compiled.N == 30 and m.to_dict()["numerics"]["nodes"] == 30
-    r.refine(); assert r.refinement["nodes"] == 45
+    r.refine(); assert r.refinement.nodes == 45
     assert ns.solve(m.with_numerics(nodes=12)).compiled.N == 12
     with pytest.raises(ValueError, match="not parameters"):
         m.with_params(zzz=1.0)
@@ -88,7 +88,7 @@ def test_numeric_export_is_loadable_and_equivalent():
     assert abs(a.costs["player1"] - b.costs["player1"]) < 1e-12
     # a Model built directly from the dataclasses (no source) refines and sweeps
     direct = ns.Model(name="d", channels=m.channels, states=m.states, agents=m.agents, horizon=m.horizon, params=dict(m.params))
-    assert ns.solve(direct, refine=True).refinement["resolved"]
+    assert ns.solve(direct, refine=True).refinement.resolved
 
 
 def test_window_tail_ignores_random_walk_states_and_flags_the_undiscounted_kyle_back():
@@ -307,12 +307,12 @@ def test_jump_flag_is_quiet_on_a_geometric_sweep():
 def test_refine_on_cells_reports_without_a_verdict():
     d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {}).update(nodes=12, engine="cells")
     r = ns.solve(d); r.refine()
-    assert r.refinement["resolved"] is None and "NOT RESOLVED" not in r.summary() and r.refinement["nodes"] == 24
+    assert r.refinement.resolved is None and "NOT RESOLVED" not in r.summary() and r.refinement.nodes == 24
 
 
 def test_second_order_and_stability_report_their_method():
     r = ns.solve(_ch3(), stability=True)
-    assert all(v["converged"] for v in r.second_order.values()) and r.stability_report["method"] == "arnoldi"
+    assert all(v["converged"] for v in r.second_order.values()) and r.stability_report.method == "arnoldi"
     assert r.to_dict()["stability"]["method"] == "arnoldi"
 
 
@@ -337,4 +337,4 @@ def test_coarse_start_reaches_the_same_equilibrium_with_fewer_fine_evaluations()
         assert warm.evaluations < cold.evaluations and "coarse start" in warm.message
         assert max(np.abs(cold.maps[k] - warm.maps[k]).max() for k in cold.maps) < 1e-7
     r = ns.solve(os.path.join(EX, "ch3_two_player.yaml")); r.refine()
-    assert r.refinement["resolved"]                                            # refine warm-starts from this result
+    assert r.refinement.resolved                                            # refine warm-starts from this result

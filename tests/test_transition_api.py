@@ -210,15 +210,15 @@ def test_settle_march_finds_the_window_and_equals_the_explicit_solve(regime, mar
     res = marched; m = regime["m"]; old = regime["old"]
     assert res.kind == "transition" and res.march_stop == "settled" and res.extra["window"] == 9.0 and res.march_settle == 1e-4
     rows = res.march
-    assert [r["T"] for r in rows] == [0.0, 3.0, 6.0, 9.0] and rows[0].evaluations == 0
-    assert all(r["monitor"] == "[T - L, T]" for r in rows[1:])
-    assert 0.5 < max(rows[0]["gap"].values()) < 0.7
-    gaps = [max(r["gap"].values()) for r in rows[1:]]
+    assert [r.T for r in rows] == [0.0, 3.0, 6.0, 9.0] and rows[0].evaluations == 0
+    assert all(r.monitor == "[T - L, T]" for r in rows[1:])
+    assert 0.5 < max(rows[0].gap.values()) < 0.7
+    gaps = [max(r.gap.values()) for r in rows[1:]]
     assert 0.5 < gaps[0] < 0.7 and 5e-4 < gaps[1] < 2e-3 and 2e-7 < gaps[2] < 3e-6
     factors = [gaps[0] / gaps[1], gaps[1] / gaps[2]]
     assert 300 < factors[0] < 1500 and 300 < factors[1] < 3000, factors
-    assert rows[1].evaluations > 2 * rows[2].evaluations >= rows[3].evaluations and 1 <= rows[3]["polish"] <= 3
-    assert [r["unknowns"] for r in rows] == [0, 576, 864, 576]
+    assert rows[1].evaluations > 2 * rows[2].evaluations >= rows[3].evaluations and 1 <= rows[3].polish <= 3
+    assert [r.unknowns for r in rows] == [0, 576, 864, 576]
     assert res.settled < 1e-4 and all(r["ok"] for r in res.diagnostics.rows if r["name"] == "settled")
     assert 0.25 < gaps[2] / res.settled < 4
     # the explicit solve at the same T, grid and closure
@@ -243,7 +243,7 @@ def test_settle_march_equals_the_explicit_solve_at_a_tight_tol(regime):
     res = ns.transition(old, new, settle=1e-4, numerics={"nodes": 12}, tol=tol)
     ex = ns.transition(old, new, T=res.extra["window"], numerics={"nodes": 12}, continuation=res.continuation, tol=tol)
     assert max(np.abs(ex.maps[k] - res.maps[k]).max() / np.abs(res.maps[k]).max() for k in res.maps) < 1e-10
-    assert 2 <= res.march[-1]["polish"] <= 8 and "polish" not in res.march[-2]
+    assert 2 <= res.march[-1].polish <= 8 and res.march[-2].polish is None   # only the last row is polished
 
 
 def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
@@ -263,17 +263,17 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     m = regime["m"]; old = regime["old"]; new = m.with_params(p1=10.0)
     same = ns.transition(old, m, settle=1e-4, numerics={"nodes": 12})
     assert same.march_stop == "settled at T = 0" and same.extra["window"] == 0.0 and len(same.march) == 1 and same.evaluations == 0
-    assert max(same.march[0]["gap"].values()) < 1e-4 and same.settled == 0.0 and same.march_floor is None and same.converged
+    assert max(same.march[0].gap.values()) < 1e-4 and same.settled == 0.0 and same.march_floor is None and same.converged
     assert all(abs(same.excess_costs[a]) < 1e-6 for a in same.costs) and same.to_dict()["window"] == 0.0
     assert all(np.array_equal(same.maps[a][:, :, :same.compiled.N], same.compiled.frozen[a]) for a in same.maps)
     same_u = ns.transition(old, m, settle=1e-4, step=1.0, numerics={"nodes": 8, "unit": 1.0})
     assert same_u.march_stop == "settled at T = 0" and same_u.extra["window"] == 0.0 and same_u.evaluations == 0 and same_u.compiled.T == 1.0
     small = ns.transition(old, new, settle=5e-2, numerics={"nodes": 6})
-    assert [r["T"] for r in small.march] == [0.0, 3.0, 6.0] and small.march_stop == "settled" and small.extra["window"] == 6.0
-    assert 0.5 < max(small.march[1]["gap"].values()) < 0.7 and 2e-3 < max(small.march[2]["gap"].values()) < 5e-3
-    assert small.march[1]["evaluations"] > small.march[2]["evaluations"] and all(r["monitor"] == "[T - L, T]" for r in small.march[1:])
+    assert [r.T for r in small.march] == [0.0, 3.0, 6.0] and small.march_stop == "settled" and small.extra["window"] == 6.0
+    assert 0.5 < max(small.march[1].gap.values()) < 0.7 and 2e-3 < max(small.march[2].gap.values()) < 5e-3
+    assert small.march[1].evaluations > small.march[2].evaluations and all(r.monitor == "[T - L, T]" for r in small.march[1:])
     assert 2e-2 < max(small.march_floor.values()) < 5e-2 and small.extra["settle_floor"] == small.march_floor
-    assert [r["unknowns"] for r in small.march] == [0, 144, 216]
+    assert [r.unknowns for r in small.march] == [0, 144, 216]
     ex6 = ns.transition(old, new, T=6.0, numerics={"nodes": 6}, continuation=small.continuation)
     assert max(np.abs(ex6.maps[k] - small.maps[k]).max() / np.abs(small.maps[k]).max() for k in small.maps) < 1e-6
     fl = ns.transition(old, new, settle=1e-4, numerics={"nodes": 8})
@@ -282,7 +282,7 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     row = next(r for r in fl.diagnostics.rows if r["name"] == "settle floor")
     assert not row["ok"] and "nothing was marched" in row["flag"] and row["advice"] == "raise numerics.nodes"
     cap = ns.transition(old, new, settle=3e-3, max_window=1, numerics={"nodes": 8})
-    assert cap.march_stop == "max_window" and cap.extra["window"] == 3.0 and cap.settled > 1e-4 and [r["T"] for r in cap.march] == [0.0, 3.0]
+    assert cap.march_stop == "max_window" and cap.extra["window"] == 3.0 and cap.settled > 1e-4 and [r.T for r in cap.march] == [0.0, 3.0]
     row = next(r for r in cap.diagnostics.rows if r["name"] == "settled")
     assert not row["ok"] and "stopped at max_window" in row["flag"] and row["advice"] == "raise max_window"
     assert "TRANSITION NOT SETTLED" in cap.summary() or not cap.diagnostics.assess().accepted
@@ -342,10 +342,10 @@ def test_settle_march_by_unit_steps(regime):
     the unit-cut strips below the window are dear, which is why the default is a window."""
     old = regime["old"]; new = regime["m"].with_params(p1=10.0)
     units = ns.transition(old, new, settle=0.5, max_window=1, step=1.0, numerics={"nodes": 6, "unit": 1.0})
-    assert [r["T"] for r in units.march] == [0.0, 1.0, 2.0, 3.0] and units.march_stop == "max_window"
-    assert all(0.5 < max(r["gap"].values()) < 0.7 for r in units.march)
-    assert units.march[0]["monitor"] == "[0, 1] from the stationary rules"
-    assert [r["T"] for r in ns.transition(old, new, settle=0.5, max_window=1, numerics={"nodes": 6, "unit": 1.0}).march] == [0.0, 3.0]
+    assert [r.T for r in units.march] == [0.0, 1.0, 2.0, 3.0] and units.march_stop == "max_window"
+    assert all(0.5 < max(r.gap.values()) < 0.7 for r in units.march)
+    assert units.march[0].monitor == "[0, 1] from the stationary rules"
+    assert [r.T for r in ns.transition(old, new, settle=0.5, max_window=1, numerics={"nodes": 6, "unit": 1.0}).march] == [0.0, 3.0]
 
 
 def test_excess_cost_tail_and_the_floor_stop(regime):
@@ -373,12 +373,12 @@ def test_excess_cost_tail_and_the_floor_stop(regime):
     small = ns.transition(old, new, settle=5e-2, numerics={"nodes": 6}, continuation=ex.continuation)
     assert small.excess_tail["source"] == "march gaps" and "with the tail past T" in small.summary()
     for a in small.excess_costs:
-        r = small.march[2]["gap"][a] / small.march[1]["gap"][a]
+        r = small.march[2].gap[a] / small.march[1].gap[a]
         assert 0 < r < 0.1 and abs(small.excess_tail["factor"][a] - r) < 1e-15
         assert abs(small.excess_costs_tail[a] - small.excess_windows[a][0] * r / (1 - r)) < 1e-15
         assert abs(small.excess_costs_total[a] - small.excess_costs[a] - small.excess_costs_tail[a]) < 1e-15
     fl = ns.transition(old, new, settle=1e-6, numerics={"nodes": 8})
-    assert fl.march_stop == "floor" and fl.extra["window"] == 0.0 and [r["T"] for r in fl.march] == [0.0] and fl.settled == 0.0
+    assert fl.march_stop == "floor" and fl.extra["window"] == 0.0 and [r.T for r in fl.march] == [0.0] and fl.settled == 0.0
     assert 2e-3 < max(fl.march_floor.values()) < 4e-3 and fl.evaluations == 0
     row = next(r for r in fl.diagnostics.rows if r["name"] == "settle floor")
     assert row["ok"] is False and "SETTLE BELOW THE GRID'S FLOOR" in row["flag"] and row["advice"] == "raise numerics.nodes" and "8 nodes" in row["flag"]

@@ -2,13 +2,17 @@
 
     from noisestate import engines
     S = engines.stationary(model, settings={"anderson_m": 10}); res = S.solve(tol=1e-12)
-    S, numerics = engines.build(model, Numerics(nodes=24), past=old)
+    S = engines.solver(model, Numerics(nodes=24), past=old)
 
 `stationary` is the age-grid engine (StationarySolver), `spectral` the piecewise-spectral triangle
 (SpectralFiniteSolver: finite horizons and transitions), `cells` the first-order uniform-cell cross-check
-(FiniteSolver).  `build(model, numerics, ...)` resolves the numerics against the model (the engine from the
-horizon kind unless given, the model's own grid fields unless overridden), lays them on the model so the
-engine reads them, and constructs the engine with the options that belong to it."""
+(FiniteSolver).
+
+THE PUBLIC SURFACE IS THE THREE ENGINES AND `solver`.  `solver(model, numerics, ...)` resolves the
+numerics against the model (the engine from the horizon kind unless given, the model's own grid
+fields unless overridden), lays them on the model so the engine reads them, and returns the engine.
+`_build` beneath it also returns the RESOLVED NUMERICS, which the solve path records and nobody
+constructing an engine by hand wants; it is internal machinery and named accordingly."""
 from __future__ import annotations
 
 from typing import Optional, Tuple
@@ -21,7 +25,7 @@ from .finite import FiniteSolver as cells
 
 ENGINE_CLASSES = {"stationary": stationary, "spectral": spectral, "cells": cells}
 
-__all__ = ["stationary", "spectral", "cells", "ENGINE_CLASSES", "solver", "build", "default_start"]
+__all__ = ["stationary", "spectral", "cells", "ENGINE_CLASSES", "solver", "default_start"]
 
 
 def default_start(S, start_policy=None) -> str:
@@ -32,7 +36,7 @@ def default_start(S, start_policy=None) -> str:
     return "stationary" if getattr(getattr(S, "c", None), "cont", None) is not None else "zero"
 
 
-def build(model: Model, numerics=None, *, verbose: bool = False, naive_observers: Optional[dict] = None,
+def _build(model: Model, numerics=None, *, verbose: bool = False, naive_observers: Optional[dict] = None,
           past=None, continuation=None) -> Tuple[object, Numerics]:
     """The engine for `model` under `numerics` (a Numerics, a dict of its fields or None), constructed; and
     the resolved Numerics it runs with.  naive_observers belongs to the stationary engine, past and
@@ -67,12 +71,12 @@ def build(model: Model, numerics=None, *, verbose: bool = False, naive_observers
 def solver(model: Model, numerics=None, **kw):
     """The engine `model`'s numerics select, constructed and returned.
 
-    THE PUBLIC FACTORY.  build() below it is the internal two-value form -- it returns the engine
-    AND the resolved Numerics, which the solve path needs and a caller constructing an engine by
-    hand does not.  The specification named build() for both; they are different functions, and
-    this is the one to reach for.  `settings` is accepted as an alias of numerics.settings.
+    THE PUBLIC FACTORY, and the only one.  _build() beneath it returns the engine AND the resolved
+    Numerics -- the solve path records those, and a caller constructing an engine by hand does not
+    want them -- so it is internal.  The specification named one function where there are two;
+    this is the public half.  `settings` is accepted as an alias of numerics.settings.
     """
     if "settings" in kw:
         numerics = Numerics.of(numerics).merged(Numerics(settings=kw.pop("settings")))
-    return build(model, numerics, **kw)[0]
+    return _build(model, numerics, **kw)[0]
 

@@ -51,7 +51,7 @@ def test_solve_takes_a_numerics_and_names_the_field_of_a_stray_keyword():
         ns.solve(m, past=r)
     r3 = ns.solve(m.with_numerics(nodes=8))
     assert r3.compiled.N == 8 and r3.numerics == r3.model.numerics.resolved("stationary").merged(Numerics(tol=1e-10, damping=0.6, max_newton=60, variable="actions"))
-    fine = r3.refine(); assert fine["nodes"] == 12 and r3.refinement is fine
+    fine = r3.refine(); assert fine.nodes == 12 and r3.refinement is fine
 
 
 def test_signal_transforms_are_immutable_validated_and_serialisable():
@@ -170,7 +170,9 @@ def test_engines_namespace_and_the_cell_engine_by_numerics():
     assert engines.stationary is engines.stationary and engines.spectral is engines.spectral and engines.cells is engines.cells
     assert set(engines.ENGINE_CLASSES) == {"stationary", "spectral", "cells"}
     m = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml"))
-    S, num = engines.build(m, {"engine": "cells", "nodes": 8})   # the two-value internal form
+    #  the public factory returns the engine; the resolved Numerics come off the engine's model
+    S = engines.solver(m, {"engine": "cells", "nodes": 8})
+    num = S.model.numerics
     assert isinstance(S, engines.cells) and num.engine == "cells" and S.solve().kind == "finite_cells"
     with pytest.raises(TypeError, match="cell engine"):
         engines.solver(m, {"engine": "cells"}, past=[])

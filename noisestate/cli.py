@@ -205,7 +205,7 @@ def _run(p, args) -> int:
             res = transition(old, args.new, settle=args.settle, step=args.step, max_window=args.max_window,
                              numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
             print(f"settle march: window {res.extra['window']:g} ({res.march_stop}); " +
-                  ", ".join(f"T = {r['T']:g}: {max(r['gap'].values()):.1e} in {r['evaluations']} evaluations" for r in res.march))
+                  ", ".join(f"T = {r.T:g}: {max(r.gap.values()):.1e} in {r.evaluations} evaluations" for r in res.march))
         else:
             res = transition(old, args.new, T=args.window, numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
         print(res.summary(diagnostics=False))

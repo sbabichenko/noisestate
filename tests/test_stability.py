@@ -13,7 +13,7 @@ def test_resolution_flag_and_stability_on_the_two_firm_market():
     d = build(N=2, L=6.0, nodes=14, unit_range=3.0).to_dict(); d["ties"] = []
     ra = ns.solve(ns.Model.from_dict(d), tol=1e-8).require_converged(); rm = ns.solve(ns.Model.from_dict(d), {"variable": "maps"}, tol=1e-8).require_converged()
     assert abs(ra.costs["firm0"] - rm.costs["firm0"]) < 1e-3
-    st = rm.stability(); assert st["fixed_point_residual"] < 1e-6 and st["radius"] > 0 and "stability" in rm.to_dict()
+    st = rm.stability(); assert st.fixed_point_residual < 1e-6 and st.radius > 0 and "stability" in rm.to_dict()
     # the two-firm market's negative curvature is the window's truncation of the lagged loss terms (README): the
     # same direction is positive on a window longer by two lags, so the check passes and reports the edge
     so = rm.second_order["firm0"]; assert so["ok"] and so["edge"] and so["min"] < -1e-4 and so["embedded"] > 0 and "NOT A MINIMUM" not in rm.summary()
@@ -22,10 +22,10 @@ def test_resolution_flag_and_stability_on_the_two_firm_market():
 
 def test_stability_of_the_chapter_3_game_and_finite_engine():
     r = ns.solve(example_path("ch3_two_player")).require_converged(); s = r.stability()
-    assert s["stable"] and s["radius"] < 1.0 and s["fixed_point_residual"] < 1e-8
+    assert s.stable and s.radius < 1.0 and s.fixed_point_residual < 1e-8
     df = example_dict("ch1_two_player_finite"); df.setdefault("numerics", {})["nodes"] = 6
     rf = ns.solve(ns.Model.from_dict(df)).require_converged(); sf = rf.stability()
-    assert sf["stable"] and sf["radius"] < 1.0
+    assert sf.stable and sf.radius < 1.0
 
 
 def test_a_shrinking_negative_curvature_is_the_grid_not_a_saddle():
@@ -38,7 +38,7 @@ def test_a_shrinking_negative_curvature_is_the_grid_not_a_saddle():
     assert not r.second_order["trader1"]["ok"] and r.second_order["trader1"]["min"] < -1e-3
     assert any("NOT A MINIMUM" in f for f in r.diagnostics.flags)
     rep = r.refine()
-    cv = rep["second_order"]["trader1"]
+    cv = rep.curvature["trader1"]
     assert cv["shrinking"] and cv["min"] < cv["fine_min"] < 0        # less negative on the finer grid
     assert not any("NOT A MINIMUM" in f for f in r.diagnostics.flags)  # the verdict is overturned
     assert any(d["name"] == "second_order_grid:trader1" and d["ok"] for d in r.diagnostics.rows)
@@ -77,13 +77,13 @@ def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
     wider = base.with_stationary(18.0).with_numerics(nodes=64)
     warm = ns.solve(wider, start_from=engines.stationary(wider).interpolate_maps(good)).require_ok()
     assert abs(warm.costs["player1"] - 0.427295) < 1e-5
-    assert warm.stability()["radius"] < 0.9 < 1.0 < spurious.stability()["radius"]
+    assert warm.stability().radius < 0.9 < 1.0 < spurious.stability().radius
 
     # the radius is computed unasked where it discriminates: the window guard failing is the only place
     # it is worth its best responses, and there it separates a branch from a truncation
     report = lambda r: getattr(r, "stability_report", None)     # only set once stability() has run
-    assert report(spurious) is not None and report(spurious)["radius"] > 1.0
+    assert report(spurious) is not None and report(spurious).radius > 1.0
     assert "UNSTABLE" in spurious.summary() and "WINDOW TOO SHORT" in spurious.summary()
     assert report(good) is None                                 # a window that passes pays nothing
     shipped = ns.solve(example_path("ch3_two_player"))           # window 3: flagged, but a truncation
-    assert report(shipped) is not None and report(shipped)["radius"] < 1.0
+    assert report(shipped) is not None and report(shipped).radius < 1.0

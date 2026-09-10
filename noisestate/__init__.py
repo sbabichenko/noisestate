@@ -182,7 +182,7 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
         if diagnostics:
             _radius_when_the_window_fails(res, stability)
         return res
-    S, num = engines.build(model, numerics, verbose=verbose, naive_observers=naive_observers, past=past, continuation=continuation)
+    S, num = engines._build(model, numerics, verbose=verbose, naive_observers=naive_observers, past=past, continuation=continuation)
     kw = num.solve_kw()
     if tol is not None:
         kw["tol"] = tol

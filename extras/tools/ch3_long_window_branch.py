@@ -61,8 +61,8 @@ def main(out=None):
         m18 = ns.load(MODEL).with_stationary(18.0).with_numerics(nodes=NODES)
         r = ns.solve(m18, **kw)
         st = r.stability()
-        print(f"  L=18, {label:30s} cost {r.costs['player1']:8.4f}  spectral radius {st['radius']:.4f}"
-              f" ({'stable' if st['stable'] else 'UNSTABLE'})")
+        print(f"  L=18, {label:30s} cost {r.costs['player1']:8.4f}  spectral radius {st.radius:.4f}"
+              f" ({'stable' if st.stable else 'UNSTABLE'})")
     if out is None:
         return 0
     import matplotlib

@@ -411,7 +411,7 @@ class Result:
             else:
                 # a refinement that shows the curvature shrinking towards zero overturns the verdict, as the
                 # window's embedded curvature does: the direction is the quadrature's, not a strategy
-                grid = ((self.refinement or {}).get("second_order") or {}).get(a)
+                grid = (self.refinement.curvature if self.refinement else {}).get(a)
                 shrinks = bool(grid and grid["shrinking"])
                 row(f"second_order:{a}", so["min"], -self.settings.second_order_tol if self.solver_class is not None else None,
                     so["ok"] or shrinks,
@@ -424,11 +424,11 @@ class Result:
                         "a wider window moves it, a quadratic term in the control's current value removes it")
         if self.refinement:
             f = self.refinement
-            row("refinement", {"cost_change": f["cost_change"], "kernel_change": f["kernel_change"], "nodes": f["nodes"]},
-                {"cost_change": self.REFINE_COST_TOL, "kernel_change": self.REFINE_KERNEL_TOL}, f["resolved"],
-                f"refinement to {f['nodes']} nodes moves costs by {f['cost_change']:.1e} and kernels by {f['kernel_change']:.1e}"
-                + ("" if f["resolved"] in (True, None) else " (NOT RESOLVED)"), "raise horizon.nodes")
-            for a, cv in (f.get("second_order") or {}).items():
+            row("refinement", {"cost_change": f.cost_change, "kernel_change": f.kernel_change, "nodes": f.nodes},
+                {"cost_change": self.REFINE_COST_TOL, "kernel_change": self.REFINE_KERNEL_TOL}, f.resolved,
+                f"refinement to {f.nodes} nodes moves costs by {f.cost_change:.1e} and kernels by {f.kernel_change:.1e}"
+                + ("" if f.resolved in (True, None) else " (NOT RESOLVED)"), "raise horizon.nodes")
+            for a, cv in (f.curvature or {}).items():
                 row(f"second_order_grid:{a}", cv["fine_min"], None, bool(cv["shrinking"]),
                     (f"the negative curvature of {a!r} shrinks with the grid ({cv['min']:.1e} here, "
                      f"{cv['fine_min']:.1e} at {cv['nodes']} nodes): the quadrature, not a saddle"
@@ -439,9 +439,9 @@ class Result:
                     "sign between neighbouring age nodes is the quadrature's, not a strategy")
         st = getattr(self, "stability_report", None)
         if st:
-            row("stability", float(st["radius"]), 1.0, bool(st["stable"]),
-                f"best-response dynamics {'stable' if st['stable'] else 'UNSTABLE'} (spectral radius {st['radius']:.3f}"
-                + (", untied game" if st["untied"] else "") + (f", by {st['method']}" if st["method"] != "arnoldi" else "") + ")",
+            row("stability", float(st.radius), 1.0, bool(st.stable),
+                f"best-response dynamics {'stable' if st.stable else 'UNSTABLE'} (spectral radius {st.radius:.3f}"
+                + (", untied game" if st.untied else "") + (f", by {st.method}" if st.method != "arnoldi" else "") + ")",
                 "naive best-response adjustment would not find this equilibrium")
         return rows
 
@@ -685,7 +685,7 @@ class Result:
         out["second_order"] = {a: dict(so) for a, so in self.second_order.items()}
         out["notes"] = self.model.notes
         if self.refinement:
-            out["refinement"] = self.refinement
+            out["refinement"] = self.refinement.to_dict()      # the payload is data, not the object
         tail = getattr(self, "window_tail", None)
         if tail is not None:
             out["window_tail"] = float(tail)
@@ -963,11 +963,11 @@ class TriangleResult(Result):
                 f"from the stationary map the buffer is frozen at, against settled_tol {self.SETTLED_TOL:g}: the closed-loop "
                 "decay over a unit of t, not the grid's floor)"
                 + (f"; the settle march stopped at max_window, T = {self.compiled.T:g}, with the gap at "
-                   f"{max(self.march[-1]['gap'].values()):.1e} against settle {self.march_settle:g}: raise max_window" if stopped else ""),
+                   f"{max(self.march[-1].gap.values()):.1e} against settle {self.march_settle:g}: raise max_window" if stopped else ""),
                 "raise max_window" if stopped else "raise horizon.window")
             if getattr(self, "march_stop", None) == "floor" and self.march:
                 fl = max(self.march_floor.values()) if self.march_floor else float("nan")
-                g1 = max(self.march[-1]["gap"].values())
+                g1 = max(self.march[-1].gap.values())
                 where = (f"the settle march stopped at T = {self.compiled.T:g} with the gap at {g1:.1e}, within a factor {2:g} of the floor"
                          if len(self.march) > 1 else "nothing was marched")
                 row("settle floor", float(fl), float(self.march_settle), False,

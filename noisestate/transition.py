@@ -86,17 +86,6 @@ class MarchPoint:
             out["polish"] = self.polish
         return out
 
-    #  the march rows are read as data by the CLI and the tests
-    def __getitem__(self, key):
-        return self.to_dict()[key]
-
-    def get(self, key, default=None):
-        return self.to_dict().get(key, default)
-
-    def __contains__(self, key):
-        #  without this, `key in obj` falls back to iterating __getitem__ with 0, 1, 2 ...
-        return key in self.to_dict()
-
 
 def _transition_model(old, new, T: float, num: Numerics, continuation):
     """(model, past, continuation): the new model rewritten to horizon kind transition on [0, T] with the past's
@@ -192,7 +181,7 @@ def transition_gap(old, new, numerics=None, continuation="stationary") -> Dict[s
     u = _unit_of(model, past.window)
     if abs(u - past.window) > 1e-12:
         model = model._patch_horizon(T=float(u))          # the march is over the TERMINAL TIME
-    S = engines.build(model, None, past=past, continuation=continuation)[0]
+    S = engines.solver(model, None, past=past, continuation=continuation)
     return gap_pass(S, S.stationary_start(), 0.0, S.c.T)
 
 
@@ -202,7 +191,7 @@ def settle_floor(model: Model, cont, numerics=None) -> Dict[str, float]:
     continuation as its own past, the same-model gap (transition_gap of the new model as its own regime).  A
     settle tolerance below it is never met; a gap within FLOOR_FACTOR of it is the floor.  One strip build and
     one best response per agent."""
-    S = engines.build(model, numerics, past=Past.of(cont), continuation=cont)[0]
+    S = engines.solver(model, numerics, past=Past.of(cont), continuation=cont)
     return gap_pass(S, S.stationary_start(), 0.0, S.c.T)
 
 
@@ -278,7 +267,7 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
         return int(sum(S._identified(a).sum() * len(a.controls) for a in S.model.agents))
     rows = []; prev = None; T = snap(u) if step is not None else snap(L); stop = None; floor = None
     while True:
-        S, num = engines.build(make_model(T), numerics, verbose=verbose, past=past, continuation=continuation)
+        S, num = engines._build(make_model(T), numerics, verbose=verbose, past=past, continuation=continuation)
         continuation = S.c.cont                                     # solved once, shared by every step
         kw = {**num.solve_kw(), **solve_kw}
         diagnostics = kw.pop("diagnostics", True)                   # run once, on the final strip
@@ -313,7 +302,7 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
                                seconds=time.time() - t0, monitor="[T - L, T]", unknowns=unknowns(S)))
         if verbose:
             print(f"settle march: T = {T:g}: gap {max(gap.values()):.2e} on [T - L, T], {res.evaluations} evaluations, "
-                  f"{rows[-1]['unknowns']} unknowns, {time.time() - t0:.1f}s", flush=True)
+                  f"{rows[-1].unknowns} unknowns, {time.time() - t0:.1f}s", flush=True)
         if max(gap.values()) <= settle:
             stop = "settled"; break
         if max(gap.values()) <= FLOOR_FACTOR * max(floor.values()):
@@ -344,8 +333,8 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
     res.march_settle = float(settle); res.march_floor = floor
     # the excess cost's tail from the march's own gap sequence: the ratio of the last two gaps, a window apart (at
     # the floor the gaps no longer measure the transient: the loss path's own decay, already in the result, stays)
-    if stop != "floor" and len(rows) >= 3 and abs((rows[-1]["T"] - rows[-2]["T"]) - L) <= eps:
-        factor = {a: rows[-1]["gap"][a] / rows[-2]["gap"][a] for a in rows[-1]["gap"] if rows[-2]["gap"][a] > 0}
+    if stop != "floor" and len(rows) >= 3 and abs((rows[-1].T - rows[-2].T) - L) <= eps:
+        factor = {a: rows[-1].gap[a] / rows[-2].gap[a] for a in rows[-1].gap if rows[-2].gap[a] > 0}
         S.excess_tail(res, factor=factor, source="march gaps")
     return res
 

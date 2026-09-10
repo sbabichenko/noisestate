@@ -227,17 +227,6 @@ class Stability:
                 "adjusted_radius_bound": self.adjusted_radius_bound, "adjustment": self.adjustment,
                 "untied": self.untied, "evaluations": self.evaluations}
 
-    #  dict access, so code written against the old report keeps working within this package
-    def __getitem__(self, key):
-        return self.to_dict()[key]
-
-    def get(self, key, default=None):
-        return self.to_dict().get(key, default)
-
-    def __contains__(self, key):
-        #  without this, `key in obj` falls back to iterating __getitem__ with 0, 1, 2 ...
-        return key in self.to_dict()
-
 
 #  D4 is not settled: the norm and scaling that make a residual comparable across grids and model
 #  scales are numerical work, not API work.  The FIELDS are specified and populated from the start
@@ -336,14 +325,3 @@ class Refinement:
         if self.curvature:
             out["second_order"] = {k: dict(v) for k, v in self.curvature.items()}
         return out
-
-    #  dict access for the payload and the diagnostic rows, which read it as data
-    def __getitem__(self, key):
-        return self.to_dict()[key]
-
-    def get(self, key, default=None):
-        return self.to_dict().get(key, default)
-
-    def __contains__(self, key):
-        #  without this, `key in obj` falls back to iterating __getitem__ with 0, 1, 2 ...
-        return key in self.to_dict()
