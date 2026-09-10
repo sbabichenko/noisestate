@@ -19,7 +19,7 @@ import numpy as np
 
 
 class AttrDict(dict):
-    """A dict whose keys are also attributes (res.status.ok, a sweep row's point.value)."""
+    """A dict whose keys are also attributes (res.extra.window_tail, a diagnostic row's .flag)."""
 
     def __getattr__(self, k):
         try:

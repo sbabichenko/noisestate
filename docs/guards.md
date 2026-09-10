@@ -1,9 +1,18 @@
 # Guards against misleading results
 
-A converged solve is a solution of the discretised, truncated model.  `res.diagnostic_rows()` lists every check as a
-row `{name, value, threshold, ok, flag, advice}` (ok is None where a check gives no verdict); `res.status` is
-`{"ok", "flags", "rows"}`, `summary()` prints the rows that fail and `to_dict()["diagnostics"]` carries them
-all.  The thresholds are fields of `noisestate.Settings` ([settings.md](settings.md)).
+A converged solve is a solution of the discretised, truncated model.  Whether that model is close
+enough to the one you wrote is what these checks answer.
+
+`res.diagnostics.rows` lists every check as a row `{name, value, threshold, ok, flag, advice}` (`ok` is
+None where a check gives no verdict); `res.diagnostics.statuses` gives each check's status, and
+`res.diagnostics.assess(policy)` is the verdict a policy makes of them --- see "Converged is not the
+same as trustworthy" in the [README](../README.md).  `summary()` prints the rows that fail,
+`to_dict()["diagnostics"]` carries them all and `to_dict()["assessment"]` the verdict.  The thresholds
+are fields of `noisestate.Settings` ([settings.md](settings.md)).
+
+A row that fails is not the same as a check that could not run: a status of `unsupported` (the engine
+cannot compute it) or `not_applicable` (the model gives it no meaning) emits no failing row, and only
+the first of the two leaves the requirement unmet.
 
 ## The rows and their flags
 

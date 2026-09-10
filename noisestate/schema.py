@@ -200,7 +200,6 @@ def payload_schema() -> dict:
                 "representation_error": by_name({"type": "number"}),
                 "representation_parts": by_name(by_name({"type": "number"})),
                 "diagnostics": {"type": "array", "items": row},
-                "resolution_ok": {"type": ["boolean", "null"]},
                 "assessment": {"type": "object", "required": ["policy", "accepted", "statuses"],
                                "properties": {"policy": {"type": "string"}, "accepted": {"type": "boolean"},
                                               "statuses": {"type": "object", "additionalProperties": {"type": "string"}},

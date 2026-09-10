@@ -105,9 +105,9 @@ Continuation in the window is the remedy, and it is complete: solving at 12 and 
 larger window from the previous holds the cost at 0.427295 through *L* = 24, with the residual at
 3.4e-11 and the tail falling to 7.9e-12.
 
-    prev = ns.solve(m.with_horizon(window=12.0)).require_converged()
+    prev = ns.solve(m.with_stationary(12.0)).require_converged()
     for L in (15.0, 18.0, 21.0, 24.0):
-        wider = m.with_horizon(window=L)
-        prev = ns.solve(wider, init=ns.StationarySolver(wider).interpolate_maps(prev)).require_ok()
+        wider = m.with_stationary(L)
+        prev = ns.solve(wider, start_from=ns.engines.stationary(wider).interpolate_maps(prev)).require_ok()
 
 `extras/tools/ch3_long_window_branch.py` reproduces the table, the figure and the continuation.

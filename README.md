@@ -13,79 +13,154 @@ loss over causal linear strategies on its own observation history.
 ## Install
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-./run-tests                                # regression tests against the chapter solvers (takes a lock; see CONTRIBUTING.md)
+pip install .                     # from a checkout of this repository
+pip install ".[plot]"             # with matplotlib, for plot() and the CLI's --plot
 ```
 
-Python >= 3.10.  Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml; matplotlib only for plots
-(`pip install -e ".[plot]"`).  The examples and reference data live in the repository (`examples/`,
-`tests/refs/`), not in the wheel.  MIT licence.
+Python >= 3.10.  Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml.  MIT licence.  The shipped model
+files install with the package, so `ns.example(...)` below works from a plain install; the reference
+data (`tests/refs/`) lives in the repository only.
 
 ## A first solve
 
+Five steps: load a model, solve it, ask whether the answer is trustworthy, read the costs, plot a kernel.
+
 ```python
 import noisestate as ns
 
-print(ns.load("examples/ch3_two_player.yaml").describe())         # the model itself, no solve: equations, delays, losses, conventions (HTML in a notebook)
-res = ns.solve("examples/ch3_two_player.yaml")                    # the model file's own numerics
-res = ns.solve("examples/ch3_two_player.yaml", ns.Numerics(nodes=32, tol=1e-12))   # a change of resolution, not of model
+model = ns.load(ns.example("ch1_two_player_finite"))   # ns.examples() lists the seven shipped models
+model                                     # <Model 'ch1_two_player_finite' finite T=1: 1 state, 2 agents, 3 channels>
+print(model.describe())                   # the equations, delays, losses and conventions; no solve
+
+res = ns.solve(model)
+res.require_ok()                          # raises unless every required check passed -- see below
 print(res.summary())
-res.require_converged()                  # raises ConvergenceError unless converged -- convergence only, not the guards
-res.require_ok()             # check() and the guards: what to call before a number is used rather than read
-res.status["ok"]             # False while any guard fails; res.status["flags"] says which
-res.costs["player1"]         # the cost of each agent (res.cost_kind says what it is)
-res.kernel("X")              # closed-loop kernel of a state, one column per channel (the last axis); res.axes gives its coordinates
-res.strategy_kernel("D1")      # closed-loop kernel of a control
-res.maps["player1"]          # raw strategy g[u][r](b) on the agent's own signal rows
-res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"}: the first-order condition decomposed
-res.means["X"]               # the mean of a state or control: a constant here, a path on a finite horizon
-res.status                   # {"ok", "flags", "rows"}: the verdict and the failing checks
-res.numerics                 # the resolved Numerics
-res.to_dict()                # the JSON-ready payload
+
+res.costs["player1"]                      # 0.39690577  (res.cost_kind: "discounted integral over [0, T]")
+res.kernel("X", "w0").plot("kernel.png")  # the state's response to the common shock
 ```
 
-That first solve prints `WINDOW TOO SHORT`, and it is meant to: the example carries the dissertation's
-`window: 3.0`, where the state kernel is still 2.4% of its peak at the edge.  The guard is the answer to
-"is this number trustworthy", and reading it is the workflow:
+```
+ch1_two_player_finite: converged residual 5.90e-09 in 15 evaluations, 0.9s; triangle grid 1 panels,
+1 pieces x 12x12 nodes = 144 nodes on [0, 1.0], rho=0.0
+  player1: discounted cost = +0.39690577
+  player2: discounted cost = +0.39690577
+```
+
+Two agents control one state, each watching it through its own noisy signal; the solve returns their
+equilibrium strategies and what the game costs each of them.  `res.require_ok()` returned quietly, which
+is the claim that this number can be used rather than merely looked at.
+
+Three objects carry everything: a `Model` (the economics), a `Numerics` (how it is solved) and a
+`Result`.  A second argument to `solve()` changes the resolution without touching the model:
 
 ```python
-res = ns.solve(ns.load("examples/ch3_two_player.yaml").with_horizon(window=9.0).with_numerics(nodes=32))
-res.status["ok"]             # True: the tail is 5e-05 and the representation error 9e-12
-res.costs["player1"]         # 0.42729 against 0.42895 on the short window -- the truncation, not noise
+res = ns.solve(model, ns.Numerics(nodes=32, tol=1e-12))
+```
+
+## Converged is not the same as trustworthy
+
+A converged solve is an exact solution of the **discretised, truncated** model.  Whether that model is
+close enough to the one you wrote is a separate question, and it is what the checks answer.
+
+* **Convergence** is one check: did the fixed-point iteration reach its tolerance?  `res.converged`.
+* **Acceptance** is a verdict over all of them under a stated policy: `res.diagnostics.assess()`.
+
+A result can converge perfectly and still be wrong for use, because its lag window was too short or its
+grid too coarse.  That is why `require_converged()` and `require_ok()` are different calls:
+
+```python
+res.require_converged()          # ConvergenceError unless the iteration converged -- convergence only
+res.require_ok()                 # the full assessment: raises unless every required check PASSED
+```
+
+`require_ok()` is the one to put in a script before a number is used.
+
+### Reading the checks
+
+```python
+res.diagnostics.statuses         # {"converged": passed, "window": failed, "settled": not_applicable, ...}
+res.diagnostics.assess()         # an Assessment: .accepted, .blocking, .statuses, .uncomputed, .policy
+res.diagnostics.flags            # the failing checks' text, e.g. ("WINDOW TOO SHORT (...)",)
+print(res.diagnostics.summary()) # the grouped verdict the CLI prints
+```
+
+Every check reports one of six statuses, and the differences between them matter:
+
+| status | meaning |
+|---|---|
+| `passed` | ran; the model met it |
+| `failed` | ran; the model did not meet it |
+| `skipped` | this engine could have run it here; `solve(diagnostics=False)` meant it did not |
+| `unsupported` | this **engine** cannot compute it (the cell engine has no representation error) |
+| `not_applicable` | the check has no meaning for this **model** (a lag window on a plain finite horizon) |
+| `missing` | applicable, supported, was to run, produced no record |
+
+`not_applicable` and `unsupported` are never merged: the first says nothing is missing, the second says
+something is.  An engine that cannot run a check does not thereby pass it.
+
+### Policies
+
+A policy names which checks a particular use requires.  `Policy.PUBLICATION` (the default) requires all
+of them; `Policy.EXPLORATORY` requires only convergence.  A weaker standard is legitimate and has to be
+asked for by name:
+
+```python
+res.diagnostics.assess(ns.Policy.EXPLORATORY).accepted     # True while you are still exploring
+res.require_ok(ns.Policy.EXPLORATORY)
+```
+
+### When a check fails
+
+`examples/ch3_two_player.yaml` carries the dissertation's `window: 3.0`, where the state kernel is still
+2.4% of its peak at the edge of the lag window:
+
+```python
+res = ns.solve(ns.example("ch3_two_player"))
+res.converged                    # True
+res.diagnostics.assess()         # publication: NOT accepted
+                                 #   window [failed] WINDOW TOO SHORT (a kernel still moves by 2.4% of
+                                 #   its peak over the last tenth of the window: raise horizon.window)
+for b in res.diagnostics.assess().blocking:
+    b.check, b.status, b.reason  # ("window", failed, "WINDOW TOO SHORT ...")
+```
+
+The guard names the field to raise.  Raising it, on a copy of the model, settles the question:
+
+```python
+better = ns.solve(ns.load(ns.example("ch3_two_player")).with_stationary(9.0).with_numerics(nodes=32))
+better.require_ok()              # returns: the tail is 5.4e-05 and the representation error 9e-12
+better.costs["player1"]          # 0.427295 against 0.428954 on the short window -- the truncation, not noise
 ```
 
 Four of the seven shipped examples flag something, each for a reason noted in its own file: three are
-statements about the model (a non-convex best response, a representation error a small grid cannot reach)
-and one is the dissertation's window.  `res.require_converged()` does not consult the guards -- it raises only when
-the fixed point did not converge -- so read `res.status` as well.
+statements about the model (a non-convex best response, a representation error a small grid cannot
+reach) and one is the dissertation's window.  The checks themselves, with their thresholds and advice,
+are in [docs/guards.md](docs/guards.md).
 
-Three objects: a `Model` (the economics, from a file, a dict or `ModelBuilder`), a `Numerics` (how it is
-solved: `engine`, `nodes`, `unit`, `unit_range`, `breakpoints`, `continuation_nodes`, `tol`, `damping`,
-`max_newton`, `variable`, `settings`; laid over the file's own `numerics:` block) and a `Result`.  Every
-engine returns a `Result`: `res.axes` names the coordinates of `kernel()` (`{"age"}` on the stationary
-engine, `{"time", "age", "shock_time"}` node-wise on the finite triangle, `{"time", "shock_time"}` for
-the cell engine's matrices, and under `"maps"` where each signal row's map values belong), `res.times`
-and `res.paths` hold the paths of a finite horizon, `res.extra` the engine's extras.  `res.evaluations`
-counts the best-response evaluations, `res.world` is every closed-loop kernel stacked.
-
-The same model from Python, with `ModelBuilder`:
+## What a Result holds
 
 ```python
-import noisestate as ns
-
-b = ns.ModelBuilder("one_agent", a=1.0, r=0.5)
-b.channel("w", "v")
-b.state("X", drift={"X": "-a", "D": 1.0}, noise={"w": 1.0})
-b.agent("me", controls=["D"], loss=[[1.0, "X", "X"], ["r", "D", "D"]])
-b.signal("me", "y", drift={"X": 1.0}, noise={"v": 1.0})
-b.stationary(discount=0.1, window=8.0, nodes=16)
-res = ns.solve(b)
-print(res.summary())
+res.costs["player1"]         # the cost of each agent (res.cost_kind says what it is)
+res.cost_parts["player1"]    # its {"variance", "mean"} parts
+res.kernel("X")              # closed-loop kernel of a state, one column per channel; .axes, .at(), .plot()
+res.strategy_kernel("D1")    # closed-loop kernel of a control
+res.maps["player1"]          # raw strategy g[u][r](b) on the agent's own signal rows
+res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"}: the first-order condition decomposed
+res.means["X"]               # the mean of a state or control: a constant here, a path on a finite horizon
+res.axes                     # the coordinates of kernel(): {"age"} stationary, {"time","age","shock_time"}
+                             # on the finite triangle, {"time","shock_time"} for the cell engine
+res.times, res.paths         # the paths of a finite horizon
+res.numerics                 # the resolved Numerics
+res.evaluations, res.seconds, res.residual, res.message
+res.world                    # every closed-loop kernel stacked
+res.extra                    # the engine's extras
+res.summary(); res.to_dict() # the text report; the JSON-ready payload
 ```
 
-`examples/make_ch5_cycle_market.py` builds an N-firm cycle in a loop; `b.finite(T, nodes)` and
-`b.transition(T, nodes, past=..., continuation=...)` set the other horizons and `b.numerics(**fields)`
-the rest of the block.
+`res.refine()` re-solves at 1.5 times the nodes and returns a `Refinement` (`.cost_change`,
+`.kernel_change`, `.resolved`, `.fine` -- the finer `Result` itself).  `res.stability()` returns a
+`Stability` (`.radius`, `.eigenvalues`, `.verified`, `.full_response`, `.adjusted_response`).
 
 ## The model file
 
@@ -116,21 +191,45 @@ An atom is a state, a control or a definition, `name@tau` its value `tau` earlie
 linear `drift` in atoms (plus `const`), a `noise` loading on the channels and, on a finite horizon, an
 `initial` value.  A signal row has a `drift`, a `noise` and an optional `delay`.  A loss is a list of
 terms `[coef, a, b]` (quadratic) and `[coef, a]` (linear); linear terms, constant drifts and initial
-states move the means only.  `ties` make agents share one strategy; `horizon` is the economics of time
-(`stationary` with `discount` and `window`, `finite` with `window` = T, `transition` with a `past` and a
-`continuation`); `numerics` is how it is solved.  Coefficients may be expressions in the parameters.  The
-full reference, every key with its type and default, is
-[docs/model_file.md](docs/model_file.md); `noisestate schema model` prints the JSON Schema.
+states move the means only.  `ties` make agents share one strategy; `numerics` is how it is solved.
+Coefficients may be expressions in the parameters.  The full reference, every key with its type and
+default, is [docs/model_file.md](docs/model_file.md); `noisestate schema model` prints the JSON Schema.
 
-## Models as equations
+### The horizon: two different lengths
 
-The same model written as its equations, with `Param`, `State`, `Control`, `Signal`, `Agent` and `shocks`:
-a state's drift is assigned (its quantity terms are the drift, its shock terms the noise loading, a constant
-becomes `const`), a signal is one linear expression with at least one shock, a loss is quadratic in the
-quantities (`(X - 1)**2` is `X^2 - 2X` with the constant dropped and noted in `model.notes`; `x.lag(tau)` is
-`x@tau`).  `ns.Model(...)` compiles it to the model file's structure, so `to_dict()` is the file and
-`save()` writes it: `examples/expr_examples.py` writes every shipped example this way and
-`tests/test_expr.py` checks that each equals its YAML file.
+`horizon` is the economics of time, and it carries **two quantities that are never the same thing**:
+
+* `window` is **L, the lag-truncation length**: how far back a strategy may look.  Stationary models
+  have one; transitions have one too.
+* `T` is the **terminal time**: when the game ends.  Finite horizons and transitions have one.
+
+```yaml
+horizon: {kind: stationary, discount: 0.5, window: 8.0}    # L = 8, no terminal time
+horizon: {kind: finite, T: 1.0}                            # ends at 1, no lag window
+horizon: {kind: transition, T: 6.0, window: 3.0, past: ...}   # both
+```
+
+Asking a horizon for the length it does not have is an error that names the one it does.  In Python the
+kinds are separate types, so `with_stationary(L)`, `with_finite(T)` and `with_transition(T, past)`
+change one field of the same kind, and `with_horizon(obj)` replaces the horizon outright:
+
+```python
+model.with_stationary(9.0)                       # a stationary model's lag window
+model.with_finite(6.0)                           # a finite model's terminal time
+model.with_horizon(ns.Finite(T=6.0))             # replace the horizon, whatever it was
+```
+
+## Other ways to build a model
+
+The first workflow above loads a file.  The same model can be written as equations or built up in a
+loop; all three produce the same `Model`, and `to_dict()` is the file in every case.
+
+### As equations
+
+With `Param`, `State`, `Control`, `Signal`, `Agent` and `shocks`: a state's drift is assigned (its
+quantity terms are the drift, its shock terms the noise loading, a constant becomes `const`), a signal
+is one linear expression with at least one shock, a loss is quadratic in the quantities (`(X - 1)**2`
+is `X^2 - 2X` with the constant dropped and noted in `model.notes`; `x.lag(tau)` is `x@tau`).
 
 ```python
 import noisestate as ns
@@ -142,24 +241,51 @@ X.drift = D1 + D2 + sigma * w.w0
 player1 = Agent("player1", controls=[D1], signals=[Signal("y1", p1**0.5 * X + w.w1)], loss=X**2 + r1 * D1**2)
 player2 = Agent("player2", controls=[D2], signals=[Signal("y2", p2**0.5 * X + w.w2, delay=0.5)], loss=(X - 1)**2 + r2 * D2**2)
 game = ns.Model("ch1", states=[X], agents=[player1, player2], horizon=ns.Stationary(window=3.0))
-print(game.describe())  # equations, observations and delays, losses, conventions (HTML in a notebook)
-eq = game.solve()
+print(game.describe())
 eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
-eq.status.ok; eq.costs["player1"]; eq.cost_parts["player1"]; eq.means["X"]
+eq.require_ok(); eq.costs["player1"]; eq.cost_parts["player1"]; eq.means["X"]
 k = eq.kernel("X", "w0"); k.values; k.axes; k.at(0.7)
 for point in game.sweep(p1=[0.3, 1, 3, 10]): point.value, point.result, point.jump
-old = game.solve(); new = game.with_params(p1=10.0).with_finite(T=6.0); path = new.solve(past=old)
 game.save("ch1.yaml"); ns.Model.load("ch1.yaml")
 with ns.using_settings(second_order_tol=1e-3): game.solve()
 ```
 
-Observation experiments do not need a second hand-built model. `with_signal()` returns a new model,
-adds new noise channels, and puts the row in every agent's information by default; `with_signals()` adds
-several rows at once. The original model is unchanged.
+The channels are the shocks used, in `shocks()` order; the parameters are the `Param`s used, with the
+values given (`Param.many` returns them in order; a coefficient may use `+ - * / **` and `sqrt exp log
+sin cos tanh abs min max`, and renders to the file's expression: `p1**0.5` is `"sqrt(p1)"`);
+`define(name, expr)` is a definition, `ns.Finite(T)` and `ns.Transition(T, past=..., continuation=...)`
+the other horizons, `numerics=` the file's block.  `examples/expr_examples.py` writes every shipped
+example this way and `tests/test_expr.py` checks that each equals its YAML file.  The YAML form stays
+the persistence format.
+
+### With ModelBuilder
+
+```python
+import noisestate as ns
+
+b = ns.ModelBuilder("one_agent", a=1.0, r=0.5)
+b.channel("w", "v")
+b.state("X", drift={"X": "-a", "D": 1.0}, noise={"w": 1.0})
+b.agent("me", controls=["D"], loss=[[1.0, "X", "X"], ["r", "D", "D"]])
+b.signal("me", "y", drift={"X": 1.0}, noise={"v": 1.0})
+b.stationary(discount=0.1, window=8.0, nodes=16)
+res = ns.solve(b)
+```
+
+`examples/make_ch5_cycle_market.py` builds an N-firm cycle in a loop; `b.finite(T, nodes)` and
+`b.transition(T, nodes, past=..., continuation=...)` set the other horizons and `b.numerics(**fields)`
+the rest of the block.
+
+## Changing what agents see
+
+Observation experiments do not need a second hand-built model.  `with_signal()` returns a new model,
+adds new noise channels, and puts the row in every agent's information by default; `with_signals()`
+adds several rows at once and `without_signal()` is the inverse.  The original model is unchanged.
 
 ```python
 public = game.with_signal("flow", drift={"D1": 1, "D2": 1}, noise={"w_flow": 1})
-player1_only = game.with_signal("flow", drift={"D1": 1}, noise={"w_flow": 1})
+player1_only = game.with_signal("flow", drift={"D1": 1}, noise={"w_flow": 1}, audience="player1")
+same_row = game.with_signal(Signal("flow", D1 + D2 + w.w_flow))      # the expression form's own type
 
 study = ns.compare({"none": game, "balanced": public, "only player 1": player1_only},
                    baseline="none", stability=True)
@@ -167,25 +293,13 @@ print(study.summary())
 study["balanced"].result                 # the ordinary noisestate Result
 study["balanced"].cost_changes           # each agent against the baseline
 study["balanced"].dynamics               # full and 50%-adjusted best responses
-study.to_dict(include_results=False)      # compact, JSON-ready comparison
+study.to_dict(include_results=False)     # compact, JSON-ready comparison
 ```
 
-`audience="player1"` or an iterable of agent names restricts a new row. `compare()` solves structurally
+`audience=` is `"all"`, one agent name or an iterable of names.  `compare()` solves structurally
 different scenarios independently and requires the same agents, horizon, discount and window so its cost
-changes compare like with like. Adjustment convergence is certified only when the computed leading
+changes compare like with like.  Adjustment convergence is certified only when the computed leading
 spectrum bounds the omitted modes; otherwise `adjusted_response` says `not certified`.
-
-The channels are the shocks used, in `shocks()` order; the parameters are the `Param`s used, with the
-values given (`Param.many` returns them in order; a coefficient may use `+ - * / **` and `sqrt exp log sin
-cos tanh abs min max`, and renders to the file's expression: `p1**0.5` is `"sqrt(p1)"`); `define(name, expr)`
-is a definition, `ns.Finite(T)` and `ns.Transition(T, past=..., continuation=...)` the other horizons,
-`numerics=` the file's block.  `res.kernel()` returns a `Kernel`, an ndarray carrying `.axes` and `.at()`
-(the engine's own interpolant: an age on the stationary engine, `(t, s)` on the finite triangle, the nearest
-cell on the cell engine) and `.plot()`; `sweep()` rows carry `.value`, `.result`, `.jump` (they are still
-dicts); `ns.using_settings(...)` replaces the default `Settings` inside the block for every engine constructed
-there (process-wide, not thread-safe).  One caution on the script above: the transition on `[0, 6]` with
-player 2's delayed row cuts the strip into pieces half a unit wide, 20k nodes at 16 nodes per piece; solve
-it at `ns.Numerics(nodes=4)` or drop the delay.  The YAML form stays the persistence format.
 
 ## Transitions
 
@@ -197,11 +311,11 @@ equilibrium on a buffer [T, T + L] (`continuation: stationary`) or by the game's
 ```python
 import noisestate as ns
 
-res = ns.solve("examples/ch3_precision_change.yaml")           # the file form: horizon.past, horizon.continuation
-old = ns.solve("examples/ch3_two_player.yaml")
-new = ns.load("examples/ch3_two_player.yaml").with_params(p1=10.0)
+res = ns.solve(ns.example("ch3_precision_change"))             # the file form: horizon.past, horizon.continuation
+old = ns.solve(ns.example("ch3_two_player"))
+new = ns.load(ns.example("ch3_two_player")).with_params(p1=10.0)
 res = ns.transition(old, new, T=6.0, numerics={"nodes": 12})   # solves the new stationary equilibrium and the transition
-res = ns.transition(old, new, settle=1e-4, numerics={"nodes": 12})   # or finds the horizon: a march in T (res.extra["window"], res.march)
+res = ns.transition(old, new, settle=1e-4, numerics={"nodes": 12})   # or finds T: a march (res.extra["window"], res.march)
 res.settled, res.excess_costs, res.loss_path["player1"], res.belief_error("player2", "X")
 ```
 
@@ -215,91 +329,83 @@ result's fields and the two shipped examples are in [docs/transitions.md](docs/t
 ```python
 import noisestate as ns
 
-rows = ns.sweep("examples/ch4_kyle_back.yaml", "eps", [0.2, 0.1, 0.05])   # each point warm-started
-rows[-1]["result"].summary(); rows[-1]["change"], rows[-1]["jump"]
+rows = ns.sweep(ns.example("ch4_kyle_back"), "eps", [0.2, 0.1, 0.05])   # each point warm-started
+rows[-1].result.summary(); rows[-1].change, rows[-1].jump, rows[-1].value
 ```
 
-Each point starts from a secant extrapolation of the previous two equilibria, which carries the
-Kyle-Back sweep down to a trading cost of 0.01 where a plain restart fails; every row names its
-`param`, its `change` from the previous point and whether that is a `jump`.  A warm-started point costs a
-handful of best responses, which is what a slider needs, and a solve can be bounded and watched:
+Each point is a `SweepPoint` (`.param`, `.value`, `.result`, `.change`, `.jump`, `.converged`,
+`.evaluations`, `.seconds`) and starts from a secant extrapolation of the previous two equilibria,
+which carries the Kyle-Back sweep down to a trading cost of 0.01 where a plain restart fails.  A row
+whose `change` is more than five times the sweep's median is a `jump`, so a branch change between
+neighbouring points is visible instead of plotted as a curve.
+
+A warm-started point costs a handful of best responses, which is what a slider needs, and a solve can
+be bounded and watched:
 
 ```python
-import noisestate as ns
-
 log = []
-res = ns.solve("examples/ch3_two_player.yaml", max_evaluations=3, deadline=30.0,
+res = ns.solve(ns.example("ch3_two_player"), max_evaluations=3, deadline=30.0,
                progress=lambda ev: log.append(ev["residual"]), diagnostics=False)
-res.converged, res.message          # False, the bound that stopped it; nothing raises, check() does
+res.converged, res.message          # False, the bound that stopped it; nothing raises
 ```
 
 `max_evaluations` caps the best-response evaluations and `deadline` the wall time in seconds; past
 either the best iterate comes back with `converged=False` and `res.message` naming the bound.
 `progress` is called after every evaluation with `{"evaluation", "residual", "phase", "seconds"}`; an
 exception it raises cancels the solve.  `diagnostics=False` skips the checks at the end (`res.foc` and
-`res.second_order` stay empty, the summary says `diagnostics skipped`) and halves a warm-started
-re-solve.  `start="coarse"` solves first at half the nodes.  `sweep(..., solve_kw={...})` forwards these
-to every point.  Grids and their operator caches are shared across solves in a process
-(`ns.clear_grid_cache()` releases them).
+`res.second_order` stay empty, those checks report `skipped`) and halves a warm-started re-solve.
+`start_policy="coarse"` solves first at half the nodes; `start_from=` takes explicit kernels or maps.
+`sweep(..., solve_kw={...})` forwards these to every point.  Grids and their operator caches are shared
+across solves in a process (`ns.clear_grid_cache()` releases them).
 
 ## The guards
 
-A converged solve is a solution of the discretised, truncated model.  `res.diagnostic_rows()` lists every check
-as a row `{name, value, threshold, ok, flag, advice}`; `summary()` prints the rows that fail.  The full
-descriptions, with thresholds and advice, are in [docs/guards.md](docs/guards.md).
+`res.diagnostics.rows` lists every check as a row `{name, value, threshold, ok, flag, advice}` plus the
+stable `code`, `category`, `severity`, `meaning`, `action` and `suggested_options` fields the payload
+carries; `summary()` prints the ones that fail.  The full descriptions, with thresholds and advice, are
+in [docs/guards.md](docs/guards.md).
 
 **Resolution.**  The representation error of the action kernels on the seen rows above 1e-6 prints
 `UNDER-RESOLVED (representation error 1.3e-05: raise horizon.nodes)`.  `solve(..., refine=True)` or
 `res.refine()` re-solves at 1.5 times the nodes and reports the change of every cost and kernel, with
-`(NOT RESOLVED)` when either moves more than its tolerance.
+`resolved=False` when either moves more than its tolerance.
 
 **Window.**  On the stationary engine a kernel still moving by more than 2% of its peak over the last
 tenth of the window prints `WINDOW TOO SHORT (a kernel still moves by 4.1% of its peak over the last
 tenth of the window: raise horizon.window)`: the equilibrium solved is that of the model truncated at
 `horizon.window`.  The Kyle-Back example with `rho: 0` is flagged (its kernels are window artefacts);
-it ships with `rho: 0.5`.
+it ships with `rho: 0.5`.  For a stationary-window failure the solver compares kernel changes over the
+last four tenths of the existing window, reports their median decay ratio and projects the tail at
+twice the window, with a benchmark range.  A tail whose increments are not shrinking suppresses the
+automatic extension suggestion and instead warns that the stationary problem may not exist, as in
+undiscounted Kyle-Back.
 
 **Second order.**  A negative curvature is a claim about the model, and the grid can make the same claim
 falsely: `res.refine()` re-solves on a finer grid and records the curvature there
-(`res.refinement["second_order"]`), and one that shrinks towards zero overturns the verdict --- the
-direction is the quadrature's, not a strategy (on the triangle it sits on the diagonal `a = t` and
-alternates in sign between neighbouring age nodes).  `examples/kyle_back_prior.yaml` is the case: the
-smallest curvature runs -1.45e-02, -1.02e-02, -8.26e-03, -6.71e-03, -5.63e-03 at 8, 12, 16, 20 and 24
-nodes, about n^-0.85.  On undiscounted stationary and on every finite-horizon result the objective is a
+(`res.refinement.curvature`), and one that shrinks towards zero overturns the verdict --- the direction
+is the quadrature's, not a strategy (on the triangle it sits on the diagonal `a = t` and alternates in
+sign between neighbouring age nodes).  `examples/kyle_back_prior.yaml` is the case: the smallest
+curvature runs -1.45e-02, -1.02e-02, -8.26e-03, -6.71e-03, -5.63e-03 at 8, 12, 16, 20 and 24 nodes,
+about n^-0.85.  On undiscounted stationary and on every finite-horizon result the objective is a
 quadratic form in the agent's strategy, and a smallest curvature below -1e-4 of the largest prints
 `NOT A MINIMUM (the best response of 'trader1' is a saddle: its loss is not convex in its own
 strategy, smallest curvature -1.8e-03 of the largest)`.  A negative direction that is positive on a
 window longer by two lags is reported as `window edge: ... a truncation of the lagged loss terms at the
-edge, not a saddle` instead.
+edge, not a saddle` instead.  On a **discounted** stationary model the curvature is not a quadratic form
+in the stationary kernel and this engine cannot build it: the check reports `unsupported`, not passed.
 
 **Settled.**  A transition whose maps on [T - L, T] are more than 1e-4 of their peak from the
-stationary continuation prints `TRANSITION NOT SETTLED by T - L: raise horizon.window (...)`; the
+stationary continuation prints `TRANSITION NOT SETTLED by T - L` and suggests a larger `--T`; the
 past's and the continuation's own window tails are echoed as `PAST WINDOW TOO SHORT` and
-`CONTINUATION WINDOW TOO SHORT`.  The transition CLI suggests a larger old-regime window after a
-past-window failure; pass it directly with `--past-window L`.  A short continuation likewise suggests
-`--continuation-window L`; because the buffer reads both stationary regimes over the same ages, this option
-enlarges their shared lag window.
-
-**Diagnostic summaries.**  CLI solves end with a compact verdict grouped into `Solve`, `Numerics`, and
-`Equilibrium`.  Add `--diagnostics` to `solve` or `transition` for every failed measurement, threshold,
-interpretation, action, and suggested option.  Python's `result.summary()` retains its detailed one-line
-flags; `result.diagnostic_summary(detailed=True)` provides the grouped form.  Saved payload rows also carry
-stable `code`, `category`, `severity`, `meaning`, `action`, and `suggested_options` fields.
-For a stationary-window failure, the solver compares kernel changes over the last four tenths of the
-existing window.  It reports their median decay ratio and projects the tail at twice the window.  A tail
-whose increments are not shrinking suppresses the automatic extension suggestion and instead warns that
-the stationary problem may not exist, as in undiscounted Kyle–Back.  The projection is deliberately shown
-with a benchmark range: alternatives based on the last ratio, an upper ratio, or a log-linear fit were less
-stable when one tail segment was irregular.
+`CONTINUATION WINDOW TOO SHORT`, which suggest `--past-window L` and `--continuation-window L`.
+Because the buffer reads both stationary regimes over the same ages, the latter enlarges their shared
+lag window.
 
 **Stability.**  `res.stability()` (or `solve(..., stability=True)`) reports the spectral radius of the
 best-response map, `best-response dynamics UNSTABLE (spectral radius 1.400)` above one: the Kyle-Back
 equilibrium converges under Anderson mixing while naive best-response adjustment would not find it.
-
-**Sweeps.**  The CLI prints value, convergence, residual, evaluations, time, strategy change and branch-jump
-status, and records the same fields in its JSON.  A row whose `change` is more than five times the sweep's
-median is a `jump`, so a branch change between neighbouring points is visible instead of plotted as a curve.
-Plot the JSON directly with `noisestate plot-sweep sweep.json sweep.png`.
+The classification is withheld unless the point is a verified equilibrium; the spectrum is reported
+either way.
 
 **What the model rejects.**  A misspelled key, an unused channel or parameter, a control that does not
 enter its owner's loss, a zero noise loading, a lag or delay not below the window, and a singular
@@ -325,45 +431,76 @@ validate, a parameter that is not the model's, a lag off the panels, a singular 
 solve bound out of range.  A `TypeError` is a wrong argument: an unknown solve option (the message names
 the `Numerics` field it belongs to, or the `Numerics(settings=...)` route for a `Settings` field),
 `naive_observers` that is not a mapping.  A `NotImplementedError` is a feature the engine does not have
-(leads on the finite engines); a past on the cell engine is a `ValueError` from the numerics (`numerics.engine
-'cells' solves a finite horizon only`).  A
-`RuntimeError` is a solver problem: a Krylov best response not converging, a non-finite value from the
-best-response map, and `ConvergenceError` (a `RuntimeError`) from `res.require_converged()`.  A fixed point that does
-not reach `tol`, or is stopped at `max_evaluations` or `deadline`, does not raise: `solve()` returns the
-result with `converged=False` and `res.message`, `sweep()` records the row with `converged: False` and
-goes on, `check()` is the raise.  `converged` means the residual (the norm of the update over the larger
-of one and the norm of the iterate) is at or below `tol`.
+(leads on the finite engines); a past on the cell engine is a `ValueError` from the numerics
+(`numerics.engine 'cells' solves a finite horizon only`).  A `RuntimeError` is a solver problem: a Krylov
+best response not converging, a non-finite value from the best-response map.
+
+`ResultValidationError` is the family for a result that will not do, with two siblings that are not
+interchangeable:
+
+* `ConvergenceError` --- the iteration did not converge.  From `require_converged()`, and from
+  `require_ok()` when convergence is what blocked.
+* `DiagnosticsError` --- it converged, but a required check did not pass.  Only from `require_ok()`,
+  and it carries the `Assessment` as `.assessment`.
+
+Catching `ConvergenceError` therefore does not catch a diagnostic failure; catch `ResultValidationError`
+for both.  A fixed point that does not reach `tol`, or is stopped at `max_evaluations` or `deadline`,
+does not raise on its own: `solve()` returns the result with `converged=False` and `res.message`, and
+`sweep()` records the row and goes on.  `converged` means the residual (the norm of the update over the
+larger of one and the norm of the iterate) is at or below `tol`.
 
 ## The command line
 
 ```bash
-noisestate validate examples/ch4_kyle_back.yaml               # the schema, then the model's own checks; prints the notes
+noisestate validate examples/ch4_kyle_back.yaml            # the schema, then the model's own checks; prints the notes
+noisestate describe examples/ch4_kyle_back.yaml            # the equations, delays, losses and conventions
 noisestate solve examples/ch4_kyle_back.yaml -o kb.json --plot kb.pdf --param rho=0.5 --nodes 32
-noisestate solve examples/ch3_two_player.yaml --refine --stability --max-evaluations 50 --deadline 60
+noisestate solve examples/ch3_two_player.yaml --refine --stability --require-ok --diagnostics
 noisestate sweep examples/ch4_kyle_back.yaml eps 0.2,0.1,0.05 -o sweep.json
-noisestate transition examples/ch3_two_player.yaml new.yaml --window 6 --nodes 12 -o change.json
-noisestate transition examples/ch3_two_player.yaml new.yaml --settle 1e-4 --nodes 12     # the horizon found by the march in T
-noisestate schema model > model.schema.json               # JSON Schema (draft 2020-12); also: schema payload
-noisestate plot kb.json kb.pdf                            # plots the saved result; --re-solve reproduces the solve first
+noisestate transition examples/ch3_two_player.yaml new.yaml --T 6 --nodes 12 -o change.json
+noisestate transition examples/ch3_two_player.yaml new.yaml --settle 1e-4 --nodes 12   # T found by the march
+noisestate schema model > model.schema.json                # JSON Schema (draft 2020-12); also: schema payload
+noisestate plot kb.json kb.pdf                             # plots the saved result; --re-solve reproduces the solve first
+noisestate plot-sweep sweep.json sweep.png
 noisestate --version
 ```
 
-`solve` takes `--engine`, `--window`, `--tol` and `-v` as well.  The exit status is 0 for a converged
-solve (a sweep: every point converged), 1 for a solve that ran but did not converge (the summary is
-still printed and `-o` still written), and 2 for a usage error or an error the package raises, printed
-as `error: ...` on stderr.  The JSON written by `-o` is `res.to_dict()`, documented key by key in
-[docs/payload.md](docs/payload.md); it validates against `noisestate.schema("payload")`.
+`solve` takes `--engine`, `--tol`, `--max-evaluations`, `--deadline` and `-v` as well, and the two
+horizon lengths under their own names: `--window L` (the lag-truncation length, stationary and
+transition models) and `--T` (the terminal time, finite and transition models).  Asking for the one a
+model's kind does not have is an error that names the other.
+
+The exit status is 0 for a converged solve (a sweep: every point converged), 1 for a solve that ran but
+did not converge (the summary is still printed and `-o` still written), and 2 for a usage error or an
+error the package raises, printed as `error: ...` on stderr.  `--require-ok` makes a diagnostically
+unaccepted result exit 1 as well, which is what a batch script wants.  The JSON written by `-o` is
+`res.to_dict()`, documented key by key in [docs/payload.md](docs/payload.md); it validates against
+`noisestate.schema("payload")`.
+
+## Working on noisestate
+
+```bash
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+./run-tests                        # the fast suite, about 2 minutes
+NOISESTATE_SLOW=1 ./run-tests      # everything, about 6 minutes
+```
+
+Always through `./run-tests`, never `pytest` directly: it takes a lock so two suites cannot overlap
+(concurrent runs corrupt every timing they touch) and caps the BLAS threads, without which the small
+solves here run 16-way and the suite takes six times as long.  [CONTRIBUTING.md](CONTRIBUTING.md) has the details
+and the measuring conventions.
 
 ## Where things are
 
 * [docs/model_file.md](docs/model_file.md): every key of a model file, with its type and default.
 * [docs/payload.md](docs/payload.md): every key of `to_dict()` and the CLI's JSON.
 * [docs/transitions.md](docs/transitions.md): the transition engine in full, with the two examples.
-* [docs/guards.md](docs/guards.md): the checks, their flags, thresholds and advice.
+* [docs/guards.md](docs/guards.md): the checks, their statuses, thresholds and advice.
 * [docs/settings.md](docs/settings.md): the tuning constants.
-* [docs/validation.md](docs/validation.md): what the tests reproduce, with the numbers; the resolved open items.
+* [docs/api.md](docs/api.md): every public function and method, with its use case.
+* [docs/validation.md](docs/validation.md): what the tests reproduce, with the numbers.
 * [docs/method.md](docs/method.md): how it works, the means, the grids, the stability guarantees.
 * [docs/limits.md](docs/limits.md): what the grammar and the engines do not do.
 * [docs/architecture.md](docs/architecture.md): the modules, one best response and one transition through them.
-* [docs/design/](docs/design/README.md): the design record of the transition, size and consolidation stages.
+* [docs/design/](docs/design/README.md): the design record, and the dated reviews behind it.
 * [CHANGELOG.md](CHANGELOG.md): every change by release.

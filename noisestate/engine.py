@@ -737,13 +737,13 @@ class EngineBase(MeanLayer):
         max_evaluations bounds the best-response evaluations (Anderson mixing and the polish together, the
         count res.evaluations reports) and deadline the wall time of the solve in seconds; at least one
         evaluation is made, and past either bound the best iterate so far is returned with converged=False
-        and res.message naming the bound (no exception; check() raises).  A coarse start is bounded the same
+        and res.message naming the bound (no exception; require_converged() raises).  A coarse start is bounded the same
         way.  progress(info) is called after every evaluation with {"evaluation": the count so far,
         "residual": the relative residual, "phase": "anderson" or "newton" (prefixed "coarse " during a coarse
         start), "seconds": since the solve began}; an exception it raises propagates, which is how a solve is
         cancelled.  diagnostics=False skips the checks at the end (the first-order-condition decomposition,
         the second-order check and the representation error: res.foc and res.second_order stay empty,
-        res.resolution_ok is None and the summary says so) and fills the costs only, for a preview.
+        those checks report `skipped` in res.diagnostics.statuses) and fills the costs only, for a preview.
         The options as given are recorded in res.solve_kw (the bounds and diagnostics=False when given; the
         progress callable is not, nor is start_from), so solve(**res.solve_kw) repeats a solve that was not
         warm-started (a sweep row after the first, or refine(), was: its record starts from zero)."""
@@ -831,7 +831,7 @@ class EngineBase(MeanLayer):
         """Hook (stationary, spectral; the cell engine keeps the no-op): the checks at the equilibrium,
         filled on the result: res.foc[agent] (the "decomp" of best_response), res.second_order[agent]
         (when the check applies) and res.representation_error[agent].  Runs after _mean_part, skipped
-        when the solve was made with diagnostics=False; a result without these has resolution_ok None."""
+        when the solve was made with diagnostics=False; the checks then report `skipped`."""
 
     def actions_from_maps(self, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Action kernels the raw maps produce in their own closed loop."""

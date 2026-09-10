@@ -2,8 +2,9 @@
 
     res.converged, res.residual, res.message     outcome of the outer solve
     res.evaluations                              best-response evaluations made
-    res.status                                   {"ok", "flags", "rows"}: the verdict, the failing checks' flags, diagnose()'s rows
-    res.require_converged()                      raise ConvergenceError unless converged
+    res.diagnostics                              the checks: .statuses, .rows, .flags, .assess(policy), .summary()
+    res.require_converged()                      raise ConvergenceError unless converged (convergence ALONE)
+    res.require_ok(policy)                       raise unless the policy's assessment accepts it (the full verdict)
     res.axes                                     the coordinate arrays of kernel(): {"age": ages} (stationary), {"time", "age",
                                                  "shock_time"} node-wise (spectral finite; shock_time < 0 on a transition's band),
                                                  {"time", "shock_time"} (cells, the two axes of the (N, N) matrix); and "maps":
@@ -269,9 +270,10 @@ class Result:
     def require_converged(self):
         """Return self, or raise ConvergenceError if the solve did not reach its tolerance.
 
-        Convergence only.  A converged solve is a solution of the *discretised, truncated* model, so
-        check() passes on a result whose window is too short or whose grid is too coarse: those are the
-        guards, and `status["ok"]` is what reads them.  require_ok() is check() plus the guards."""
+        Convergence ONLY.  A converged solve is a solution of the *discretised, truncated* model, so this
+        passes on a result whose window is too short or whose grid is too coarse: those are the checks,
+        and res.diagnostics.assess(policy) is what weighs them.  require_ok() is this plus the checks,
+        and is the call to put in front of a number that will be used rather than looked at."""
         if not self.converged:
             raise ConvergenceError(f"{self.model.name}: residual {self.residual:.2e} ({self.message})")
         return self

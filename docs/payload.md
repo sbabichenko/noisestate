@@ -1,7 +1,7 @@
 # The result payload
 
 What `res.to_dict()`, `noisestate solve -o` and every row of `noisestate sweep -o` carry, generated from
-`noisestate.schema("payload")` (`payload_version` 1; `noisestate schema payload` prints the schema,
+`noisestate.schema("payload")` (`payload_version` 2; `noisestate schema payload` prints the schema,
 `noisestate.schema.validate(doc, "payload")` checks a document).  Every key is present unless marked optional;
 the optional ones appear when the engine or the options produced them.  `numerics` in the table is the
 `numerics` block of the model schema ([model_file.md](model_file.md)); shapes follow `axes`.
@@ -10,7 +10,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 
 | key | type | meaning |
 |---|---|---|
-| `payload_version` | const 1 | the payload format, 1 |
+| `payload_version` | const 2 | the payload format, 2 ([CHANGELOG](../CHANGELOG.md) lists what 2 renamed) |
 | `version` | string | the package version that wrote it |
 | `name` | string | the model's name |
 | `engine` | `stationary` \| `spectral` \| `cells` | the engine that solved it (`numerics.engine` resolved) |
@@ -37,19 +37,18 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `foc` | map of map of map of map of list of number | per agent, per control: `foc`, `physical`, `wedge`, each per channel: the first-order-condition decomposition |
 | `costs` | map of number | per agent: the cost (`cost_kind` says what it is) |
 | `cost_parts` | map of map of number | per agent: `variance` and `mean` (a transition adds `continuation`, the buffer's cost) |
-| `means` | map of number or list of number | per state, control, definition and signal row (`agent.row`): a constant (stationary) or the path on `means_t` |
-| `means_t` | list of number or null | the time nodes of the mean paths; null on the stationary engine |
+| `means` | map of number or list of number | per state, control, definition and signal row (`agent.row`): a constant (stationary) or the path on `mean_times` |
+| `mean_times` | list of number or null | the time nodes of the mean paths; null on the stationary engine |
 | `representation_error` | map of number | per agent: the representation error of the action kernels on the seen rows |
 | `representation_parts` | map of map of number (optional) | a transition's error by region: interior, tip, last window, buffer |
-| `diagnostics` | list of object | every row of `res.diagnostic_rows()` ([guards.md](guards.md)), plus stable `code`, `category`, `severity`, `meaning`, `action`, and `suggested_options` fields; stationary window rows add a `trend` with the within-window tail ratio, rough doubled-window projection, benchmark range, and `decaying`, `slow_decay`, `not_decaying`, or `inconclusive` assessment (the last when the underlying solve is unconverged or under-resolved) |
-| `resolution_ok` | boolean or null | the resolution row's verdict (null when not computed) |
-| `status` | object | `ok` and the failing `flags` (and the rows) |
+| `diagnostics` | list of object | every row of `res.diagnostics.rows` ([guards.md](guards.md)), plus stable `code`, `category`, `severity`, `meaning`, `action`, and `suggested_options` fields; stationary window rows add a `trend` with the within-window tail ratio, rough doubled-window projection, benchmark range, and `decaying`, `slow_decay`, `not_decaying`, or `inconclusive` assessment (the last when the underlying solve is unconverged or under-resolved) |
+| `assessment` | object | what a policy makes of the checks: `policy` (the name), `accepted`, `statuses` (every applicable check by name -> `passed`, `failed`, `skipped`, `unsupported`, `not_applicable` or `missing`), `blocking` (the checks that denied acceptance, each with its status and reason) and `uncomputed`.  This replaced `status` and `resolution_ok`, which disagreed about what a missing check meant |
 | `cost_kind` | string | `flow loss per unit time` (stationary) or the discounted integral (finite) |
 | `second_order` | map of object | per agent: `min`, `max`, `ok`, `converged`, and `edge`/`embedded` when the negative direction was re-evaluated on a longer window |
 | `notes` | list of string | the model's notes (what the numbers are) |
-| `refinement` | object (optional) | with `--refine`: `cost_change`, `kernel_change`, `nodes`, `resolved` |
+| `refinement` | object (optional) | with `--refine`: `cost_change`, `kernel_change`, `nodes`, `resolved`, `converged` |
 | `window_tail` | number (optional) | stationary: the largest change of a kernel over the last tenth of the window relative to its peak |
-| `stability` | object (optional) | with `--stability`: `radius`, `stable`, `method`, `untied` |
+| `stability` | object (optional) | with `--stability`: `radius`, `eigenvalues`, `method`, `stable`, `untied`, `evaluations`, and the evidence that makes the classification meaningful -- `fixed_point_residual`, `residual_norm`, `residual_tolerance`, `verified`, `unverified_reasons` -- plus `full_response`, `adjusted_response`, `adjusted_radius_bound`, `adjustment`.  A classification of an unverified point is withheld; the spectrum is reported either way |
 | `past` | object (optional) | a transition's past: its provenance (kind, model, params, window, nodes, costs, window tail; no kernels) |
 | `settled` | number or null (optional) | a transition's largest relative distance of any map on [T - L, T] from the stationary continuation |
 | `continuation` | object (optional) | a transition's continuation: the same provenance |
@@ -58,10 +57,11 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `excess_costs` | map of number (optional) | per agent: the discounted integral over [0, T] of E[loss(t)] minus the new stationary flow |
 | `old_flows` | map of number (optional) | per agent: the old regime's stationary flow loss |
 | `new_flows` | map of number (optional) | per agent: the new regime's stationary flow loss |
-| `window` | number (transition) | the horizon T solved on: the file's, or the one the settle march found |
+| `window` | number (transition) | the terminal time T solved on: the file's, or the one the settle march found.  The KEY is named `window` for the payload's history; the quantity is T, and `horizon.window` elsewhere is the lag-truncation length L |
 | `march` | array (optional) | the settle march's rows `{T, gap, gap_last, evaluations, seconds, monitor}` (T = 0 first: the pass from the stationary rules) |
 | `march_stop` | string or null (optional) | `settled`, `settled at T = 0` or `max_window` (the settled flag then stays) |
 | `march_settle` | number or null (optional) | the march's tolerance |
+| `settle_floor` | map of number (optional) | per agent: the smallest settle gap this grid can distinguish, the floor the march's tolerance is checked against |
 | `excess_windows` | map of list of number (optional) | per agent: the excess's discounted integral per window, the last window [T - L, T] first |
 | `excess_costs_tail` | map of number (optional) | per agent: the tail past T, the last window's excess times r / (1 - r) (agents with no factor in (0, 1) are absent) |
 | `excess_costs_total` | map of number (optional) | per agent: `excess_costs` + `excess_costs_tail` |

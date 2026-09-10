@@ -1,7 +1,8 @@
 # The model file
 
-The reference of every key of a model file, generated from `noisestate.schema("model")` (JSON Schema, draft
-2020-12; `noisestate schema model` prints it).  A file is validated against it first (`noisestate validate`,
+The reference of every key of a model file.  Maintained by hand against `noisestate.schema("model")`
+(JSON Schema, draft 2020-12; `noisestate schema model` prints it, and is the authority if the two
+ever disagree).  A file is validated against it first (`noisestate validate`,
 `noisestate.schema.validate(doc, "model")` lists the violations with their paths), then against the model's
 own checks ([guards.md](guards.md), "What the model rejects").  Unknown keys are errors everywhere.  Every
 coefficient may be a number or an expression in the parameters (`"sqrt(p1)"`, `"-gamma1"`).
@@ -31,10 +32,11 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `agents.<name>.loss` | list of list of number or expression |  | none (a control must enter its owner's loss) |
 | `agents.<name>.myopic` | boolean |  | false |
 | `ties` | list of list of string | groups of agents sharing one strategy | none |
-| `horizon` | object | the economics of time: the kind, the discount, the window, a transition's past and continuation |  |
+| `horizon` | object | the economics of time: the kind, the discount, the two lengths, a transition's past and continuation |  |
 | `horizon.kind` | `stationary` \| `finite` \| `transition` | | `stationary` |
 | `horizon.discount` | number or expression | a number, or an expression in the parameters | 0 |
-| `horizon.window` | number or expression | the lag window L (stationary) or the horizon T (finite, transition) | 8.0 (`ModelBuilder.stationary`), 1.0 (`finite`, `transition`) |
+| `horizon.window` | number or expression | **L, the lag-truncation length**: how far back a strategy may look.  `stationary` and `transition` only; a `finite` horizon has none | 8.0 (`ModelBuilder.stationary`); a transition's comes from its past |
+| `horizon.T` | number or expression | **the terminal time**: when the game ends.  `finite` and `transition` only; a `stationary` horizon has none | 1.0 (`ModelBuilder.finite`, `transition`) |
 | `horizon.past` | object | kind transition only |  |
 | `horizon.past.model` | string or object | the old stationary model: a path (relative to the file) or an inline model |  |
 | `horizon.past.initial` | list of object | initial shocks {name, loads, rows} |  |
@@ -42,7 +44,7 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `horizon.past.initial[].loads` | map of number or expression |  |  |
 | `horizon.past.initial[].rows` | map of number or expression |  |  |
 | `horizon.continuation` | `stationary` \| `end` | kind transition only; default stationary | `stationary` |
-| `horizon.settle` | number or expression | kind transition only, in place of `window` (exactly one): the settle tolerance the horizon T is found for by the march in T ([transitions.md](transitions.md)) |  |
+| `horizon.settle` | number or expression | kind transition only, in place of `T` (exactly one): the settle tolerance T is found for by the march in T ([transitions.md](transitions.md)) |  |
 | `horizon.stationary` | object | kind transition only: the continuation's stationary solve |  |
 | `horizon.stationary.window` | number or expression | must equal the past's window | the past's window |
 | `numerics` | object | how the model is solved: the engine, the grid, the fixed point's options, the settings |  |
@@ -82,8 +84,11 @@ The fields of `numerics.settings` are those of `noisestate.Settings`: [settings.
   `[-2*theta, X]`.  Linear terms move only the means (below).
 * **Ties.** `ties: [[firm0, firm1, firm2]]` makes the listed agents share one
   strategy (a symmetric equilibrium): only the first is solved for.
-* **Horizon.** The economics of time: `stationary` with `discount` and `window` (lag window L);
-  `finite` with `window` = T; `transition` with its `past` and `continuation` ([transitions.md](transitions.md)).
+* **Horizon.** The economics of time, carrying **two lengths that are never the same quantity**:
+  `window` is the lag-truncation length L (how far back a strategy may look) and `T` is the terminal
+  time (when the game ends).  `stationary` has `discount` and `window`; `finite` has `T`;
+  `transition` has both, plus its `past` and `continuation` ([transitions.md](transitions.md)).
+  Asking a horizon for the length its kind does not have is an error naming the one it does.
 * **Numerics.** How it is solved, an optional block with the fields of `noisestate.Numerics`:
   `engine` (`stationary`, `spectral`, or `cells` for the first-order cell scheme on a finite
   horizon; default from the kind), `nodes` per panel (stationary) or per side of each piece of
