@@ -400,3 +400,22 @@ def test_removing_a_row_is_the_inverse_of_adding_one():
         m.without_signal("y1")
     with pytest.raises(ValueError, match="unknown agent"):
         m.without_signal("y1", audience="nobody")
+
+
+def test_to_dict_carries_the_behaviour_and_omits_only_provenance():
+    """What the file form promises, and what a to_dict() comparison therefore establishes.
+
+    The signal round-trip test asserts two models are equal by comparing to_dict(); that is only
+    an equivalence claim if to_dict() carries everything a solve depends on.  It does: definitions
+    and ties are there when the model has them -- they are missing from a model with none, which
+    is easy to mistake for an omission -- and what is left out is source, remarks and
+    deprecations, none of which reach the solver.
+    """
+    import dataclasses
+    rich = ns.load(os.path.join(EX, "ch5_cycle_market.yaml"))
+    assert rich.definitions and rich.ties                        # a model that exercises both
+    omitted = {f.name for f in dataclasses.fields(ns.Model)} - set(rich.to_dict())
+    assert omitted == {"source", "remarks", "deprecations"}
+    back = ns.Model.from_dict(rich.to_dict())
+    assert back.to_dict() == rich.to_dict()
+    assert len(back.definitions) == len(rich.definitions) and len(back.ties) == len(rich.ties)
