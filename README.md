@@ -99,6 +99,13 @@ Every check reports one of six statuses, and the differences between them matter
 `not_applicable` and `unsupported` are never merged: the first says nothing is missing, the second says
 something is.  An engine that cannot run a check does not thereby pass it.
 
+Which checks a model has depends on what its horizon **carries**, not on its kind.  A stationary model
+has its own lag `window`.  A transition has none of its own: the windows it is solved on belong to the
+past it inherits and the stationary continuation it is closed by, so it carries `past window` and
+`continuation window` instead, plus `settled`.  A transition closed by the game's `end` has nothing to
+settle against and reports `settled` as `not_applicable`; one whose past is a prior on the state rather
+than an inherited regime has no `past window` either.
+
 ### Policies
 
 A policy names which checks a particular use requires.  `Policy.PUBLICATION` (the default) requires all
@@ -473,7 +480,9 @@ model's kind does not have is an error that names the other.
 The exit status is 0 for a converged solve (a sweep: every point converged), 1 for a solve that ran but
 did not converge (the summary is still printed and `-o` still written), and 2 for a usage error or an
 error the package raises, printed as `error: ...` on stderr.  `--require-ok` makes a diagnostically
-unaccepted result exit 1 as well, which is what a batch script wants.  The JSON written by `-o` is
+unaccepted result exit 1 as well, which is what a batch script wants; `--policy exploratory` asks for
+the weaker standard by name.  A check the engine cannot compute is reported as `cannot be checked here`
+rather than as a failure, and says whether any setting could change it.  The JSON written by `-o` is
 `res.to_dict()`, documented key by key in [docs/payload.md](docs/payload.md); it validates against
 `noisestate.schema("payload")`.
 

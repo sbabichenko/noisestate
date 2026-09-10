@@ -2,6 +2,52 @@
 
 ## Unreleased -- the first ten minutes
 
+DIAGNOSTICS A TRANSITION CAN PASS
+
+Three defects found by walking the package cold, fixed together because they
+interact (docs/design/newcomer_friction_2026-09-10.txt).
+
+Applicability was decided by the horizon's KIND, so every transition was asked
+about a lag window it does not have and about settling it may not do.  Neither
+emitted a row, both landed as MISSING -- "applicable, supported, was to run,
+produced no record" -- and NO TRANSITION COULD BE PUBLICATION-ACCEPTED.  Worse,
+the status that means "investigate this" fired routinely on correct models.
+
+The predicates now read what the horizon CARRIES.  A stationary model has its own
+`window`.  A transition's windows belong to its past and its continuation, so it
+carries `past window` and `continuation window`, plus `settled` -- and a
+transition closed by the game's `end` has nothing to settle against, while a past
+that is a prior on the state rather than an inherited regime has no window at
+all.  No shipped example reports MISSING now.
+
+`past window` and `continuation window` were rows the result EMITTED and names no
+policy knew, so a failing past window printed PAST WINDOW TOO SHORT and could not
+block acceptance.  0.8 closed NOT_APPLICABLE-vs-UNSUPPORTED and
+applicable-vs-emitted; this was the third gap of that shape, emitted-vs-known.
+Both are now in CHECKS, in Policy.PUBLICATION and in MINIMUM.
+
+Fixing applicability alone would have UNMASKED this one -- nothing was accepted
+before, so nothing was accepted while printing a failure -- which is why the two
+went together.
+
+THE CLI STOPPED CONTRADICTING ITSELF
+
+    noisestate solve examples/ch4_kyle_back.yaml --nodes 40 --require-ok
+    not ok: failed diagnostic checks: second_order (see summary)
+    Diagnostics: 0 failed, 3 passed
+
+Two lines about one result.  The status was UNSUPPORTED and nothing had failed:
+Kyle-Back is discounted stationary, where the curvature is not a quadratic form
+in the stationary kernel and this engine cannot build it at all.  No --nodes
+value could ever change the verdict, and nothing said so, so the obvious response
+was wasted effort -- on the example the README prints in full.
+
+It now reads "cannot be checked here ... no setting will change it", names why,
+and points at `--policy exploratory`, which had to be added: the library has had
+validation policies since 0.8 and the CLI hardcoded PUBLICATION, so the weaker
+standard it insists be NAMED could not be named from the command line.
+
+
 0.8 settled the contracts and left the documentation describing the API it replaced.  This pass is
 the user-facing half: what a person meets before they meet the solver.  No numerical method or 0.8
 contract changed.

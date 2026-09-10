@@ -19,6 +19,7 @@ import yaml
 from . import __version__, solve as _solve
 from .plotting import plot_payload, plot_sweep_payload
 from .spec import Model
+from .diagnostics import Policy, Status
 from .numerics import Numerics
 from .sweep import sweep
 from .schema import schema, validate as schema_errors
@@ -30,12 +31,52 @@ def _exit_code(res, args) -> int:
     exit status would otherwise take an UNDER-RESOLVED or WINDOW TOO SHORT result as sound."""
     if not res.converged:
         return 1
-    verdict = res.diagnostics.assess()
+    policy = {"publication": Policy.PUBLICATION, "exploratory": Policy.EXPLORATORY}[
+        getattr(args, "policy", "publication")]
+    verdict = res.diagnostics.assess(policy)
     if getattr(args, "require_ok", False) and not verdict.accepted:
-        failed = [b.check for b in verdict.blocking]
-        print("not ok: failed diagnostic checks: " + ", ".join(failed) + " (see summary)", file=sys.stderr)
+        for line in _why_not_accepted(res, verdict):
+            print(line, file=sys.stderr)
         return 1
     return 0
+
+
+def _why_not_accepted(res, verdict) -> list:
+    """Why --require-ok is refusing, in the words of what actually happened.
+
+    It used to say "failed diagnostic checks: X" whatever the status was.  On ch4_kyle_back at 40
+    nodes that produced "failed diagnostic checks: second_order" above a summary reading "0 failed,
+    3 passed" -- two lines about one result contradicting each other, because the status was
+    UNSUPPORTED and nothing had failed.  A check this engine cannot run is not a check the model
+    failed, and the CLI must not collapse the two any more than the library does.
+    """
+    by_status: dict = {}
+    for b in verdict.blocking:
+        by_status.setdefault(b.status, []).append(b.check)
+    lines = []
+    failed = by_status.pop(Status.FAILED, [])
+    if failed:
+        lines.append("not ok: failed diagnostic checks: " + ", ".join(sorted(failed)) + " (see summary)")
+    unsupported = by_status.pop(Status.UNSUPPORTED, [])
+    if unsupported:
+        lines.append("not ok: cannot be checked here: " + ", ".join(sorted(unsupported))
+                     + " -- this engine cannot compute it for this model, so no setting will change it."
+                     + _unsupported_hint(res, unsupported))
+    for status, checks in sorted(by_status.items(), key=lambda kv: str(kv[0])):
+        lines.append(f"not ok: {status} checks: " + ", ".join(sorted(checks)) + " (see summary)")
+    if verdict.policy is not Policy.EXPLORATORY:
+        lines.append("       a weaker standard is legitimate and has to be named: --policy exploratory "
+                     "requires convergence only.")
+    return lines
+
+
+def _unsupported_hint(res, checks) -> str:
+    """The one case the package knows how to explain, rather than a general apology."""
+    if "second_order" in checks and res.model.horizon.kind == "stationary" and float(res.model.horizon.discount) > 0:
+        return ("\n       second_order: the curvature is built as an exact quadratic form, which the "
+                "stationary engine cannot do at a positive discount (horizon.discount "
+                f"{float(res.model.horizon.discount):g}); a finite horizon can.")
+    return ""
 
 
 def transition_lines(m: Model) -> list:
@@ -146,7 +187,13 @@ def main(argv=None) -> int:
     ps.add_argument("result", help="the JSON written by sweep"); ps.add_argument("out", help="the figure (.pdf/.png)")
     for p_ in (s, t):
         p_.add_argument("--require-ok", action="store_true",
-                        help="exit non-zero when a diagnostic guard fails, not only when the solve does not converge")
+                        help="exit non-zero unless the policy accepts the result, not only when the solve does not converge")
+        #  The library has had validation policies since 0.8 and the CLI hardcoded PUBLICATION, so a
+        #  weaker standard -- which is legitimate, and which the library insists be named -- could
+        #  not be asked for from the command line at all.
+        p_.add_argument("--policy", choices=("publication", "exploratory"), default="publication",
+                        help="which checks --require-ok demands: publication (all of them, the default) "
+                             "or exploratory (convergence only). A weaker standard has to be named")
     w = sub.add_parser("sweep", help="solve along one parameter with warm starts; write a JSON list")
     w.add_argument("model"); w.add_argument("param"); w.add_argument("values", help="comma-separated values")
     w.add_argument("-o", "--out", required=True, help="output .json")

@@ -14,6 +14,10 @@
  problem -- the assessment's vocabulary is coarser than the checks it judges -- and they interact,
  so the order of any fix matters (see item 3).  Items 4 onward are friction rather than fault.
 
+ STATUS.  Items 1, 2 and 3 were FIXED on 2026-09-10, together and in the order this file argues for.
+ What each turned out to be, and what the fix was, is appended to each item below.  Items 4 to 6 are
+ open.  The findings are kept as written; the fixes are marked, not edited in.
+
  Each item states HOW IT WAS FOUND and gives the command that shows it.  Measured against the tree
  at 37ae8b3 (the consolidation pass), on the shipped examples.
 
@@ -62,6 +66,13 @@
 
  FOUND BY running --require-ok on each shipped example and reading the exit codes.
 
+ FIXED 2026-09-10.  _exit_code now reports FAILED and UNSUPPORTED apart: "cannot be checked here:
+ second_order -- this engine cannot compute it for this model, so no setting will change it", with
+ the reason named (the curvature is an exact quadratic form, which the stationary engine cannot
+ build at a positive discount; a finite horizon can).  `--policy exploratory` was added, because the
+ message wanted to point at a weaker standard and the CLI had no way to ask for one -- the library
+ has had policies since 0.8 and the CLI hardcoded PUBLICATION.
+
 
 ================================================================================================
  2.  No transition can ever be publication-accepted                                    [DEFECT]
@@ -104,6 +115,16 @@
  FOUND BY running the assessment over all seven shipped examples and asking why the two transitions
  blocked; four of the seven are unacceptable, but only these two for a reason that is not real.
 
+ FIXED 2026-09-10.  The predicates read the horizon: `window` applies to a model with a lag window of
+ its OWN (stationary); `past window` when the past is an inherited regime (`past: {model: ...}`, not a
+ prior on the state); `continuation window` and `settled` when the transition is closed by a
+ stationary continuation rather than by the game's end.  No shipped example reports MISSING now, and
+ a test asserts that.
+
+ A test named test_the_window_check_applies_to_a_transition_too_not_only_a_stationary_model asserted
+ the old behaviour -- and tested it on ch3_two_player, a STATIONARY model, so it passed either way
+ and never examined a transition at all.  Replaced.
+
 
 ================================================================================================
  3.  A guard that fails, is printed, and is invisible to acceptance                    [DEFECT]
@@ -128,6 +149,12 @@
 
  FOUND BY comparing the set of rows with ok=False against the set of blocking checks, rather than
  reading either alone.
+
+ FIXED 2026-09-10, together with item 2 as this file argued.  `past window` and `continuation window`
+ are now names in CHECKS, in Policy.PUBLICATION and in MINIMUM, so a failure in them blocks and a
+ policy can require them.  ch3_precision_change now blocks on past window rather than printing it and
+ accepting.  The test asserts the general property -- that no row with ok=False is absent from
+ blocking -- rather than the one instance.
 
 
 ================================================================================================

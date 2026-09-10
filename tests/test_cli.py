@@ -81,3 +81,37 @@ def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
 
 def test_describe_prints_the_model_as_equations():
     assert main(["describe", os.path.join(EX, "ch3_two_player.yaml")]) == 0
+
+
+def test_require_ok_says_cannot_be_checked_rather_than_failed(capsys):
+    """ch4_kyle_back at 40 nodes printed "failed diagnostic checks: second_order" above a summary
+    reading "0 failed, 3 passed": two lines about one result contradicting each other, because the
+    status was UNSUPPORTED and nothing had failed.  A check this engine cannot run is not a check the
+    model failed, and the CLI must not collapse the two any more than the library does.
+    """
+    import noisestate as ns
+    assert main(["solve", ns.example("ch4_kyle_back"), "--nodes", "24", "--require-ok"]) == 1
+    err = capsys.readouterr().err
+    assert "cannot be checked here: second_order" in err
+    assert "failed diagnostic checks" not in err
+    assert "no setting will change it" in err                  # and that it is permanent
+    assert "positive discount" in err                          # named, not a general apology
+
+
+def test_a_weaker_standard_can_be_asked_for_by_name(capsys):
+    """The library has had policies since 0.8 and the CLI hardcoded PUBLICATION, so the weaker
+    standard it insists be NAMED could not be named from the command line at all."""
+    import noisestate as ns
+    assert main(["solve", ns.example("ch4_kyle_back"), "--nodes", "24",
+                 "--require-ok", "--policy", "exploratory"]) == 0
+    assert main(["solve", ns.example("ch4_kyle_back"), "--nodes", "24", "--require-ok"]) == 1
+    capsys.readouterr()
+
+
+def test_a_real_failure_is_still_reported_as_a_failure(capsys):
+    """Separating unsupported out must not stop a genuine guard failure reading as one."""
+    import noisestate as ns
+    assert main(["solve", ns.example("ch3_two_player"), "--nodes", "12", "--require-ok"]) == 1
+    err = capsys.readouterr().err
+    assert "failed diagnostic checks:" in err and "window" in err
+    assert "cannot be checked here" not in err

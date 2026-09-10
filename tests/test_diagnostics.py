@@ -74,11 +74,60 @@ def test_not_applicable_is_a_property_of_the_model_and_never_blocks():
     assert stat.diagnostics.statuses["window"] is not Status.NOT_APPLICABLE
 
 
-def test_the_window_check_applies_to_a_transition_too_not_only_a_stationary_model():
-    """Applicability reads the model.  A transition carries a lag-truncation window as well, so
-    hard-coding "stationary" would drop transitions out of the check."""
-    assert "window" in applicable(CHECKS, example("ch3_two_player"))
-    assert "window" not in applicable(CHECKS, example("ch3_two_player").with_finite(1.0))
+def test_applicability_reads_what_the_model_carries_not_its_kind():
+    """The check that applies is the one the model gives meaning to, and for the window family that
+    is decided by what the horizon HOLDS, not by its kind.
+
+    This test replaces one named "the window check applies to a transition too" which asserted
+    exactly that -- and tested it on ch3_two_player, a STATIONARY model, so it passed either way and
+    never examined a transition at all.  What a transition actually carries is a past and a
+    continuation, each with its own lag window and its own check; its horizon.window is None.
+    Deeming the plain `window` check applicable to it produced no row and left the status MISSING --
+    "was to run, produced no record" -- on every transition, so none could be accepted.
+    """
+    stat = example("ch3_two_player")
+    assert "window" in applicable(CHECKS, stat)                       # a stationary model has its own
+    assert "window" not in applicable(CHECKS, stat.with_finite(1.0))  # a finite horizon has none
+    trans = example("ch3_precision_change")
+    assert trans.horizon.kind == "transition" and trans.horizon.window is None
+    assert "window" not in applicable(CHECKS, trans)                  # its windows are its past's and its continuation's
+    assert {"past window", "continuation window", "settled"} <= applicable(CHECKS, trans)
+
+
+def test_a_transition_closed_by_the_games_end_has_nothing_to_settle_against():
+    """continuation "end" means the game stops at T, so there is no stationary buffer for the maps to
+    settle TO and no continuation window to be too short.  Both were being demanded regardless."""
+    prior = example("kyle_back_prior")
+    assert prior.horizon.kind == "transition" and prior.horizon.continuation == "end"
+    applies = applicable(CHECKS, prior)
+    assert "settled" not in applies and "continuation window" not in applies
+    #  and its past is a PRIOR on the state, not an inherited regime, so it has no window either
+    assert "model" not in (prior.horizon.past or {}) and "past window" not in applies
+
+
+def test_no_shipped_example_reports_a_check_as_missing():
+    """MISSING means "applicable, supported, was to run, produced no record" -- the status that says
+    INVESTIGATE THIS.  It fired routinely on correct models, which is how a status stops meaning
+    anything.  Nothing shipped should produce one."""
+    coarse = {"ch3_precision_change": {"nodes": 5}, "ch5_cycle_market": {"nodes": 6},
+              "kyle_back_prior": {"nodes": 8}}
+    for name in ns.examples():
+        res = ns.solve(ns.example(name), coarse.get(name))
+        missing = [c for c, st in res.diagnostics.statuses.items() if st is Status.MISSING]
+        assert not missing, f"{name}: {missing} reported MISSING"
+
+
+def test_a_failing_past_window_blocks_acceptance():
+    """It failed, was printed as PAST WINDOW TOO SHORT, and could not block: `past window` was a row
+    the result emitted and not a name any policy knew.  Emitted is not the same as known -- the third
+    gap of this shape, after NOT_APPLICABLE-vs-UNSUPPORTED and applicable-vs-emitted.
+    """
+    res = ns.solve(ns.example("ch3_precision_change"), {"nodes": 5})
+    failing = {d["name"].split(":", 1)[0] for d in res.diagnostics.rows if d["ok"] is False}
+    assert "past window" in failing                                  # the guard fires
+    blocking = {b.check for b in res.diagnostics.assess().blocking}
+    assert "past window" in blocking                                 # and acceptance sees it
+    assert not (failing - blocking), f"failing rows invisible to acceptance: {sorted(failing - blocking)}"
 
 
 def test_a_check_this_engine_cannot_build_is_unsupported_not_inapplicable():

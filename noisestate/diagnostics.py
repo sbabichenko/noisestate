@@ -45,14 +45,46 @@ class Status(enum.Enum):
 
 
 #  Every check a policy may require, with the question that decides whether it APPLIES.  The
-#  predicate reads the model and nothing else: applicability is never hard-coded per horizon kind,
-#  because a transition carries a lag-truncation window just as a stationary model does.
-def _carries_lag_window(model) -> bool:
-    return model.horizon.kind in ("stationary", "transition")
+#  predicate asks what the model CARRIES, not what kind it is -- the two came apart badly here.
+#  An earlier version of this comment claimed applicability was never hard-coded per horizon kind
+#  "because a transition carries a lag-truncation window just as a stationary model does", and the
+#  predicates then tested the kind anyway.  Both halves were wrong: a transition's lag windows
+#  belong to its PAST and its CONTINUATION and are checked under their own names, while the plain
+#  `window` check measures a result's own window tail, which only a stationary result has.  The cost
+#  of the mismatch was that every transition reported `window` and `settled` as MISSING -- the status
+#  that means "applicable, supported, was to run, produced no record" -- so no transition could be
+#  accepted, and the one status meaning "investigate this" fired on correct models.
+def _carries_own_lag_window(model) -> bool:
+    """Whether the model has a lag-truncation window of its OWN whose tail is measurable.
+
+    A stationary model does.  A transition does not: the window it is solved on belongs to the past
+    it inherits and to the stationary continuation it is closed by, and each of those has its own
+    check.  horizon.window is None on both shipped transitions for exactly that reason.
+    """
+    return model.horizon.kind == "stationary"
 
 
 def _is_transition(model) -> bool:
     return model.horizon.kind == "transition"
+
+
+def _has_stationary_past(model) -> bool:
+    """A transition inheriting a STATIONARY REGIME, whose own window tail comes with its provenance.
+
+    Not merely a transition with a past.  A past may instead be a prior on the state -- a list of
+    initial shocks, `past: {initial: [...]}`, as in kyle_back_prior -- and a prior has no lag window
+    to be too short.  Only `past: {model: ...}` brings an inherited regime with a window tail.
+    """
+    past = model.horizon.past or {}
+    return _is_transition(model) and past.get("model") is not None
+
+
+def _closed_by_a_continuation(model) -> bool:
+    """A transition closed by the new model's stationary equilibrium on a buffer, rather than by the
+    game's end.  Only then is there something for the maps to settle TO, or a continuation whose own
+    window can be too short.  `continuation` defaults to "stationary" when a transition omits it.
+    """
+    return _is_transition(model) and (model.horizon.continuation or "stationary") != "end"
 
 
 def curvature_is_obtainable(model) -> bool:
@@ -77,8 +109,13 @@ CHECKS = {
     "converged": lambda model: True,
     "resolution": lambda model: True,
     "second_order": lambda model: True,      # applies everywhere; see curvature_is_obtainable
-    "window": _carries_lag_window,
-    "settled": _is_transition,
+    "window": _carries_own_lag_window,
+    #  A transition's two lag windows, named as the rows that carry them are named.  They were
+    #  EMITTED as rows before and were not names any policy knew, so a failing past window printed
+    #  PAST WINDOW TOO SHORT and could not block acceptance: emitted is not the same as known.
+    "past window": _has_stationary_past,
+    "continuation window": _closed_by_a_continuation,
+    "settled": _closed_by_a_continuation,
 }
 
 #  Checks that exist only because diagnostics ran.  With solve(diagnostics=False) they are SKIPPED,
@@ -86,7 +123,8 @@ CHECKS = {
 DIAGNOSTIC_ONLY = frozenset({"resolution", "second_order"})
 
 #  The minimum an equilibrium must satisfy to be called verified, independent of any policy.
-MINIMUM = frozenset({"converged", "resolution", "second_order", "window"})
+MINIMUM = frozenset({"converged", "resolution", "second_order", "window",
+                     "past window", "continuation window"})
 
 
 def applicable(checks: Iterable[str], model) -> frozenset:
@@ -108,7 +146,8 @@ class Policy:
 
 
 Policy.PUBLICATION = Policy("publication",
-                            frozenset({"converged", "resolution", "window", "second_order", "settled"}))
+                            frozenset({"converged", "resolution", "window", "second_order", "settled",
+                                       "past window", "continuation window"}))
 Policy.EXPLORATORY = Policy("exploratory", frozenset({"converged"}))
 
 

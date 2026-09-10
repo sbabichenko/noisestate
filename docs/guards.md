@@ -14,6 +14,12 @@ A row that fails is not the same as a check that could not run: a status of `uns
 cannot compute it) or `not_applicable` (the model gives it no meaning) emits no failing row, and only
 the first of the two leaves the requirement unmet.
 
+Which checks apply is decided by what the model's horizon CARRIES.  A stationary model has its own lag
+`window`; a transition's windows belong to its past and its continuation, so it carries `past window`
+and `continuation window` instead, together with `settled`.  A transition closed by the game's `end`
+has no continuation to settle against, and a past that is a prior on the state has no window.  All four
+are names a policy can require, so a failing `past window` blocks acceptance rather than only printing.
+
 ## The rows and their flags
 
 | row | value | threshold | flag the user sees | advice |
