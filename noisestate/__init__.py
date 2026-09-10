@@ -17,13 +17,13 @@ from .accel import ConvergenceError, DiagnosticsError, ResultValidationError
 from ._settings import Settings
 from .results import Result
 from . import engines
-from .sweep import sweep
+from .sweep import sweep, SweepPoint
 from .comparison import compare, ComparisonResult, ScenarioResult
 from .diagnostics import Assessment, Policy, Status
 from .grid_cache import clear as clear_grid_cache
 from .transition import transition, transition_gap
 from .schema import schema
-from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition, SweepPoint, using_settings
+from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition, using_settings
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
 

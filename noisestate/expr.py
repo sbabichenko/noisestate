@@ -1024,30 +1024,6 @@ def compile_model(name: str, states, agents, definitions=None, ties=None, horizo
 
 # ------------------------------------------------------------------------------------ sweep rows, settings
 
-@dataclass(frozen=True)
-class SweepPoint:
-    """One point of a sweep: the model at one parameter value, and what solving it there took.
-
-    A CONTINUATION point, not a comparison scenario -- it carries the predictor and branch fields
-    (`change`, `jump`) that only make sense along a path.  It shares CONVENTIONS with
-    ScenarioResult, not identity: both are frozen dataclasses, both carry result / seconds /
-    evaluations / converged under those names, and both expose to_dict().  Making them one type
-    would merge two different objects; giving them different field names for the same thing would
-    make a reader check which is which.
-    """
-    param: str
-    value: float
-    result: object
-    seconds: float
-    evaluations: int
-    converged: bool
-    change: Optional[float] = None      # strategy change from the previous point on the same grid
-    jump: bool = False                  # that change far above the sweep's typical: a branch jump?
-
-    def to_dict(self) -> dict:
-        return {"param": self.param, "value": self.value, "seconds": self.seconds,
-                "evaluations": self.evaluations, "converged": self.converged,
-                "change": self.change, "jump": self.jump, "result": self.result.to_dict()}
 
 
 class using_settings:
@@ -1081,5 +1057,5 @@ class using_settings:
 
 
 __all__ = ["Param", "Coef", "shocks", "Shock", "State", "Control", "define", "Definition", "Quantity", "Linear", "Quad",
-           "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint", "using_settings",
+           "Signal", "Agent", "Stationary", "Finite", "Transition", "using_settings",
            "sqrt", "exp", "log", "sin", "cos", "tanh"]

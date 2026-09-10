@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import copy
 import time
+from dataclasses import dataclass
 from typing import Iterable, List, Optional, Union
 
 import numpy as np
 import yaml
 
-from .expr import SweepPoint
 from .spec import Model, ModelBuilder
 from .past import Past
 from .results import TriangleResult
@@ -52,6 +52,32 @@ def warm_start(prev) -> Optional[dict]:
         c = prev.compiled
         return {a.name: np.stack([prev.world[c.block(u)] for u in a.controls]) for a in prev.model.agents}
     return prev.maps
+
+
+@dataclass(frozen=True)
+class SweepPoint:
+    """One point of a sweep: the model at one parameter value, and what solving it there took.
+
+    A CONTINUATION point, not a comparison scenario -- it carries the predictor and branch fields
+    (`change`, `jump`) that only make sense along a path.  It shares CONVENTIONS with
+    ScenarioResult, not identity: both are frozen dataclasses, both carry result / seconds /
+    evaluations / converged under those names, and both expose to_dict().  Making them one type
+    would merge two different objects; giving them different field names for the same thing would
+    make a reader check which is which.
+    """
+    param: str
+    value: float
+    result: object
+    seconds: float
+    evaluations: int
+    converged: bool
+    change: Optional[float] = None      # strategy change from the previous point on the same grid
+    jump: bool = False                  # that change far above the sweep's typical: a branch jump?
+
+    def to_dict(self) -> dict:
+        return {"param": self.param, "value": self.value, "seconds": self.seconds,
+                "evaluations": self.evaluations, "converged": self.converged,
+                "change": self.change, "jump": self.jump, "result": self.result.to_dict()}
 
 
 def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iterable[float], numerics=None,
