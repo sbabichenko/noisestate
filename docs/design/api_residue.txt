@@ -43,6 +43,13 @@
 
  FOUND BY comparing dir(instance) against dir(ns.Result).
 
+ CORRECTED 2026-09-10.  The "five" was measured on ONE subclass; across all four the figure is 22,
+ so the total is 39 rather than 22.  summary and plot were declared on Result in the meantime, and
+ the remaining 22 split into two different problems: the 17 dataclass fields belong on Result and
+ are merely undeclared, while the rest are genuinely per-engine (march_*, excess_tail,
+ belief_error and the others are transition-only) and the friction there is that a user holding a
+ Result cannot discover which of them their result has.  See newcomer_friction_2026-09-10.txt.
+
  WORTH NOTING that summary() and plot() differing by engine is deliberate and correct -- their
  signatures and return types are identical across the four subclasses, only the contents differ.
  What is accidental is that the base class does not declare them at all.

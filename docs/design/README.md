@@ -16,5 +16,6 @@ with the code, the code and the pages above are current.
 | [consolidation_api_design.md](consolidation_api_design.md) | the consolidation pass: the API memo |
 | [consolidation_2026-09-10.md](consolidation_2026-09-10.md) | the consolidation pass after 0.8: what was shared, the two bugs it surfaced, and what was left alone |
 | [api_spec.txt](api_spec.txt) | the 0.8 API specification: what was decided, why, and the two items still open |
+| [newcomer_friction_2026-09-10.txt](newcomer_friction_2026-09-10.txt) | where a first user gets stuck: three connected defects in the assessment, and the friction around them.  Findings, with the command that shows each |
 | [api_residue.txt](api_residue.txt) | what the 0.8 redesign did not reach: nine leads, with the evidence for each |
 | [reviews/](reviews/) | dated reviews and superseded snapshots, kept for the reasoning.  Each carries its version and the disposition of its findings; they are history, not task lists |

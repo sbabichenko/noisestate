@@ -1,0 +1,229 @@
+================================================================================================
+ noisestate -- WHERE A NEWCOMER GETS STUCK
+ Findings from walking the package cold, 2026-09-10.  Findings, not a work plan.
+================================================================================================
+
+ WHAT THIS IS
+
+ The 0.8 redesign settled the contracts and the pass after it fixed the documentation, the first
+ workflow and the duplication.  None of that was driven by watching someone MEET the package.  This
+ file is that: plausible first moves, a first model written by hand, and the shipped examples run
+ as a new user would run them, with what happened.
+
+ Unlike docs/design/api_residue.txt, SOME OF THESE ARE DEFECTS.  Items 1 to 3 are one connected
+ problem -- the assessment's vocabulary is coarser than the checks it judges -- and they interact,
+ so the order of any fix matters (see item 3).  Items 4 onward are friction rather than fault.
+
+ Each item states HOW IT WAS FOUND and gives the command that shows it.  Measured against the tree
+ at 37ae8b3 (the consolidation pass), on the shipped examples.
+
+ What did NOT come up is worth recording too: model validation is the strongest part of the
+ package.  Every malformed model tried -- a control absent from its own loss, an agent with no
+ rows, an unused channel, a misspelled top-level key, a finite horizon given the pre-0.8 `window`
+ -- was refused with a message naming the item and usually the correction.
+
+
+================================================================================================
+ 1.  A result whose every check passes, which --require-ok still rejects        [the worst one]
+================================================================================================
+
+     $ noisestate solve examples/ch4_kyle_back.yaml --nodes 40 --require-ok
+     not ok: failed diagnostic checks: second_order (see summary)
+     ch4_kyle_back: converged residual 3.88e-11 in 47 evaluations, 0.3s; ...
+     Diagnostics: 0 failed, 3 passed
+       Solve       PASS
+       Numerics    PASS
+       Equilibrium NOT CHECKED
+     exit 1
+
+ Two lines about the same result contradict each other: "failed diagnostic checks: second_order"
+ against "0 failed, 3 passed".  The status is UNSUPPORTED, not FAILED.  The CLI's wording collapses
+ precisely the distinction 0.8 exists to preserve -- and it is the library that is right here, not
+ the message.
+
+ Worse, it is PERMANENT.  Kyle-Back is a discounted stationary model, where the second-order form
+ is not a quadratic form in the stationary kernel and this engine cannot build it at all
+ (diagnostics.curvature_is_obtainable).  No value of --nodes will ever change the verdict, and
+ nothing in the output says so, so the obvious response -- raise the resolution and try again -- is
+ wasted effort.  A user who does exactly that arrives at the output above.
+
+ This is the FLAGSHIP example: ch4_kyle_back is the model the README prints in full to explain the
+ model file.
+
+ WHY IT MATTERS.  The first thing a careful user does is put require_ok() in front of their
+ numbers, which is what the README tells them to do.  On the headline example that produces an
+ error they cannot act on, phrased in a way that contradicts the summary printed beneath it.
+
+ WHAT WOULD FIX IT.  Three separate things, worth separating: (a) the CLI should say "cannot be
+ checked here" rather than "failed" for an unsupported check; (b) an unsupported check should say
+ whether any setting could change it, since UNSUPPORTED is a statement about the engine and the
+ model together and is therefore knowable in advance; (c) the docs should say which shipped
+ examples can be accepted and which cannot, and why.
+
+ FOUND BY running --require-ok on each shipped example and reading the exit codes.
+
+
+================================================================================================
+ 2.  No transition can ever be publication-accepted                                    [DEFECT]
+================================================================================================
+
+ Applicability is decided by the horizon's KIND rather than by what the model carries:
+
+     def _carries_lag_window(model):  return model.horizon.kind in ("stationary", "transition")
+     def _is_transition(model):       return model.horizon.kind == "transition"
+
+ But `kyle_back_prior` has continuation "end" -- the game stops at T, so there is nothing to settle
+ AGAINST -- and horizon.window is None, so there is no lag window to check.  Both checks are
+ nevertheless deemed applicable, no row is emitted for either, and both land as MISSING:
+
+     ns.solve(ns.example("kyle_back_prior"), {"nodes": 8}).diagnostics.statuses
+     -> {'converged': passed, 'resolution': passed, 'second_order': failed,
+         'settled': missing, 'window': missing}
+
+     ns.solve(ns.example("ch3_precision_change"), {"nodes": 5}).diagnostics.assess().blocking
+     -> window [missing]   (among others)
+
+ MISSING is defined as "applicable, supported, was to run, produced no record" -- the status that
+ means INVESTIGATE THIS, something silently produced nothing.  It fires routinely on correct
+ models, so it stops carrying that meaning, which is the failure mode 0.8 set out to remove one
+ level up.
+
+ The module's own docstring already states the rule this breaks:
+
+     "applicability is never hard-coded per horizon kind, because a transition carries a
+      lag-truncation window just as a stationary model does"
+
+ The predicate is a hard-coded kind check.  The docstring's reasoning is right -- a transition CAN
+ carry a lag window -- but the conclusion needs the model consulted, not its kind: does this
+ horizon actually have a window, and does it have a continuation to settle against.
+
+ WHY IT MATTERS.  Every transition is unacceptable under Policy.PUBLICATION for a reason that is
+ not a defect in the result.  A user working on transitions -- the whole of Chapter 3 -- has no
+ usable acceptance gate and learns to ignore the assessment.
+
+ FOUND BY running the assessment over all seven shipped examples and asking why the two transitions
+ blocked; four of the seven are unacceptable, but only these two for a reason that is not real.
+
+
+================================================================================================
+ 3.  A guard that fails, is printed, and is invisible to acceptance                    [DEFECT]
+================================================================================================
+
+ On ch3_precision_change the past-window guard FAILS and is shown to the user, while acceptance
+ never considers it:
+
+     rows emitted        past window   ok=False        <- printed as PAST WINDOW TOO SHORT
+     CHECKS              {converged, resolution, second_order, settled, window}
+     assess().blocking   resolution, settled, window   <- no past window
+
+ `past window` and `continuation window` are emitted as rows but are not names the policy knows, so
+ a policy cannot require them and a failure in them cannot block.  0.8 closed two gaps of this
+ shape -- NOT_APPLICABLE against UNSUPPORTED, and applicable against emitted.  This is the third:
+ EMITTED against KNOWN.
+
+ ORDER OF FIXING MATTERS.  This is currently MASKED by item 2: no transition is ever accepted, so
+ no result is accepted while printing PAST WINDOW TOO SHORT.  Fixing item 2 alone REMOVES that
+ mask, and a transition whose past window is too short would then be accepted with the failure
+ printed above the verdict.  The two want fixing together.
+
+ FOUND BY comparing the set of rows with ok=False against the set of blocking checks, rather than
+ reading either alone.
+
+
+================================================================================================
+ 4.  Four of seven shipped examples cannot be accepted, with no signal which are fixable
+================================================================================================
+
+     ch1_delayed_finite     accepted
+     ch1_two_player_finite  accepted
+     ch3_two_player         window [failed]                    fixable: window 9, nodes 32
+     ch5_cycle_market       resolution [failed]                not at a sane cost (see below)
+     ch4_kyle_back          second_order [unsupported]         NEVER, on this engine (item 1)
+     kyle_back_prior        second_order [failed] + item 2     a real claim about the model
+     ch3_precision_change   resolution, settled + item 2       fixable: --nodes 8 --past-window 6 --T 12
+
+ The examples are honest and each says in its own file why it flags.  What is missing is the
+ distinction a newcomer needs: which of these is a knob away from passing, which is a statement
+ about the model, and which can never pass here.  docs/user_experience.md has this analysis for
+ four of them, dated against 0.6.9, but the assessment output does not carry it and the README does
+ not point at it from where the failure appears.
+
+ ch5_cycle_market sits at representation error 6.6e-06 against a 1e-06 threshold (measured here).
+ docs/user_experience.md records that it does not reach the threshold at 10 or 12 nodes either, at
+ 9.9 s and 25 s -- those two timings are its, measured against 0.6.9, and were not re-run.
+
+ FOUND BY running every shipped example under the default policy.
+
+
+================================================================================================
+ 5.  There is no way to install it by name
+================================================================================================
+
+     $ pip download noisestate --no-deps
+     ERROR: Could not find a version that satisfies the requirement noisestate (from versions: none)
+
+ The README says `pip install .` from a checkout, which is honest and works, and the examples now
+ ship inside the wheel so the first workflow runs from a plain install.  But there is no built
+ distribution anywhere, so "install it and try it" is not a thing anyone can do without the
+ repository.  Whether that matters is a decision about the audience, not a defect.
+
+ FOUND BY trying the obvious install command.
+
+
+================================================================================================
+ 6.  Smaller snags, each real and each cheap
+================================================================================================
+
+ A STATE WITH NO NOISE MISDIRECTS.  Removing a state's noise loading reports
+
+     channel(s) ['w'] are never loaded by a state or a signal row (misspelled?)
+
+ which points at the channel and suggests a typo, when the cause is the state that stopped loading
+ it.  Every other validation message names the thing that is wrong.
+
+ kernel() DOES NOT LIST WHAT EXISTS.  res.kernel("Z") gives `unknown quantity 'Z'` without naming
+ the quantities there are, unlike with_params and without_signal, which both list the alternatives.
+
+ Result STILL DOES NOT DECLARE ITS MEMBERS, and api_residue.txt UNDERCOUNTS IT.  That file records
+ "17 fields + 5 subclass-only = 22".  The 5 was measured on one subclass; across all four the
+ figure is 22, so the total is 39, not 22.  Two of them (summary, plot) were declared on Result in
+ the user-experience pass.  The 17 dataclass fields belong on Result and are simply undeclared; the
+ 22 are genuinely per-engine (march_*, excess_tail, belief_error and the rest are transition-only),
+ and the friction there is that a user holding a Result cannot discover which of them their result
+ has.  Those are two different problems under one heading.
+
+     hasattr(ns.Result, "costs")   -> False        # every result has costs
+     hasattr(ns.Result, "settled") -> False        # only a transition has settled
+
+ res.extra["window"] STILL HOLDS THE TERMINAL TIME.  The CLI and the model file now separate T from
+ the lag window L, and the payload documents this key as "named `window` for the payload's history;
+ the quantity is T".  It is the last place the old conflation is live, and it is in the settle
+ march's output, where a user reads the T that was found.
+
+ THE VERSION IS UNRELEASED.  pyproject says 0.8.0, which is archived; the CHANGELOG's top entry is
+ "Unreleased" and now holds two passes of work, one of which (transition --window becoming --T) is
+ breaking at the command line.
+
+ FOUND BY the newcomer walk-through, and by re-measuring api_residue.txt's own figure.
+
+
+================================================================================================
+ SUGGESTED ORDER
+================================================================================================
+
+ Items 1, 2 and 3 are one problem: the assessment's vocabulary is coarser than the set of checks it
+ judges.  They should be fixed together and in this shape --
+
+   a. applicability reads what the model CARRIES (a continuation to settle against, a lag window to
+      check) instead of its kind;
+   b. `past window` and `continuation window` become names the policy knows, so that a failure in
+      them can block and a policy can require them;
+   c. the CLI distinguishes "failed" from "cannot be checked here", and an unsupported check says
+      whether any setting could change it.
+
+ -- because (a) alone unmasks (3), and (c) alone leaves the contradiction in item 1 unexplained.
+
+ Item 4 is documentation once 1 to 3 are done: the assessment can then say which failures are
+ fixable, and the README can point at it.
+
+ Items 5 and 6 are independent and can be taken in any order or left.
