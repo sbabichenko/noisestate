@@ -61,7 +61,7 @@ def stationary(m, nodes, window=None):
 def same_model_solver(m, stat, T, nodes, continuation=True, settings=None, **hz):
     """The spectral finite engine on the strip [0, T] at `nodes` with `stat` (m's stationary equilibrium) as the
     past and, unless continuation=False, as the continuation; `hz` goes to with_numerics (unit, unit_range)."""
-    return ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=T).with_numerics(nodes=nodes, **hz), settings=settings,
+    return ns.SpectralFiniteSolver(m.with_horizon(kind="finite", T=T).with_numerics(nodes=nodes, **hz), settings=settings,
                                    past=stat, continuation=stat if continuation else None)
 
 
@@ -130,7 +130,7 @@ def prior_model(rho=0.5, nodes=12):
     return {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": A1, "D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": H1}, "noise": {"w1": 1.0}}},
                              "loss": [[1.0, "X", "X"], [R1, "D", "D"]]}},
-            "horizon": {"kind": "finite", "window": T1, "discount": rho}, "numerics": {"nodes": nodes}}
+            "horizon": {"kind": "finite", "T": T1, "discount": rho}, "numerics": {"nodes": nodes}}
 
 
 # ------------------------------------------------ the record of a solve

@@ -31,7 +31,7 @@ def test_delayed_row_map_axes_place_the_map():
     assert (age > L + 1e-9).sum() == 7 and np.abs(g[age > L + 1e-9]).max() == 0.0 and np.abs(g[age < L]).max() > 0.1
     d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 4
     r = ns.solve(d).require_converged(); p = json.loads(json.dumps(r.to_dict())); row = p["agents"]["player2"]["signals"]["y2"]
-    g = np.array(p["maps"]["player2"]["D2"]["y2"]); t = np.array(row["map_time"]); T = p["horizon"]["window"]
+    g = np.array(p["maps"]["player2"]["D2"]["y2"]); t = np.array(row["map_time"]); T = p["horizon"]["T"]
     assert row["delay"] == 0.25 and np.allclose(t, r.grid.t + 0.25) and np.allclose(row["map_age"], r.grid.a + 0.25)
     assert (t > T + 1e-9).any() and np.abs(g[t > T + 1e-9]).max() == 0.0 and np.abs(g[t <= T]).max() > 0.1
     assert p["agents"]["player1"]["signals"]["y1"]["map_time"] == p["grid"]["t"]        # an undelayed row: the grid's own time

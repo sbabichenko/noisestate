@@ -52,7 +52,7 @@ def test_the_result_subclasses_are_no_longer_exported(name):
 @pytest.mark.parametrize("horizon, message", [
     ({"kind": "stationary", "window": 3.0, "nodes": 8}, "moved under numerics"),
     ({"kind": "finite_cells", "window": 1.0}, "numerics.engine"),
-    ({"kind": "transition", "window": 3.0, "stationary": {"nodes": 8}}, "numerics.continuation_nodes"),
+    ({"kind": "transition", "T": 3.0, "stationary": {"nodes": 8}}, "numerics.continuation_nodes"),
 ])
 def test_the_old_model_file_spellings_name_what_replaced_them(horizon, message):
     d = {"channels": ["w"], "states": {"X": {"noise": {"w": 1.0}}},
@@ -103,7 +103,7 @@ def test_cell_engine_mean_solve_refuses_a_singular_mean_system():
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples"))
     from ch1_mean_sweep import model as ch1_targets
-    d = ch1_targets(10.0, nodes=12).to_dict(); d["horizon"] = {"kind": "finite", "window": 1.0}
+    d = ch1_targets(10.0, nodes=12).to_dict(); d["horizon"] = {"kind": "finite", "T": 1.0}
     d["numerics"] = {"engine": "cells", "nodes": 8, "settings": {"mean_rcond": 1.0}}      # every system fails a threshold of 1
     with pytest.raises(ValueError, match="the mean system is singular"):
         ns.solve(d)

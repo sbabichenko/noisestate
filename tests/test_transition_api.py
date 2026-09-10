@@ -16,7 +16,7 @@ def regime():
     """Chapter 3, p1 = 3 (the shipped file) to p1 = 10, T = 6, 8 nodes: the keyword form from zero and its inputs."""
     m = example("ch3_two_player")
     old = ns.solve(m).require_converged()
-    new = m.with_params(p1=10.0).with_horizon(kind="finite", window=6.0).with_numerics(nodes=8)
+    new = m.with_params(p1=10.0).with_horizon(kind="finite", T=6.0).with_numerics(nodes=8)
     return {"m": m, "old": old, "new": new, "zero": ns.solve(new, past=old, continuation="stationary", start="zero")}
 
 
@@ -24,7 +24,7 @@ def test_file_form_equals_the_keyword_form_bit_for_bit(regime):
     """horizon: {kind: transition, past: {model: ch3_two_player.yaml}} solves the past on the fly and the
     continuation at horizon.nodes, exactly as solve(new, past=old, continuation="stationary")."""
     d = regime["m"].with_params(p1=10.0).to_dict()
-    d["horizon"] = {"kind": "transition", "window": 6.0, "past": {"model": EX + "ch3_two_player.yaml"}}; d["numerics"] = {"nodes": 8}
+    d["horizon"] = {"kind": "transition", "T": 6.0, "past": {"model": EX + "ch3_two_player.yaml"}}; d["numerics"] = {"nodes": 8}
     m = ns.Model.from_dict(d)
     assert m.horizon.kind == "transition" and m.horizon.past == {"model": EX + "ch3_two_player.yaml"} and m.horizon.continuation is None
     assert m.to_dict()["horizon"]["past"] == {"model": EX + "ch3_two_player.yaml"}
@@ -55,7 +55,7 @@ def test_transition_helper_starts_from_the_new_stationary_maps(regime):
     bit the keyword form with the same start, in fewer evaluations than from zero (21 against 23)."""
     m = regime["m"]; z = regime["zero"]
     res = ns.transition(EX + "ch3_two_player.yaml", m.with_params(p1=10.0), T=6.0, numerics={"nodes": 8})
-    assert res.model.horizon.kind == "transition" and res.model.horizon.window == 6.0 and res.model.horizon.nodes == 8
+    assert res.model.horizon.kind == "transition" and res.model.horizon.T == 6.0 and res.model.horizon.nodes == 8
     assert res.model.horizon.past == {"model": EX + "ch3_two_player.yaml"} and res.solve_kw["start"] == "stationary"
     assert res.past is not None and res.stationary is res.continuation and res.stationary.model.horizon.kind == "stationary"
     kw = ns.solve(regime["new"], past=regime["old"], continuation="stationary", start="stationary")
@@ -98,7 +98,8 @@ def test_transition_validation():
     with pytest.raises(ValueError, match="belongs to horizon.kind 'transition'"):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "past": {"initial": []}}})
     with pytest.raises(ValueError, match="belongs to horizon.kind 'transition'"):
-        ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "stationary", "continuation": "end"}})
+        ns.Model.from_dict({**d, "horizon": {**{k: v for k, v in d["horizon"].items() if k != "T"},
+                                             "kind": "stationary", "window": 4.0, "continuation": "end"}})
     with pytest.raises(ValueError, match="needs a past block"):
         ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition"}})
     with pytest.raises(ValueError, match="needs a `model`"):
@@ -122,7 +123,7 @@ def test_transition_validation():
         with pytest.raises(ValueError, match="spectral finite engine only"):
             engine(t)
     with pytest.raises(TypeError, match="horizon.kind 'finite'"):
-        ns.solve({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": {**d, "horizon": {"kind": "finite", "window": 1.0}}}}})
+        ns.solve({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": {**d, "horizon": {"kind": "finite", "T": 1.0}}}}})
 
 
 def test_cli_round_trip(tmp_path, capsys):
@@ -131,7 +132,7 @@ def test_cli_round_trip(tmp_path, capsys):
     directory whatever the working directory."""
     shutil.copy(EX + "ch3_two_player.yaml", tmp_path / "old.yaml")
     d = example("ch3_two_player").with_params(p1=10.0).to_dict()
-    d["horizon"] = {"kind": "transition", "window": 6.0, "past": {"model": "old.yaml"}, "continuation": "stationary"}
+    d["horizon"] = {"kind": "transition", "T": 6.0, "past": {"model": "old.yaml"}, "continuation": "stationary"}
     d["numerics"] = {"nodes": 8, "continuation_nodes": 8}
     with open(tmp_path / "change.yaml", "w") as fh:
         yaml.safe_dump(d, fh)
@@ -298,12 +299,14 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     d["horizon"] = {"kind": "transition", "settle": 5e-2, "past": {"model": EX + "ch3_two_player.yaml"}}; d["numerics"] = {"nodes": 6}
     fm = ns.Model.from_dict(d)
     assert fm.horizon.settle == 5e-2 and fm.to_dict()["horizon"] == {"kind": "transition", "discount": 0.0, "settle": 5e-2, "past": d["horizon"]["past"]}
-    assert "settle" not in fm.with_horizon(window=6.0, settle=None).to_dict()["horizon"]
+    assert "settle" not in fm.with_horizon(T=6.0, settle=None).to_dict()["horizon"]
     fr = ns.solve(fm, max_evaluations=40)
     hr = ns.transition(EX + "ch3_two_player.yaml", new, settle=5e-2, numerics={"nodes": 6}, max_evaluations=40)
     assert fr.extra["window"] == hr.extra["window"] and np.array_equal(fr.world, hr.world) and [r["evaluations"] for r in fr.march] == [r["evaluations"] for r in hr.march]
-    with pytest.raises(ValueError, match="exactly one of window"):
-        ns.Model.from_dict({**d, "horizon": {**d["horizon"], "window": 6.0}})
+    #  settle and T are the two ways to give a transition its terminal time; window is the
+    #  continuation's L and coexists with either
+    with pytest.raises(ValueError, match="exactly one of T"):
+        ns.Model.from_dict({**d, "horizon": {**d["horizon"], "T": 6.0}})
     with pytest.raises(ValueError, match="belongs to horizon.kind 'transition'"):
         ns.Model.from_dict({**d, "horizon": {"kind": "finite", "settle": 1e-4}})
     with pytest.raises(ValueError, match="positive tolerance"):

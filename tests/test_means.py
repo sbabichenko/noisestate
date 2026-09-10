@@ -159,7 +159,7 @@ def test_validation_of_constants_and_singular_mean_systems():
     bad = json.loads(json.dumps(d)); bad["states"]["const"] = {"drift": {}, "noise": {"w0": 1.0}}
     with pytest.raises(ValueError, match="reserved"):
         ns.Model.from_dict(bad)
-    fin = json.loads(json.dumps(d)); fin["horizon"] = {"kind": "finite", "window": 1.0}; fin["numerics"] = {"engine": "cells", "nodes": 4}     # the finite engines: paths
+    fin = json.loads(json.dumps(d)); fin["horizon"] = {"kind": "finite", "T": 1.0}; fin["numerics"] = {"engine": "cells", "nodes": 4}     # the finite engines: paths
     assert ns.solve(fin).require_converged().means["D"].shape == (4,)
     walk = json.loads(json.dumps(d)); walk["states"]["X"]["drift"] = {"const": 0.3}      # a random walk with a drift and no inputs
     with pytest.raises(ValueError, match="no stationary mean"):

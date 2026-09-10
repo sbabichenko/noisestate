@@ -85,7 +85,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         grid's end.  Invariant: Tg = T + L with a continuation, T without; a continuation always has a past
         with a window.  Returns L, the past's window (None without one)."""
         hz = model.horizon
-        self.T = float(hz.window)
+        self.T = float(hz.extent)
         self.past = past
         if past is not None:
             past.validate(model, (hz.unit or min(lags)) if lags else None)

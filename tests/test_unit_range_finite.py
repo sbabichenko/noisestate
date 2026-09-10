@@ -34,7 +34,7 @@ def test_unit_range_below_the_window_coarsens_the_grid_within_the_measured_cost(
     """Window 2, 5 nodes, the controls lagged by 0.25 and both rows undelayed: unit_range 0.5 keeps the cuts at
     0.25 and 0.5, at T - 0.25 and T - 0.5, and one panel between: 21 pieces for 36, N 525 for 900; the costs
     move by 1.3e-5 relative and the state kernel by 6.4e-4 of its peak on a 41 x 41 lattice."""
-    full = ns.solve(undelayed(window=2.0, nodes=5)); coarse = ns.solve(undelayed(window=2.0, nodes=5, unit_range=0.5))
+    full = ns.solve(undelayed(T=2.0, nodes=5)); coarse = ns.solve(undelayed(T=2.0, nodes=5, unit_range=0.5))
     assert coarse.compiled.coarse and [float(b) for b in coarse.grid.bp] == [0.0, 0.25, 0.5, 1.0, 1.5, 1.75, 2.0]
     assert len(coarse.grid.pieces) == 21 and len(full.grid.pieces) == 36 and coarse.compiled.N == 525 and full.compiled.N == 900
     for k in full.costs:
@@ -67,10 +67,10 @@ def test_unit_range_on_a_transition_keeps_the_identity_within_the_measured_floor
 def test_unit_range_guards_and_kind_change():
     m = example("ch1_delayed_finite")
     with pytest.raises(ValueError, match="shifted by the delay"):
-        ns.SpectralFiniteSolver(m.with_horizon(window=2.0).with_numerics(nodes=4, unit_range=0.5))
+        ns.SpectralFiniteSolver(m.with_horizon(T=2.0).with_numerics(nodes=4, unit_range=0.5))
     with pytest.raises(ValueError, match="below the largest lag"):
-        ns.SpectralFiniteSolver(undelayed(window=2.0, nodes=4, unit=0.125, unit_range=0.125))
+        ns.SpectralFiniteSolver(undelayed(T=2.0, nodes=4, unit=0.125, unit_range=0.125))
     s = m.with_horizon(kind="stationary", window=3.0).with_numerics(nodes=4, unit_range=2.0)
-    assert s.with_horizon(kind="finite", window=2.0).horizon.unit_range is None            # a stationary sizing is not a finite one
-    assert s.with_horizon(kind="finite", window=2.0).with_numerics(unit_range=1.0).horizon.unit_range == 1.0
+    assert s.with_horizon(kind="finite", T=2.0, window=None).horizon.unit_range is None            # a stationary sizing is not a finite one
+    assert s.with_horizon(kind="finite", T=2.0, window=None).with_numerics(unit_range=1.0).horizon.unit_range == 1.0
     assert s.with_horizon().with_numerics(nodes=6).horizon.unit_range == 2.0

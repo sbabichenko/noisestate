@@ -85,7 +85,7 @@ def _naive(naive_observers):
 def _pieces(model):
     """Read the resolved fields once, rather than a potentially stale source dictionary."""
     hz = model.horizon
-    span = f'{"lag window" if hz.kind == "stationary" else "T"} {hz.window:g}'
+    span = f'{"lag window" if hz.kind == "stationary" else "T"} {hz.extent:g}'
     agents = []
     for agent in model.agents:
         agents.append(dict(

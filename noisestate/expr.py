@@ -761,33 +761,55 @@ class Agent:
 
 # ------------------------------------------------------------------------------------------------- horizons
 
-class Stationary:
-    """A stationary horizon: the lag window L and the discount rate (0 is average cost)."""
+class _Horizon:
+    """A horizon in the expression form.  The three kinds are separate types so that the valid
+    combination of quantities is expressed by the TYPE, rather than by optional fields on one
+    object -- a stationary model has no terminal time and a finite one has no lag window.
+    """
+    kind = "stationary"
+    window = None                # L, the lag-truncation length
+    T = None                     # the terminal time
+
+    @property
+    def extent(self):
+        """The length of the primary computational axis: T where there is one, else the window."""
+        return self.window if self.kind == "stationary" else self.T
+
+    def compile(self) -> dict:
+        out = {"kind": self.kind, "discount": _coef_str(self.discount)}
+        if self.window is not None:
+            out["window"] = _coef_str(self.window)
+        if self.T is not None:
+            out["T"] = _coef_str(self.T)
+        return out
+
+
+class Stationary(_Horizon):
+    """A stationary horizon: the lag-truncation length L and the discount rate (0 is average cost)."""
     kind = "stationary"
 
     def __init__(self, window: float = 8.0, discount=0.0):
         self.window = window; self.discount = discount
 
-    def compile(self) -> dict:
-        return {"kind": self.kind, "discount": _coef_str(self.discount), "window": _coef_str(self.window)}
 
-
-class Finite(Stationary):
-    """A finite horizon [0, T]."""
+class Finite(_Horizon):
+    """A finite horizon [0, T].  T is the terminal time; a finite horizon has no lag window."""
     kind = "finite"
 
     def __init__(self, T: float = 1.0, discount=0.0):
-        super().__init__(T, discount)
+        self.T = T; self.discount = discount
 
 
-class Transition(Stationary):
+class Transition(_Horizon):
     """A transition on [0, T] from `past` (a stationary Model, its dict, a path, or a list of initial shocks
     {name, loads, rows}) continued by "stationary" (the new model's equilibrium, its window the past's unless
     `window` is given) or "end"."""
     kind = "transition"
 
     def __init__(self, T: float = 1.0, past=None, continuation: str = "stationary", discount=0.0, window=None):
-        super().__init__(T, discount)
+        #  a transition carries BOTH: T is when the game ends, `window` the continuation's L, which
+        #  defaults to the past's
+        self.T = T; self.discount = discount
         if past is None:
             raise ValueError("Transition(): a past is required (a stationary Model, a path, or a list of initial shocks)")
         self.past = past; self.continuation = continuation; self.stationary_window = window
@@ -832,7 +854,10 @@ def _check_kinds(name, states, agents, definitions, horizon):
         for x in items:
             if not isinstance(x, kind):
                 raise ValueError(f"Model {name}: {what}, not {x!r}")
-    if not isinstance(horizon, Stationary):
+    #  _Horizon, not Stationary: the three kinds are siblings now.  Finite used to SUBCLASS
+    #  Stationary -- which is how a terminal time came to be stored in a field called window --
+    #  and this check was the last thing that inheritance was carrying.
+    if not isinstance(horizon, _Horizon):
         raise ValueError(f"Model {name}: horizon must be Stationary(...), Finite(...) or Transition(...), not {horizon!r}")
 
 
@@ -886,7 +911,7 @@ class _Walk:
             for sg in a.signals:
                 self.linear(sg.expr); self.coef(sg.delay)
             self.quad(a.loss)
-        self.coef(horizon.window); self.coef(horizon.discount)
+        self.coef(horizon.extent); self.coef(horizon.discount)
         if isinstance(horizon, Transition):
             self.coef(horizon.stationary_window)
             if isinstance(horizon.past, (list, tuple)):

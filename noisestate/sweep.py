@@ -25,6 +25,11 @@ from .results import TriangleResult
 from .engines import build, default_start
 
 
+#  The two horizon lengths a sweep can move.  They are separate parameters because they are
+#  separate quantities: L is how far back a kernel is carried, T is when the game ends.
+HORIZON_LENGTHS = ("horizon.window", "horizon.T")
+
+
 def _load_dict(model: Union[str, dict, Model]) -> dict:
     if isinstance(model, str):
         with open(model) as fh:
@@ -58,7 +63,7 @@ def warm_start(prev) -> Optional[dict]:
 
 def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iterable[float], numerics=None,
           solver_kw: Optional[dict] = None, solve_kw: Optional[dict] = None, verbose: bool = False) -> List[dict]:
-    """Solve the model at each value of `param` (a key of `params`, or "horizon.window": the window L of a
+    """Solve the model at each value of `param` (a key of `params`, or "horizon.window" / "horizon.T": the
     stationary model, the horizon T of a finite one or of a transition, which then warm-starts each point from
     the previous maps read on the new grid, the stationary maps beyond it), warm-starting each point from
     the linear extrapolation of the last two equilibria in the parameter (a secant predictor;
@@ -73,9 +78,9 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
     model's past is solved once and shared by every point (solver_kw={"past": ...} gives it); its
     continuation, the new model's stationary equilibrium, is solved at each point."""
     base = _load_dict(model)
-    if param != "horizon.window" and param not in (base.get("params") or {}):
+    if param not in HORIZON_LENGTHS and param not in (base.get("params") or {}):
         raise ValueError(f"{param!r} is not a parameter of the model (params: {sorted((base.get('params') or {}))}; "
-                         "'horizon.window' sweeps the window or horizon)")
+                         "'horizon.window' sweeps the lag window L, 'horizon.T' the terminal time)")
     solver_kw = dict(solver_kw or {})
     if (base.get("horizon") or {}).get("kind") == "transition" and "past" not in solver_kw:
         solver_kw["past"] = Past.from_block(Model.from_dict(base).horizon.past)      # the past solved once for every point
@@ -83,8 +88,8 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
     prev = prev2 = None
     for v in values:
         d = copy.deepcopy(base)
-        if param == "horizon.window":
-            d.setdefault("horizon", {})["window"] = float(v)
+        if param in HORIZON_LENGTHS:
+            d.setdefault("horizon", {})[param.split(".", 1)[1]] = float(v)
         else:
             d.setdefault("params", {})[param] = float(v)
         m = Model.from_dict(d)

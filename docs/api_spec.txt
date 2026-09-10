@@ -570,6 +570,24 @@
      NOT BLOCKING.  The report fields are specified now and carried from the start; only the
      verified-equilibrium classification waits on the numerical definition.
 
+ INVESTIGATIONS -- open questions that block nothing
+
+ I1  CROSS-REGIME DELAYED OBSERVATIONS.  A transition refuses a row delayed beyond T, on the
+     grounds that it "carries nothing within the window".  That reason is not right for a
+     transition: the past is solved and attached, and the grid represents it -- a transition
+     result's shock_time axis was measured running from -3.0 with T = 1.0 (2026-09-10).
+
+     What that measurement establishes is only that PAST SHOCKS ARE REPRESENTED.  It does NOT
+     establish that a delayed observation crossing the regime boundary is resolved correctly, which
+     depends on the signal definitions, on what each agent knows on either side, and on how the old
+     and new regimes join.  Nor does it justify substituting the past's extent as the validation
+     bound.
+
+     The restriction is kept and the message now says what it is: a limit of the current engines,
+     not a claim that the model is ill-posed.  Lifting it requires establishing the semantics
+     first, and then testing that the engines deliver them.
+
+
  RESOLVED SINCE DRAFT 1
      D1  with_horizon takes a horizon object; typed methods remain.                     PART 2.2
      D2  The validation policy is a first-class object.                                 PART 3.4

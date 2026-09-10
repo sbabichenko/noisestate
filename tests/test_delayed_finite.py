@@ -4,7 +4,14 @@ from noisestate.finite_spectral import SpectralCompiled, SpectralFiniteSolver
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def _finite(name, **hz):
-    d = ns.read_yaml(os.path.join(HERE, "..", "examples", name)); d["numerics"] = {**d.get("numerics", {}), **{k: hz.pop(k) for k in list(hz) if k in ("nodes", "unit", "unit_range", "breakpoints")}}; d["horizon"].update(hz); return d
+    """The example with these overrides.  `window=` names the HORIZON'S LENGTH here, which on these
+    finite examples is the terminal time T -- the helper puts it under the key the kind keeps."""
+    d = ns.read_yaml(os.path.join(HERE, "..", "examples", name))
+    d["numerics"] = {**d.get("numerics", {}), **{k: hz.pop(k) for k in list(hz) if k in ("nodes", "unit", "unit_range", "breakpoints")}}
+    if "window" in hz and d["horizon"].get("kind", "stationary") != "stationary":
+        hz["T"] = hz.pop("window")
+    d["horizon"].update(hz)
+    return d
 
 def test_delayed_finite_spectral_converges_and_matches_cells():
     """Control lag 0.25 in the state and a delayed observation for player 2 (Chapter 2 style).

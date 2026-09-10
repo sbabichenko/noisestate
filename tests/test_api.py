@@ -305,7 +305,7 @@ def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
 
 def test_the_zero_start_is_explicit_with_a_continuation():
     old = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8}).require_converged()
-    new = old.model.with_params(p1=10.0).with_horizon(kind="finite", window=6.0).with_numerics(nodes=5)
+    new = old.model.with_params(p1=10.0).with_finite(6.0).with_numerics(nodes=5)
     d = ns.solve(new, past=old, continuation="stationary", max_evaluations=1)
     z = ns.solve(new, past=old, continuation="stationary", max_evaluations=1, start="zero")
     e = ns.solve(new, past=old, continuation="end", max_evaluations=1)

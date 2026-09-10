@@ -49,10 +49,10 @@ def transition_lines(m: Model) -> list:
         out.append(f"initial shock {sh.get('name', '?')}: loads {sh.get('loads') or {}}, seen on rows {sh.get('rows') or {}}")
     cont = hz.continuation or "stationary"
     if cont == "end":
-        out.append(f"continuation: the game ends at T = {hz.window:g}")
+        out.append(f"continuation: the game ends at T = {hz.extent:g}")
     else:
         st = hz.stationary or {}
-        out.append(f"continuation: the new model's stationary equilibrium on a buffer of one window after T = {hz.window:g}"
+        out.append(f"continuation: the new model's stationary equilibrium on a buffer of one window after T = {hz.extent:g}"
                    + (f" (window {st['window']:g})" if st.get("window") is not None else " (the past's window)")
                    + f", {st.get('nodes', hz.nodes)} nodes per panel (numerics.continuation_nodes)")
     return out
@@ -240,7 +240,7 @@ def _run(p, args) -> int:
         m = Model.from_dict(d, base_dir=base_dir)
         print(f"{m.name}: {len(m.channels)} channels, {len(m.states)} states, {len(m.definitions)} definitions, "
               f"{len(m.agents)} agents, {len(m.control_names)} controls; horizon {m.horizon.kind}, "
-              f"discount {m.horizon.discount}, window {m.horizon.window}; lags {m.all_lags()}")
+              f"discount {m.horizon.discount}, extent {m.horizon.extent}; lags {m.all_lags()}")
         for a in m.agents:
             print(f"  {a.name}: controls {a.controls}; rows {[r.name for r in a.signals]}; {len(a.loss)} loss terms"
                   + ("; myopic" if a.myopic else ""))

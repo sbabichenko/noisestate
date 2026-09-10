@@ -50,7 +50,7 @@ def model(rho, kind, nodes):
     return {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": h}, "noise": {"w1": 1.0}}},
                              "loss": [[1.0, "X", "X"], [r, "D", "D"]]}},
-            "horizon": {"kind": "finite" if cells else kind, "window": T, "discount": rho},
+            "horizon": {"kind": "finite" if cells else kind, "T": T, "discount": rho},
             "numerics": {"nodes": nodes, **({"engine": "cells"} if cells else {})}}
 
 

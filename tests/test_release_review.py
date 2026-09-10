@@ -13,7 +13,12 @@ def _ch3(**hz):
     d["numerics"] = {**d.get("numerics", {}), **{k: hz.pop(k) for k in list(hz) if k in ("nodes", "unit", "unit_range", "breakpoints")}}
     if hz.get("kind") == "finite_cells":
         hz["kind"] = "finite"; d["numerics"]["engine"] = "cells"
-    d["horizon"].update(hz); return d
+    d["horizon"].update(hz)
+    #  the base file is stationary, so `window` is its lag-truncation L.  A caller switching the
+    #  kind means "the horizon's length", which for a finite horizon or a transition is T.
+    if d["horizon"].get("kind", "stationary") != "stationary" and "window" in d["horizon"]:
+        d["horizon"]["T"] = d["horizon"].pop("window")
+    return d
 
 
 # ---------------------------------------------------------------- delayed rows in the stationary engine
@@ -178,7 +183,8 @@ def test_cli_reports_model_errors_as_messages(tmp_path, capsys):
         main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--nodes", "0"])
     with pytest.raises(SystemExit):
         main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--param", "p1=abc"])
-    d = _ch3(); d["horizon"]["kind"] = "finite"; d["horizon"]["window"] = 1.0; d.setdefault("numerics", {})["nodes"] = 8
+    d = _ch3(); d["horizon"] = {"kind": "finite", "T": 1.0, "discount": d["horizon"].get("discount", 0.0)}
+    d.setdefault("numerics", {})["nodes"] = 8
     good = tmp_path / "good.yaml"; yaml.safe_dump(d, open(good, "w"))
     assert main(["solve", str(good)]) == 0 and "discounted cost" in capsys.readouterr().out
 
@@ -197,7 +203,7 @@ def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
                              "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}}}
     import copy
     st = copy.deepcopy(base); st["horizon"] = {"kind": "stationary", "window": 6.0}; st["numerics"] = {"nodes": 16}; rs = ns.solve(st).require_converged()
-    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 7.0}; fi["numerics"] = {"nodes": 5}     # pieces of 0.5: 105 pieces
+    fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "T": 7.0}; fi["numerics"] = {"nodes": 5}     # pieces of 0.5: 105 pieces
     rf = ns.solve(fi).require_converged()
     g = rs.compiled.grid; sides = np.where((np.arange(g.N) % g.n) == g.n - 1, -1, 1)
     t_eval = 4.0                    # three units before the end and, for ages up to 1, three after the start (transients ~1e-4)
@@ -255,9 +261,9 @@ def test_delayed_row_equilibrium_is_insensitive_to_the_least_squares_cutoff():
 @pytest.mark.parametrize("edit, match", [
     (lambda d: d["numerics"].update(unit=0.5, unit_range=8.0), "unit_range"),
     (lambda d: d["numerics"].update(nodes=12.7), "must be an integer"),
-    (lambda d: d["agents"]["player1"]["signals"]["y1"].update(delay=3.0), "not below the window"),
-    (lambda d: d["states"]["X"]["drift"].update({"D1@3.5": 0.1}), "not below the window"),
-    (lambda d: d["agents"]["player1"]["loss"].append([0.1, "D1", "X@-9.0"]), "not below the window"),
+    (lambda d: d["agents"]["player1"]["signals"]["y1"].update(delay=3.0), "not below the horizon's extent"),
+    (lambda d: d["states"]["X"]["drift"].update({"D1@3.5": 0.1}), "not below the horizon's extent"),
+    (lambda d: d["agents"]["player1"]["loss"].append([0.1, "D1", "X@-9.0"]), "not below the horizon's extent"),
     (lambda d: d["agents"]["player1"].update(loss=[[0.5, "X", "X"]]), "do not enter its loss"),
     (lambda d: d["agents"].update(ghost=None), "empty block"),
 ])
@@ -270,7 +276,7 @@ def test_second_round_validation(edit, match):
 def test_lag_beyond_horizon_rejected_on_every_engine():
     for kind in ("stationary", "finite", "finite_cells"):
         d = _ch3(kind=kind, window=0.2, nodes=4); d["states"]["X"]["drift"] = {"D1@0.25": 1.0, "D2": 1.0}
-        with pytest.raises(ValueError, match="not below the window"):
+        with pytest.raises(ValueError, match="not below the horizon's extent"):
             ns.Model.from_dict(d)
 
 

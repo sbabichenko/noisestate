@@ -85,7 +85,7 @@ def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
     r = S.solve(init=w, diagnostics=False); assert len(calls) == 2 * r.evaluations and not any(calls)
     calls.clear(); r = S.solve(init=w); assert len(calls) == 2 * r.evaluations + 2 and calls[-2:] == [True, True]
     # the cell engine (no checks of its own) accepts the option as well
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite", "window": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 12}
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite", "T": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 12}
     assert ns.solve(ns.Model.from_dict(d), diagnostics=False).converged
 
 

@@ -37,7 +37,7 @@ class FiniteCompiled(CompiledBase):
         super().__init__(model)
         reject_leads(model, 'cell engine')
         hz = model.horizon
-        self.T = float(hz.window)
+        self.T = float(hz.extent)
         self.N = int(hz.nodes)
         self.h = self.T / self.N
         self.rho = float(hz.discount)

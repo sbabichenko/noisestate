@@ -34,7 +34,7 @@ agents:
 numerics: {nodes: 12}
 horizon:
   kind: transition
-  window: 2.0
+  T: 2.0
   discount: 0.0
   past:
     initial:

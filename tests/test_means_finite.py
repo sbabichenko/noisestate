@@ -63,7 +63,7 @@ def test_ch1_p10_path_against_the_dissertation_and_the_cell_engine():
     tq = np.array([0.0, 0.05, 0.1, 0.2, 0.5, 0.75, 0.9]); d1sp = sp.mean("D1", tq); Jsp = sp.cost_parts["player1"]["mean"]
     got = {}
     for N in (40, 80, 160):
-        d = ch1_targets(10.0, nodes=12).to_dict(); d["horizon"] = {"kind": "finite", "window": 1.0}; d["numerics"] = {"engine": "cells", "nodes": N}
+        d = ch1_targets(10.0, nodes=12).to_dict(); d["horizon"] = {"kind": "finite", "T": 1.0}; d["numerics"] = {"engine": "cells", "nodes": N}
         res = ns.solve(d).require_converged(); idx = np.round(tq / res.compiled.h).astype(int)
         got[N] = (res.means["D1"][idx], res.cost_parts["player1"]["mean"])
         assert res.mean_times.shape == (N,) and np.abs(res.means["D2"] + res.means["D1"]).max() < 1e-12
@@ -114,7 +114,8 @@ def one_state(a, r, theta, rho, x0, kind="finite", nodes=12):
     loss = [[1.0, "X", "X"], [r, "D", "D"]] + ([[-2.0 * theta, "X"]] if theta else [])
     return ns.Model.from_dict({"name": "lq1", "channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}, "initial": x0}},
                                "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 2.0 ** 0.5}, "noise": {"w1": 1.0}}}, "loss": loss}},
-                               "horizon": {"kind": _kind(kind), "window": 1.0, "discount": rho},
+                               "horizon": {"kind": _kind(kind), **({"window": 1.0} if _kind(kind) == "stationary" else {"T": 1.0}),
+                                           "discount": rho},
                                "numerics": {"nodes": nodes, **_engine(kind)}})
 
 
@@ -146,7 +147,7 @@ def test_two_states_matrix_riccati(theta, rho):
          "states": {"X": {"drift": {"X": -0.5, "Y": 1.0, "D": 1.0}, "noise": {"w0": 1.0}, "initial": 0.2}, "Y": {"drift": {"Y": -1.0, "D": 0.5}, "initial": -0.4}},
          "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.0}, "noise": {"w1": 1.0}}},
                           "loss": [[1.0, "X", "X"], [-2.0 * theta, "X"], [0.3, "Y", "Y"], [0.4, "D", "D"]]}},
-         "horizon": {"kind": "finite", "window": 1.5, "discount": rho}, "numerics": {"nodes": 12}}
+         "horizon": {"kind": "finite", "T": 1.5, "discount": rho}, "numerics": {"nodes": 12}}
     res = ns.solve(d).require_converged()
     xs, us, J, V0 = riccati([[-0.5, 1.0], [0.0, -1.0]], [1.0, 0.5], np.diag([1.0, 0.3]), [theta, 0.0], 0.4, rho, [0.2, -0.4], 1.5, res.mean_times)
     assert np.abs(res.means["X"] - xs[0]).max() < 1e-11 and np.abs(res.means["Y"] - xs[1]).max() < 1e-11 and np.abs(res.means["D"] - us).max() < 1e-11
@@ -170,7 +171,7 @@ def test_targets_scale_the_means_and_leave_the_kernels_and_the_examples():
         assert all(np.array_equal(v, np.zeros(len(res.mean_times))) for v in res.means.values()) and set(res.model.control_names) <= set(res.means)
         assert all(p["mean"] == 0.0 and p["variance"] == res.costs[k] for k, p in res.cost_parts.items())
         assert "mean" not in res.summary().split("\n")[1] and "means at" not in res.summary()
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite", "window": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 20}
+    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite", "T": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 20}
     rc = ns.solve(d).require_converged()
     assert all(np.array_equal(v, np.zeros(20)) for v in rc.means.values()) and rc.cost_parts["player1"]["mean"] == 0.0
 

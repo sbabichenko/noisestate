@@ -30,7 +30,9 @@ agents:
     loss: [[0.5, X, X], ["0.5*r2", D2, D2]]
 horizon:
   kind: transition
-  window: 6.0                         # the horizon T of the transition (the past's window L = 3 is the band's depth)
+  T: 6.0                              # the terminal time of the transition
+                                      # (the past's window L = 3 is the band's depth; horizon.window here
+                                      #  would set the continuation's L, and defaults to the past's)
   discount: 0.0
   past: {model: ch3_two_player.yaml}  # the old regime, solved on the fly (a path relative to this file)
   continuation: stationary            # the new model's stationary equilibrium closes the game after T

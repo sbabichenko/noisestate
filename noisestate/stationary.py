@@ -46,9 +46,9 @@ class Compiled(CompiledBase):
         if hz.breakpoints:
             bp = list(hz.breakpoints)
         elif lags or hz.unit:
-            bp = AgeGrid.breakpoints_from_delays(hz.window, lags, hz.unit, hz.unit_range)
+            bp = AgeGrid.breakpoints_from_delays(hz.extent, lags, hz.unit, hz.unit_range)
         else:
-            bp = [0.0, hz.window]
+            bp = [0.0, hz.extent]
         for l in lags:
             if not any(abs(l - b) < 1e-12 for b in bp):
                 raise ValueError(f"lag {l} is not a panel breakpoint {[round(b, 6) for b in bp]}; set horizon.unit so every lag is a "

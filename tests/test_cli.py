@@ -5,7 +5,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..",
 
 def test_cli_validate_solve_sweep_on_every_engine(tmp_path, capsys):
     assert main(["validate", os.path.join(EX, "ch5_cycle_market.yaml")]) == 0
-    cells = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); cells["horizon"] = {"kind": "finite", "window": 1.0}; cells["numerics"] = {"engine": "cells", "nodes": 24}
+    cells = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); cells["horizon"] = {"kind": "finite", "T": 1.0}; cells["numerics"] = {"engine": "cells", "nodes": 24}
     cells_path = tmp_path / "cells.yaml"; cells_path.write_text(yaml.safe_dump(cells))
     for name, path in (("ch3", os.path.join(EX, "ch3_two_player.yaml")), ("ch1", os.path.join(EX, "ch1_two_player_finite.yaml")), ("cells", str(cells_path))):
         out = tmp_path / f"{name}.json"; plot = tmp_path / f"{name}.png"

@@ -89,8 +89,11 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             d = model.to_dict()
             for s in d["states"].values():
                 s.pop("initial", None)
+            #  the continuation's length is the PAST'S WINDOW -- its lag-truncation L, never the
+            #  transition's extent, which is T.  The terminal time goes with the other transition
+            #  blocks: a stationary horizon has none.
             hz = d.setdefault("horizon", {}); hz.update(kind="stationary", window=float(past.window))
-            for k in ("past", "continuation", "stationary"):
+            for k in ("past", "continuation", "stationary", "T"):
                 hz.pop(k, None)
             nm = d.setdefault("numerics", {})
             for k in ("breakpoints", "engine", "continuation_nodes"):

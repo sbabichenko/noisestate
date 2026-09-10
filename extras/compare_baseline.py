@@ -42,7 +42,7 @@ def npz_path(path: str) -> str:
 
 def _ch3_same_model():
     m = example("ch3_two_player"); stat = stationary(m, 6)
-    return ns.solve(m.with_horizon(kind="finite", window=6.0).with_numerics(nodes=6), past=stat, continuation=stat, start="stationary")
+    return ns.solve(m.with_horizon(kind="finite", T=6.0).with_numerics(nodes=6), past=stat, continuation=stat, start="stationary")
 
 
 CASES = {

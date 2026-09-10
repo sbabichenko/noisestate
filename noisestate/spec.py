@@ -175,14 +175,49 @@ class Horizon:
     by solve(); `Model.numerics` presents them, `Model.with_numerics` changes them)."""
     kind: str = "stationary"          # "stationary" | "finite" (a finite horizon) | "transition"
     discount: float = 0.0
-    window: float = 8.0               # L for stationary; T for finite and transition
+    #  TWO DISTINCT QUANTITIES, never aliased.  Before 0.8 one `window` field held both, and the
+    #  comment on it read "L for stationary; T for finite and transition" -- so a transition's own
+    #  lag window had nowhere to live and was exiled to the nested `stationary` block.
+    window: Optional[float] = None    # L, the lag-truncation length: stationary, and a transition's
+    T: Optional[float] = None         # the terminal time: finite and transition
     # kind "transition" only: the past ({"model": a path or an inline stationary model dict, "initial": [shocks]}),
     # the continuation ("stationary", the default, or "end") and the sizing of the new model's stationary solve
     # for the continuation ({"window": the past's, "nodes": numerics.continuation_nodes})
     past: Optional[dict] = None
     continuation: Optional[str] = None
     stationary: Optional[dict] = None
-    settle: Optional[float] = None    # kind "transition" only: in place of window, the settle tolerance the horizon T is found for (a march in T)
+    settle: Optional[float] = None    # kind "transition" only: in place of T, the settle tolerance the horizon T is found for (a march in T)
+
+    @property
+    def extent_known(self) -> bool:
+        """Whether the primary axis has a length yet.
+
+        False for exactly one thing: a transition given `settle` instead of T, whose terminal time
+        the march finds.  The extent-dependent checks (lags, leads, unit_range, breakpoints) are
+        deferred there rather than run against a stand-in -- the march builds a real model at each
+        T, and each of those is validated.
+        """
+        return self.window is not None if self.kind == "stationary" else (self.T is not None or self.window is not None)
+
+    @property
+    def extent(self) -> float:
+        """The length of the PRIMARY COMPUTATIONAL AXIS: T for a finite horizon or a transition,
+        the lag window L for a stationary model.
+
+        A derived quantity, not a third field and not an alias: it SELECTS whichever of T and
+        window a given operation needs.  Grid construction, breakpoints and unit_range want this;
+        a transition's continuation wants `window` and must never take extent, which there is T.
+        """
+        if self.kind == "stationary":
+            return float(self.window)
+        if self.T is not None:
+            return float(self.T)
+        #  a transition given `settle` instead of T: the terminal time is not determined yet -- the
+        #  march finds it -- so the template's extent is its continuation window when it has one.
+        if self.window is not None:
+            return float(self.window)
+        raise ValueError("this transition has neither a terminal time T nor a continuation window: "
+                         "its extent is not determined until the settle march sets T")
     # ---- the resolved numerics (numerics.py): the grid
     breakpoints: Optional[List[float]] = None
     unit: Optional[float] = None
@@ -275,12 +310,22 @@ class Model:
         return sweep(self, param, list(vals), numerics=numerics, solver_kw=solver_kw, solve_kw=solve_kw, verbose=verbose)
 
     def with_finite(self, T: float, **fields) -> "Model":
-        """The same model on the finite horizon [0, T] (with_horizon(kind="finite", window=T, ...))."""
-        return self.with_horizon(kind="finite", window=T, **fields)
+        """The same model on the finite horizon [0, T].  T is the terminal time, not a lag window."""
+        return self.with_horizon(kind="finite", T=T, window=None, **fields)
 
     def with_stationary(self, window: float, **fields) -> "Model":
-        """The same model on a stationary horizon with lag window `window`."""
-        return self.with_horizon(kind="stationary", window=window, **fields)
+        """The same model on a stationary horizon with lag-truncation length L = `window`."""
+        return self.with_horizon(kind="stationary", window=window, T=None, **fields)
+
+    def with_transition(self, T: float, past, window: Optional[float] = None, **fields) -> "Model":
+        """The same model as a transition on [0, T] from `past`.
+
+        A transition carries BOTH quantities: T is when the game ends, and `window` is the
+        continuation's lag-truncation length L.  `window` defaults to the past's, which is what a
+        transition without one has always used.
+        """
+        extra = {} if window is None else {"window": window}
+        return self.with_horizon(kind="transition", T=T, past=past, **extra, **fields)
 
     def save(self, path: str) -> None:
         """Write the model file (to_dict() as YAML, the parameter expressions intact).
@@ -689,37 +734,19 @@ class Model:
                               "refuses it) or the problem ill-posed", UserWarning)
 
     def _check_horizon(self) -> None:
-        """The horizon: nodes an integer of at least 2, every lag, delay and lead below the window, unit_range
-        within the window, unit positive, breakpoints increasing from 0 to the window, window positive,
-        discount non-negative, kind one of the three engines."""
+        """The horizon: nodes an integer of at least 2, every lag, delay and lead below the primary axis's
+        extent, unit_range within it, unit positive, breakpoints increasing from 0 to it, each length
+        positive where the kind has one, discount non-negative, kind one of the three engines."""
         hz = self.horizon
         if hz.nodes != int(hz.nodes):
             raise ValueError(f"numerics.nodes must be an integer, got {hz.nodes!r}")
-        far = [l for l in self.all_lags() if l >= hz.window - 1e-12]
-        if far:
-            raise ValueError(f"lag(s)/delay(s) {far} are not below the window {hz.window}: a quantity read that far back, or "
-                             "a row delayed that much, carries nothing within the window")
-        leads = [-l for s in self.states for (n, l) in self.expand(s.drift) if l < 0]
-        for a in self.agents:
-            for term in a.loss:
-                leads += [-l for atom in term[1:] for (n, l) in self.expand({atom: 1.0}) if l < 0]
-        if any(l >= hz.window - 1e-12 for l in leads):
-            raise ValueError(f"lead(s) {sorted(set(l for l in leads if l >= hz.window - 1e-12))} are not below the window {hz.window}")
-        if hz.unit_range is not None and hz.unit_range > hz.window + 1e-12:
-            raise ValueError(f"numerics.unit_range ({hz.unit_range}) must not exceed the window ({hz.window})")
-        if hz.unit is not None and not hz.unit > 0:
-            raise ValueError("numerics.unit must be positive")
-        if hz.breakpoints is not None:
-            bp = list(hz.breakpoints)
-            if len(bp) < 2 or abs(bp[0]) > 1e-12 or abs(bp[-1] - hz.window) > 1e-9 * max(1.0, hz.window) or any(b2 <= b1 for b1, b2 in zip(bp, bp[1:])):
-                raise ValueError(f"numerics.breakpoints {bp} must increase from 0 to horizon.window ({hz.window})")
         if hz.nodes < 2:
             raise ValueError("numerics.nodes must be at least 2")
-        if not hz.window > 0:
-            raise ValueError("horizon.window must be positive")
+        if hz.unit is not None and not hz.unit > 0:
+            raise ValueError("numerics.unit must be positive")
         if hz.discount < 0:
             raise ValueError("horizon.discount must be non-negative")
-        if self.horizon.kind not in ("stationary", "finite", "transition"):
+        if hz.kind not in ("stationary", "finite", "transition"):
             raise ValueError("horizon.kind must be 'stationary', 'finite' or 'transition' (the engine, spectral or cells, is numerics.engine)")
         if hz.engine == "cells" and hz.kind != "finite":
             raise ValueError(f"numerics.engine 'cells' solves a finite horizon only, not horizon.kind {hz.kind!r}")
@@ -727,6 +754,47 @@ class Model:
             raise ValueError(f"numerics.engine 'stationary' solves horizon.kind 'stationary' only, not {hz.kind!r}")
         if hz.engine == "spectral" and hz.kind == "stationary":
             raise ValueError("numerics.engine 'spectral' solves a finite horizon or a transition, not horizon.kind 'stationary'")
+
+        #  Each LENGTH is checked where the kind has one: a stationary model has no T and a finite
+        #  one has no lag window, so a blanket check on either would test None for one of the kinds.
+        if hz.window is not None and not hz.window > 0:
+            raise ValueError("horizon.window (the lag-truncation length L) must be positive")
+        if hz.T is not None and not hz.T > 0:
+            raise ValueError("horizon.T (the terminal time) must be positive")
+        if hz.settle is None and hz.extent_known and not hz.extent > 0:
+            raise ValueError(f"a {hz.kind} horizon needs a positive "
+                             + ("window (the lag-truncation length L)" if hz.kind == "stationary" else "T"))
+
+        #  The checks that need the primary axis's LENGTH.  A settle march's template has none yet
+        #  -- the march finds T -- so these are deferred to the models it builds, each of which is
+        #  validated in turn.  Only these are deferred: the kind, the discount and the engine
+        #  pairing above are checked for every model, and guarding the whole method once hid the
+        #  kind's own error behind this one.
+        if not hz.extent_known:
+            return
+        far = [l for l in self.all_lags() if l >= hz.extent - 1e-12]
+        if far:
+            raise ValueError(
+                f"lag(s)/delay(s) {far} are not below the horizon's extent {hz.extent}. This is a "
+                "restriction of the current engines, not a statement that the model is ill-posed: a "
+                "stationary kernel is truncated at the window, and the finite engines carry no "
+                "history before t = 0. A transition does inherit a past, so whether a delayed row "
+                "may cross the regime boundary is an open question (docs/api_spec.txt, "
+                "INVESTIGATIONS): the past being represented does not establish that such a row is "
+                "resolved correctly, which depends on the signal definitions and on how the two "
+                "regimes join.")
+        leads = [-l for s in self.states for (n, l) in self.expand(s.drift) if l < 0]
+        for a in self.agents:
+            for term in a.loss:
+                leads += [-l for atom in term[1:] for (n, l) in self.expand({atom: 1.0}) if l < 0]
+        if any(l >= hz.extent - 1e-12 for l in leads):
+            raise ValueError(f"lead(s) {sorted(set(l for l in leads if l >= hz.extent - 1e-12))} are not below the horizon's extent {hz.extent}")
+        if hz.unit_range is not None and hz.unit_range > hz.extent + 1e-12:
+            raise ValueError(f"numerics.unit_range ({hz.unit_range}) must not exceed the horizon's extent ({hz.extent})")
+        if hz.breakpoints is not None:
+            bp = list(hz.breakpoints)
+            if len(bp) < 2 or abs(bp[0]) > 1e-12 or abs(bp[-1] - hz.extent) > 1e-9 * max(1.0, hz.extent) or any(b2 <= b1 for b1, b2 in zip(bp, bp[1:])):
+                raise ValueError(f"numerics.breakpoints {bp} must increase from 0 to the horizon's extent ({hz.extent})")
 
     def _check_transition(self) -> None:
         """The transition blocks: kind 'transition' requires a past block (a `model`, a list of `initial` shocks,
@@ -769,7 +837,7 @@ class Model:
     # ------------------------------------------------------- construction
     _KEYS = {
         "model": {"name", "params", "channels", "states", "definitions", "agents", "ties", "horizon", "numerics"},
-        "horizon": {"kind", "discount", "window", "past", "continuation", "stationary", "settle"},
+        "horizon": {"kind", "discount", "window", "T", "past", "continuation", "stationary", "settle"},
         "numerics": {"engine", "nodes", "unit", "unit_range", "breakpoints", "continuation_nodes", "tol", "damping", "max_newton",
                      "variable", "settings"},
         "state": {"drift", "noise", "initial"},
@@ -792,7 +860,13 @@ class Model:
         source (with its parameter expressions) is returned, so re-parametrising it works; with
         numeric=True, or when there is no source, coefficients are returned as numbers."""
         hz = self.horizon
-        horizon = {"kind": hz.kind, "discount": hz.discount, "window": hz.window}
+        #  each kind writes the quantities it HAS; a finite horizon has no lag window and a
+        #  stationary model has no terminal time, so neither is emitted as a null
+        horizon = {"kind": hz.kind, "discount": hz.discount}
+        if hz.window is not None:
+            horizon["window"] = hz.window
+        if hz.T is not None:
+            horizon["T"] = hz.T
         if hz.settle is not None:                             # the horizon is the march's output: the file says settle, not window
             horizon = {"kind": hz.kind, "discount": hz.discount, "settle": hz.settle}
         for k in ("past", "continuation"):
@@ -947,11 +1021,22 @@ class Model:
                              "with_horizon(kind='finite').with_numerics(engine='cells')")
         if fields.get("kind") is not None and fields["kind"] != self.horizon.kind:
             d["numerics"].pop("engine", None)             # the old kind's engine is not the new kind's
+            #  Drop only the length the NEW kind does not have.  A stationary L must not survive
+            #  into a finite horizon as its T -- that is the conflation the split ended -- but T
+            #  itself carries over from finite to transition, where it means the same thing, and a
+            #  transition's continuation window carries back to stationary.
+            keeps = {"stationary": {"window"}, "finite": {"T"}, "transition": {"T", "window"}}
+            for key in {"window", "T"} - keeps.get(fields["kind"], {"window", "T"}):
+                if key not in fields:
+                    d["horizon"].pop(key, None)
         if fields.get("kind") is not None and fields["kind"] != self.horizon.kind:
             for k in ("breakpoints", "unit_range"):
                 if k not in fields:
                     d["numerics"].pop(k, None)
-        d["horizon"].update(fields)
+        d["horizon"].update({k: v for k, v in fields.items() if v is not None})
+        for key, value in fields.items():
+            if value is None:
+                d["horizon"].pop(key, None)
         return self._rebuilt(d)
 
     @classmethod
@@ -989,9 +1074,9 @@ class Model:
                 raise
         params = _Recording(params)                            # records which parameters the model references
         hz = d.get("horizon") or {}
-        if hz.get("settle") is not None and hz.get("window") is not None:
-            raise ValueError("horizon takes exactly one of window (the horizon T) and settle (the tolerance the horizon is found for "
-                             "by a march in T), not both")
+        if hz.get("settle") is not None and hz.get("T") is not None:
+            raise ValueError("horizon takes exactly one of T (the terminal time) and settle (the tolerance the "
+                             "horizon is found for by a march in T), not both")
         nm, kind, deprecations = _numerics_block(d)
         from ._settings import Settings
         cls._check_keys("numerics", nm, cls._KEYS["numerics"])
@@ -1008,7 +1093,11 @@ class Model:
             raise ValueError(f"numerics.settings: {exc}") from None
         horizon = Horizon(kind=kind,
                           discount=eval_coef(hz.get("discount", 0.0), params),
-                          window=eval_coef(hz.get("window", 8.0), params),
+                          #  the two quantities are read separately, and each kind is given the one
+                          #  it has.  A file that spells a finite horizon's length `window` is
+                          #  refused by name in _horizon_length below.
+                          window=_horizon_length(hz, kind, params, "window"),
+                          T=_horizon_length(hz, kind, params, "T"),
                           past=copy.deepcopy(hz["past"]) if hz.get("past") is not None else None,
                           continuation=hz.get("continuation"),
                           stationary=stationary,
@@ -1060,6 +1149,41 @@ class Model:
         return m
 
 
+
+
+def _horizon_length(hz: dict, kind: str, params, which: str):
+    """`window` (the lag-truncation length L) or `T` (the terminal time), per kind.
+
+    Before 0.8 one key carried both, so `window: 1.0` on a finite horizon meant T.  A file still
+    spelling it that way is refused by the name that replaced it rather than silently read as an
+    L the finite engines have no use for.
+    """
+    if kind not in ("stationary", "finite", "transition"):
+        return None            # an unknown kind is the kind validator's to report, not this one
+    wants_window = kind in ("stationary", "transition")
+    wants_T = kind in ("finite", "transition")
+    if which == "window":
+        if not wants_window:
+            if hz.get("window") is not None:
+                raise ValueError(f"horizon.window is the lag-truncation length L and a {kind} horizon has none; "
+                                 f"its length is horizon.T")
+            return None
+        if kind == "transition":
+            #  a transition's L is its CONTINUATION's, which comes from the past unless the file
+            #  states one.  Defaulting it to a number would put a meaningless 8.0 on every
+            #  transition that never asked for one.
+            return None if hz.get("window") is None else eval_coef(hz["window"], params)
+        return eval_coef(hz.get("window", 8.0), params)
+    if not wants_T:
+        if hz.get("T") is not None:
+            raise ValueError(f"horizon.T is the terminal time and a {kind} horizon has none; "
+                             f"its length is horizon.window (the lag-truncation length L)")
+        return None
+    if hz.get("T") is None and hz.get("settle") is None:
+        raise ValueError(f"a {kind} horizon needs horizon.T (the terminal time)"
+                         + ("; horizon.window there is the continuation's lag-truncation length L"
+                            if kind == "transition" else ""))
+    return None if hz.get("T") is None else eval_coef(hz["T"], params)
 
 
 def _numerics_block(d: dict):
@@ -1133,7 +1257,7 @@ class ModelBuilder:
         return self
 
     def finite(self, T=1.0, nodes=16, discount=0.0):
-        self.d["horizon"] = {"kind": "finite", "window": T, "discount": discount}; return self.numerics(nodes=nodes)
+        self.d["horizon"] = {"kind": "finite", "T": T, "discount": discount}; return self.numerics(nodes=nodes)
 
     def numerics(self, **fields):
         """The numerics block (the fields of noisestate.Numerics); a field given None is dropped."""
@@ -1155,7 +1279,8 @@ class ModelBuilder:
             past = past.to_dict()
         block = {"initial": list(past)} if isinstance(past, (list, tuple)) else {"model": past}
         st = dict(stationary or {})
-        self.d["horizon"] = {"kind": "transition", "window": T, "discount": discount, "past": block, "continuation": continuation,
+        #  T is the terminal time; the `stationary` block's window is the continuation's L
+        self.d["horizon"] = {"kind": "transition", "T": T, "discount": discount, "past": block, "continuation": continuation,
                              **({"stationary": {"window": st["window"]}} if st.get("window") is not None else {})}
         return self.numerics(nodes=nodes, unit=unit, continuation_nodes=st.get("nodes"))
 

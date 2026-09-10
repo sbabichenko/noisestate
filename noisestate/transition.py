@@ -78,8 +78,11 @@ def _transition_model(old, new, T: float, num: Numerics, continuation):
     block = _past_block(old, past)
     if not past.window > 0 and continuation == "stationary":
         continuation = "end"
-    hz.update(kind="transition", window=float(T), past=block,
+    #  T is the TERMINAL TIME.  The parameter has always been called T; before the split it was
+    #  written to `window`, which is the continuation's lag-truncation length L.
+    hz.update(kind="transition", T=float(T), past=block,
               continuation=continuation if isinstance(continuation, str) else "stationary")
+    hz.pop("window", None)              # the continuation's L comes from the past
     for k in ("stationary", "settle"):
         hz.pop(k, None)
     return Model.from_dict(d), past, continuation
@@ -148,7 +151,7 @@ def transition_gap(old, new, numerics=None, continuation="stationary") -> Dict[s
     model, past, continuation = _transition_model(old, new, past.window, num, continuation)
     u = _unit_of(model, past.window)
     if abs(u - past.window) > 1e-12:
-        model = model.with_horizon(window=float(u))
+        model = model.with_horizon(T=float(u))          # the march is over the TERMINAL TIME
     S = engines.build(model, None, past=past, continuation=continuation)[0]
     return gap_pass(S, S.stationary_start(), 0.0, S.c.T)
 
@@ -307,14 +310,14 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
 
 def march_model(model: Model, numerics=None, past=None, continuation=None, **solve_kw):
     """The march for a model of kind transition with horizon.settle (the file form of solve()): the past from
-    its block (or the keyword), the model at each T by with_horizon(window=T)."""
+    its block (or the keyword), the model at each T by with_horizon(T=T)."""
     hz = model.horizon
     if past is None:
         past = Past.from_block(hz.past)
     past = Past.of(past)
     if continuation is None:
         continuation = hz.continuation or "stationary"
-    return march(lambda T: model.with_horizon(window=float(T), settle=None), past, continuation, hz.settle, numerics, **solve_kw)
+    return march(lambda T: model.with_horizon(T=float(T), settle=None), past, continuation, hz.settle, numerics, **solve_kw)
 
 
 def transition(old, new, T: Optional[float] = None, numerics=None, continuation="stationary",

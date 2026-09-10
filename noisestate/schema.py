@@ -67,7 +67,11 @@ def model_schema() -> dict:
                "properties": {
                    "kind": {"enum": ["stationary", "finite", "transition"]},
                    "discount": _NUMBER_OR_EXPR,
-                   "window": {**_NUMBER_OR_EXPR, "description": "the lag window L (stationary) or the horizon T (finite, transition)"},
+                   "window": {**_NUMBER_OR_EXPR, "description": "the lag-truncation length L: a stationary "
+                              "horizon, and a transition's continuation (which defaults to the past's). A finite "
+                              "horizon has none -- its length is T"},
+                   "T": {**_NUMBER_OR_EXPR, "description": "the terminal time: a finite horizon or a transition. "
+                         "A stationary horizon has none -- its length is the lag window"},
                    "past": {"type": "object", "additionalProperties": False,
                             "properties": {"model": {"anyOf": [{"type": "string"}, {"type": "object"}],
                                                      "description": "the old stationary model: a path (relative to the file) or an inline model"},

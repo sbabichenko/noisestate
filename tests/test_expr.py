@@ -120,7 +120,7 @@ def test_target_script_pieces(tmp_path):
     with pytest.raises(ValueError, match="exactly one parameter"):
         game.sweep(p1=[1], p2=[1])
     new = game.with_params(p1=10.0).with_finite(T=6.0)
-    assert new.horizon.kind == "finite" and new.horizon.window == 6.0 and new.params["p1"] == 10.0
+    assert new.horizon.kind == "finite" and new.horizon.T == 6.0 and new.horizon.window is None and new.params["p1"] == 10.0
     assert new.with_stationary(window=4.0).horizon.kind == "stationary"
     path = os.path.join(tmp_path, "ch1.yaml")
     game.save(path)

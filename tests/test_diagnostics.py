@@ -18,7 +18,9 @@ def model(kind="stationary", engine=None, nodes=8, **horizon):
          "states": {"X": {"drift": {"X": -1, "D": 1}, "noise": {"w0": 1}}},
          "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1}, "noise": {"w1": 1}}},
                           "loss": [[1, "X", "X"], [1, "D", "D"]]}},
-         "horizon": {"kind": kind, "window": 4 if kind == "stationary" else 1.0, **horizon},
+         #  the length goes under the key its kind keeps it in.  Writing one key and branching on
+         #  the kind -- as this helper first did -- is the conflation PART 2 of the spec ended.
+         "horizon": {"kind": kind, **({"window": 4.0} if kind == "stationary" else {"T": 1.0}), **horizon},
          "numerics": {"nodes": nodes, **({"engine": engine} if engine else {})}}
     return ns.Model.from_dict(d)
 

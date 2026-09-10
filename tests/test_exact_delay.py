@@ -95,7 +95,7 @@ def test_finite_engine_on_the_delayed_problem_converges_spectrally():
     model = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
              "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": h}, "noise": {"w1": 1.0}, "delay": delta}},
                               "loss": [[1.0, "X", "X"], [r, "D", "D"]]}},
-             "horizon": {"kind": "finite", "window": 3.0}, "numerics": {"nodes": 5}}
+             "horizon": {"kind": "finite", "T": 3.0}, "numerics": {"nodes": 5}}
     r5 = ns.solve(model).require_converged(); model["numerics"]["nodes"] = 6; r6 = ns.solve(model).require_converged()
     assert r5.representation_error["a"] < 1e-5 and r6.representation_error["a"] < 1e-6
     assert abs(r5.costs["a"] - r6.costs["a"]) < 2e-6 and r6.second_order["a"]["ok"]

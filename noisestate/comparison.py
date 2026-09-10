@@ -159,10 +159,10 @@ def compare(models: Mapping[str, object], *, baseline: Optional[str] = None, num
     prepared = {name: as_model(value) for name, value in models.items()}
     first = prepared[baseline]
     signature = (tuple(a.name for a in first.agents), first.horizon.kind,
-                 float(first.horizon.discount), float(first.horizon.window))
+                 float(first.horizon.discount), first.horizon.window, first.horizon.T)
     for name, model in prepared.items():
         here = (tuple(a.name for a in model.agents), model.horizon.kind,
-                float(model.horizon.discount), float(model.horizon.window))
+                float(model.horizon.discount), model.horizon.window, model.horizon.T)
         if here != signature:
             raise ValueError(f"compare(): scenario {name!r} has incompatible agents or horizon; "
                              "cost comparisons require the same agents, kind, discount and window")
