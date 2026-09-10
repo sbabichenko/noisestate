@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from typing import List, Optional, Union
 
-from .settings import DEFAULT, PRISTINE, Settings
+from ._settings import DEFAULT, PRISTINE, Settings
 
 ENGINES_OF_KIND = {"stationary": "stationary", "finite": "spectral", "transition": "spectral"}
 ENGINE_NAMES = ("stationary", "spectral", "cells")

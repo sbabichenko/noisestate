@@ -213,27 +213,29 @@ The three ways to run many solves are easy to confuse:
 
 ## Appendix: the 0.7 renames
 
-Names that were correct but inconsistent were renamed in 0.7.  Every old spelling still works,
-warns, and names its replacement; they are removed in 0.8.
+Names that were correct but inconsistent were renamed in 0.7, and the old spellings are **gone** --
+nothing outside this repository imports noisestate, so no transition was owed. Each removed
+top-level name raises an `AttributeError` naming its replacement rather than a bare one.
 
-| old | new | why |
-|---|---|---|
-| `ns.ENGINES` | `ns.ENGINE_CLASSES` | case-only collision with the `ns.engines` module |
-| `ns.settings(...)` | `ns.using_settings(...)` | case-only collision with the `ns.Settings` class, *and* with the `noisestate.settings` submodule |
-| `ns.make_solver` | `ns.solver` | the only `make_*`; now parallel to `ns.solve` |
-| `ns.BaseResult` | `ns.Result` | an alias since 0.6 |
-| `res.check()` | `res.require_converged()` | it raises, so it takes the `require_*` prefix, and now pairs with `require_ok()` |
-| `res.diagnose()` | `res.diagnostic_rows()` | joins `diagnostic_records` / `diagnostic_summary` / `diagnostic_verdict` |
-| `res.category_verdict()` | `res.diagnostic_verdict()` | same family |
-| `res.action_kernel()` | `res.strategy_kernel()` | neither old name said which was the strategy and which the closed loop |
-| `res.grid_info()` | `res.grid_summary()` | the only `*_info` |
-| `res.means_driven` | `res.has_means` | a bool sitting among `means` and the mean paths, read as data |
-| `res.means_t` | `res.mean_times` | it is the *time nodes* of the mean paths, not means over time |
-| `model.means_driven` | `model.drives_means` | the structural question, as a predicate |
-| `model.finite(T)` | `model.with_finite(T)` | returns a copy, so it joins the `with_*` family |
-| `model.stationary(w)` | `model.with_stationary(w)` | the same |
-| `model.owner(c)` | `model.owner_of(c)` | reads as a lookup rather than a noun |
+| old | new |
+|---|---|
+| `ns.ENGINES` | `ns.ENGINE_CLASSES` |
+| `ns.settings(...)` | `ns.using_settings(...)` |
+| `ns.make_solver` | `ns.solver` |
+| `ns.BaseResult` | `ns.Result` |
+| `res.check()` | `res.require_converged()` |
+| `res.diagnose()` | `res.diagnostic_rows()` |
+| `res.category_verdict()` | `res.diagnostic_verdict()` |
+| `res.action_kernel()` | `res.strategy_kernel()` |
+| `res.grid_info()` | `res.grid_summary()` |
+| `res.means_driven` | `res.has_means` |
+| `res.means_t` | `res.mean_times` |
+| `model.means_driven` | `model.drives_means` |
+| `model.finite(T)` | `model.with_finite(T)` |
+| `model.stationary(w)` | `model.with_stationary(window)` |
+| `model.owner(c)` | `model.owner_of(c)` |
 
-The payload key `means_t` is **unchanged**.  The JSON is a wire format read by saved files and by
-front ends, so it carries a different compatibility promise from the Python attribute; renaming it
-belongs to a payload-schema version, not to this one.
+The `noisestate.settings` submodule was renamed `noisestate._settings` to free the name, so the
+removed `ns.settings` can explain itself; `from noisestate import Settings` is unaffected.
+
+The payload key `means_t` is still unchanged, and is addressed in `docs/api_spec.txt` PART 7.

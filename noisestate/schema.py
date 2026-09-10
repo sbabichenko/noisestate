@@ -17,7 +17,7 @@ from dataclasses import fields
 from typing import List
 
 from .numerics import ENGINE_NAMES
-from .settings import Settings
+from ._settings import Settings
 
 DRAFT = "https://json-schema.org/draft/2020-12/schema"
 

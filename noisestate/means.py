@@ -17,7 +17,7 @@ from typing import Dict, Optional
 import numpy as np
 import scipy.linalg as sla
 
-from .settings import tunable
+from ._settings import tunable
 from .spec import Agent
 
 

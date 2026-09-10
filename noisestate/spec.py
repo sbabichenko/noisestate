@@ -33,7 +33,6 @@ import math
 import re
 import warnings
 
-from ._renames import renamed_method, renamed_property
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -994,7 +993,7 @@ class Model:
             raise ValueError("horizon takes exactly one of window (the horizon T) and settle (the tolerance the horizon is found for "
                              "by a march in T), not both")
         nm, kind, deprecations = _numerics_block(d)
-        from .settings import Settings
+        from ._settings import Settings
         cls._check_keys("numerics", nm, cls._KEYS["numerics"])
         stationary = hz.get("stationary")
         if isinstance(stationary, dict):
@@ -1061,13 +1060,6 @@ class Model:
         return m
 
 
-#  The 0.7 renames; the old spellings still work and name what replaced them (noisestate/_renames.py).
-#  ModelBuilder keeps its own .finite()/.stationary(): those mutate the builder, while a Model's return
-#  a changed copy, and the with_ prefix is what marks the difference.
-Model.finite = renamed_method("Model.finite()", "with_finite")
-Model.stationary = renamed_method("Model.stationary()", "with_stationary")
-Model.owner = renamed_method("Model.owner()", "owner_of")
-Model.means_driven = renamed_property("Model.means_driven", "drives_means")
 
 
 def _numerics_block(d: dict):

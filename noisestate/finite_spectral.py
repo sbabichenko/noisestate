@@ -22,7 +22,7 @@ from .closed_loop import ClosedLoopRows
 from .engine import EngineBase
 from .past import Past
 from .results import TriangleResult, TransitionResult
-from .settings import tunable
+from ._settings import tunable
 from .spec import Agent, Model
 from .spectral_compiled import SpectralCompiled
 from .spectral_means import SpectralMeans

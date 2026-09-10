@@ -1007,14 +1007,14 @@ class using_settings:
     and not thread-safe: another thread solving during the block sees the overrides too."""
 
     def __init__(self, **overrides):
-        from .settings import Settings
+        from ._settings import Settings
         self.overrides = overrides
         Settings.of(overrides)              # unknown fields raise here, before the block
 
     @staticmethod
     def _modules():
         import importlib
-        return [importlib.import_module("noisestate." + m) for m in ("settings", "numerics", "results")]
+        return [importlib.import_module("noisestate." + m) for m in ("_settings", "numerics", "results")]
 
     def __enter__(self):
         from dataclasses import replace

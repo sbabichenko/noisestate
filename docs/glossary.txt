@@ -20,7 +20,7 @@
      PART 1   WHAT THE NAMES FOLLOW TODAY .... the conventions that actually hold, with evidence
      PART 2   GLOSSARY ....................... every name, grouped by the job it does
      PART 3   KNOWN GAPS ..................... four verified problems in current behaviour
-     PART 4   RENAMED IN 0.7 ................. old spelling -> new spelling
+     PART 4   RENAMED IN 0.7 ................. the old spellings are gone
 
 
 ================================================================================================
@@ -70,7 +70,7 @@
 ================================================================================================
 
  Grouped by the job, because "which name do I want" is a far more common question than "what
- does this name I already have do".  Deprecated 0.7 spellings are in PART 4, not here.
+ does this name I already have do".  The 0.7 renames, whose old spellings are gone, are in PART 4.
 
 
  2.1  GETTING A MODEL IN
@@ -404,50 +404,21 @@
 
 
 ================================================================================================
- PART 4   RENAMED IN 0.7
+ PART 4   RENAMED IN 0.7 -- THE OLD SPELLINGS ARE GONE
 ================================================================================================
 
- Every old spelling still works.  It warns, names its replacement, and is removed in 0.8.
+ The 0.7 renames were deleted rather than aliased: nothing outside this repository imports
+ noisestate, so no transition was owed.  Each removed name explains itself rather than raising a
+ bare AttributeError, as the 0.6 removals do.  The table of what became what is in
+ CHANGELOG.md 0.7.0; it is drafting history, not reference material.
 
-     OLD                          NEW                          WHY
-     ------------------------------------------------------------------------------------------
-     ns.ENGINES                   ns.ENGINE_CLASSES            case-only collision with the
-                                                               ns.engines module
-     ns.settings(...)             ns.using_settings(...)       case-only collision with the
-                                                               ns.Settings class, AND it shadowed
-                                                               the noisestate.settings submodule
-     ns.make_solver               ns.solver                    the only make_*; now parallel to
-                                                               ns.solve
-     ns.BaseResult                ns.Result                    an alias since 0.6
-     res.check()                  res.require_converged()      it raises, so it takes require_*,
-                                                               and now pairs with require_ok()
-     res.diagnose()               res.diagnostic_rows()        joins the diagnostic_* family
-     res.category_verdict()       res.diagnostic_verdict()     the same family
-     res.action_kernel()          res.strategy_kernel()        neither old name said which was
-                                                               the strategy and which the closed
-                                                               loop
-     res.grid_info()              res.grid_summary()           the only *_info
-     res.means_driven             res.has_means                a bool sitting among means and the
-                                                               mean paths, where it read as data
-     res.means_t                  res.mean_times               it is the TIME NODES of the mean
-                                                               paths, not means over time
-     model.means_driven           model.drives_means           the structural question, as a
-                                                               predicate
-     model.finite(T)              model.with_finite(T)         returns a copy, so it joins with_*
-     model.stationary(window)     model.with_stationary(window)  the same
-     model.owner(c)               model.owner_of(c)            reads as a lookup, not a noun
+ [V] Verified by test (tests/test_deprecations.py): the four top-level names, seven Result members
+     and four Model members are gone; each of the four top-level names raises an AttributeError
+     naming its replacement.
 
- [V] Nothing outside this repository imports noisestate (grep over ~/dissertation, ~/Projects and
-     ~/decision-mesh-audit, 2026-09-10), so nothing is owed a transition period.  The specification
-     proposes DELETING this whole layer -- _renames.py, the module __getattr__, the class aliases
-     and the 32 deprecation tests -- rather than carrying it to 0.8.   -> api_spec PART 11 step 2
-
- DELIBERATELY NOT RENAMED
-     validate()        raises but keeps its name; a raising validate() is a strong enough
-                       convention elsewhere that require_valid() would cost more than it gains.
-     payload "means_t" the JSON key is unchanged.  The wire format is read by saved files and
-                       front ends and carries a different compatibility promise from the Python
-                       attribute; renaming it belongs to a payload-schema version.
-     resolution_ok     see PART 3.
+ One consequence worth recording: noisestate.settings could not explain itself while the SUBMODULE
+ of that name was bound, because __getattr__ is never consulted for a name that is already bound.
+ The submodule is noisestate._settings now, which frees the name.  `from noisestate import
+ Settings` is unaffected and remains the public route.
 
 ================================================================================================

@@ -43,12 +43,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from ._renames import renamed_method, renamed_property, warn
 
 import numpy as np
 
 from .accel import ConvergenceError
-from .settings import DEFAULT, Settings, tunable
+from ._settings import DEFAULT, Settings, tunable
 from .kernel import Kernel, AttrDict
 from .spec import Model
 
@@ -613,28 +612,6 @@ class Result:
         return out
 
 
-#  The 0.7 renames.  Each old spelling still works and says what replaced it; see noisestate/_renames.py
-#  for the conventions they settle.  BaseResult is served by noisestate.__getattr__ until 0.8.
-Result.check = renamed_method("Result.check()", "require_converged")
-Result.diagnose = renamed_method("Result.diagnose()", "diagnostic_rows")
-Result.category_verdict = renamed_method("Result.category_verdict()", "diagnostic_verdict")
-Result.action_kernel = renamed_method("Result.action_kernel()", "strategy_kernel")
-Result.grid_info = renamed_method("Result.grid_info()", "grid_summary")
-Result.means_driven = renamed_property("Result.means_driven", "has_means")
-
-
-def _means_t_get(self):
-    warn("Result.means_t", "Result.mean_times")
-    return self.mean_times
-
-
-def _means_t_set(self, value):
-    warn("Result.means_t", "Result.mean_times")
-    self.mean_times = value
-
-
-Result.means_t = property(_means_t_get, _means_t_set,
-                          doc="Deprecated in 0.7, removed in 0.8: use ``mean_times``.")
 
 
 @dataclass

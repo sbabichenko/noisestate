@@ -5,7 +5,7 @@ import noisestate as ns
 from noisestate import Settings
 from noisestate.results import StationaryResult
 from noisestate.engine import EngineBase
-from noisestate.settings import DEFAULT
+from noisestate._settings import DEFAULT
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
 
 

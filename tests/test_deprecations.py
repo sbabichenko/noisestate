@@ -109,86 +109,61 @@ def test_cell_engine_mean_solve_refuses_a_singular_mean_system():
         ns.solve(d)
 
 
-# ---------------------------------------------------------------- the 0.7 renames
-#  Unlike the 0.6 removals above, these still work: each warns and names its replacement.
+# ---------------------------------------------------------------- the 0.7 renames are gone
+#  Deleted rather than aliased: nothing outside this repository imports noisestate, so no
+#  transition was owed.  Each removed name still explains itself, as the 0.6 removals do.
 
-RENAMED_ON_RESULT = [("check", "require_converged"), ("diagnose", "diagnostic_rows"),
-                     ("category_verdict", "diagnostic_verdict"), ("action_kernel", "strategy_kernel"),
-                     ("grid_info", "grid_summary")]
-RENAMED_ON_MODEL = [("finite", "with_finite"), ("stationary", "with_stationary"), ("owner", "owner_of")]
-
-
-@pytest.mark.parametrize("old,new", RENAMED_ON_RESULT)
-def test_the_renamed_result_methods_still_work_and_name_the_replacement(stat, old, new):
-    with pytest.warns(DeprecationWarning, match=f"use Result.{new}"):
-        getattr(stat, old)(*{"category_verdict": ("numerics",), "action_kernel": ("D1",)}.get(old, ()))
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")                     # the new spelling warns about nothing
-        getattr(stat, new)(*{"diagnostic_verdict": ("numerics",), "strategy_kernel": ("D1",)}.get(new, ()))
+RENAMED_07 = [("ENGINES", "ENGINE_CLASSES"), ("make_solver", "solver"),
+              ("BaseResult", "Result"), ("settings", "using_settings")]
+GONE_ON_RESULT = ["check", "diagnose", "category_verdict", "action_kernel", "grid_info",
+                  "means_driven", "means_t"]
+GONE_ON_MODEL = ["finite", "stationary", "owner", "means_driven"]
 
 
-@pytest.mark.parametrize("old,new", [("means_driven", "has_means"), ("means_t", "mean_times")])
-def test_the_renamed_result_properties_still_read(stat, old, new):
-    with pytest.warns(DeprecationWarning, match=f"use Result.{new}"):
-        was = getattr(stat, old)
+@pytest.mark.parametrize("old,new", RENAMED_07)
+def test_the_renamed_top_level_names_are_gone_and_name_the_replacement(old, new):
+    with pytest.raises(AttributeError, match=f"renamed noisestate.{new} in 0.7"):
+        getattr(ns, old)
+    assert getattr(ns, new) is not None
+
+
+def test_the_settings_submodule_was_renamed_so_the_hook_can_see_the_old_name():
+    """noisestate.settings could not explain itself while the submodule of that name was bound --
+    __getattr__ is never consulted for a bound name.  The submodule is _settings now."""
+    import noisestate._settings as s
+    assert s.Settings is ns.Settings
+    with pytest.raises(AttributeError, match="using_settings"):
+        ns.settings
+
+
+@pytest.mark.parametrize("old", GONE_ON_RESULT)
+def test_the_renamed_result_members_are_gone(stat, old):
+    assert not hasattr(stat, old), old
+
+
+@pytest.mark.parametrize("old", GONE_ON_MODEL)
+def test_the_renamed_model_members_are_gone(old):
+    assert not hasattr(example("ch3_two_player"), old), old
+
+
+def test_the_new_names_all_work_and_warn_about_nothing(stat):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert was is getattr(stat, new) or was == getattr(stat, new)
+        stat.require_converged(); stat.diagnostic_rows(); stat.diagnostic_records()
+        stat.diagnostic_verdict("numerics"); stat.grid_summary(); stat.strategy_kernel("D1")
+        stat.has_means; stat.mean_times
+        m = example("ch3_two_player")
+        m.with_finite(2.0); m.with_stationary(4.0); m.owner_of("D1"); m.drives_means
 
 
-@pytest.mark.parametrize("old,new", RENAMED_ON_MODEL)
-def test_the_renamed_model_methods_still_work(old, new):
-    m = example("ch3_two_player")
-    args = {"finite": (4.0,), "stationary": (4.0,), "owner": ("D1",)}[old]
-    with pytest.warns(DeprecationWarning, match=f"use Model.{new}"):
-        getattr(m, old)(*args)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        getattr(m, new)(*args)
-    with pytest.warns(DeprecationWarning, match="use Model.drives_means"):
-        m.means_driven
-
-
-@pytest.mark.parametrize("old,new", [("ENGINES", "ENGINE_CLASSES"), ("make_solver", "solver"),
-                                     ("BaseResult", "Result"), ("settings", "using_settings")])
-def test_the_renamed_top_level_names_still_resolve(old, new):
-    with pytest.warns(DeprecationWarning, match=f"use noisestate.{new}"):
-        got = getattr(ns, old)(**{}) if old == "settings" else getattr(ns, old)
-    if old == "settings":
-        assert type(got) is ns.using_settings                # the shim really builds the new object
-    else:
-        assert got is getattr(ns, new)
-
-
-def test_a_removed_06_name_still_explains_itself_beside_the_07_renames():
-    """The 0.7 module __getattr__ chains to the 0.6 one instead of replacing it: assigning over it
-    silently turned these explanations back into bare AttributeErrors."""
-    with pytest.raises(AttributeError, match="removed in 0.6"):
-        ns.StationaryResult
-    with pytest.raises(AttributeError, match="has no attribute"):
-        ns.no_such_name_at_all
-
-
-def test_the_package_never_uses_its_own_deprecated_names():
-    """A deprecated name used *inside* noisestate warns code the user did not write, and the warning
-    names a fix they cannot apply.  This caught a real one: renaming sweep.make_solver to solver left
-    `Result._make_solver` importing the old name, an ImportError on a path no other test reaches."""
+def test_the_package_emits_no_deprecation_warning_in_normal_use():
+    """A deprecated name used INSIDE noisestate warns code the user did not write.  This caught a
+    real one before the layer was deleted: renaming sweep.make_solver to solver left
+    Result._make_solver importing the old name, an ImportError on a path no other test reaches."""
+    import dataclasses
     m = example("ch3_two_player").with_numerics(nodes=6)
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
         res = ns.solve(m)
-        res.require_converged()
-        res.stability()
-        res.diagnostic_summary()
-        res.diagnostic_verdict("numerics")
-        res.grid_summary()
-        res.to_dict()
-        res.has_means, res.mean_times
-        m.describe(), m.drives_means, m.owner_of("D1")
-        m.with_finite(2.0), m.with_stationary(4.0)
-
-        # _make_solver only takes the import branch when solver_class is None, which a solved
-        # result never has -- so reaching the broken line means clearing it deliberately.
-        import dataclasses
-        bare = dataclasses.replace(res, solver_class=None)
-        assert bare._make_solver(m) is not None
+        res.require_converged(); res.stability(); res.diagnostic_summary(); res.to_dict()
+        assert dataclasses.replace(res, solver_class=None)._make_solver(m) is not None

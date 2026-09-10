@@ -14,7 +14,7 @@ import dataclasses
 from .spec import Model, ModelBuilder
 from .numerics import Numerics
 from .accel import ConvergenceError
-from .settings import Settings
+from ._settings import Settings
 from .results import Result
 from .stationary import StationarySolver
 from .finite import FiniteSolver
@@ -39,11 +39,21 @@ __all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", 
 _REMOVED_RESULTS = ("StationaryResult", "TriangleResult", "TransitionResult", "CellResult")   # exported until 0.6
 
 
+#  Renamed in 0.7.  The old spellings are gone rather than aliased -- nothing outside this
+#  repository imports noisestate -- but each still explains itself instead of raising a bare
+#  AttributeError.  "settings" is here only because the settings submodule was renamed _settings
+#  to free the name; while it was bound, this hook could never see it.
+_RENAMED = {"ENGINES": "ENGINE_CLASSES", "make_solver": "solver", "BaseResult": "Result",
+            "settings": "using_settings"}
+
+
 def __getattr__(name: str):
     """A removed name explains itself rather than raising a bare AttributeError."""
     if name in _REMOVED_RESULTS:
         raise AttributeError(f"noisestate.{name} was removed in 0.6: every engine returns noisestate.Result, and "
                              f"isinstance(res, noisestate.Result) holds for every result")
+    if name in _RENAMED:
+        raise AttributeError(f"noisestate.{name} was renamed noisestate.{_RENAMED[name]} in 0.7")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 def _read_version() -> str:
@@ -170,28 +180,3 @@ def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluati
     if diagnostics:
         _radius_when_the_window_fails(res, stability)
     return res
-
-
-#  The 0.7 renames of top-level names.  Two were case-only collisions with a neighbour (ENGINES beside
-#  the engines module, settings beside the Settings class); make_solver was the only make_* verb; and
-#  BaseResult has been an alias of Result since 0.6.  Each old name still resolves and says what
-#  replaced it.  See noisestate/_renames.py.
-from ._renames import renamed_module_attr, warn as _warn_renamed      # noqa: E402
-
-__getattr__ = renamed_module_attr(globals(), {
-    "ENGINES": "ENGINE_CLASSES",
-    "make_solver": "solver",
-    "BaseResult": "Result",
-}, fallback=__getattr__)          # keep the 0.6 removals explaining themselves
-
-
-def settings(**overrides):
-    """Deprecated in 0.7, removed in 0.8: use ``noisestate.using_settings``.
-
-    This name cannot go through __getattr__ like the others: noisestate.settings is also the
-    submodule, which is already bound here, so __getattr__ would never be consulted and old code
-    would get "module is not callable" instead of being told the new name.  Binding it keeps the
-    behaviour it has always had -- the callable shadowed the submodule before this rename too.
-    """
-    _warn_renamed("noisestate.settings", "noisestate.using_settings")
-    return using_settings(**overrides)

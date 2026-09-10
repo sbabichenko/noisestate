@@ -17,7 +17,7 @@ import scipy.linalg as sla
 
 from .accel import solve_fixed_point
 from .means import MeanLayer
-from .settings import Settings, tunable
+from ._settings import Settings, tunable
 from .spec import Agent, Model
 
 

@@ -30,7 +30,7 @@ from .engine import EngineBase, singular_system_message
 from .compile import CompiledBase, close_under_delays
 from .symmetry import find_cyclic_symmetry
 from .results import StationaryResult
-from .settings import Settings, tunable
+from ._settings import Settings, tunable
 from .spec import Agent, Atom, Model
 
 
