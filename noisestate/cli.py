@@ -73,6 +73,20 @@ def _plot_output_path(path: str) -> str:
 
 
 
+def _horizon_span(hz) -> str:
+    """The horizon's own lengths, under the names the model file uses: `window` is the lag-truncation
+    length L, `T` the terminal time, and a transition has both.  Not `extent`, which is the derived
+    selector between them and is a word the user never writes."""
+    parts = []
+    if hz.window is not None:
+        parts.append(f"window (lag) {hz.window:g}")
+    if hz.T is not None:
+        parts.append(f"T {hz.T:g}")
+    elif hz.settle is not None:
+        parts.append(f"T from the settle march ({hz.settle:g})")
+    return ", ".join(parts) or "no length set"
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="noisestate", description="Solve an LQG game with private information from a model file.")
     p.add_argument("--version", action="version", version=f"noisestate {__version__}")
@@ -248,7 +262,7 @@ def _run(p, args) -> int:
         m = Model.from_dict(d, base_dir=base_dir)
         print(f"{m.name}: {len(m.channels)} channels, {len(m.states)} states, {len(m.definitions)} definitions, "
               f"{len(m.agents)} agents, {len(m.control_names)} controls; horizon {m.horizon.kind}, "
-              f"discount {m.horizon.discount}, extent {m.horizon.extent}; lags {m.all_lags()}")
+              f"discount {m.horizon.discount}, {_horizon_span(m.horizon)}; lags {m.all_lags()}")
         for a in m.agents:
             print(f"  {a.name}: controls {a.controls}; rows {[r.name for r in a.signals]}; {len(a.loss)} loss terms"
                   + ("; myopic" if a.myopic else ""))

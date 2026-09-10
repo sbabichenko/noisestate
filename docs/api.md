@@ -28,6 +28,7 @@ That solve converged — `res.converged` is `True` and `res.require_converged()`
 
 | call | use it when |
 |---|---|
+| `ns.example(name)` | the path of a shipped model file — `ns.load(ns.example("ch4_kyle_back"))`. `ns.examples()` lists the seven names. They install with the package, so this works from a plain `pip install` |
 | `ns.load(path)` | you have a YAML model file. A relative `horizon.past.model` resolves from that file's directory |
 | `ns.Model.from_dict(d)` | you have the file structure as a dict — generated models, tests, anything programmatic |
 | `ns.Model(name=..., states=..., agents=..., horizon=...)` | you built the pieces with the expression API below |
@@ -259,3 +260,8 @@ Installed as `noisestate`; every subcommand takes `--help`.
 
 `solve` and `transition` take `--require-ok`, which makes a failed **guard** a non-zero exit status
 rather than only a failed solve.
+
+The two horizon lengths keep their own names here as in Python: `solve --window L` is the
+lag-truncation length and `solve --T` the terminal time, and asking for the one a model's kind does
+not have is an error naming the other.  `transition --T` is the terminal time; `--past-window L` and
+`--continuation-window L` are lag windows.

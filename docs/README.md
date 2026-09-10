@@ -13,10 +13,10 @@ transitions, sweeps, the guards, the settings, the error contract and the CLI.  
 | [settings.md](settings.md) | the tuning constants of `noisestate.Settings`, each with its default and meaning |
 | [validation.md](validation.md) | what the tests reproduce against the dissertation's solvers and closed forms, with the numbers; the resolved open items |
 | [notes/](notes/README.md) | standalone HTML notes, each an argument with its numbers attached: the best-response Jacobian and the spectral radius, read off the FOC; `_template.html` is the design and the constraints that shape it |
-| [user_experience.md](user_experience.md) | what a first session runs into: the rough edges found by using the package, each with what it cost and whether it is fixed, deliberate or open |
+| [user_experience.md](user_experience.md) | a dated log (0.6.9) of what a first session ran into, each rough edge with what it cost and what became of it; the three still open are marked |
 | [method.md](method.md) | how it works: the best response and the fixed point, the stationary and finite forms, the means, the grids and caches, the stability guarantees |
 | [limits.md](limits.md) | what the grammar and the engines do not do |
 | [architecture.md](architecture.md) | the modules and what each holds; one best response and one transition followed through them |
-| [design/](design/README.md) | the design record: the transition engine's plan and three design notes, the dissertation passages it implements, the size stage's brief, the consolidation plan and the API memo |
+| [design/](design/README.md) | the design record: the 0.8 API specification and what it left behind, the transition engine's plan and design notes, the dissertation passages it implements, the size brief, the consolidation plan, and dated reviews kept as history |
 
 `CHANGELOG.md` at the root records every change by release.

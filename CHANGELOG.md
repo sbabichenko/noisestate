@@ -1,5 +1,83 @@
 # Changelog
 
+## Unreleased -- the first ten minutes
+
+0.8 settled the contracts and left the documentation describing the API it replaced.  This pass is
+the user-facing half: what a person meets before they meet the solver.  No numerical method or 0.8
+contract changed.
+
+NOT YET VERSIONED.  0.8.0 is already archived, and one change here is breaking at the command line
+(`transition --window` is now `--T`), so this needs its own number before it ships.
+
+THE FIRST WORKFLOW RUNS, AND SUCCEEDS
+
+The README opened with `ns.load("examples/ch3_two_player.yaml")` -- a path a wheel does not carry,
+four lines under an install section that said so -- and that first solve deliberately printed WINDOW
+TOO SHORT.  The first thing a reader saw was a file they did not have producing a warning they had
+no context for.
+
+The examples now install with the package (`package-dir` maps the top-level `examples/` to
+`noisestate.examples`, so there is one copy for both readers) and `ns.example(name)` returns a path;
+`ns.examples()` lists the seven.  The README opens on `ch1_two_player_finite`, which converges and
+passes publication in about a second: load, solve, assess, read the costs, plot a kernel.  Every
+line of it was executed to write it, and a test asserts it keeps both converging and passing.  The
+short window follows as the diagnostics tutorial it always was.  Installation and contributor setup
+are separate; the second uses ./run-tests, as CONTRIBUTING.md requires and the README previously
+contradicted.
+
+CONVERGENCE VERSUS ACCEPTANCE, EXPLAINED ONCE
+
+In its own section, with the six statuses in a table and the reason NOT_APPLICABLE and UNSUPPORTED
+stay apart.  The route is `res.diagnostics.statuses`, `.assess(policy)`, `.blocking` and
+`require_ok()`, and the failing example shows the guard naming the field to raise with the corrected
+solve beside it.  Three error messages that opened with why the API had changed now open with the
+problem and the call that works; the reasoning stayed in the docstrings.
+
+A NOTEBOOK CAN READ A RESULT
+
+`repr(result)` ran to 78,891 characters -- the compiled engine, every kernel, every map -- which is
+what a notebook prints when the last line of a cell is a result.  Both Result and Model now render
+one line of what the object is, with the detail an explicit `summary()`, `describe()` or `to_dict()`
+away.  `summary()` and `plot()` are declared on `Result` with real signatures: every engine had them,
+but only on the internal subclasses, so `help(noisestate.Result)` and `dir()` listed neither.
+`with_signal` gets its three calling forms as overloads.
+
+THE HORIZON SPLIT REACHES THE CLI AND THE REFERENCE
+
+`transition --window` meant the terminal time while `--past-window` and `--continuation-window` in
+the same command meant lag windows.  It is now `--T`, and `--window` is refused BY NAME rather than
+re-pointed: a script that passed it meant T.  `solve` keeps `--window L` and gains `--T`, so a finite
+model's horizon is reachable at all.  `validate` reports the length the kind actually has instead of
+`extent`, which is the derived selector and a word no user writes.
+
+Behind the rename, a real bug: the settled guard filed its suggestion under the key `window` while
+carrying 2 * T, so a failing transition printed `retry with --window 12` -- unrunnable after this
+change, and read as a lag window before it.
+
+THE DOCUMENTATION MATCHES THE CODE
+
+payload.md described version 1 (`status`, `resolution_ok`, `means_t`); it is reconciled key by key
+against the schema and against real payloads from all three engines, in both directions, and a test
+keeps it that way.  `resolution_ok` was still DECLARED in the payload schema -- the published
+contract -- eleven lines below a comment recording its removal; nothing emitted it.  Removed.
+
+model_file.md, the reference for every key of a model file, never mentioned `horizon.T`: the 0.8
+split reached the code and not the reference, so a finite model's terminal time was undocumented
+while `horizon.window` was still glossed as "the lag window L (stationary) or the horizon T (finite,
+transition)".  Its header claimed to be generated from the schema; no generator is committed, so the
+claim is gone rather than false.  guards.md and limits.md carried removed spellings, the latter in a
+snippet that now runs.
+
+DATED REVIEWS READ AS HISTORY
+
+UX_REVIEW.txt sat at the repository root: seven findings under "Recommendation" headings, reviewed
+against 0.6.9, five already acted on.  It moves to docs/design/reviews/ under its date with each
+finding's disposition checked against the code.  docs/glossary.txt was headed "GLOSSARY OF CURRENT
+BEHAVIOUR ... verified 2026-09-10" while describing `ns.StationarySolver`, `res.status` and
+`res.resolution_ok`; it was the "before" snapshot and now says so.  api_spec.txt, headed "Written
+before implementation", says it is implemented and names D4 and I1 as what is still open.  docs/
+holds only current user-facing pages.
+
 ## 0.8.0 (2026-09-10) -- the contracts, decided rather than discovered
 
 A redesign written down before it was implemented (docs/design/api_spec.txt) and reviewed against the
