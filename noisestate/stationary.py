@@ -79,6 +79,27 @@ class Compiled(CompiledBase):
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
 
     # ------------------------------------------------------------- operators
+    def _add_point_columns(self, B, rows, deltas, gur, impulse_controls) -> None:
+        """A row's POINT observations, added to the forcing columns of the closed-loop system.
+
+        `deltas` is {source: [(age, weight)]}: what the row sees as an impulse rather than through a
+        kernel.  A source is a Brownian channel (its own column) or an impulse control (a column
+        AFTER the channels, at nW + its position), and anything else is not forced here.
+
+        Written out three times in this class -- in the dense, per-panel and symmetric closed loops --
+        which is three copies of that column mapping, where the nW offset is the easy thing to get
+        wrong.  The row selector is what actually differed between them, so it is the argument.
+        """
+        for src, dl in deltas.items():
+            if src in self.channels:
+                col = self.channels.index(src)
+            elif src in impulse_controls:
+                col = self.nW + list(impulse_controls).index(src)
+            else:
+                continue
+            for (age, w) in dl:
+                B[rows, col] += w * (self.shift(age) @ gur)
+
     def shift(self, tau: float) -> np.ndarray:
         return self.grid.shift_cached(tau)
 
@@ -249,15 +270,7 @@ class Compiled(CompiledBase):
                     C = Cs[r]
                     for nm, op in blocks.items():                       # only the primaries the row reads
                         MU[bl, self.block(nm)] += C @ op
-                    for src, dl in deltas.items():
-                        if src in self.channels:
-                            col = self.channels.index(src)
-                        elif src in impulse_controls:
-                            col = self.nW + list(impulse_controls).index(src)
-                        else:
-                            continue
-                        for (age, w) in dl:
-                            B[nxs + bl.start:nxs + bl.stop, col] += w * (self.shift(age) @ gur)
+                    self._add_point_columns(B, slice(nxs + bl.start, nxs + bl.stop), deltas, gur, impulse_controls)
         Z = np.zeros((n, ncol))
         if nX:
             MUX, MUU = MU[:, :nxs], MU[:, nxs:]
@@ -327,15 +340,7 @@ class Compiled(CompiledBase):
                     C = Cs[r]
                     for nm, op in blocks.items():
                         MU[rows_here, self.block(nm)] += C @ op
-                for src, dl in deltas.items():
-                    if src in self.channels:
-                        col = self.channels.index(src)
-                    elif src in impulse_controls:
-                        col = self.nW + list(impulse_controls).index(src)
-                    else:
-                        continue
-                    for (age, w) in dl:
-                        B[bl, col] += w * (self.shift(age) @ gur)
+                self._add_point_columns(B, bl, deltas, gur, impulse_controls)
         return MU
 
     def closed_loop_symmetric(self, maps, excluded=None, impulse_controls=()):
@@ -480,15 +485,7 @@ class Compiled(CompiledBase):
                     regular, deltas = self.row_seen(a.name, r, excl)
                     gur = g[ui, r]
                     M[bl, :] += self.grid.conv_op_left(gur) @ regular
-                    for src, dl in deltas.items():
-                        if src in self.channels:
-                            col = self.channels.index(src)
-                        elif src in impulse_controls:
-                            col = self.nW + list(impulse_controls).index(src)
-                        else:
-                            continue
-                        for (age, w) in dl:
-                            B[bl, col] += w * (self.shift(age) @ gur)
+                    self._add_point_columns(B, bl, deltas, gur, impulse_controls)
         Z = np.linalg.solve(np.eye(n) - M, B)
         return Z
 
