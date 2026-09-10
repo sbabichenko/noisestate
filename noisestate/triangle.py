@@ -203,7 +203,7 @@ class TriangleGrid:
         self.side_t = np.concatenate([np.where(np.abs(pc.t - pc.t1) < 1e-13, -1, 1) for pc in self.pieces])
         self._piece_by_pq = {(pc.p, pc.q): pc for pc in self.pieces if not pc.upper}
         self._upper_by_pq = {(pc.p, pc.q): pc for pc in self.pieces if pc.upper}
-        self.mass_matrices = {}              # rho -> mass_matrix(rho)
+        self.mass_matrices = {}              # (rho, t_lo, t_hi) -> mass_sparse(...); there is no dense twin
         self.read_cache = {}                 # (dt, da) -> read matrix (filled by the spectral engine)
         self.paths = {}                      # key -> LinePath (filled by the spectral engine)
         self._row_weights = {}               # (t, side) -> row_weights(t, side)

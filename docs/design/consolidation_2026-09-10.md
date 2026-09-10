@@ -10,7 +10,7 @@ was verified against the baseline record, which reports the kernels bit-identica
 |---|---|---|
 | package lines | 14218 | 14317 |
 | results.py | 1491 | 1238 |
-| duplicated 6-line blocks | 8 site-groups | 2 (deliberate, below) |
+| duplicated 6-line blocks | 8 site-groups | 0 |
 | pyflakes on the package | 7 findings | clean |
 | modules importing matplotlib | 3 | 2 (plotting.py, kernel.py) |
 
@@ -75,10 +75,33 @@ Neither was the point of the work; both were shipping.
 
 ## What was deliberately not done
 
-**The dense and sparse variants stay apart.**  The two remaining duplicated blocks
-(`spectral_compiled.py` 551/688, `triangle.py` 329/637) are a dense assembly beside its sparse
-counterpart.  Unifying them is the question the 2026-09-06 pass took as its decision D1, and it is a
-change of formulation rather than a removal of duplication.  Out of scope here.
+**The dense/sparse pairs — revised, and then done.**  This section first said they stayed apart as
+D1 territory.  That was wrong, and the distinction is worth writing down: D1 is about dense and
+sparse *assemblies of different formulations*, where unifying them changes the arithmetic and the
+last bit with it.  These pairs are not that.  Each is one operator built into two containers, from
+the same calls with the same weights, where only the sink differs — so the traversal can be shared
+with the arithmetic untouched, and the results are bit-identical by construction rather than by
+tolerance.
+
+Four were shared, in the second half of this pass:
+
+* `map_shift` / `map_shift_sparse` → `Compiled._shift_ops`, the geometry deciding which pieces shift
+  node to node, which are triangles cut by the buffer's diagonal, which lie beyond unit_range.
+* `interp` / `interp_sparse` → `interp_factors`, which the sparse form already used while the dense
+  one kept its own copy of the loop.
+* `read` / `read_sparse` → `_read_zeros`, the predicate for which nodes must return zero.
+* The `mass` / `mass_sparse` pairing was a false positive of the name heuristic: `mass` is a weight
+  vector and `mass_sparse` is a Gram matrix whose dense twin no longer exists.  A stale comment
+  still named the removed method.
+
+**What that left behind.**  The sparse builder used to reach its misalignment error by *calling*
+`map_shift(delay)` — allocating a dense N x N array for the side effect of raising, 1012 KiB on the
+smallest delayed example and 62 MiB on a transition grid of 2850 nodes.  Forcing that branch now
+shows peak allocation of 3.3 KiB against 1132 KiB.
+
+And nothing had ever asserted that a dense form and its sparse twin agree — the invariant the whole
+two-container design rests on.  Both pairs now have tests that compare them across the branches that
+differ, each verified to fail against an injected regression rather than assumed to.
 
 **Model was not split.**  `Model` is 1054 lines, of which 253 are twelve `_check_*` methods, and
 spec.py is now the largest file.  Extracting the validation into its own module was considered and

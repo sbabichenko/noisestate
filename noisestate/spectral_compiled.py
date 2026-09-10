@@ -462,12 +462,25 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             M = np.eye(self.N)
         else:
             M = g.interp(g.t - dt, g.a - da, side_t=g.side_t, side_a=g.side_a, side_d=g.side_ds)
-            if da > 0:
-                M[g.a0 < da - 1e-12] = 0.0
-            if dt > 0 and g.L is not None:
-                M[self._before(dt)] = 0.0             # an old shock read before zero: the past's, not the strip's 0+ value
+            M[self._read_zeros(dt, da)] = 0.0
         cache[key] = M
         return M
+
+    def _read_zeros(self, dt: float, da: float) -> np.ndarray:
+        """Which nodes a read at (t - dt, a - da) must return ZERO for, rather than an interpolated value.
+
+        Two reasons, and both are conditions rather than values, which is why they belong in one
+        place: the shock had not arrived (the node's age starts below da), and -- with a band -- an
+        old shock read before zero, whose value is the past's and not the strip's 0+ one.  The dense
+        and sparse readers apply the same mask, one by assigning rows and one through a diagonal.
+        """
+        g = self.g
+        zero = np.zeros(self.N, dtype=bool)
+        if da > 0:
+            zero |= g.a0 < da - 1e-12
+        if dt > 0 and g.L is not None:
+            zero |= self._before(dt)
+        return zero
 
     def _before(self, lag: float) -> np.ndarray:
         """Nodes of the band whose read `lag` earlier falls before time zero: t - lag < 0, or t - lag = 0 read
@@ -678,11 +691,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
                 M = identity(self.N, format="csr")
             else:
                 M = g.interp_sparse(g.t - dt, g.a - da, side_t=g.side_t, side_a=g.side_a, side_d=g.side_ds)
-                zero = np.zeros(self.N, dtype=bool)
-                if da > 0:
-                    zero |= g.a0 < da - 1e-12
-                if dt > 0 and g.L is not None:
-                    zero |= self._before(dt)
+                zero = self._read_zeros(dt, da)
                 if zero.any():
                     M = csr_matrix(diags((~zero).astype(float)) @ M)
                     M.eliminate_zeros()
