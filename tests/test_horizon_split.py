@@ -116,10 +116,13 @@ def test_with_horizon_replaces_rather_than_patches():
     stat = example("ch3_two_player")
     fin = stat.with_horizon(ns.Finite(T=6.0))
     assert fin.horizon.T == 6.0 and fin.horizon.window is None
-    with pytest.raises(TypeError, match="takes a horizon OBJECT"):
-        stat.with_horizon(kind="finite", T=6.0)
-    with pytest.raises(TypeError, match="takes a horizon OBJECT"):
-        stat.with_horizon()
+    #  The message leads with the problem and names the call that works; the reasoning lives in the
+    #  docstring and docs/design/api_spec.txt, not in front of a caller who just needs the spelling.
+    for bad in (lambda: stat.with_horizon(kind="finite", T=6.0), lambda: stat.with_horizon()):
+        with pytest.raises(TypeError, match="takes a horizon object, not keywords") as exc:
+            bad()
+        assert "with_stationary(window)" in str(exc.value) and "with_horizon(Finite(T=1.0))" in str(exc.value)
+    assert "['window']" in str(pytest.raises(TypeError, stat.with_horizon, window=9.0).value)
     #  the internal patcher still refuses a kind change that does not say what each length becomes
     with pytest.raises(ValueError, match="must state both"):
         stat._patch_horizon(kind="finite", T=6.0)

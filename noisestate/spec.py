@@ -1136,15 +1136,14 @@ class Model:
         """
         from .expr import _Horizon
         if fields or horizon is None:
+            #  The reasoning behind the object form is in this method's docstring, not in the
+            #  message: what a caller who got here needs is the call that works.
             raise TypeError(
-                "with_horizon() takes a horizon OBJECT and replaces the horizon: "
-                "with_horizon(Stationary(window=3.0)), with_horizon(Finite(T=1.0)), "
-                "with_horizon(Transition(T=1.0, past=...)). The keyword form was removed because it "
-                "had to guess which of the old kind's quantities still applied -- a lag-truncation "
-                "length and a terminal time are different things and neither carries over by "
-                "default. To change one field on the SAME kind, use with_stationary(window), "
-                "with_finite(T) or with_transition(T, past)."
-                + (f" Got keyword(s) {sorted(fields)}." if fields else ""))
+                "with_horizon() takes a horizon object, not keywords"
+                + (f" (got {sorted(fields)})" if fields else "") + ". "
+                "To change one field on the same kind: with_stationary(window), with_finite(T), "
+                "with_transition(T, past). To replace the horizon: with_horizon(Stationary(window=3.0)), "
+                "with_horizon(Finite(T=1.0)), with_horizon(Transition(T=1.0, past=...)).")
         if not isinstance(horizon, _Horizon):
             raise TypeError("with_horizon() takes a horizon object -- Stationary(window=...), "
                             "Finite(T=...) or Transition(T=..., past=...) -- not "

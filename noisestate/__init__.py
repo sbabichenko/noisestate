@@ -58,10 +58,8 @@ def __getattr__(name: str):
         raise AttributeError(f"noisestate.{name} was renamed noisestate.{_RENAMED[name]} in 0.7")
     if name in _MOVED_TO_ENGINES:
         raise AttributeError(
-            f"noisestate.{name} moved to noisestate.{_MOVED_TO_ENGINES[name]} in 0.8. The package "
-            "has one standard entry point, noisestate.solve(), and one namespace for constructing "
-            "an engine directly, noisestate.engines -- there were four routes to the same three "
-            "classes.")
+            f"noisestate.{name} moved to noisestate.{_MOVED_TO_ENGINES[name]} in 0.8. Solve with "
+            "noisestate.solve(model, numerics); construct an engine directly from noisestate.engines.")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 def _read_version() -> str:
@@ -189,9 +187,10 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
     spectral engine; on a model of kind "transition" each overrides the file's block).  Unknown options are a
     TypeError naming the Numerics or Settings field they belong to.  res.numerics is the resolved Numerics."""
     if start_from is not None and start_policy is not None:
-        raise TypeError("solve() takes start_from OR start_policy, not both: start_from is an explicit "
-                        "starting point (kernels or maps) and start_policy is the name of a strategy that "
-                        "generates one. A precedence rule would discard one of them silently.")
+        #  Why there is no precedence rule: docs/design/api_spec.txt.  The caller needs the choice.
+        raise TypeError("solve() takes start_from OR start_policy, not both. start_from is an explicit "
+                        "starting point (kernels or maps); start_policy is a name (\"zero\", \"coarse\", "
+                        "\"stationary\") for one the solver generates. Drop whichever you did not mean.")
     model = as_model(model)
     if unknown:
         bad = sorted(unknown)
