@@ -167,6 +167,23 @@ def _radius_when_the_window_fails(res, asked: bool) -> None:
         pass
 
 
+def _after_solve(res, refine: bool, stability: bool, diagnostics: bool):
+    """What every solve does once it has a result, whichever branch produced it.
+
+    solve() returns down two paths -- the march in T for a transition with horizon.settle, and the
+    ordinary engine solve -- and both ran this same block.  The order matters and is not obvious:
+    refine() and stability() are what the caller asked for, and the unasked radius comes last so it
+    can see that stability() has already run rather than computing it twice.
+    """
+    if refine:
+        res.refine()
+    if stability:
+        res.stability()
+    if diagnostics:
+        _radius_when_the_window_fails(res, stability)
+    return res
+
+
 def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None, max_evaluations=None, deadline=None,
           progress=None, diagnostics: bool = True, refine: bool = False, stability: bool = False, verbose: bool = False,
           naive_observers=None, past=None, continuation=None, **unknown) -> Result:
@@ -206,23 +223,11 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
                              "start_from and start_policy do not apply")
         res = march_model(model, numerics, past=past, continuation=continuation, verbose=verbose, tol=tol, max_evaluations=max_evaluations,
                           deadline=deadline, progress=progress, diagnostics=diagnostics)
-        if refine:
-            res.refine()
-        if stability:
-            res.stability()
-        if diagnostics:
-            _radius_when_the_window_fails(res, stability)
-        return res
+        return _after_solve(res, refine, stability, diagnostics)
     S, num = engines._build(model, numerics, verbose=verbose, naive_observers=naive_observers, past=past, continuation=continuation)
     kw = num.solve_kw()
     if tol is not None:
         kw["tol"] = tol
     res = S.solve(start_from=start_from, start_policy=engines.default_start(S, start_policy), max_evaluations=max_evaluations, deadline=deadline, progress=progress,
                   diagnostics=diagnostics, **kw)
-    if refine:
-        res.refine()
-    if stability:
-        res.stability()
-    if diagnostics:
-        _radius_when_the_window_fails(res, stability)
-    return res
+    return _after_solve(res, refine, stability, diagnostics)
