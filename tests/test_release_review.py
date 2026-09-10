@@ -18,10 +18,10 @@ def _ch3(**hz):
 # ---------------------------------------------------------------- delayed rows in the stationary engine
 def test_delayed_row_solves_and_is_window_independent():
     d = _ch3(window=3.0, nodes=16); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.5
-    r3 = ns.solve(d).check()
+    r3 = ns.solve(d).require_converged()
     d = _ch3(window=6.0, nodes=16); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.5
-    r6 = ns.solve(d).check()
-    undelayed = ns.solve(_ch3(window=6.0, nodes=16)).check()
+    r6 = ns.solve(d).require_converged()
+    undelayed = ns.solve(_ch3(window=6.0, nodes=16)).require_converged()
     assert all(r.second_order[a]["ok"] for r in (r3, r6) for a in r.second_order)
     assert abs(r6.costs["player2"] - r3.costs["player2"]) < 5e-3            # window 3 truncates; 6 has settled
     assert r6.costs["player2"] > undelayed.costs["player2"]                   # less information costs more
@@ -34,14 +34,14 @@ def test_one_agent_delayed_observation_costs_more_and_passes_second_order():
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.5}, "noise": {"w1": 1.0}, "delay": 0.5}},
                              "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}},
             "horizon": {"kind": "stationary", "window": 6.0}, "numerics": {"nodes": 12}}
-    r = ns.solve(base).check(); base["agents"]["a"]["signals"]["y"]["delay"] = 0.0; r0 = ns.solve(base).check()
+    r = ns.solve(base).require_converged(); base["agents"]["a"]["signals"]["y"]["delay"] = 0.0; r0 = ns.solve(base).require_converged()
     assert r.costs["a"] > r0.costs["a"] and r.second_order["a"]["ok"]
     assert r.stability()["radius"] == 0.0 and "stable" in r.summary()        # one agent: radius 0, not NaN
 
 
 def test_cell_engine_dense_branch_with_delays():
     d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d.setdefault("numerics", {}).update(nodes=16, engine="cells")
-    r = ns.solve(d).check()
+    r = ns.solve(d).require_converged()
     assert r.resolution_ok is None and r.to_dict()["resolution_ok"] is None
     r.refine(); assert r.refinement["nodes"] == 32                             # doubled: lags stay aligned
 
@@ -107,7 +107,7 @@ def test_second_order_flags_non_convex_losses():
 
 
 def test_sharp_optimality_the_projected_foc_vanishes_only_at_the_equilibrium():
-    m = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")); S = StationarySolver(m); res = S.solve().check(); c = S.c; nW = c.nW
+    m = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")); S = StationarySolver(m); res = S.solve().require_converged(); c = S.c; nW = c.nW
 
     def projected_foc(maps, a):
         Zp = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls); Zpass, R = Zp[:, :nW], Zp[:, nW:]
@@ -161,7 +161,7 @@ def test_linear_terms_are_noted_and_builder_is_accepted():
 
 def test_wrong_kind_warm_start_is_an_error_and_right_kinds_are_converted():
     d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
-    r = ns.solve(d).check(); S = ns.SpectralFiniteSolver(ns.Model.from_dict(d))
+    r = ns.solve(d).require_converged(); S = ns.SpectralFiniteSolver(ns.Model.from_dict(d))
     assert S.solve(init=r.maps).converged                                     # raw maps are accepted and converted
     with pytest.raises(ValueError, match="expected action kernels"):
         S.solve(init={k: v[:, :, :5] for k, v in r.maps.items()})
@@ -194,9 +194,9 @@ def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.5}, "noise": {"w1": 1.0}, "delay": 0.5}},
                              "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}}}
     import copy
-    st = copy.deepcopy(base); st["horizon"] = {"kind": "stationary", "window": 6.0}; st["numerics"] = {"nodes": 16}; rs = ns.solve(st).check()
+    st = copy.deepcopy(base); st["horizon"] = {"kind": "stationary", "window": 6.0}; st["numerics"] = {"nodes": 16}; rs = ns.solve(st).require_converged()
     fi = copy.deepcopy(base); fi["horizon"] = {"kind": "finite", "window": 7.0}; fi["numerics"] = {"nodes": 5}     # pieces of 0.5: 105 pieces
-    rf = ns.solve(fi).check()
+    rf = ns.solve(fi).require_converged()
     g = rs.compiled.grid; sides = np.where((np.arange(g.N) % g.n) == g.n - 1, -1, 1)
     t_eval = 4.0                    # three units before the end and, for ages up to 1, three after the start (transients ~1e-4)
     I = rf.grid.interp(t_eval + 0 * rs.ages, rs.ages, side_a=sides)
@@ -215,8 +215,8 @@ def test_leads_only_in_cross_terms_with_the_own_current_control():
         with pytest.raises(ValueError, match="lead"):
             ns.Model.from_dict(d)
     # the supported form: [c, D1, X@-tau] is the same flow as [c, D1@tau, X] at discount 0
-    d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["0.5*r1", "D1", "D1"], [0.2, "D1", "X@-0.5"]]; lead = ns.solve(d).check()
-    d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["0.5*r1", "D1", "D1"], [0.2, "D1@0.5", "X"]]; lag = ns.solve(d).check()
+    d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["0.5*r1", "D1", "D1"], [0.2, "D1", "X@-0.5"]]; lead = ns.solve(d).require_converged()
+    d["agents"]["player1"]["loss"] = [[0.5, "X", "X"], ["0.5*r1", "D1", "D1"], [0.2, "D1@0.5", "X"]]; lag = ns.solve(d).require_converged()
     assert abs(lead.costs["player1"] - lag.costs["player1"]) < 5e-3 * abs(lag.costs["player1"])
 
 
@@ -243,7 +243,7 @@ def test_delayed_row_equilibrium_is_insensitive_to_the_least_squares_cutoff():
     try:
         for rc in (1e-9, 1e-6):
             np.linalg.lstsq = lambda A, b, rcond=None, _o=orig, _rc=rc: _o(A, b, rcond=_rc)
-            costs[rc] = ns.StationarySolver(m).solve().check().costs["player2"]
+            costs[rc] = ns.StationarySolver(m).solve().require_converged().costs["player2"]
     finally:
         np.linalg.lstsq = orig
     assert abs(costs[1e-9] - costs[1e-6]) < 1e-6
@@ -314,17 +314,17 @@ def test_delayed_rows_with_mixed_panels_and_non_dyadic_units():
     breakpoints and must still read the right side."""
     d = _ch3(window=6.0, nodes=8); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.5; d["numerics"].update(unit=0.25)
     d["agents"]["player1"]["loss"].append([0.05, "D1", "X@0.25"])
-    r = ns.solve(d).check()
+    r = ns.solve(d).require_converged()
     assert r.representation_error["player2"] < 1e-9 and np.abs(r.kernel("D2")[r.ages < 0.5 - 1e-12]).max() == 0.0
     d = _ch3(window=12.0, nodes=8); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.3; d["numerics"].update(unit=0.3, unit_range=2.4)
-    r = ns.solve(d).check()
+    r = ns.solve(d).require_converged()
     assert r.representation_error["player2"] < 1e-9 and np.abs(r.kernel("D2")[r.ages < 0.3 - 1e-12]).max() == 0.0
 
 
 def test_coarse_start_reaches_the_same_equilibrium_with_fewer_fine_evaluations():
     for path in ("ch3_two_player.yaml", "ch1_two_player_finite.yaml"):
         m = ns.load(os.path.join(EX, path))
-        cold = ns.make_solver(m).solve().check(); warm = ns.make_solver(m).solve(start="coarse").check()
+        cold = ns.solver(m).solve().require_converged(); warm = ns.solver(m).solve(start="coarse").require_converged()
         assert warm.evaluations < cold.evaluations and "coarse start" in warm.message
         assert max(np.abs(cold.maps[k] - warm.maps[k]).max() for k in cold.maps) < 1e-7
     r = ns.solve(os.path.join(EX, "ch3_two_player.yaml")); r.refine()

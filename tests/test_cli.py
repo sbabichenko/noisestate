@@ -42,7 +42,7 @@ def test_top_level_solve_rejects_unknown_options():
     with pytest.raises(TypeError, match="unknown option"):
         ns.solve(os.path.join(EX, "ch3_two_player.yaml"), tolerance=1e-8)
     res = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), tol=1e-8, verbose=False)
-    assert isinstance(res, ns.BaseResult) and res.check() is res
+    assert isinstance(res, ns.Result) and res.require_converged() is res
 
 
 def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
@@ -51,7 +51,7 @@ def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
     the exit status would otherwise take a WINDOW TOO SHORT result as sound."""
     import pytest
     r = ns.solve(os.path.join(EX, "ch3_two_player.yaml"))
-    assert r.check() is r and not r.status["ok"]
+    assert r.require_converged() is r and not r.status["ok"]
     with pytest.raises(ns.ConvergenceError, match="converged, but"):
         r.require_ok()
     assert ns.solve(os.path.join(EX, "ch4_kyle_back.yaml")).require_ok().status["ok"]

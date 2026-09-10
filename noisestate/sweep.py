@@ -38,7 +38,7 @@ def _load_dict(model: Union[str, dict, Model]) -> dict:
     return copy.deepcopy(model)
 
 
-def make_solver(model: Model, numerics=None, **kw):
+def solver(model: Model, numerics=None, **kw):
     """The engine the model's numerics select (noisestate.engines.build), constructed with `kw` (verbose,
     naive_observers, past, continuation; `settings` is accepted as an alias of numerics.settings)."""
     if "settings" in kw:
@@ -88,7 +88,7 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
         else:
             d.setdefault("params", {})[param] = float(v)
         m = Model.from_dict(d)
-        S = make_solver(m, numerics, **solver_kw)
+        S = solver(m, numerics, **solver_kw)
         t0 = time.time()
         init = None
         if prev is not None and not S.same_grid(prev.compiled) and hasattr(S, "warm_maps_from"):

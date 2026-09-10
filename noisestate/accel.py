@@ -72,7 +72,7 @@ def anderson(F: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, tol: float =
 
 
 class ConvergenceError(RuntimeError):
-    """Raised by Result.check() when a solve did not reach its tolerance."""
+    """Raised by Result.require_converged() and require_ok() when a result is not usable."""
 
 
 class _Stop(Exception):

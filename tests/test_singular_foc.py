@@ -27,7 +27,7 @@ def test_a_singular_best_response_system_raises_on_every_engine(kind, nodes):
         warnings.simplefilter("ignore", UserWarning)
         with pytest.raises(ValueError, match="the best-response system of market_maker is singular"):
             ns.solve(m)
-        res = ns.solve(_kyle_back(kind, nodes, [[1.0, "P", "P"], [-2.0, "P", "V"]])).check()   # the same setup with the term: regular
+        res = ns.solve(_kyle_back(kind, nodes, [[1.0, "P", "P"], [-2.0, "P", "V"]])).require_converged()   # the same setup with the term: regular
     assert res.converged and abs(res.costs["market_maker"]) > 0.01       # its cost omits the V^2 term and is negative
 
 

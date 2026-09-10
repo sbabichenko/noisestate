@@ -47,14 +47,14 @@ def test_examples_compile_to_their_files(name):
 
 @pytest.mark.parametrize("name", ["ch1_two_player_finite", "ch1_delayed_finite", "ch3_two_player", "ch4_kyle_back", "kyle_back_prior"])
 def test_examples_solve_to_the_baseline(name):
-    res = EXAMPLES[name]().solve().check()
+    res = EXAMPLES[name]().solve().require_converged()
     for agent, cost in BASELINE[name]["costs"].items():
         assert abs(res.costs[agent] - cost) <= 1e-14 * max(1.0, abs(cost)), (name, agent)
 
 
 @pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="ch5 (6 s) and the precision-change transition: NOISESTATE_SLOW=1")
 def test_slow_examples_solve_to_the_files():
-    res = EXAMPLES["ch5_cycle_market"]().solve().check()
+    res = EXAMPLES["ch5_cycle_market"]().solve().require_converged()
     for agent, cost in BASELINE["ch5_cycle_market"]["costs"].items():
         assert abs(res.costs[agent] - cost) <= 1e-14 * max(1.0, abs(cost))
     m = EXAMPLES["ch3_precision_change"](past=EXAMPLES["ch3_two_player"]())
@@ -78,9 +78,9 @@ eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
 eq.status.ok; eq.costs["player1"]; eq.cost_parts["player1"]; eq.means["X"]
 k = eq.kernel("X", "w0"); k.values; k.axes; k.at(0.7)
 for point in game.sweep(p1=[0.3, 1, 3, 10]): point.value, point.result, point.jump
-old = game.solve(); new = game.with_params(p1=10.0).finite(T=6.0); path = new.solve(past=old)
+old = game.solve(); new = game.with_params(p1=10.0).with_finite(T=6.0); path = new.solve(past=old)
 game.save("ch1.yaml"); ns.Model.load("ch1.yaml")
-with ns.settings(second_order_tol=1e-3): game.solve()
+with ns.using_settings(second_order_tol=1e-3): game.solve()
 '''
 
 
@@ -118,21 +118,21 @@ def test_target_script_pieces(tmp_path):
     assert rows[-1].jump is False and abs(rows[-1].result.costs["player1"] - eq.costs["player1"]) < 1e-8
     with pytest.raises(ValueError, match="exactly one parameter"):
         game.sweep(p1=[1], p2=[1])
-    new = game.with_params(p1=10.0).finite(T=6.0)
+    new = game.with_params(p1=10.0).with_finite(T=6.0)
     assert new.horizon.kind == "finite" and new.horizon.window == 6.0 and new.params["p1"] == 10.0
-    assert new.stationary(window=4.0).horizon.kind == "stationary"
+    assert new.with_stationary(window=4.0).horizon.kind == "stationary"
     path = os.path.join(tmp_path, "ch1.yaml")
     game.save(path)
     loaded = ns.Model.load(path)
     assert loaded == game and loaded.to_dict() == game.to_dict()
     assert ns.solve(loaded, ns.Numerics(nodes=16, unit=0.5)).costs == eq.costs
-    with ns.settings(second_order_tol=1e-3):
+    with ns.using_settings(second_order_tol=1e-3):
         res = game.solve(ns.Numerics(nodes=16, unit=0.5))
         assert ns.Settings.of(None).second_order_tol == 1e-3
     assert res.settings.second_order_tol == 1e-3 and ns.Settings.of(None).second_order_tol == 1e-4
     assert eq.settings.second_order_tol == 1e-4
     with pytest.raises(TypeError):
-        ns.settings(no_such_setting=1)
+        ns.using_settings(no_such_setting=1)
 
 
 def test_round_trip_of_a_model_with_lags_and_definitions(tmp_path):
@@ -209,7 +209,7 @@ def test_definitions_lags_leads_and_constants():
     assert d["agents"]["me"]["loss"] == [[1, "Xl", "Xl"], ["-2*k", "Xl"], [1, "D", "D"], [1, "D", "X@-0.5"]]
     assert d["agents"]["me"]["signals"]["y"] == {"drift": {"Xl": 1}, "noise": {"w1": 1}, "delay": 0.25}
     assert d["params"] == {"tau": 0.5, "k": 0.3} and d["channels"] == ["w0", "w1"]
-    assert m.means_driven and m.all_lags() == [0.25, 0.5, 0.75]
+    assert m.drives_means and m.all_lags() == [0.25, 0.5, 0.75]
     # the field form still constructs and compares as before
     plain = ns.Model.from_dict(d)
     assert plain == m and isinstance(plain, ns.Model) and ns.Model("empty").channels == []

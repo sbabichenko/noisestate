@@ -27,7 +27,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `axes` | map of list of number | the coordinates of every kernel by name: `age` (stationary); `time`, `age`, `shock_time` node-wise on the spectral triangle (`shock_time` < 0 on a transition's band); `time`, `shock_time` for the cell engine's (N, N) matrices; under `maps`, where each row's map values belong |
 | `times` | list of number or null | the time nodes of the paths; null on the stationary engine |
 | `options` | object | `numerics` (the resolved Numerics), `solver` (the engine's constructor options) and `solve` (the solve options: start, bounds, diagnostics, ...); `noisestate plot --re-solve` re-solves under them |
-| `grid` | object | the grid's description (`res.grid_info()`): its `kind`, nodes, panels or pieces, window |
+| `grid` | object | the grid's description (`res.grid_summary()`): its `kind`, nodes, panels or pieces, window |
 | `discount` | number | the discount rate |
 | `channels` | list of string | the Brownian channels in kernel column order |
 | `agents` | map of object | per agent: its `controls` and its `signals`, each row with its `delay` and the axes of its map (`map_time`, `map_age` or `map_shock_time`, per `map_convention`) |
@@ -41,7 +41,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `means_t` | list of number or null | the time nodes of the mean paths; null on the stationary engine |
 | `representation_error` | map of number | per agent: the representation error of the action kernels on the seen rows |
 | `representation_parts` | map of map of number (optional) | a transition's error by region: interior, tip, last window, buffer |
-| `diagnostics` | list of object | every row of `res.diagnose()` ([guards.md](guards.md)), plus stable `code`, `category`, `severity`, `meaning`, `action`, and `suggested_options` fields; stationary window rows add a `trend` with the within-window tail ratio, rough doubled-window projection, benchmark range, and `decaying`, `slow_decay`, `not_decaying`, or `inconclusive` assessment (the last when the underlying solve is unconverged or under-resolved) |
+| `diagnostics` | list of object | every row of `res.diagnostic_rows()` ([guards.md](guards.md)), plus stable `code`, `category`, `severity`, `meaning`, `action`, and `suggested_options` fields; stationary window rows add a `trend` with the within-window tail ratio, rough doubled-window projection, benchmark range, and `decaying`, `slow_decay`, `not_decaying`, or `inconclusive` assessment (the last when the underlying solve is unconverged or under-resolved) |
 | `resolution_ok` | boolean or null | the resolution row's verdict (null when not computed) |
 | `status` | object | `ok` and the failing `flags` (and the rows) |
 | `cost_kind` | string | `flow loss per unit time` (stationary) or the discounted integral (finite) |

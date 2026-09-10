@@ -62,7 +62,7 @@ def test_spectral_finite_engine_matches_the_discounted_closed_form(rho):
     """12 nodes per side: the cost to 1e-8 (measured -5e-9 at rho = 0 and -1e-8 at 0.5; 3e-5 at 8 nodes, 2e-4 at 6)
     and the kernels to 6e-5 (D on w1, the one that reads K(t) and G(s) directly; 1e-5 and below on the others)."""
     J, kernel = exact(rho)
-    res = ns.solve(model(rho, "finite", 12)).check()
+    res = ns.solve(model(rho, "finite", 12)).require_converged()
     assert abs(res.costs["a"] - J) < 1e-7
     for name, ch in (("D", "w1"), ("D", "w0"), ("X", "w0"), ("X", "w1")):
         assert np.abs(res.evaluate(name, ch, TS, SS) - kernel(name, ch, TS, SS)).max() < 2e-4, (name, ch)
@@ -73,7 +73,7 @@ def test_cell_engine_is_first_order_and_its_richardson_pair_matches_the_closed_f
     """48 and 96 cells: the cost error halves (measured 4.5e-2 / 2.3e-2 at rho = 0, 2.4e-2 / 1.2e-2 at 0.5, ratio 1.98)
     and the Richardson pair is within 4e-4 (measured 4.0e-4 and 2.6e-4; the pair (24, 48) is within 1.8e-3)."""
     J, _ = exact(rho)
-    e48 = ns.solve(model(rho, "finite_cells", 48)).check().costs["a"] - J
-    e96 = ns.solve(model(rho, "finite_cells", 96)).check().costs["a"] - J
+    e48 = ns.solve(model(rho, "finite_cells", 48)).require_converged().costs["a"] - J
+    e96 = ns.solve(model(rho, "finite_cells", 96)).require_converged().costs["a"] - J
     assert 1.9 < e48 / e96 < 2.1
     assert abs(2 * e96 - e48) < 1e-3

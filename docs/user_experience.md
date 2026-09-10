@@ -47,7 +47,7 @@ again in the environment.
 
 ### `check()` did less than its name implied, and the CLI said 0 either way
 
-`res.check()` tested convergence only, so it passed on a result whose guards had failed; `noisestate
+`res.require_converged()` tested convergence only, so it passed on a result whose guards had failed; `noisestate
 solve` exited 0 on the same result, and a script reading only the exit status would have taken it as
 sound.  `res.require_ok()` is now check() plus the guards, `noisestate solve --require-ok` is the same
 split on the command line, and `noisestate describe model.yaml` reaches the model explanation that was
@@ -60,7 +60,7 @@ asks explicitly for the old reproduction path.)
 
 ### `check()` passes while `status["ok"]` is False
 
-`res.check()` raises only when the fixed point did not converge.  It says nothing about the guards, so on
+`res.require_converged()` raises only when the fixed point did not converge.  It says nothing about the guards, so on
 `ch3_two_player` it passes happily while `status["ok"]` is `False`.  It is the obvious call to reach for
 and the one most likely to be misread as "the result is sound".  Documented inline in the README for now;
 a `check(strict=True)` that consults the guards would close it properly.

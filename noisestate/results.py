@@ -3,7 +3,7 @@
     res.converged, res.residual, res.message     outcome of the outer solve
     res.evaluations                              best-response evaluations made
     res.status                                   {"ok", "flags", "rows"}: the verdict, the failing checks' flags, diagnose()'s rows
-    res.check()                                  raise ConvergenceError unless converged
+    res.require_converged()                      raise ConvergenceError unless converged
     res.axes                                     the coordinate arrays of kernel(): {"age": ages} (stationary), {"time", "age",
                                                  "shock_time"} node-wise (spectral finite; shock_time < 0 on a transition's band),
                                                  {"time", "shock_time"} (cells, the two axes of the (N, N) matrix); and "maps":
@@ -21,7 +21,7 @@
     res.cost_parts[agent]                        {"variance", "mean"}, the two parts
     res.means[name]                              mean of every state, control and definition, and the mean drift rate of
                                                  every signal row as "agent.row": a constant (stationary) or the path on the
-                                                 time nodes res.means_t (finite; the spectral res.mean(name, t) interpolates)
+                                                 time nodes res.mean_times (finite; the spectral res.mean(name, t) interpolates)
     res.kernel(name, channel=None)               closed-loop kernel of a state or control
     res.maps[agent]                              raw strategies on the agent's signal rows, indexed by the age of the
                                                  increment as the agent sees it (a delayed row's raw increment is older
@@ -42,6 +42,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+from ._renames import renamed_method, renamed_property, warn
 
 import numpy as np
 
@@ -79,7 +81,7 @@ class Result:
     second_order: Dict[str, dict] = field(default_factory=dict)   # agent -> {"min", "max", "ok"}: is the best response a minimum
     foc: Dict[str, dict] = field(default_factory=dict)            # agent -> control -> {"foc", "physical", "wedge"} kernels
     means: Dict[str, object] = field(default_factory=dict)        # quantity -> its mean, a float (stationary) or a path (finite); zero when nothing drives it
-    means_t: Optional[np.ndarray] = None                          # the time nodes of the mean paths (finite engines)
+    mean_times: Optional[np.ndarray] = None                       # the time nodes of the mean paths (finite engines)
     cost_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> {"variance", "mean"} parts of its cost
     settings: Settings = DEFAULT                                  # the tuning constants of the engine that produced this result
     kind: str = "base"
@@ -135,7 +137,7 @@ class Result:
         """{"ok": converged and no check failed, "flags": the flags of the failing checks (and of the checks
         without a verdict, when they carry one), "rows": diagnose()'s rows}; a dict whose keys are also
         attributes (res.status.ok)."""
-        rows = self.diagnose()
+        rows = self.diagnostic_rows()
         failed = [d["flag"] for d in rows if d["ok"] is False and d["flag"]]
         return AttrDict({"ok": bool(self.converged) and not failed, "flags": failed, "rows": rows})
 
@@ -145,7 +147,7 @@ class Result:
         return {}
 
     @property
-    def means_driven(self) -> bool:
+    def has_means(self) -> bool:
         """Whether any mean is nonzero beyond round-off."""
         return any(np.max(np.abs(np.asarray(v, dtype=float))) > self.MEAN_ZERO for v in self.means.values() if np.size(v))
 
@@ -165,8 +167,8 @@ class Result:
     def _make_solver(self, model: Model):
         """The engine that produced this result, with the same constructor options, on `model`."""
         if self.solver_class is None:
-            from .sweep import make_solver
-            return make_solver(model)
+            from .sweep import solver
+            return solver(model)
         return self.solver_class(model, **self.solver_kw)
 
     @property
@@ -179,7 +181,7 @@ class Result:
                                                        if k in ("tol", "damping", "max_newton", "variable") and v is not None})
 
     # ----------------------------------------------------------- common
-    def check(self):
+    def require_converged(self):
         """Return self, or raise ConvergenceError if the solve did not reach its tolerance.
 
         Convergence only.  A converged solve is a solution of the *discretised, truncated* model, so
@@ -194,7 +196,7 @@ class Result:
 
         The whole verdict: what check() tests, and then `status["flags"]` empty.  Use it wherever a number
         is going to be used rather than looked at."""
-        self.check()
+        self.require_converged()
         flags = self.status["flags"]
         if flags:
             raise ConvergenceError(f"{self.model.name}: converged, but " + "; ".join(flags))
@@ -213,12 +215,12 @@ class Result:
     def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         raise NotImplementedError
 
-    def action_kernel(self, control: str, channel: Optional[str] = None) -> np.ndarray:
+    def strategy_kernel(self, control: str, channel: Optional[str] = None) -> np.ndarray:
         if control not in self.model.control_names:
             raise KeyError(f"{control!r} is not a control")
         return self.kernel(control, channel)
 
-    def grid_info(self) -> dict:
+    def grid_summary(self) -> dict:
         raise NotImplementedError
 
     @property
@@ -274,7 +276,7 @@ class Result:
 
     REFINE_COST_TOL, REFINE_KERNEL_TOL = tunable("refine_cost_tol"), tunable("refine_kernel_tol")
 
-    def diagnose(self) -> List[dict]:
+    def diagnostic_rows(self) -> List[dict]:
         """Every check this result carries, as rows {name, value, threshold, ok, flag, advice}: ok is
         True/False, or None when the check gives no verdict (not computed, or not applicable).  The
         summary prints the rows that fail; to_dict() carries them all.  The thresholds are the class
@@ -301,7 +303,7 @@ class Result:
         if tail is not None:
             row("window", float(tail), self.WINDOW_TAIL_TOL, bool(tail <= self.WINDOW_TAIL_TOL),
                 f"WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window"
-                + ("; the means' continuation integrals are truncated there as well)" if self.means_driven else ")"),
+                + ("; the means' continuation integrals are truncated there as well)" if self.has_means else ")"),
                 "raise horizon.window")
         for a, so in self.second_order.items():
             if so.get("converged") is False:
@@ -394,9 +396,32 @@ class Result:
                 out["suggested_options"] = {}
         return out
 
+    def diagnostic_records(self) -> List[dict]:
+        """diagnose() with the presentation and automation fields of _diagnostic_record added."""
+        return [self._diagnostic_record(d) for d in self.diagnostic_rows()]
+
+    def diagnostic_verdict(self, category: str, exclude=()) -> Optional[bool]:
+        """One category of diagnose() collapsed to a verdict: False if any check failed, True if any
+        passed and none failed, None if none of them ran.
+
+        ``exclude`` leaves checks out by the *root* of their name -- the part before any ``:``, which
+        is what the category itself is computed from -- so "second_order" covers the per-agent
+        "second_order:<agent>" rows, and an exclusion cannot silently lapse when a name gains a
+        suffix.  The use for it is "stability": it sits in the equilibrium category, but a
+        best-response-unstable equilibrium is often the finding rather than a defect in the numbers,
+        and a caller reporting it separately should not also have it condemn the solve.
+        """
+        group = [r for r in self.diagnostic_records()
+                 if r.get("category") == category and r["name"].split(":", 1)[0] not in exclude]
+        if any(r.get("ok") is False for r in group):
+            return False
+        if any(r.get("ok") is True for r in group):
+            return True
+        return None
+
     def diagnostic_summary(self, detailed: bool = False) -> str:
         """Compact grouped verdict, with full explanations when ``detailed`` is true."""
-        rows = [self._diagnostic_record(d) for d in self.diagnose()]
+        rows = self.diagnostic_records()
         judged = [d for d in rows if d["ok"] is not None]
         failed = [d for d in judged if d["ok"] is False]
         lines = [f"Diagnostics: {len(failed)} failed, {len(judged) - len(failed)} passed"]
@@ -444,7 +469,7 @@ class Result:
     def _status(self, compact: bool = False) -> str:
         """One line: the outcome, then every check that failed or has no verdict, and the informational
         rows (refinement, stability, a skipped diagnostics pass) whenever they were computed."""
-        rows = self.diagnose()
+        rows = self.diagnostic_rows()
         if compact:
             converged = next(d for d in rows if d["name"] == "converged")
             return "converged" if converged["ok"] else f"NOT converged ({converged['advice']})"
@@ -547,7 +572,7 @@ class Result:
                "options": {"numerics": num.to_dict(),
                            "solver": {k: (v.to_dict() if hasattr(v, "to_dict") else v) for k, v in self.solver_kw.items()},
                            "solve": dict(self.solve_kw)},
-               "grid": self.grid_info(), "discount": float(c.rho), "channels": self.channels,
+               "grid": self.grid_summary(), "discount": float(c.rho), "channels": self.channels,
                "agents": {a.name: {"controls": list(a.controls),
                                    "signals": {r.name: {"delay": float(r.delay), **self.map_axes(r.delay)} for r in a.signals}}
                           for a in m.agents},
@@ -555,11 +580,11 @@ class Result:
                "costs": {k: float(v) for k, v in self.costs.items()},
                "cost_parts": {a: {k: float(v) for k, v in p.items()} for a, p in self.cost_parts.items()},
                "means": {k: (v.tolist() if isinstance(v, np.ndarray) else float(v)) for k, v in self.means.items()},
-               "means_t": None if self.means_t is None else self.means_t.tolist()}
+               "means_t": None if self.mean_times is None else self.mean_times.tolist()}
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
         if self.representation_parts:
             out["representation_parts"] = {a: {k: float(v) for k, v in p.items()} for a, p in self.representation_parts.items()}
-        out["diagnostics"] = [{k: (None if v is None else v) for k, v in self._diagnostic_record(d).items()} for d in self.diagnose()]
+        out["diagnostics"] = [{k: (None if v is None else v) for k, v in self._diagnostic_record(d).items()} for d in self.diagnostic_rows()]
         out["resolution_ok"] = None if self.resolution_ok is None else bool(self.resolution_ok)
         st = self.status
         out["status"] = {"ok": st["ok"], "flags": st["flags"]}
@@ -588,7 +613,28 @@ class Result:
         return out
 
 
-BaseResult = Result                      # the old name (until 0.6)
+#  The 0.7 renames.  Each old spelling still works and says what replaced it; see noisestate/_renames.py
+#  for the conventions they settle.  BaseResult is served by noisestate.__getattr__ until 0.8.
+Result.check = renamed_method("Result.check()", "require_converged")
+Result.diagnose = renamed_method("Result.diagnose()", "diagnostic_rows")
+Result.category_verdict = renamed_method("Result.category_verdict()", "diagnostic_verdict")
+Result.action_kernel = renamed_method("Result.action_kernel()", "strategy_kernel")
+Result.grid_info = renamed_method("Result.grid_info()", "grid_summary")
+Result.means_driven = renamed_property("Result.means_driven", "has_means")
+
+
+def _means_t_get(self):
+    warn("Result.means_t", "Result.mean_times")
+    return self.mean_times
+
+
+def _means_t_set(self, value):
+    warn("Result.means_t", "Result.mean_times")
+    self.mean_times = value
+
+
+Result.means_t = property(_means_t_get, _means_t_set,
+                          doc="Deprecated in 0.7, removed in 0.8: use ``mean_times``.")
 
 
 @dataclass
@@ -694,7 +740,7 @@ class StationaryResult(Result):
             ax.axis("off")
         fig.suptitle(_result_plot_title(self), fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
 
-    def grid_info(self) -> dict:
+    def grid_summary(self) -> dict:
         g = self.compiled.grid
         return {"kind": "stationary", "breakpoints": [float(b) for b in g.breakpoints], "nodes_per_panel": g.n,
                 "ages": g.nodes.tolist()}
@@ -710,7 +756,7 @@ class StationaryResult(Result):
             for u in a.controls:
                 k = self.kernel(u)
                 lines.append(f"    {u}(0+) on channels: " + ", ".join(f"{ch}={k[0, j]:+.4f}" for j, ch in enumerate(self.channels)))
-        if self.means_driven:
+        if self.has_means:
             lines.append("  means: " + ", ".join(f"{n}={self._mz(self.means[n]):+.6f}" for n in c.prim))
         return "\n".join(lines)
 
@@ -754,7 +800,7 @@ class TriangleResult(Result):
 
     @property
     def times(self) -> Optional[np.ndarray]:
-        return self.means_t
+        return self.mean_times
 
     @property
     def extra(self) -> dict:
@@ -813,7 +859,7 @@ class TriangleResult(Result):
         a = t if g.L is None else np.zeros_like(t)              # the line s = 0, or (a strip, cut at age L) the age-0 line
         return g.interp(t, a) @ (self.compiled.mean_embed @ np.asarray(self.means[name], dtype=float))
 
-    def grid_info(self) -> dict:
+    def grid_summary(self) -> dict:
         g = self.grid; c = self.compiled
         out = {"kind": "finite", "breakpoints": [float(b) for b in g.bp], "nodes_per_side": g.nt,
                "t": g.t.tolist(), "age": g.a.tolist(), "s": g.s.tolist()}
@@ -823,11 +869,11 @@ class TriangleResult(Result):
                 out["buffer"] = [float(c.T), float(g.T)]
         return out
 
-    def diagnose(self) -> List[dict]:
+    def diagnostic_rows(self) -> List[dict]:
         """The common rows, then a transition's: the past's own window tail, and with a continuation the `settled`
         check (the maps on [T - L, T] against the stationary maps the buffer is frozen at, threshold
         settings.settled_tol) and the continuation's window tail."""
-        rows = super().diagnose()
+        rows = super().diagnostic_rows()
 
         def row(name, value, threshold, ok, flag, advice=""):
             rows.append({"name": name, "value": value, "threshold": threshold, "ok": ok, "flag": flag, "advice": advice})
@@ -888,7 +934,7 @@ class TriangleResult(Result):
             lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.8f}"
                          + (f" (variance {parts['variance']:+.8f}, mean {parts['mean']:+.8f})" if parts and parts["mean"] != 0.0 else "")
                          + (f" + continuation {parts['continuation']:+.8f} on the buffer" if parts and "continuation" in parts else ""))
-        if self.means_driven:
+        if self.has_means:
             at = np.array([0.0, 0.5 * c.T, c.T])
             lines.append("  means at t = 0, T/2, T: " + ", ".join(f"{n}=" + "/".join(f"{self._mz(v):+.4f}" for v in self.mean(n, at)) for n in c.prim))
         return "\n".join(lines)
@@ -950,8 +996,8 @@ class TransitionResult(TriangleResult):
             raise KeyError(f"no agent {agent!r}; the agents are {[x.name for x in self.model.agents]}")
         return self._make_solver(self.model).belief_error(a, name, self.world)
 
-    def grid_info(self) -> dict:
-        out = super().grid_info(); out["kind"] = "transition"
+    def grid_summary(self) -> dict:
+        out = super().grid_summary(); out["kind"] = "transition"
         return out
 
     def to_dict(self) -> dict:
@@ -1033,7 +1079,7 @@ class CellResult(Result):
         k = c.channels.index(channel)
         return K[:, k * c.N:(k + 1) * c.N]
 
-    def grid_info(self) -> dict:
+    def grid_summary(self) -> dict:
         c = self.compiled
         return {"kind": "finite_cells", "cells": int(c.N), "h": float(c.h), "t": c.times.tolist()}
 
@@ -1054,7 +1100,7 @@ class CellResult(Result):
             parts = self.cost_parts.get(a.name)
             lines.append(f"  {a.name}: discounted cost = {self.costs.get(a.name, float('nan')):+.6f}"
                          + (f" (variance {parts['variance']:+.6f}, mean {parts['mean']:+.6f})" if parts and parts["mean"] != 0.0 else ""))
-        if self.means_driven:
+        if self.has_means:
             lines.append("  means at t = 0, T/2: " + ", ".join(f"{n}={self._mz(self.means[n][0]):+.4f}/{self._mz(self.means[n][c.N // 2]):+.4f}" for n in c.prim))
         return "\n".join(lines)
 
@@ -1077,7 +1123,7 @@ def _plot_title(name: str, residual: float, rows, suffix: str = "") -> str:
 
 
 def _result_plot_title(res, suffix: str = "") -> str:
-    return _plot_title(res.model.name, res.residual, res.diagnose(), suffix)
+    return _plot_title(res.model.name, res.residual, res.diagnostic_rows(), suffix)
 
 
 def _plot_transition(res, path: str) -> None:
@@ -1085,7 +1131,7 @@ def _plot_transition(res, path: str) -> None:
     names = res.model.state_names + res.model.control_names; chans = res.channels
     agents = [a.name for a in res.model.agents]; states = res.model.state_names
     c = res.compiled; g = res.grid; T = c.T; L = g.L or 0.0
-    means = res.means_driven and res.means_t is not None
+    means = res.has_means and res.mean_times is not None
     ncol = max(len(chans), len(agents), 1)
     fig, axes = plt.subplots(len(names) + 2 + means, ncol, figsize=(3.6 * ncol, 2.5 * (len(names) + 2 + means)), squeeze=False)
     for i, name in enumerate(names):
@@ -1121,7 +1167,7 @@ def _plot_transition(res, path: str) -> None:
     if means:
         ax = axes[-1, 0]
         for name in names:
-            ax.plot(res.means_t, res.means[name], lw=1, label=name)
+            ax.plot(res.mean_times, res.means[name], lw=1, label=name)
         ax.axhline(0, color="k", lw=0.4); ax.set_title("mean paths", fontsize=9); ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
         for ax in axes[-1, 1:]:
             ax.axis("off")
@@ -1135,7 +1181,7 @@ def _plot_by_shock_time(res, curves, path: str) -> None:
     a last row with the mean paths against t when they are nonzero."""
     plt = _pyplot()
     names = res.model.state_names + res.model.control_names; chans = res.channels
-    means = res.means_driven and res.means_t is not None
+    means = res.has_means and res.mean_times is not None
     fig, axes = plt.subplots(len(names) + means, len(chans), figsize=(3.6 * len(chans), 2.5 * (len(names) + means)), squeeze=False)
     for i, name in enumerate(names):
         for k, ch in enumerate(chans):
@@ -1148,7 +1194,7 @@ def _plot_by_shock_time(res, curves, path: str) -> None:
     if means:
         ax = axes[-1, 0]
         for name in names:
-            ax.plot(res.means_t, res.means[name], lw=1, label=name)
+            ax.plot(res.mean_times, res.means[name], lw=1, label=name)
         ax.axhline(0, color="k", lw=0.4); ax.set_title("mean paths", fontsize=9); ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
         for ax in axes[-1, 1:]:
             ax.axis("off")

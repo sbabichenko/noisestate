@@ -17,5 +17,5 @@ def test_cpp_cascade_replica_reproduces_published_two_trader_solution():
     res = CppCascadeReplica(ns.Model.from_dict(d)).solve()
     c_ref = np.stack([np.array(ref["traders"][0]["c"][k][0]) for k in range(4)], axis=1)
     assert res.converged
-    assert np.abs(res.action_kernel("D1") - c_ref).max() < 1e-3
+    assert np.abs(res.strategy_kernel("D1") - c_ref).max() < 1e-3
     assert abs(-res.costs["trader1"] - ref["traders"][0]["flow"]) < 2e-6

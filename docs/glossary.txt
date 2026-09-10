@@ -1,0 +1,453 @@
+================================================================================================
+ noisestate -- GLOSSARY OF CURRENT BEHAVIOUR
+ What every public name does TODAY, and where today's behaviour is known to be wrong.
+================================================================================================
+
+ WHAT THIS IS, AND WHAT IT IS NOT
+ ------------------------------------------------------------------------------------------------
+ This file describes the API AS IT IS, verified against the source on 2026-09-10.  The intended
+ API -- the contracts being designed, and the decisions still open -- is a separate document,
+ docs/api_spec.txt.  The two are deliberately split, because an earlier round of this work treated
+ inferences drawn from documentation as facts about the source and three of them were wrong.
+
+     [V]  verified against the source or by running it; the method is stated with the claim
+     ->   a cross-reference to the section of docs/api_spec.txt that proposes a change
+
+ Where this file and the specification disagree, the specification is the intent and this file is
+ the present.  Nothing in the specification is implemented yet.
+
+ CONTENTS
+     PART 1   WHAT THE NAMES FOLLOW TODAY .... the conventions that actually hold, with evidence
+     PART 2   GLOSSARY ....................... every name, grouped by the job it does
+     PART 3   KNOWN GAPS ..................... four verified problems in current behaviour
+     PART 4   RENAMED IN 0.7 ................. old spelling -> new spelling
+
+
+================================================================================================
+ PART 1   WHAT THE NAMES FOLLOW TODAY
+================================================================================================
+
+ Three conventions hold across the whole surface and are worth relying on.
+
+   with_*     A method returning a CHANGED COPY of a model; the receiver is untouched.
+              [V] All 7 -- with_params, with_horizon, with_numerics, with_signal, with_signals,
+                  with_finite, with_stationary -- audited 2026-09-10.
+              This is the strongest convention in the package.  It also does real work:
+              Model.with_finite() returns a copy while ModelBuilder.finite() mutates the builder.
+
+   require_*  A method that RAISES when the answer is no.  require_ok, require_converged.
+              Read it as one-way: require_ tells you control flow may stop here.  The converse is
+              not claimed -- validate() raises and keeps its name.
+
+   to_*       A method returning another representation.  to_dict on Model, Result,
+              ComparisonResult, ScenarioResult.  A Python-wide idiom rather than a local decision.
+
+ Conventions that do NOT hold, and are NOT to be relied on:
+
+   *_ok       does NOT mean "returns a bool".
+              [V] resolution_ok is Optional[bool] and returns None on the cell engine (solved a
+                  cells model 2026-09-10: representation_error was {} and resolution_ok was None).
+              [V] require_ok matches this shape and RAISES.
+              -> api_spec PART 1 R3 and PART 3
+
+   verb/noun  does NOT predict anything.
+              [V] Nine Result methods carry noun names and compute: kernel, strategy_kernel,
+                  stability, map_axes, grid_summary, and all four diagnostic_* names.
+              The useful distinction is property vs method, not part of speech: a noun method is
+              correct when it is a parameterized query.
+              -> api_spec PART 1 R2
+
+ [V] Model and Result expose 87 public members; 14 are governed by any prefix rule.  The
+     conventions constrain names; they do not determine them.
+
+ [V] Two distinctions in the current names are deliberate and are to survive any cleanup:
+     Model.drives_means (can the means move -- structural) against Result.has_means (did they --
+     realized); and res.kernel (closed-loop response) against res.strategy_kernel (the strategy).
+
+
+================================================================================================
+ PART 2   GLOSSARY
+================================================================================================
+
+ Grouped by the job, because "which name do I want" is a far more common question than "what
+ does this name I already have do".  Deprecated 0.7 spellings are in PART 4, not here.
+
+
+ 2.1  GETTING A MODEL IN
+ ------------------------------------------------------------------------------------------------
+ ns.load(path)                       The model of a YAML file.  A relative horizon.past.model
+                                     resolves from that file's own directory.
+ Model.load(path)                    The same, as a classmethod.
+ Model.from_dict(d, base_dir=None)   A model from the file structure as a dict.  Runs validate().
+ Model(name, states=, agents=, ...)  A model from pieces built with the expression API below.
+ ns.ModelBuilder(name, **params)     The fluent builder producing the same structure as the file.
+                                     Its .finite()/.stationary() MUTATE the builder -- unlike the
+                                     Model methods of similar name, which return a copy.
+
+ THE EXPRESSION API (for writing a model as equations rather than a dict)
+ ns.Param(name, value)               A named parameter.  Arithmetic on it stays symbolic, so the
+ ns.Param.many(**kw)                 saved file keeps the expression rather than a number.
+ ns.shocks("w0", "w1")               The Brownian channels as a namespace: w = shocks("w0"); w.w0.
+                                     The order given here is the model's channel order.
+ ns.State(name, initial=, drift=)    A state; set X.drift = D + sigma * w.w0 after construction.
+ ns.Control(name)                    A control.  It belongs to whichever Agent lists it.
+ ns.Signal(name, expr, delay=0.0)    One observed row.  delay makes it an observation lag.
+ ns.Agent(name, controls, signals, loss, myopic=False, naive_observers=None)
+                                     An agent's controls, information and quadratic loss.  myopic
+                                     ignores its own continuation effects; naive_observers is the
+                                     stationary engine's option, carried on the model.
+ ns.define(name, expr)               A named linear expression reported as its own kernel, e.g.
+                                     an index built from several prices.
+ ns.sqrt exp log sin cos tanh        These functions of a Param expression, kept symbolic.
+ ns.Stationary(window, discount)     An infinite-horizon problem: lag window L, discount 0 meaning
+                                     average cost.
+ ns.Finite(T, discount)              A finite horizon [0, T].
+ ns.Transition(T, past, continuation, discount, window)
+                                     A regime change on [0, T] from a past stationary model.
+
+
+ 2.2  UNDERSTANDING A MODEL YOU DID NOT WRITE
+ ------------------------------------------------------------------------------------------------
+ Model.describe()                    The whole model as equations, delays, losses and the
+                                     conventions that apply, with no solve.  Renders as HTML in a
+                                     notebook, plain text elsewhere.
+ Model.notes                         Just the conventions that are easy to misread here.
+ Model.validate()                    Every structural rule, in a fixed order.  Raises.  from_dict
+                                     already runs it; call it after hand-editing.
+ Model.to_dict(numeric=False)        The file structure back out.  numeric=True resolves parameter
+                                     expressions to numbers -- the form to fingerprint when
+                                     proving two models are identical.
+ Model.state_names / .control_names / .def_names / .channels
+                                     The names, for building something over them.
+ Model.owner_of(control)             Which agent owns a control.
+ Model.all_lags()                    Every distinct positive lag or observation delay, e.g. to
+                                     check that a window covers them.
+ Model.drives_means                  Whether anything moves the means at all (a linear loss term,
+                                     a drift constant).  If false, only second moments matter.
+ Model.expand(expr) / .constant(expr)
+                                     Expanding an expression into primary atoms; its constant term.
+ Model.numerics                      The numerics this model carries, as a Numerics.
+
+
+ 2.3  CHANGING A MODEL WITHOUT REWRITING IT
+ ------------------------------------------------------------------------------------------------
+ Every one returns a NEW model and leaves the original alone.  This is how an experiment is run:
+ build one model, vary one thing.
+
+ Model.with_params(**values)         Different parameter values.  The others keep their
+                                     expressions and are re-evaluated.
+ Model.with_horizon(**fields)        A different window, horizon, discount, past or continuation.
+ Model.with_finite(T, **fields)      The finite horizon [0, T].
+ Model.with_stationary(window, **fields)
+                                     A stationary horizon with lag window L.  The parameter is
+                                     named window, matching Stationary(window).
+ Model.with_numerics(numerics, ...)  A different grid, engine or tolerance.  The problem is
+                                     unchanged; only how it is solved.
+ Model.with_signal(name, drift=, noise=, audience="all", delay=0)
+                                     An information experiment: add one observed row.  New noise
+                                     channels are added for you.  audience is "all", an agent
+                                     name, or a list of them.
+ Model.with_signals(rows, audience="all")
+                                     Several rows at once.
+ Model.save(path)                    Write it back out as YAML, parameter expressions intact.
+
+
+ 2.4  SOLVING
+ ------------------------------------------------------------------------------------------------
+ ns.solve(model, numerics=None, **kw)
+                                     The normal entry point.  Takes a Model, a ModelBuilder, a
+                                     dict or a path.  Returns a Result -- it does NOT raise when
+                                     the solve fails to converge; the result says so.
+ Model.solve(numerics=None, **kw)    The same as a method.  An expression model's naive_observers
+                                     are passed along for you.
+ ns.Numerics(engine=, nodes=, tol=, ...)
+                                     The numerical choices, separate from the model.  Every field
+                                     is optional; None means "keep the model's own".
+ ns.using_settings(**overrides)      A context manager replacing the solver's defaults for a block.
+ ns.Settings(...)                    The full frozen tunable set (31 fields), to hold one directly.
+ ns.solver(model, numerics, **kw)    The engine object rather than a result -- to step it by hand
+                                     or reuse it.
+ ns.ENGINE_CLASSES                   {"stationary": StationarySolver, "spectral":
+                                     SpectralFiniteSolver, "cells": FiniteSolver}.
+ ns.engines                          The same three as a module, by attribute.
+ ns.StationarySolver / SpectralFiniteSolver / FiniteSolver
+                                     The three engines, to construct directly.
+ ns.clear_grid_cache()               Free the cached grids.  For measuring memory, not normal use.
+
+ SOLVE KEYWORDS  init, start (warm starts); tol, max_evaluations, deadline (bounds);
+                 diagnostics=False (skip the guards when solving thousands of times);
+                 refine=True (also solve finer and report the change); stability=True;
+                 naive_observers, past, continuation (engine options); verbose, progress.
+
+
+ 2.5  READING A RESULT
+ ------------------------------------------------------------------------------------------------
+ Every engine returns a ns.Result, so isinstance(res, ns.Result) holds whatever solved it.  The
+ concrete class per engine is internal, but it is where summary() and plot() are implemented.
+ [V] Their SIGNATURES and return types are identical across all four result classes --
+     summary(diagnostics=True) -> str and plot(path) -> None (checked 2026-09-10).  Only the
+     CONTENTS differ by engine, which is correct and is not a contract inconsistency.
+
+ res.costs                           Equilibrium cost per agent -- usually the number you came
+                                     for.  res.cost_parts splits it; res.cost_kind names the
+                                     convention.
+ res.kernel(name, channel=None)      The CLOSED-LOOP response of a state, control or definition to
+                                     a shock, as a Kernel.
+ res.strategy_kernel(control, channel=None)
+                                     The STRATEGY itself rather than the closed-loop outcome.
+ res.means / .mean_times             The means, and the time nodes they sit on.  res.has_means
+                                     says whether any of them is nonzero.
+ res.paths / .times                  Paths over time on a finite horizon, and their time nodes.
+ res.foc[agent][control]             The first-order condition split into "physical" (what it
+                                     would be if nobody reacted) and "wedge" (what remains because
+                                     they do).  The wedge is the strategic correction.
+ res.axes                            The coordinate arrays the kernels are indexed by.
+ res.map_axes(delay)                 Where a map's values belong for a row observed with that lag.
+ res.maps / .world                   The raw solved objects, for warm starts and for code working
+                                     below the kernel level.
+ res.converged / .residual / .evaluations / .seconds / .message
+                                     What the solve did.
+ res.numerics                        The grid and tolerances it actually ran with, resolved.
+ res.grid_summary()                  The grid's description: kind, nodes, panels or pieces, window.
+ res.extra                           Engine-specific extras; {} when the engine has none.
+ res.summary()                       All of the above as readable text.
+ res.plot(path)                      The standard figures for this engine (matplotlib).
+ res.to_dict()                       A JSON-serialisable view, with provenance.
+
+ ns.Kernel                           An ndarray with four additions: .axes (what the indices
+                                     mean), .at(*coords) (interpolated using the engine's own
+                                     interpolant), .plot(path), .values (the plain array).
+
+
+ 2.6  DECIDING WHETHER TO BELIEVE IT
+ ------------------------------------------------------------------------------------------------
+ The distinction this package cares about most.  A solve that converged is not the same as a
+ solve you should quote.
+
+ res.require_converged()             Returns res, or raises ConvergenceError if it did not reach
+                                     tolerance.  Convergence only.
+ res.require_ok()                    Returns res, or raises if it did not converge OR any guard
+                                     failed.  THIS is the one to use before quoting a number.
+ res.status                          {"ok": ..., "flags": [...]} without raising.
+ res.diagnostic_rows()               Every check as {name, value, threshold, ok, flag, advice}.
+ res.diagnostic_records()            The same rows plus code, category, severity, meaning, action,
+                                     suggested_options.
+ res.diagnostic_summary(detailed=False)
+                                     Those rows grouped and readable.
+ res.diagnostic_verdict(category, exclude=())
+                                     One category ("solve", "numerics", "equilibrium") collapsed
+                                     to True / False / None.  exclude matches the ROOT of a name,
+                                     the part before any ":", so "second_order" covers the
+                                     per-agent "second_order:<agent>" rows.
+ res.resolution_ok                   Is this grid too coarse for the answer it reports.  THREE-
+                                     VALUED -- see PART 3.
+ res.refine(factor=1.5)              Re-solve finer and report the relative change.  A guard
+                                     standing while its number shrinks means the grid, not the
+                                     model.
+ res.stability(untied=True)          The spectral radius of the best-response Jacobian.  Above 1
+                                     the equilibrium is not reachable by best-response dynamics --
+                                     often the finding, not a defect.
+
+ ns.ConvergenceError                 Raised ONLY by require_converged() and require_ok().
+
+
+ 2.7  FAMILIES OF SOLVES
+ ------------------------------------------------------------------------------------------------
+ ns.sweep(model, param, values, ...) One parameter along a path.  Warm-starts each point from a
+                                     secant predictor of the last two, which is what makes it
+                                     robust at hard points.  Returns SweepPoint rows with result,
+                                     seconds, evaluations, converged, change, and a jump flag for
+                                     a possible branch change.
+ Model.sweep(p1=[0.3, 1, 3])         The same, with the parameter as a keyword.
+ ns.compare({name: model, ...}, baseline=, stability=, adjustment=, solve_kw=)
+                                     Several STRUCTURALLY DIFFERENT models against one baseline.
+                                     Requires the same agents, horizon kind, discount and window,
+                                     so the cost changes compare like with like.
+ ns.transition(old, new, T)          The path from one stationary regime to another over [0, T].
+ ns.transition_gap(old, new)         The T = 0 case: every agent applies the new regime's
+                                     stationary rules from date zero, inheriting the old regime's
+                                     state and observations, with no transition solved.  The
+                                     benchmark a real transition is measured against.
+
+ ns.ComparisonResult                 study[name], iterate for the names, study.summary() for the
+                                     table, study.to_dict(include_results=False) for a compact
+                                     payload.
+ ns.ScenarioResult                   One entry: .result (the ordinary Result, nothing hidden),
+                                     .total_cost, .total_change, .total_change_fraction,
+                                     .cost_changes (per agent vs the baseline), .dynamics (the
+                                     response classification when stability=True).
+ ns.SweepPoint                       One sweep row; a dict with attribute access.
+
+ WHICH OF THE THREE DO I WANT
+     sweep       ONE model, one parameter moving along a path.  Warm starts make it cheap; the
+                 jump flag warns when the equilibrium may have changed branch.
+     compare     SEVERAL models differing structurally, each solved independently, costs measured
+                 against a named baseline.
+     transition  TWO models and the path between them, as a dynamic problem in its own right.
+
+
+ 2.8  GETTING DATA OUT
+ ------------------------------------------------------------------------------------------------
+ res.to_dict()                       The result as JSON-ready data.
+ Model.to_dict() / Model.save(path)  The model as data, or back to a file.
+ ns.schema("model") / ns.schema("payload")
+                                     The JSON Schema (draft 2020-12) of either, for validating
+                                     generated files or typing a front end.
+ ns.read_yaml(path) / ns.read_json(path)
+                                     Read either without building a model.
+
+
+ 2.9  THE COMMAND LINE
+ ------------------------------------------------------------------------------------------------
+ Installed as `noisestate`.  Every subcommand takes --help.
+
+ noisestate solve model.yaml         Solve a file; -o out.json writes the payload.
+ noisestate validate model.yaml      Check against the schema and the model's own rules, and print
+                                     the structure.
+ noisestate describe model.yaml      The model as equations and conventions, no solve.
+ noisestate sweep ...                Solve along one parameter with warm starts; write a JSON list.
+ noisestate transition old.yaml new.yaml
+                                     The transition between two regimes.
+ noisestate plot result.json         Plot from a saved payload rather than re-solving.
+ noisestate plot-sweep sweep.json    Costs, residuals, strategy changes and runtime from a sweep.
+ noisestate schema                   Print either JSON Schema.
+
+ solve and transition take --require-ok, which makes a failed GUARD a non-zero exit status rather
+ than only a failed solve.  This is the form for a script or a CI job.
+
+
+================================================================================================
+ PART 3   KNOWN GAPS IN CURRENT BEHAVIOUR
+================================================================================================
+
+ Four problems, each verified by running the code, each addressed by docs/api_spec.txt.
+
+
+ 3.1  VERDICTS THAT LOOK BOOLEAN ARE THREE-VALUED           -> api_spec PART 1 R3, PART 3
+ ------------------------------------------------------------------------------------------------
+ res.resolution_ok, res.diagnostic_verdict(...), and the numerics_ok / equilibrium_ok keys of a
+ comparison payload each return True, False, or None ("not checked").
+
+ [V] resolution_ok is None on the cell engine, which computes no representation error.
+
+ The name reads as two-valued, so the natural test is wrong:
+
+     if not res.resolution_ok:        # None is falsey: "not checked" reads as "it failed"
+         raise ...
+
+     if res.resolution_ok is False:   # correct: only when checked AND failed
+         raise ...
+
+ Use res.require_ok() instead where possible -- subject to 3.2.
+
+
+ 3.2  require_ok() PASSES ON CHECKS THAT NEVER RAN          -> api_spec PART 3
+ ------------------------------------------------------------------------------------------------
+ [V] require_ok() raises only when status["flags"] is non-empty, and a check that never ran
+     contributes no flag.  It therefore promises "no applicable check failed", not "all required
+     checks passed".  Two consequences, both demonstrated 2026-09-10:
+
+     WITH THE GUARDS OFF.  ns.solve(model, diagnostics=False) then require_ok() PASSES, having
+     run no guards at all.
+
+     ON THE CELL ENGINE.  One model per engine, guards on:
+
+         stationary       converged=True  resolution=False  window=True   second_order:a=True
+         finite/spectral  converged=True  resolution=True   (no window)   second_order:a=True
+         finite/cells     converged=True  resolution=None   (no window)   (NO second_order row)
+                          -> status ok = True
+
+     The cell engine passes the whole verdict while performing two fewer checks than the others:
+     one it cannot compute, one it does not emit.  Absence of evidence reads as soundness.
+
+ The specification separates check STATUS (passed, failed, skipped, unsupported, not_applicable)
+ from validation POLICY (which checks are required for this use), and defines require_ok() as
+ "every required, applicable check passed".
+
+
+ 3.3  RESPONSE DYNAMICS ARE REPORTED FOR UNCONVERGED SOLVES  -> api_spec PART 4
+ ------------------------------------------------------------------------------------------------
+ [V] compare() calls result.stability() with no guard between it and solve(), so a scenario that
+     never converged still gets a response classification; ScenarioResult.dynamics drops the
+     fixed_point_residual that stability() computes precisely to reveal this.
+
+ [V] ch3_two_player at window >= 18 converges to its tolerance at a second fixed point of the
+     TRUNCATED problem; on that branch the kernel has not decayed by the window's edge, so the
+     window guard fails while require_converged() passes.
+     What the guard establishes, and no more: the TRUNCATION IS NOT VALIDATED -- this fixed point
+     of the truncated problem has not been shown to be one of the untruncated problem.  That makes
+     the branch UNVERIFIED; it is not by itself proof that the branch is an artifact.
+
+     Two observations often quoted alongside that case do NOT establish it, and are recorded here
+     as observations only: that branch costs about seven times the other, and at window 18 the
+     second-order check passes while the best-response radius exceeds 1.  Distinct equilibria may
+     have distinct costs, and an equilibrium may be unstable under best-response iteration.
+     Neither is evidence of invalidity.  (An earlier draft of these documents presented them as
+     such under a verified marker; the numbers were verified, the inference was not.)
+
+ The Jacobian at a non-fixed point is a legitimate object.  Labelling its output equilibrium
+ stability is the error.  EQUILIBRIUM VALIDITY AND RESPONSE STABILITY ARE SEPARATE FINDINGS.
+
+
+ 3.4  ONE HORIZON FIELD CARRIES TWO MEANINGS                 -> api_spec PART 2
+ ------------------------------------------------------------------------------------------------
+ [V] spec.py:179 reads:  window: float = 8.0   # L for stationary; T for finite and transition
+
+ A terminal time and a lag-truncation window are different objects, and the consequence is that
+ the lag window has no stable home:
+
+ [V] for a stationary model it is horizon.window; for a transition it is
+     horizon.stationary["window"], because horizon.window there holds T (spec.py:802-803).
+
+ [V] Stationary(window) and with_stationary(window) agree with each other, as do Finite(T) and
+     with_finite(T).  The inconsistency is between the pairs, not within them.
+
+
+================================================================================================
+ PART 4   RENAMED IN 0.7
+================================================================================================
+
+ Every old spelling still works.  It warns, names its replacement, and is removed in 0.8.
+
+     OLD                          NEW                          WHY
+     ------------------------------------------------------------------------------------------
+     ns.ENGINES                   ns.ENGINE_CLASSES            case-only collision with the
+                                                               ns.engines module
+     ns.settings(...)             ns.using_settings(...)       case-only collision with the
+                                                               ns.Settings class, AND it shadowed
+                                                               the noisestate.settings submodule
+     ns.make_solver               ns.solver                    the only make_*; now parallel to
+                                                               ns.solve
+     ns.BaseResult                ns.Result                    an alias since 0.6
+     res.check()                  res.require_converged()      it raises, so it takes require_*,
+                                                               and now pairs with require_ok()
+     res.diagnose()               res.diagnostic_rows()        joins the diagnostic_* family
+     res.category_verdict()       res.diagnostic_verdict()     the same family
+     res.action_kernel()          res.strategy_kernel()        neither old name said which was
+                                                               the strategy and which the closed
+                                                               loop
+     res.grid_info()              res.grid_summary()           the only *_info
+     res.means_driven             res.has_means                a bool sitting among means and the
+                                                               mean paths, where it read as data
+     res.means_t                  res.mean_times               it is the TIME NODES of the mean
+                                                               paths, not means over time
+     model.means_driven           model.drives_means           the structural question, as a
+                                                               predicate
+     model.finite(T)              model.with_finite(T)         returns a copy, so it joins with_*
+     model.stationary(window)     model.with_stationary(window)  the same
+     model.owner(c)               model.owner_of(c)            reads as a lookup, not a noun
+
+ [V] Nothing outside this repository imports noisestate (grep over ~/dissertation, ~/Projects and
+     ~/decision-mesh-audit, 2026-09-10), so nothing is owed a transition period.  The specification
+     proposes DELETING this whole layer -- _renames.py, the module __getattr__, the class aliases
+     and the 32 deprecation tests -- rather than carrying it to 0.8.   -> api_spec PART 11 step 2
+
+ DELIBERATELY NOT RENAMED
+     validate()        raises but keeps its name; a raising validate() is a strong enough
+                       convention elsewhere that require_valid() would cost more than it gains.
+     payload "means_t" the JSON key is unchanged.  The wire format is read by saved files and
+                       front ends and carries a different compatibility promise from the Python
+                       attribute; renaming it belongs to a payload-schema version.
+     resolution_ok     see PART 3.
+
+================================================================================================

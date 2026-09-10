@@ -37,7 +37,7 @@ def test_ch1_target_sweep_against_the_dissertation():
     separation failure)."""
     seen = {}
     for p, (r0, rh, J) in REF.items():
-        res = ns.solve(ch1_targets(p, nodes=20 if p == 1000.0 else 12)).check()
+        res = ns.solve(ch1_targets(p, nodes=20 if p == 1000.0 else 12)).require_converged()
         d0, dh = res.mean("D1", [0.0, 0.5]); Jb = res.cost_parts["player1"]["mean"]; seen[p] = d0
         tol_d, tol_J = (2.5e-3, 3.5e-3) if p == 1000.0 else (1e-3, 2e-3)
         assert abs(d0 - r0) < tol_d * r0 and abs(dh - rh) < tol_d * rh and abs(Jb + 1.0 - J) < tol_J * J
@@ -54,7 +54,7 @@ def test_ch1_p10_path_against_the_dissertation_and_the_cell_engine():
     Dbar1(0), the largest at t = 0.075, the reference's own error as above; 8e-4 at T/2).  The cell engine, an independent
     first-order discretisation, solves the same mean system on its cells: its Richardson pairs (40, 80) and (80, 160)
     close on the spectral paths as h^2 (4.8e-3 then 1.2e-3 at T/2; the cost 1.4e-3 then 3.3e-4), not on the reference."""
-    sp = ns.solve(ch1_targets(10.0, nodes=12)).check()
+    sp = ns.solve(ch1_targets(10.0, nodes=12)).require_converged()
     data = np.loadtxt(os.path.join(REFS, "ch1_mean_p10.txt"))
     d1 = sp.mean("D1", data[:, 0])
     assert np.abs(d1 - data[:, 2]).max() < 1.4e-2 and abs(d1[100] - data[100, 2]) < 1e-3       # t = 0.5
@@ -64,9 +64,9 @@ def test_ch1_p10_path_against_the_dissertation_and_the_cell_engine():
     got = {}
     for N in (40, 80, 160):
         d = ch1_targets(10.0, nodes=12).to_dict(); d["horizon"] = {"kind": "finite", "window": 1.0}; d["numerics"] = {"engine": "cells", "nodes": N}
-        res = ns.solve(d).check(); idx = np.round(tq / res.compiled.h).astype(int)
+        res = ns.solve(d).require_converged(); idx = np.round(tq / res.compiled.h).astype(int)
         got[N] = (res.means["D1"][idx], res.cost_parts["player1"]["mean"])
-        assert res.means_t.shape == (N,) and np.abs(res.means["D2"] + res.means["D1"]).max() < 1e-12
+        assert res.mean_times.shape == (N,) and np.abs(res.means["D2"] + res.means["D1"]).max() < 1e-12
     assert np.abs(got[160][0] - d1sp).max() < np.abs(got[80][0] - d1sp).max() < np.abs(got[40][0] - d1sp).max()
     r1 = 2 * got[80][0] - got[40][0] - d1sp; r2 = 2 * got[160][0] - got[80][0] - d1sp
     assert np.abs(r2).max() < 1.5e-3 and np.abs(r2).max() < 0.5 * np.abs(r1).max()
@@ -124,16 +124,16 @@ def test_one_agent_is_the_deterministic_optimum(a, r, theta, rho, x0):
     x0 and no target, and discounted with both: paths within 1e-11 of the Riccati closed form at 12 nodes per side
     (6e-14 to 2e-12 seen) and the mean cost within 1e-10 of both the integrated loss and V(0, x0).  The cell engine's
     error halves from 40 to 80 cells (first order): 1.5e-2 to 7.6e-3 on the state at (a, r, theta, rho) = (-0.5, 0.3, 2, 0.5)."""
-    res = ns.solve(one_state(a, r, theta, rho, x0)).check()
-    xs, us, J, V0 = riccati(a, 1.0, 1.0, theta, r, rho, x0, 1.0, res.means_t)
+    res = ns.solve(one_state(a, r, theta, rho, x0)).require_converged()
+    xs, us, J, V0 = riccati(a, 1.0, 1.0, theta, r, rho, x0, 1.0, res.mean_times)
     assert np.abs(res.means["X"] - xs[0]).max() < 1e-11 and np.abs(res.means["D"] - us).max() < 1e-11
     assert abs(res.cost_parts["a"]["mean"] - J) < 1e-10 and abs(res.cost_parts["a"]["mean"] - V0) < 1e-10
     assert res.means["X"][0] == x0 and abs(res.means["D"][-1]) < 1e-12 and np.array_equal(res.means["a.y"], 2.0 ** 0.5 * res.means["X"])
     if rho:
         errs = []
         for N in (40, 80):
-            rc = ns.solve(one_state(a, r, theta, rho, x0, kind="finite_cells", nodes=N)).check()
-            xs, us, J, V0 = riccati(a, 1.0, 1.0, theta, r, rho, x0, 1.0, rc.means_t)
+            rc = ns.solve(one_state(a, r, theta, rho, x0, kind="finite_cells", nodes=N)).require_converged()
+            xs, us, J, V0 = riccati(a, 1.0, 1.0, theta, r, rho, x0, 1.0, rc.mean_times)
             errs.append(np.abs(rc.means["X"] - xs[0]).max())
         assert 0.4 < errs[1] / errs[0] < 0.6 and errs[1] < 1e-2
 
@@ -147,8 +147,8 @@ def test_two_states_matrix_riccati(theta, rho):
          "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.0}, "noise": {"w1": 1.0}}},
                           "loss": [[1.0, "X", "X"], [-2.0 * theta, "X"], [0.3, "Y", "Y"], [0.4, "D", "D"]]}},
          "horizon": {"kind": "finite", "window": 1.5, "discount": rho}, "numerics": {"nodes": 12}}
-    res = ns.solve(d).check()
-    xs, us, J, V0 = riccati([[-0.5, 1.0], [0.0, -1.0]], [1.0, 0.5], np.diag([1.0, 0.3]), [theta, 0.0], 0.4, rho, [0.2, -0.4], 1.5, res.means_t)
+    res = ns.solve(d).require_converged()
+    xs, us, J, V0 = riccati([[-0.5, 1.0], [0.0, -1.0]], [1.0, 0.5], np.diag([1.0, 0.3]), [theta, 0.0], 0.4, rho, [0.2, -0.4], 1.5, res.mean_times)
     assert np.abs(res.means["X"] - xs[0]).max() < 1e-11 and np.abs(res.means["Y"] - xs[1]).max() < 1e-11 and np.abs(res.means["D"] - us).max() < 1e-11
     assert abs(res.cost_parts["a"]["mean"] - J) < 1e-10
 
@@ -158,20 +158,20 @@ def test_targets_scale_the_means_and_leave_the_kernels_and_the_examples():
     kernels and the variance part are identical to the bit, since the solve never sees the targets.  Without a driver
     every mean is exactly zero, with no solve, and the shipped finite examples' costs are what they were (identical to the
     release before the means to every digit, the cell engine included)."""
-    r1 = ns.solve(ch1_targets(3.0, nodes=8)).check(); r2 = ns.solve(ch1_targets(3.0, nodes=8, b=(2.0, -2.0))).check()
+    r1 = ns.solve(ch1_targets(3.0, nodes=8)).require_converged(); r2 = ns.solve(ch1_targets(3.0, nodes=8, b=(2.0, -2.0))).require_converged()
     assert np.abs(r2.means["D1"] - 2 * r1.means["D1"]).max() < 1e-12 and abs(r2.cost_parts["player1"]["mean"] - 4 * r1.cost_parts["player1"]["mean"]) < 1e-12
     assert np.array_equal(r1.world, r2.world) and r1.cost_parts["player1"]["variance"] == r2.cost_parts["player1"]["variance"]
-    off = ns.make_solver(ch1_targets(3.0, nodes=8)).solve(diagnostics=False)
-    assert np.array_equal(off.means["D1"], r1.means["D1"]) and off.costs == r1.costs and off.means_t.shape == (8,)
+    off = ns.solver(ch1_targets(3.0, nodes=8)).solve(diagnostics=False)
+    assert np.array_equal(off.means["D1"], r1.means["D1"]) and off.costs == r1.costs and off.mean_times.shape == (8,)
     for f, costs in (("ch1_two_player_finite.yaml", {"player1": 0.396905768985999, "player2": 0.396905768985999}),
                      ("ch1_delayed_finite.yaml", {"player1": 0.4838242662682089, "player2": 0.476678011994978})):
-        res = ns.solve(os.path.join(EX, f)).check()
+        res = ns.solve(os.path.join(EX, f)).require_converged()
         assert all(abs(res.costs[k] - v) < 1e-14 for k, v in costs.items())
-        assert all(np.array_equal(v, np.zeros(len(res.means_t))) for v in res.means.values()) and set(res.model.control_names) <= set(res.means)
+        assert all(np.array_equal(v, np.zeros(len(res.mean_times))) for v in res.means.values()) and set(res.model.control_names) <= set(res.means)
         assert all(p["mean"] == 0.0 and p["variance"] == res.costs[k] for k, p in res.cost_parts.items())
         assert "mean" not in res.summary().split("\n")[1] and "means at" not in res.summary()
     d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite", "window": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 20}
-    rc = ns.solve(d).check()
+    rc = ns.solve(d).require_converged()
     assert all(np.array_equal(v, np.zeros(20)) for v in rc.means.values()) and rc.cost_parts["player1"]["mean"] == 0.0
 
 
@@ -179,8 +179,8 @@ def test_no_information_limit_is_the_open_loop_path():
     """With signals that carry nothing (precision 1e-8) the kernels are zero and the mean paths are the open-loop Nash
     equilibrium of the deterministic game, Dbar1(t) = (T - t) b1 / r = 10 (1 - t), to O(p) (6.5e-9 seen); the mean cost
     is r int (10 (1 - t))^2 dt = 10/3."""
-    res = ns.solve(ch1_targets(1e-8, nodes=8)).check()
-    assert np.abs(res.means["D1"] - 10.0 * (1.0 - res.means_t)).max() < 1e-7 and abs(res.cost_parts["player1"]["mean"] - 10.0 / 3.0) < 1e-7
+    res = ns.solve(ch1_targets(1e-8, nodes=8)).require_converged()
+    assert np.abs(res.means["D1"] - 10.0 * (1.0 - res.mean_times)).max() < 1e-7 and abs(res.cost_parts["player1"]["mean"] - 10.0 / 3.0) < 1e-7
 
 
 def delayed_with_targets():
@@ -197,7 +197,7 @@ def test_delayed_rows_and_lags_keep_the_formulation():
     the derivative of the mean cost: along three smooth deviations of player 1's path, the world answering through the
     response operator (a different line geometry from the continuation's), the central difference of the mean cost is
     zero to 1e-10 (1e-11 seen).  A control acting after the lag is idle within the last lag: Dbar1 = 0 on (T - tau, T]."""
-    m = delayed_with_targets(); S = SpectralFiniteSolver(m); res = S.solve().check(); c = S.c
+    m = delayed_with_targets(); S = SpectralFiniteSolver(m); res = S.solve().require_converged(); c = S.c
     assert all(np.isfinite(v).all() for v in res.means.values()) and res.means["X"][0] == 0.3 and np.abs(res.means["D1"]).max() > 1
     M, b = S.mean_system(res.maps); zbar = S.solve_means(res.maps)
     assert np.abs(M @ zbar - b).max() < 1e-13 * np.abs(b).max()
@@ -221,8 +221,8 @@ def test_delayed_rows_and_lags_keep_the_formulation():
 def test_ties_share_the_means_and_opposite_targets_cannot_be_tied():
     d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 8
     d["agents"]["player1"]["loss"].append([-2.0, "X"]); d["agents"]["player2"]["loss"].append([-2.0, "X"]); d["ties"] = [["player1", "player2"]]
-    tied = ns.solve(d).check(); assert np.abs(tied.means["D1"] - tied.means["D2"]).max() < 1e-13 and tied.means["D1"][0] > 1
-    d["ties"] = []; free = ns.solve(d).check(); assert np.abs(free.means["D1"] - tied.means["D1"]).max() < 1e-6
+    tied = ns.solve(d).require_converged(); assert np.abs(tied.means["D1"] - tied.means["D2"]).max() < 1e-13 and tied.means["D1"][0] > 1
+    d["ties"] = []; free = ns.solve(d).require_converged(); assert np.abs(free.means["D1"] - tied.means["D1"]).max() < 1e-6
     d["agents"]["player2"]["loss"][-1] = [2.0, "X"]; d["ties"] = [["player1", "player2"]]
     with pytest.raises(ValueError, match="not structurally identical"):
         ns.Model.from_dict(d)
@@ -230,7 +230,7 @@ def test_ties_share_the_means_and_opposite_targets_cannot_be_tied():
 
 def test_initial_state_spec_payload_and_cli(tmp_path):
     m = one_state(-1.0, 0.5, 1.0, 0.0, 0.7)
-    assert m.states[0].initial == 0.7 and m.to_dict(numeric=True)["states"]["X"]["initial"] == 0.7 and m.means_driven
+    assert m.states[0].initial == 0.7 and m.to_dict(numeric=True)["states"]["X"]["initial"] == 0.7 and m.drives_means
     assert ns.Model.from_dict(m.to_dict()).states[0].initial == 0.7 and any("initial value 0.7 moves only the means" in n for n in m.notes)
     assert ns.ModelBuilder("b").channel("w0", "w1").state("X", {"X": -1.0, "D": 1.0}, {"w0": 1.0}, initial=0.7).to_dict()["states"]["X"]["initial"] == 0.7
     d = m.to_dict(); d["states"]["X"]["initial"] = "x0"; d["params"] = {"x0": 0.7}
@@ -247,9 +247,9 @@ def test_initial_state_spec_payload_and_cli(tmp_path):
         ns.Model.from_dict(b)
     with pytest.raises(ValueError, match="no meaning in a stationary model"):
         m.with_horizon(kind="stationary", window=4.0)
-    res = ns.solve(m).check()
+    res = ns.solve(m).require_converged()
     d = json.loads(json.dumps(res.to_dict()))
-    assert d["means"]["X"] == res.means["X"].tolist() and d["means_t"] == res.means_t.tolist() and d["cost_parts"]["a"]["mean"] == res.cost_parts["a"]["mean"]
+    assert d["means"]["X"] == res.means["X"].tolist() and d["means_t"] == res.mean_times.tolist() and d["cost_parts"]["a"]["mean"] == res.cost_parts["a"]["mean"]
     assert ns.Model.from_dict(d["model"]).states[0].initial == 0.7
     path = tmp_path / "lq.yaml"; out = tmp_path / "lq.json"
     import yaml

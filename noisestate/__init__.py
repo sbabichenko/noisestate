@@ -15,25 +15,26 @@ from .spec import Model, ModelBuilder
 from .numerics import Numerics
 from .accel import ConvergenceError
 from .settings import Settings
-from .results import Result, BaseResult
+from .results import Result
 from .stationary import StationarySolver
 from .finite import FiniteSolver
 from .finite_spectral import SpectralFiniteSolver
 from . import engines
-from .engines import ENGINES
-from .sweep import sweep, make_solver
+from .engines import ENGINE_CLASSES
+from .sweep import sweep, solver
+from .comparison import compare, ComparisonResult, ScenarioResult
 from .grid_cache import clear as clear_grid_cache
 from .transition import transition, transition_gap
 from .schema import schema
-from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition, SweepPoint, settings
+from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition, SweepPoint, using_settings
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
 
-__all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "Result", "BaseResult", "StationarySolver",
+__all__ = ["Model", "ModelBuilder", "Numerics", "ConvergenceError", "Settings", "Result", "StationarySolver",
            "FiniteSolver", "SpectralFiniteSolver", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_yaml", "read_json",
-           "make_solver", "ENGINES", "clear_grid_cache", "schema",
+           "solver", "compare", "ComparisonResult", "ScenarioResult", "ENGINE_CLASSES", "clear_grid_cache", "schema",
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
-           "settings", "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh"]
+           "using_settings", "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh"]
 
 _REMOVED_RESULTS = ("StationaryResult", "TriangleResult", "TransitionResult", "CellResult")   # exported until 0.6
 
@@ -110,7 +111,7 @@ def _radius_when_the_window_fails(res, asked: bool) -> None:
     """
     if asked or getattr(res, "stability_report", None) is not None:
         return
-    if not res.converged or not any(d["name"] == "window" and d["ok"] is False for d in res.diagnose()):
+    if not res.converged or not any(d["name"] == "window" and d["ok"] is False for d in res.diagnostic_rows()):
         return
     try:
         res.stability()
@@ -169,3 +170,28 @@ def solve(model, numerics=None, *, init=None, start=None, tol=None, max_evaluati
     if diagnostics:
         _radius_when_the_window_fails(res, stability)
     return res
+
+
+#  The 0.7 renames of top-level names.  Two were case-only collisions with a neighbour (ENGINES beside
+#  the engines module, settings beside the Settings class); make_solver was the only make_* verb; and
+#  BaseResult has been an alias of Result since 0.6.  Each old name still resolves and says what
+#  replaced it.  See noisestate/_renames.py.
+from ._renames import renamed_module_attr, warn as _warn_renamed      # noqa: E402
+
+__getattr__ = renamed_module_attr(globals(), {
+    "ENGINES": "ENGINE_CLASSES",
+    "make_solver": "solver",
+    "BaseResult": "Result",
+}, fallback=__getattr__)          # keep the 0.6 removals explaining themselves
+
+
+def settings(**overrides):
+    """Deprecated in 0.7, removed in 0.8: use ``noisestate.using_settings``.
+
+    This name cannot go through __getattr__ like the others: noisestate.settings is also the
+    submodule, which is already bound here, so __getattr__ would never be consulted and old code
+    would get "module is not callable" instead of being told the new name.  Binding it keeps the
+    behaviour it has always had -- the callable shadowed the submodule before this rename too.
+    """
+    _warn_renamed("noisestate.settings", "noisestate.using_settings")
+    return using_settings(**overrides)

@@ -52,10 +52,117 @@ def test_solve_takes_a_numerics_and_names_the_field_of_a_stray_keyword():
     fine = r3.refine(); assert fine["nodes"] == 12 and r3.refinement is fine
 
 
+def test_signal_transforms_are_immutable_validated_and_serialisable():
+    m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
+    public = m.with_signal("public_flow", drift={"D1": 1, "D2": 1}, noise={"wf": 0.5})
+    assert "wf" not in m.channels and "wf" in public.channels
+    assert all("public_flow" not in [r.name for r in a.signals] for a in m.agents)
+    assert all("public_flow" in [r.name for r in a.signals] for a in public.agents)
+    assert ns.Model.from_dict(public.to_dict()).to_dict() == public.to_dict()
+
+    one = m.with_signal("extra", drift={"X": 1}, noise={"we": 1}, audience="player1")
+    assert "extra" in [r.name for r in one.agents[0].signals]
+    assert "extra" not in [r.name for r in one.agents[1].signals]
+    with pytest.raises(ValueError, match="unknown agent"):
+        m.with_signal("extra", drift={"X": 1}, noise={"we": 1}, audience="nobody")
+    with pytest.raises(ValueError, match="already has a signal"):
+        m.with_signal("y1", drift={"X": 1}, noise={"we": 1}, audience="player1")
+
+
+def test_model_transforms_keep_the_naive_observers_the_file_does_not_carry():
+    """naive_observers is not a model-file key, so a with_*() that rebuilt through from_dict() alone
+    dropped it -- and Model.solve() reads it off the model, so the transformed copy silently solved a
+    fully strategic game instead."""
+    from noisestate import Param, shocks, State, Control, Agent, Signal
+    eps, rho, g1, sV, sZ = Param.many(eps=0.2, rho=0.5, gamma1=1.0, sigma_V=1.0, sigma_Z=1.0)
+    w = shocks("wV", "wZ", "w1")
+    V = State("V"); P, D1 = Control("P"), Control("D1"); V.drift = sV * w.wV
+    mm = Agent("market_maker", [P], [Signal("flow", D1 + sZ * w.wZ)], P**2 - 2 * P * V, myopic=True)
+    tr = Agent("trader1", [D1], [Signal("y1", g1 * V - g1 * P + w.w1), Signal("flow", sZ * w.wZ)],
+               -D1 * V + D1 * P + eps * D1**2, naive_observers=["market_maker"])
+    game = ns.Model("kb", states=[V], agents=[mm, tr], horizon=ns.Stationary(window=8.0, discount=rho),
+                    numerics={"nodes": 12})
+    want = {"trader1": ["market_maker"]}
+    assert game.naive_observers == want
+    for made in (game.with_horizon(window=6.0), game.with_numerics(nodes=10), game.with_params(eps=0.3),
+                 game.with_signal("extra", drift={"V": 1}, noise={"we": 1}), game.with_finite(4.0),
+                 game.with_horizon(window=6.0).with_numerics(nodes=10)):
+        assert made.naive_observers == want
+    # the field is only the mechanism; what matters is that the solver is still told
+    res = game.with_horizon(window=6.0).solve(max_evaluations=1, diagnostics=False)
+    assert res.solver_kw.get("naive_observers") == want
+
+
+def test_category_verdict_excludes_by_root_not_by_full_name():
+    """The equilibrium category holds `stability` beside the per-agent `second_order:<agent>` rows.
+    Excluding on the full name would silently match nothing for the suffixed ones, so the exclusion
+    is on the root -- the part before the ':', which is what the category itself is computed from."""
+    m = ns.Model.from_dict({
+        "name": "verdicts", "channels": ["w0", "w1"],
+        "states": {"X": {"drift": {"X": -1, "D": 1}, "noise": {"w0": 1}}},
+        "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1}, "noise": {"w1": 1}}},
+                          "loss": [[1, "X", "X"], [1, "D", "D"]]}},
+        "horizon": {"kind": "stationary", "window": 4}, "numerics": {"nodes": 8}})
+    res = ns.solve(m)
+    res.stability()
+    names = [r["name"] for r in res.diagnostic_records() if r["category"] == "equilibrium"]
+    assert "stability" in names and any(n.startswith("second_order:") for n in names)
+
+    assert res.diagnostic_verdict("equilibrium") is not None
+    assert res.diagnostic_verdict("equilibrium", exclude=("second_order",)) is not None   # stability left
+    # both roots gone leaves the category empty, so the verdict is "not checked" rather than a bool.
+    # Matching on the full name would leave second_order:a behind and return True here.
+    assert res.diagnostic_verdict("equilibrium", exclude=("second_order", "stability")) is None
+    assert res.diagnostic_verdict("no such category") is None
+
+
+def test_compare_summary_keeps_numerics_equilibrium_and_dynamics_in_their_own_columns():
+    m = ns.Model.from_dict({
+        "name": "cols", "channels": ["w0", "w1"],
+        "states": {"X": {"drift": {"X": -1, "D": 1}, "noise": {"w0": 1}}},
+        "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1}, "noise": {"w1": 1}}},
+                          "loss": [[1, "X", "X"], [1, "D", "D"]]}},
+        "horizon": {"kind": "stationary", "window": 4}, "numerics": {"nodes": 8}})
+    study = ns.compare({"base": m, "a considerably longer scenario name": m.with_signal(
+        "public", drift={"X": 1}, noise={"wp": 1})}, baseline="base", stability=True)
+    lines = study.summary().splitlines()
+    head = lines[0]
+    for column in ("numerics", "equilibrium", "full response"):
+        assert column in head
+    # every column starts under its own header, whatever the scenario names and verdict words are
+    for column in study.HEAD[3:]:
+        at = head.index(column)
+        assert all(line[at:at + 1] != " " for line in lines[1:]), f"{column} column is misaligned"
+
+
+def test_compare_keeps_results_and_separates_costs_from_dynamics():
+    base = ns.Model.from_dict({
+        "name": "comparison", "channels": ["w0", "w1"],
+        "states": {"X": {"drift": {"X": -1, "D": 1}, "noise": {"w0": 1}}},
+        "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1}, "noise": {"w1": 1}}},
+                          "loss": [[1, "X", "X"], [1, "D", "D"]]}},
+        "horizon": {"kind": "stationary", "window": 4}, "numerics": {"nodes": 8},
+    })
+    more = base.with_signal("public", drift={"X": 1}, noise={"wp": 1})
+    study = ns.compare({"base": base, "more information": more}, baseline="base", stability=True)
+    assert study["base"].result.model is base
+    assert study["base"].total_change == 0 and study["more information"].cost_changes["a"]["value"] == study["more information"].result.costs["a"]
+    assert study["base"].dynamics["full_response"] == "converges"
+    assert study["base"].dynamics["adjusted_response"] == "converges"
+    assert study["base"].dynamics["adjusted_radius_bound"] < 1
+    payload = study.to_dict(include_results=False)
+    assert payload["baseline"] == "base" and len(payload["scenarios"]) == 2
+    import json
+    json.dumps(study.to_dict())
+    assert "scenario" in study.summary() and "not checked" not in study.summary()
+    with pytest.raises(ValueError, match="incompatible"):
+        ns.compare({"stationary": base, "finite": base.with_finite(4)})
+
+
 def test_engines_namespace_and_the_cell_engine_by_numerics():
     from noisestate import engines
     assert engines.stationary is ns.StationarySolver and engines.spectral is ns.SpectralFiniteSolver and engines.cells is ns.FiniteSolver
-    assert set(ns.ENGINES) == {"stationary", "spectral", "cells"}
+    assert set(ns.ENGINE_CLASSES) == {"stationary", "spectral", "cells"}
     m = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml"))
     S, num = engines.build(m, {"engine": "cells", "nodes": 8})
     assert isinstance(S, ns.FiniteSolver) and num.engine == "cells" and S.solve().kind == "finite_cells"
@@ -70,15 +177,15 @@ def test_one_result_reads_the_same_on_every_engine(numerics):
     """A consumer reads a kernel with its axes without knowing the engine: every axis in res.axes has the
     length of the kernel's node axis (or axes), the maps' axes are there too, and the aliases hold."""
     m = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml"))
-    r = ns.solve(m, numerics).check()
+    r = ns.solve(m, numerics).require_converged()
     K = r.kernel("X", "w1")
     node_axes = {k: v for k, v in r.axes.items() if k != "maps"}
     assert K.ndim == (2 if numerics["engine"] == "cells" else 1) and all(len(v) == K.shape[0] for v in node_axes.values())
     assert "time" in node_axes and "shock_time" in node_axes and r.times is not None and len(r.times) == len(r.paths["means"]["X"])
     assert r.axes["maps"]["player1"]["y1"]["map_time"].shape[0] == r.maps["player1"].shape[2]
-    assert isinstance(r, ns.Result) and isinstance(r, ns.BaseResult)
+    assert isinstance(r, ns.Result) and isinstance(r, ns.Result)
     assert not hasattr(r, "Z") and not hasattr(r, "iterations")      # the 0.5 spellings, removed in 0.6
-    assert r.status["ok"] is True and r.status["flags"] == [] and r.status["rows"] == r.diagnose()
+    assert r.status["ok"] is True and r.status["flags"] == [] and r.status["rows"] == r.diagnostic_rows()
     diagnostic = r.to_dict()["diagnostics"][0]
     assert diagnostic["code"] == "converged" and diagnostic["category"] == "solve"
     assert diagnostic["severity"] == "ok" and diagnostic["meaning"] and "suggested_options" in diagnostic
@@ -177,7 +284,7 @@ def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
 
 
 def test_the_zero_start_is_explicit_with_a_continuation():
-    old = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8}).check()
+    old = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8}).require_converged()
     new = old.model.with_params(p1=10.0).with_horizon(kind="finite", window=6.0).with_numerics(nodes=5)
     d = ns.solve(new, past=old, continuation="stationary", max_evaluations=1)
     z = ns.solve(new, past=old, continuation="stationary", max_evaluations=1, start="zero")

@@ -1001,7 +1001,7 @@ class SweepPoint(AttrDict):
     "jump"} with attribute access (point.value, point.result, point.jump)."""
 
 
-class settings:
+class using_settings:
     """`with ns.settings(second_order_tol=1e-3): ...` replaces the default Settings for the block: every
     engine constructed inside (a solve, a sweep, a transition) reads the overridden defaults.  Process-wide
     and not thread-safe: another thread solving during the block sees the overrides too."""

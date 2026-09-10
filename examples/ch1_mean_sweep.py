@@ -34,7 +34,7 @@ def main(argv=None) -> None:
     print(f"open-loop Dbar1(0) = {T / r:.6f}, closed-loop Dbar1(0) = {CLOSED_LOOP:.6f}")
     print(f"{'p':>8} {'Dbar1(0)':>10} {'Dbar1(T/2)':>11} {'Jbar1':>10} {'Jvar1':>10} {'evals':>5} {'s':>5}")
     for p in [float(x) for x in args.p.split(",")]:
-        res = ns.solve(model(p, args.nodes)).check()
+        res = ns.solve(model(p, args.nodes)).require_converged()
         d0, dh = res.mean("D1", [0.0, 0.5 * T])
         print(f"{p:8g} {d0:10.6f} {dh:11.6f} {res.cost_parts['player1']['mean']:10.6f} {res.cost_parts['player1']['variance']:10.6f} "
               f"{res.evaluations:5d} {res.seconds:5.1f}")

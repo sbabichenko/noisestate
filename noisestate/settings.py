@@ -6,7 +6,7 @@ default and a one-line meaning; `DEFAULT` is the instance with the defaults.  An
 `noisestate.solve()`, and records the fields that differ from the defaults in `res.solver_kw`, so
 a result rebuilds an engine with the same settings for refine() and stability(), and the JSON
 payload carries them under options.solver.  The older class-attribute names (`EngineBase.FOC_RCOND`,
-`BaseResult.STABILITY_MAX_EVALUATIONS`, `SpectralFiniteSolver.MAP_RIDGE`, ...) remain as aliases
+`Result.STABILITY_MAX_EVALUATIONS`, `SpectralFiniteSolver.MAP_RIDGE`, ...) remain as aliases
 (`tunable`) that read the same field of the instance's settings, and the code reads those names
 through the alias, so assigning a class attribute (a monkeypatch in the tests) still takes effect.
 

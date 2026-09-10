@@ -12,7 +12,7 @@ def test_two_firm_cycle_market_ties_definitions_and_two_controls():
     from make_ch5_cycle_market import build
     from noisestate.stationary import StationarySolver
     b = build(N=2, L=6.0, nodes=6, unit_range=3.0)
-    tied = ns.solve(b.build(), tol=1e-8).check()
+    tied = ns.solve(b.build(), tol=1e-8).require_converged()
     d = b.to_dict(); d["ties"] = []
     untied_solver = StationarySolver(ns.Model.from_dict(d))
     new = untied_solver.response_map(tied.maps)
@@ -39,15 +39,15 @@ def test_lagged_state_feedback_in_both_engines():
     d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml"))
     d["states"]["X"]["drift"]["X@0.5"] = -0.3                                  # delayed mean reversion
     d.setdefault("numerics", {})["unit"] = 0.5
-    ra = ns.solve(ns.Model.from_dict(d), {"variable": "actions"}).check()
-    rm = ns.solve(ns.Model.from_dict(d), {"variable": "maps"}).check()
+    ra = ns.solve(ns.Model.from_dict(d), {"variable": "actions"}).require_converged()
+    rm = ns.solve(ns.Model.from_dict(d), {"variable": "maps"}).require_converged()
     # with lagged state feedback the two paths agree only to first order in the node count
     # (1.6e-5 at 24 nodes per panel, 3.7e-6 at 48; see README "Limits")
     assert np.abs(ra.kernel("X") - rm.kernel("X")).max() < 1e-4
     df = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); df.setdefault("numerics", {})["nodes"] = 6
     df["states"]["X"]["drift"]["X@0.25"] = -0.3
-    rf = ns.solve(ns.Model.from_dict(df)).check()
-    rfm = ns.solve(ns.Model.from_dict(df), {"variable": "maps"}).check()
+    rf = ns.solve(ns.Model.from_dict(df)).require_converged()
+    rfm = ns.solve(ns.Model.from_dict(df), {"variable": "maps"}).require_converged()
     assert abs(rf.costs["player1"] - rfm.costs["player1"]) < 1e-6
 
 
@@ -56,5 +56,5 @@ def test_sweep_and_finite_discounting():
     rows = sweep(os.path.join(EX, "ch3_two_player.yaml"), "p1", [3.0, 4.0, 5.0])
     assert all(r["converged"] for r in rows)
     df = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); df.setdefault("numerics", {})["nodes"] = 8; df["horizon"]["discount"] = 0.5
-    r = ns.solve(ns.Model.from_dict(df)).check()
+    r = ns.solve(ns.Model.from_dict(df)).require_converged()
     assert 0 < r.costs["player1"] < 0.3969      # 0.2926, below the undiscounted 0.39690577; the closed form is in test_finite_discount.py

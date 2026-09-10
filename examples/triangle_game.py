@@ -27,8 +27,6 @@ SIG_F = 1.0                     # noise on the public flow row
 def model(kind="stationary", window=3.0, nodes=12, flow=False, p=P, r=R, sig_f=SIG_F,
           vis=(1.0, 1.0, 1.0)):
     chans = ["wx1", "wx2"] + [f"w{i + 1}{k + 1}" for i in range(3) for k in range(2)]
-    if flow:
-        chans += ["wf1", "wf2"]
     d = {"name": "triangle_flow" if flow else "triangle", "channels": chans,
          "states": {f"X{k + 1}": {"drift": {f"D{i + 1}{k + 1}": 1.0 for i in range(3)},
                                   "noise": {f"wx{k + 1}": SIG}} for k in range(2)},
@@ -41,10 +39,14 @@ def model(kind="stationary", window=3.0, nodes=12, flow=False, p=P, r=R, sig_f=S
                      [0.5 * ri, f"D{i + 1}{k + 1}", f"D{i + 1}{k + 1}"]]
             rows[f"y{i + 1}{k + 1}"] = {"drift": {f"X{k + 1}": float(np.sqrt(pi))},
                                         "noise": {f"w{i + 1}{k + 1}": 1.0}}
-            if flow:
-                rows[f"flow{k + 1}"] = {"drift": {f"D{j + 1}{k + 1}": float(vis[j])
-                                                  for j in range(3) if vis[j] != 0.0},
-                                        "noise": {f"wf{k + 1}": sig_f}}
         d["agents"][f"player{i + 1}"] = {"controls": [f"D{i + 1}{k + 1}" for k in range(2)],
                                          "signals": rows, "loss": loss}
-    return ns.Model.from_dict(d)
+    base = ns.Model.from_dict(d)
+    if not flow:
+        return base
+    return base.with_signals({
+        f"flow{k + 1}": {"drift": {f"D{j + 1}{k + 1}": float(vis[j])
+                                     for j in range(3) if vis[j] != 0.0},
+                          "noise": {f"wf{k + 1}": sig_f}}
+        for k in range(2)
+    }, audience="all")

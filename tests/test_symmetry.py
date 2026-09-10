@@ -36,6 +36,6 @@ def test_solve_uses_the_symmetric_path_and_reproduces_the_equilibrium():
     def counted(*a, **k):
         calls[0] += 1; return orig(*a, **k)
     S.c.closed_loop_symmetric = counted
-    r = S.solve().check(); assert calls[0] > 0
-    S2 = ns.StationarySolver(m); S2.c.sym = None; r2 = S2.solve().check()          # the general path
+    r = S.solve().require_converged(); assert calls[0] > 0
+    S2 = ns.StationarySolver(m); S2.c.sym = None; r2 = S2.solve().require_converged()          # the general path
     assert abs(r.costs["firm0"] - r2.costs["firm0"]) < 1e-9 and np.abs(r.maps["firm0"] - r2.maps["firm0"]).max() < 1e-8

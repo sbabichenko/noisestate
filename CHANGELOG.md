@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.7.0 (2026-09-09) -- the names line up
+
+Fifteen public names were renamed.  None of them was wrong; all of them were inconsistent with the
+name next to them, and the surface is small enough (111 public names) that the inconsistency was
+the thing making it hard to guess.  Unlike the 0.6.9 removals, every old spelling still works: it
+warns, names its replacement, and goes away in 0.8.
+
+The conventions the renames settle, so the next name can be placed without looking one up:
+
+    require_*    raises when the answer is no        require_ok, require_converged
+    *_ok         returns a bool, never raises        resolution_ok
+    has_/drives_ a predicate on stored data          has_means, drives_means
+    with_*       a changed copy of a model           with_params, with_finite
+    to_*         another representation              to_dict
+    verb         computes something new              solve, refine, describe, validate
+    noun         stored data                         costs, kernels, status
+
+Two of the renames fix collisions that were only visible in autocomplete:
+
+- `ns.ENGINES` (a dict) sat beside `ns.engines` (a module), differing in case alone.  It is
+  `ENGINE_CLASSES`.
+- `ns.settings` (a context manager) sat beside `ns.Settings` (a class) *and* shadowed the
+  `noisestate.settings` submodule of the same name.  It is `using_settings`.  This one could not be
+  served by the module `__getattr__` the others use -- the submodule is already bound, so
+  `__getattr__` is never consulted -- so it is bound explicitly and old code is told the new name
+  instead of getting "module is not callable".
+
+The rest, with the reason each:
+
+| old | new | why |
+|---|---|---|
+| `ns.make_solver` | `ns.solver` | the only `make_*`; now parallel to `ns.solve` |
+| `ns.BaseResult` | `ns.Result` | an alias since 0.6, finally retired |
+| `res.check()` | `res.require_converged()` | it raises, so it takes `require_*`, and now pairs with `require_ok()` instead of suggesting a weaker check |
+| `res.diagnose()` | `res.diagnostic_rows()` | one family with `diagnostic_records`, `diagnostic_summary`, `diagnostic_verdict` |
+| `res.category_verdict()` | `res.diagnostic_verdict()` | the same family |
+| `res.action_kernel()` | `res.strategy_kernel()` | neither old name said which of the two was the strategy and which the closed loop; `action_kernel` had no docstring either |
+| `res.grid_info()` | `res.grid_summary()` | the only `*_info` |
+| `res.means_driven` | `res.has_means` | a bool sitting among `means` and the mean paths, where it read as data |
+| `res.means_t` | `res.mean_times` | it is the *time nodes* of the mean paths, not the means over time, and `res.times` is the property that returns it |
+| `model.means_driven` | `model.drives_means` | the structural question ("does anything move the means"), as a predicate |
+| `model.finite(T)` | `model.with_finite(T)` | it returns a copy, so it joins `with_*`.  `ModelBuilder.finite()` keeps its name: that one mutates the builder, and the prefix is now what tells them apart |
+| `model.stationary(w)` | `model.with_stationary(w)` | the same |
+| `model.owner(c)` | `model.owner_of(c)` | reads as a lookup rather than a noun |
+
+Deliberately **not** renamed: `validate()` raises but keeps its name, because a raising `validate()`
+is a strong enough convention elsewhere that `require_valid()` would cost more than it gains; and
+the payload key `means_t` is unchanged, because the JSON is a wire format read by saved files and
+front ends and carries a different compatibility promise from the Python attribute.  Renaming it
+belongs to a payload-schema version.
+
+`docs/api.md` is new: every name `import noisestate as ns` gives you, grouped by the job it does,
+with the rename table as its appendix.
+
 ## 0.6.9 (2026-09-09) -- the deprecated spellings are gone
 
 Everything 0.5 marked "until 0.6" is removed.  Each removal is refused by the name that replaced it

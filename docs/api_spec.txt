@@ -1,0 +1,606 @@
+================================================================================================
+ noisestate -- API SPECIFICATION (DRAFT 2)
+ Exact signatures, return types, and behaviour tables.  Written before implementation.
+================================================================================================
+
+ HOW TO READ THIS
+ ------------------------------------------------------------------------------------------------
+     [V]  VERIFIED   Checked against the source or by running it, on the date given.  The method is
+                     stated so the claim can be re-checked rather than trusted.
+     [I]  INTENDED   The proposed contract.  NOT current behaviour unless a [V] says so.
+     [O]  OPEN       A decision not yet made.  Collected in PART 11.
+
+ A [V] marks a FACT, never an inference drawn from one.  Draft 1 violated this once, in the
+ stability section, and PART 5.1 records the correction.
+
+ SCOPE
+ [V] Nothing outside this repository imports noisestate (grep over ~/dissertation, ~/Projects,
+     ~/decision-mesh-audit, 2026-09-10).  No compatibility is owed; old spellings are deleted.
+
+
+================================================================================================
+ PART 1   RULES
+================================================================================================
+
+ FOUR ENFORCEABLE RULES.  Each is decidable by a test over the public surface.
+
+ R1  with_* returns an independent modified model.
+     [I] Returns a new Model.  The receiver is not mutated, and the two share no mutable
+         structure.  Immutable objects (strings, frozen params) may be shared.
+     [V] EVIDENCE, with its limits stated.  On examples/ch3_two_player.yaml (2026-09-10), a
+         reachable-object traversal to depth 14 over dicts, sequences and __dict__ finds 58
+         mutable objects reachable from the model.  For all SEVEN with_* methods -- with_params,
+         with_horizon, with_numerics, with_stationary, with_finite, with_signal, with_signals --
+         the copy shares ZERO ids with the original.  Model.params is a mappingproxy.
+     [V] Buffer sharing was checked as well, because distinct ndarray objects can share writable
+         storage despite distinct ids.  It found nothing -- and the reason matters: ZERO ndarrays
+         are reachable from a Model at all today.  The check is therefore VACUOUS here, not
+         passed.  It becomes live the moment a model carries an array, and T1 keeps it for that.
+     [V] What this does NOT establish: the contract for every model.  It is one model, one
+         traversal depth, and traversal cannot see storage held behind C extension objects that
+         expose no __dict__.  Two earlier drafts each generalised from a narrower check than the
+         claim they stated; this note exists so the third does not.
+     TEST  T1: the same traversal over SEVERAL models spanning the three horizon kinds, asserting
+         an empty id intersection AND no np.shares_memory pair between reachable arrays.
+         Immutable objects (strings, numbers) may be shared and are excluded.
+
+ R2  Properties expose data.  Methods perform operations or parameterized queries.
+     [I] A noun method is correct when it is a parameterized query -- kernel(name, channel),
+         grid_summary().  Part of speech is not the rule and grammatical uniformity buys nothing.
+     TEST  no public property takes arguments; no public method is a bare data read.
+
+ R3  A name that reads as a predicate returns a real bool.
+     [I] is_* and has_* return bool, never None.  So does any other predicate-shaped name.
+         Multivalued assessments use *_status, or return a status object.
+     [V] CORRECTION to draft 1: resolution_ok was cited as violating R3.  It matches neither
+         is_ nor has_ -- it carries the *_ok suffix, which is a different problem.  R3 is not
+         violated today; the *_ok suffix is retired under R6 instead.
+     TEST  every is_*/has_* member returns bool on every engine.
+
+ R4  require_* returns the receiver on success and raises on failure.
+     [I] One-way: require_ tells you control flow may stop.  The converse is not claimed;
+         validate() raises and keeps its name.
+     TEST  every require_* returns self or raises; never returns a falsey value.
+
+ R6  *_ok is retired as a suffix on ASSESSMENT PROPERTIES.
+     [I] On a property reporting an assessment it reads as two-valued and is not.  Such names take
+         *_status, or the assessment is read from the diagnostics object.  resolution_ok is
+         removed under this rule (PART 3).
+     [I] EXEMPT: require_ok().  It is a require_* METHOD governed by R4, where "ok" names what is
+         being required rather than claiming a boolean return.  It returns the receiver or raises.
+         Draft 2 banned the suffix outright and kept require_ok, which contradicted itself.
+
+ ONE PRINCIPLE, NOT A RULE.
+
+ P1  The same concept uses the same name, argument convention and type everywhere; a genuine
+     difference keeps a different name.
+     [I] This outranks every prefix rule and is the reason for PART 10.
+     [V] CORRECTION to draft 1, which called all five rules "mechanically checkable".  This one
+         is not: applying it requires deciding whether two things are the same concept, which is
+         judgment.  Tests can enforce particular contracts DERIVED from it (PART 10), not the
+         principle itself.
+
+ [V] Model and Result expose 87 public members; 14 carry a prefix a rule governs (2026-09-10).
+     The rules constrain names; they do not determine them.
+
+
+================================================================================================
+ PART 2   HORIZON
+================================================================================================
+
+ 2.1  WHAT IS WRONG
+ [V] One field carries two meanings.  spec.py:179 -- window: float = 8.0   # L for stationary;
+     T for finite and transition
+ [V] So the lag window has no stable home: horizon.window for a stationary model,
+     horizon.stationary["window"] for a transition, where horizon.window holds T (spec.py:802).
+ [V] Horizon carries 17 fields covering three kinds, most optional for any one kind.
+
+ 2.2  SIGNATURES  [I]
+
+     class Stationary:  window: float;  discount: float = 0.0
+     class Finite:      T: float;       discount: float = 0.0
+     class Transition:  T: float;  past: Past;  window: float;
+                        continuation: str = "stationary";  discount: float = 0.0
+
+     Model.with_horizon(horizon: Stationary | Finite | Transition) -> Model
+     Model.with_stationary(window: float, **fields) -> Model
+     Model.with_finite(T: float, **fields) -> Model
+     Model.with_transition(T: float, past: Past, window: float, **fields) -> Model
+
+ [I] T is the terminal time.  window is the lag-truncation length L.  They are never aliased and
+     neither is ever read from the other's field.  A Transition carries both at the top level.
+ [I] D1 RESOLVED: with_horizon survives and takes a horizon OBJECT, so the type carries the valid
+     field combination.  The three typed convenience methods remain.
+ [I] Passing a field that the kind does not define is an error naming the kind and the field.
+
+
+================================================================================================
+ PART 3   DIAGNOSTICS
+================================================================================================
+
+ 3.1  WHAT IS WRONG
+ [V] Demonstrated 2026-09-10, one model per engine, guards on:
+
+         stationary       converged=True  resolution=False  window=True   second_order:a=True
+         finite/spectral  converged=True  resolution=True   (no window)   second_order:a=True
+         finite/cells     converged=True  resolution=None   (no window)   (NO second_order row)
+                          -> status ok = True
+
+     The cell engine passes the whole verdict while running two fewer checks: one it cannot
+     compute, one it does not emit.
+ [V] With diagnostics=False, require_ok() PASSES having run no guards at all.
+ [V] Mechanism: require_ok() raises only when status["flags"] is non-empty, and a check that
+     never ran contributes no flag.
+
+ 3.2  CHECK STATUS  [I]
+ Status describes ONE check.  It says nothing about acceptance.
+
+     PASSED          ran; the model met it
+     FAILED          ran; the model did not meet it
+     SKIPPED         this engine can compute it here; it was not run (diagnostics=False, budget)
+     UNSUPPORTED     this engine cannot compute it
+     NOT_APPLICABLE  the check has no meaning for this model
+     MISSING         applicable and supported, was to run, produced no record -- a package defect
+
+ [I] NOT_APPLICABLE is a property of the MODEL (a lag-window guard on a finite horizon).
+     UNSUPPORTED is a property of the ENGINE (representation error on the cell engine).
+     The two are never merged: one means nothing is missing, the other means something is.
+
+ 3.3  EXPECTED INVENTORY  [I]
+ [I] The checks that APPLY are computed from the model and the policy, independently of the rows
+     an engine emits.  An applicable check with no emitted row is never simply absent -- but it is
+     not automatically UNSUPPORTED either.  CAPABILITY IS DETERMINED FIRST, and the three reasons
+     are kept apart:
+
+         applicable, engine cannot compute it            -> UNSUPPORTED
+         applicable, engine can, deliberately not run    -> SKIPPED   (diagnostics=False, budget)
+         applicable, engine can, was to run, no record   -> MISSING
+
+     MISSING is a defect in this package, not a property of the model or the engine, and is
+     reported as such.  Draft 2 called every absent record UNSUPPORTED, which mislabels a solve
+     run with the guards off as an engine limitation.
+ [V] Without this, the cell engine's missing second_order row disappears from evaluation
+     entirely rather than being reported as missing (3.1).
+
+     applicable_checks(model, policy) -> frozenset[str]      [I]  from model + policy only
+     supported_checks(engine)         -> frozenset[str]      [I]  engine capability
+     an applicable check not in supported_checks is UNSUPPORTED, always, on every run.
+
+ 3.4  VALIDATION POLICY  [I]
+ [I] D2 RESOLVED: the policy is a first-class object.
+
+     class Policy:
+         name: str
+         required: frozenset[str]          # by check root, e.g. "second_order"
+         def applies(self, model) -> frozenset[str]
+
+     Policy.PUBLICATION   required = {converged, resolution, window, second_order, settled}
+     Policy.EXPLORATORY   required = {converged}
+
+ [I] D3/D5 RESOLVED, and they were never independent questions.  Requirements follow the POLICY
+     and the MODEL.  Engine capability decides whether a requirement can be SATISFIED, never
+     whether it applies.  There is NO automatic engine exemption.
+ [I] Draft 1 said the default policy requires checks "where the engine defines them".  That
+     phrase reintroduced the exemption it claimed to close, and is removed.
+ [I] A weaker requirement set is legitimate and must be a DIFFERENT NAMED POLICY.  Consequence,
+     stated plainly: under PUBLICATION the cell engine cannot produce an accepted result, because
+     it cannot compute two required checks.  That is the honest report, not a defect to route
+     around.
+
+ 3.5  AGGREGATE CONTRACT  [I]
+ [I] The six statuses describe individual checks and do NOT describe a collection.  An
+     aggregate returns a structured assessment, never a single status.
+
+     @dataclass(frozen=True)
+     class Assessment:
+         accepted: bool                        # every required, applicable check PASSED
+         policy: str
+         blocking: tuple[Blocker, ...]         # empty iff accepted
+         statuses: Mapping[str, Status]        # every applicable check, by name
+         uncomputed: tuple[str, ...]           # applicable, produced no result, for ANY reason:
+                                               # UNSUPPORTED, SKIPPED or MISSING
+
+     @dataclass(frozen=True)
+     class Blocker:
+         check: str
+         status: Status                        # FAILED, SKIPPED, UNSUPPORTED or MISSING
+         reason: str
+
+ [I] `uncomputed` is the FIELD listing every applicable check with no result, whatever the reason.
+     MISSING is one STATUS a check in that list may carry.  Draft 2 called the field `missing`,
+     which collided with the status name and read as though the field held only that case.
+
+ [I] EMPTY IS NOT THE SAME AS MISSING, and acceptance is decided only after the expected
+     inventory of 3.3 has been consulted:
+
+         no APPLICABLE check           accepted=True, statuses={}, blocking=(), uncomputed=()
+                                       Nothing was required here.  Emptiness is visible in
+                                       statuses rather than reported as a pass.
+         applicable checks, no records Each such check takes UNSUPPORTED, SKIPPED or MISSING
+                                       per 3.3 and appears in `uncomputed`.  accepted=False ONLY IF
+                                       one of them is REQUIRED by the policy.  An OPTIONAL check
+                                       with no record is reported and does not block -- Draft 2
+                                       said no-records always means rejection, contradicting its
+                                       own acceptance table.
+
+     An assessment must never read an absent record as an empty category.  That is the cell
+     engine's missing second_order row (3.1), and it is the whole reason 3.3 computes the
+     inventory from the model and policy rather than from what an engine emitted.
+
+ 3.6  ACCEPTANCE TABLE  [I]
+
+     status of a check       required by policy      optional
+     -------------------------------------------------------------------
+     PASSED                  does not block          does not block
+     FAILED                  BLOCKS                  reported, no block
+     SKIPPED                 BLOCKS                  reported, no block
+     UNSUPPORTED             BLOCKS                  reported, no block
+     NOT_APPLICABLE          does not block          does not block
+
+ [I] MISSING blocks exactly as UNSUPPORTED and SKIPPED do: required blocks, optional reports.
+ [I] ACCEPTANCE, stated once and without exception: accepted is True iff every check that the
+     policy REQUIRES and the model makes APPLICABLE has status PASSED.  Nothing else grants
+     acceptance -- not an absent record, not an empty category, not an engine limitation.
+ [I] Every non-PASSED status appears in `statuses` whether or not it blocks.  Optional failures
+     are never silent.
+
+ 3.7  SIGNATURES  [I]
+
+     res.diagnostics                                        -> Diagnostics
+     Diagnostics.rows                                       -> tuple[CheckRow, ...]
+     Diagnostics.statuses                                   -> Mapping[str, Status]
+     Diagnostics.assess(policy: Policy = Policy.PUBLICATION) -> Assessment
+     Diagnostics.summary(detailed: bool = False)            -> str
+     Diagnostics.by_category(category: str)                 -> tuple[CheckRow, ...]
+
+     res.require_ok(policy: Policy = Policy.PUBLICATION)    -> Result   (raises)
+     res.require_converged()                                -> Result   (raises)
+
+ [I] EXCEPTIONS.  The two failures are SIBLINGS, not parent and child:
+
+         ResultValidationError            a result is not fit for the use asked of it
+         |-- ConvergenceError             the solve did not reach its tolerance
+         |-- DiagnosticsError             it converged, and the assessment was not accepted
+
+     A converged result can fail diagnostics, so DiagnosticsError must NOT be a ConvergenceError:
+     `except ConvergenceError` would then catch failures that have nothing to do with convergence.
+     A caller wanting either writes `except ResultValidationError`.
+ [I] require_ok() succeeds iff assess(policy).accepted.  When it does not, WHICH exception is
+     raised follows the reason, so each exception's contract stays true:
+
+         the `converged` check did not pass   -> ConvergenceError
+         anything else blocked                -> DiagnosticsError
+
+     Both carry the Assessment.  Convergence is still an ordinary check inside the policy; this
+     rule only decides which name the failure is reported under, so that DiagnosticsError can
+     continue to mean "it converged, and was still not accepted".  Draft 2 raised DiagnosticsError
+     for every rejection, including non-convergence, which contradicted its own contract.
+ [I] The message distinguishes "failed" from "could not be established", which call for different
+     actions from the reader.
+ [I] require_converged() is unchanged, tests the solve only, and raises ConvergenceError.
+ [I] Replaces, and removes: diagnostic_rows, diagnostic_records, diagnostic_summary,
+     diagnostic_verdict, status, resolution_ok.
+ [I] A check name's ROOT is the part before any ":".  Category and exclusion both key on the root,
+     so "second_order" covers "second_order:<agent>".
+ [V] Matching the full name instead silently excluded nothing (fixed 2026-09-09, tested).
+
+
+================================================================================================
+ PART 4   STABILITY
+================================================================================================
+
+ 4.1  WHAT IS WRONG
+ [V] compare() calls result.stability() with no guard between it and solve(), so a scenario that
+     never converged still receives a response classification.  ScenarioResult.dynamics omits the
+     fixed_point_residual that stability() computes.
+
+ 4.2  A CORRECTION TO DRAFT 1
+ Draft 1 wrote, under a [V] marker, that two observations showed a converged solve need not be an
+ equilibrium: a fixed point costing seven times another, and a case where the second-order check
+ passes while the best-response radius exceeds 1.  Neither supports that conclusion.
+
+     - Distinct equilibria may have distinct costs.  A higher cost is not disqualifying.
+     - An equilibrium may be unstable under best-response iteration.  rho > 1 is a statement
+       about the dynamics, not about validity.
+
+ [V] The numbers were verified; the inference was not, and is withdrawn.  The observations are
+     kept as observations.
+
+ [V] What the ch3 long-window case does show: a stationary window much longer than the kernel's
+     support admits a second fixed point of the TRUNCATED problem, and on that branch the kernel
+     has not decayed by the window's edge, so the window guard fails.
+ [I] The correct reading of that guard, and no more: a failed window guard establishes that the
+     TRUNCATION IS NOT VALIDATED -- the truncated problem's fixed point has not been shown to be a
+     fixed point of the untruncated one.  It does not by itself prove the branch is an artifact.
+     Draft 2 said the guard "makes it an artifact", which is a stronger claim than insufficient
+     evidence supports.  What follows is that the branch is UNVERIFIED, which is exactly the
+     verdict 4.3 is built to express.
+ [I] EQUILIBRIUM VALIDITY AND RESPONSE STABILITY ARE SEPARATE FINDINGS and are reported
+     separately.  Neither is evidence for the other.
+
+ 4.3  SIGNATURE AND RETURN  [I]
+
+     @dataclass(frozen=True)
+     class Stability:
+         radius: float
+         eigenvalues: tuple[complex, ...]
+         method: str
+         fixed_point_residual: float
+         residual_norm: str                 # which norm, and its scaling
+         residual_tolerance: float | None    # None until D4 is settled
+         verified: bool                     # a real bool, per R3
+         unverified_reasons: tuple[str, ...]   # empty iff verified
+         full_response: str | None
+         adjusted_response: str | None
+         adjusted_radius_bound: float | None
+         adjustment: float
+
+     res.stability(untied: bool = True, policy: Policy = Policy.PUBLICATION) -> Stability
+
+ [I] The classification fields are ALWAYS PRESENT, and are None when verified is False.  Draft 1
+     removed them conditionally; that makes attribute access depend on the data, which is worse
+     than a documented None.
+ [I] THE VERIFICATION RULE, stated as the computation rather than as prose:
+
+         MINIMUM  = {converged, resolution, second_order, window}
+         required = applicable(MINIMUM | policy.required, model)
+         verified = residual_passed and all(statuses[c] is PASSED for c in required)
+
+     The UNION is what makes both halves true at once, and prose got each of them wrong once:
+       - a WEAK policy cannot lower the bar, because MINIMUM is always in the union.  It also does
+         not by itself cause rejection: if every applicable check in the union passed, verified
+         is True under Policy.EXPLORATORY.  That is NOT equivalence with Policy.PUBLICATION,
+         which contributes `settled` to the union and so has more to satisfy; a weak policy
+         simply adds nothing beyond MINIMUM.  Draft 2 rev 2 said a policy too weak to satisfy
+         the minimum yields verified=False, which wrongly made the policy the cause.
+       - a STRONG policy's ADDITIONAL required checks must also pass.  Draft 2 rev 2's "iff"
+         named only the minimum, so a stronger policy's extra checks did not bind.
+ [I] APPLICABILITY IS COMPUTED FROM THE MODEL, never hard-coded per kind.  `window` in particular
+     is applicable wherever the model carries a lag-truncation window, which is a stationary model
+     AND a transition (whose continuation carries one -- PART 2).  It is not applicable to a plain
+     finite horizon.  Draft 2 rev 2 wrote "window where the model is stationary", which silently
+     dropped transitions from verification.
+ [I] residual_passed is fixed_point_residual <= residual_tolerance under residual_norm, and is
+     False whenever residual_tolerance is None (D4 unsettled).
+ [I] unverified_reasons names every element of `required` whose status is not PASSED, and the
+     residual condition when it is the one that failed.
+ [I] Reading the set from the policy alone -- Draft 2's rule -- would let Policy.EXPLORATORY
+     produce verified=True on weaker evidence under the same label.  That is the engine-exemption
+     loophole of 3.4 returning by another route; the label must mean one thing.
+ [I] The Jacobian at a non-fixed point remains computable: radius, eigenvalues, method and the
+     residual are always returned.  Only the INTERPRETATION is withheld.
+ [I] D4 DOES NOT BLOCK THE REST OF THIS SPECIFICATION.  The three report fields --
+     fixed_point_residual, residual_norm, residual_tolerance -- are specified and populated from
+     the start, so the evidence is carried and serialised even before the numerical definition is
+     settled.  What is gated is only the CLASSIFICATION:
+
+         until D4 is settled   residual_norm names the norm actually used; residual_tolerance is
+                               None; verified is False; unverified_reasons contains
+                               "equilibrium residual criterion not yet defined"; the three
+                               classification fields are None.
+         after D4              verified is computed as in 4.3 and the classification appears.
+
+     A caller therefore never sees a classification resting on an undefined criterion, and never
+     has to guess whether one is missing because the point failed or because the criterion does
+     not exist yet.
+ [O] D4  The numerical definition: the NORM, its SCALING, and the threshold, specified together so
+         the number is comparable across grids and model scales.  The solve residual is not, which
+         is why it cannot serve.  This is numerical work, not API work.
+
+
+================================================================================================
+ PART 5   RESULTS, COORDINATES, CONTAINERS
+================================================================================================
+
+ 5.1  COORDINATES
+ [V] times is not a second name for mean_times: three implementations exist (base returns None;
+     one engine returns self.mean_times; another returns self.compiled.times).  They coincide on
+     one engine only.
+ [I] They stay separate, each documented with its scope:
+         mean_times   time nodes the mean paths are sampled on; None where means are constants
+         times        time nodes of res.paths for this engine
+         axes         coordinate arrays kernels are indexed by, by name
+         map_axes(delay) -> dict   where a map's values belong for a row observed with that lag
+ [I] D6 RESOLVED: the specification fixes the MEANING of each coordinate and leaves the storage
+     open.  Vocabulary, fixed and not reused across engines:
+         time        a calendar time on [0, T]
+         age         an elapsed lag
+         shock_time  when the shock landed
+
+ 5.2  CONTAINERS
+ [V] SweepPoint is a dict subclass; ScenarioResult is a dataclass.
+ [I] They remain DIFFERENT TYPES carrying different information -- a continuation point has
+     predictor and branch fields, a comparison scenario has baseline-relative costs -- and share
+     conventions only:
+         both are frozen dataclasses
+         both carry: result, seconds, evaluations, converged
+         both expose to_dict()
+ [I] compare() records seconds and evaluations per scenario, which sweep() already does.
+
+ 5.3  refine
+ [V] refine(factor=1.5, **solve_kw) returns a dict today.
+ [I] Returns a Refinement, and does not mutate the receiver:
+
+     @dataclass(frozen=True)
+     class Refinement:
+         coarse: Result                # the result refine() was called on
+         fine: Result                  # the finer solve, in full
+         cost_change: Mapping[str, float]
+         kernel_change: Mapping[str, float]
+         shrinking: bool               # a real bool, per R3
+
+ [I] The finer Result is reachable rather than summarized away, so a caller can run the whole
+     diagnostics contract on it.
+
+ 5.4  NO CHANGE
+ [V] summary(diagnostics=True) -> str and plot(path) -> None already have identical signatures and
+     return types across all four result classes (2026-09-10).  Only contents differ by engine,
+     which is correct.  This was reported as an inconsistency in an earlier round and is not one.
+
+
+================================================================================================
+ PART 6   SOLVER EXPOSURE
+================================================================================================
+
+ [V] Four routes reach the same three classes: ns.ENGINE_CLASSES, ns.engines, the three top-level
+     classes, ns.solver().
+ [I] Two survive:
+         ns.solve(model, numerics=None, **kw) -> Result          the standard entry point
+         ns.engines                                               the advanced namespace:
+             engines.stationary, engines.spectral, engines.cells
+             engines.build(model, numerics=None, **kw) -> Solver
+ [I] Removed: ns.ENGINE_CLASSES, ns.solver, and the three top-level solver classes.
+
+
+================================================================================================
+ PART 7   SERIALIZATION
+================================================================================================
+
+ [V] The payload key is means_t; the Python attribute is mean_times.
+ [I] The key becomes mean_times.  Names match before the format is versioned.
+ [I] D7 RESOLVED: the payload carries the FULL status of every applicable check and the POLICY the
+     assessment used, not a tri-state ok.  A payload that records only "ok" cannot distinguish a
+     passed check from one that could not be run, which is the distinction PART 3 exists to make.
+
+     payload["diagnostics"] = {
+         "policy":   <policy name>,
+         "accepted": <bool>,
+         "checks":   [{"name", "root", "category", "status", "value", "threshold", "detail"}],
+         "blocking": [{"check", "status", "reason"}],
+         "uncomputed": [<check name>],
+     }
+
+ [I] The payload declares a schema version from this point; ns.schema("payload") reports it.
+
+
+================================================================================================
+ PART 8   SIGNALS, WARM STARTS, READING FILES
+================================================================================================
+
+ 8.1  SIGNALS  [I]
+
+     Model.with_signal(signal: Signal, *, audience: str | Sequence[str] = "all") -> Model
+     Model.with_signal(name: str, *, drift: Mapping[str, float], noise: Mapping[str, float],
+                       audience: str | Sequence[str] = "all", delay: float = 0.0) -> Model
+     Model.with_signals(signals: Sequence[Signal], *, audience = "all") -> Model
+     Model.with_signals(rows: Mapping[str, dict], *, audience = "all") -> Model
+
+ [I] Both forms are retained and overloaded on the first argument: a Signal, or a name plus the
+     file-form blocks.  The dict form exists because a model loaded from a file has no Signal
+     object to hand.  Mixing forms in one call is an error.
+ [I] DUPLICATE NAMES: adding a row whose name an agent in the audience already has is an error
+     naming the agent and the row.  It is never a silent replacement.  To replace, the caller
+     removes first -- Model.without_signal(name, audience="all") -> Model.
+ [I] Noise channels named by a new row are appended to model.channels in the order given, and
+     only if not already present.
+
+ 8.2  WARM STARTS  [I]
+ [V] init and start are not duplicates: init is an object (action kernels or raw maps); start is
+     a strategy name ("zero", "coarse", "stationary").
+
+     ns.solve(..., start_from: Mapping[str, ndarray] | None = None,
+                   start_policy: str | None = None, ...)
+
+ [I] D8 RESOLVED on the names.  THEIR INTERACTION: supplying both is an ERROR, not a precedence
+     rule.  A precedence rule silently discards one of two things the caller asked for, and the
+     caller cannot tell which was used.  The error names both arguments.
+ [I] start_policy=None with start_from=None means the engine's default, which each engine names
+     in its documentation.
+
+ 8.3  READING FILES
+ [V] ns.load(path) constructs and validates a Model; ns.read_yaml(path) parses to a dict.
+     Different operations; both stay.
+ [V] The duplication is internal: sweep._load_dict reimplements as_model over the same four-way
+     union with the TypeError message copied verbatim.
+ [I] sweep._load_dict is removed; as_model is the one normalizer.
+
+
+================================================================================================
+ PART 9   DISTINCTIONS THAT MUST SURVIVE
+================================================================================================
+
+ [I] MODEL CAPABILITY vs REALIZED RESULT
+         Model.drives_means   can anything move the means (structural)
+         Result.has_means     did they, beyond round-off (realized)
+     Both are bool, per R3.
+
+ [I] CLOSED-LOOP RESPONSE vs STRATEGY
+         res.kernel(name, channel)              closed-loop response to a shock
+         res.strategy_kernel(control, channel)  the strategy itself
+
+ [I] EQUILIBRIUM VALIDITY vs RESPONSE STABILITY        see PART 4.2.  Neither implies the other.
+ [I] TERMINAL TIME vs LAG WINDOW                       see PART 2.
+ [I] CONSTRUCT-AND-VALIDATE vs PARSE                   see PART 8.3.
+ [I] CONTINUATION POINT vs SCENARIO                    see PART 5.2.
+ [I] NOT_APPLICABLE (model) vs UNSUPPORTED (engine)    see PART 3.2.
+
+
+================================================================================================
+ PART 10   CONTRACTS TO BE TESTED
+================================================================================================
+
+ Derived from P1 and the rules; each is decidable.
+
+ T1  Over several models spanning the three horizon kinds: for every with_*, the mutable  R1
+     objects reachable from the copy share no id with those reachable from the receiver,
+     and no reachable array pair satisfies np.shares_memory.
+ T2  No public property takes arguments; no public method is a bare data read.          R2
+ T3  Every is_*/has_* member returns bool on every engine.                              R3
+ T4  Every require_* returns self or raises.                                            R4
+ T5  No public PROPERTY carries the *_ok suffix.  require_ok(), a require_* method,       R6
+     is exempt by name.
+ T6  For every engine: applicable_checks minus supported_checks are UNSUPPORTED, and    3.3
+     each appears in Assessment.statuses.
+ T7  require_ok(PUBLICATION) raises after solve(diagnostics=False).                      3.6
+ T8  require_ok(PUBLICATION) raises on the cell engine for a model whose policy          3.4
+     requires resolution or second_order.
+ T9  stability() on an unconverged result has verified=False, non-empty                  4.3
+     unverified_reasons, and None classification fields.
+ T10 Supplying both start_from and start_policy raises.                                  8.2
+ T11 Adding a duplicate signal name raises and names the agent and the row.              8.1
+ T12 The payload round-trips every check status and the policy name.                     7
+
+
+================================================================================================
+ PART 11   OPEN DECISIONS
+================================================================================================
+
+ D4  The equilibrium residual: its NORM, its SCALING, and its threshold, specified together so
+     the number is comparable across grids and model scales.                            PART 4.3
+     NOT BLOCKING.  The report fields are specified now and carried from the start; only the
+     verified-equilibrium classification waits on the numerical definition.
+
+ RESOLVED SINCE DRAFT 1
+     D1  with_horizon takes a horizon object; typed methods remain.                     PART 2.2
+     D2  The validation policy is a first-class object.                                 PART 3.4
+     D3  No automatic engine exemption; requirements follow policy and model.           PART 3.4
+     D5  Follows from D3: the cell engine cannot reach PUBLICATION acceptance.          PART 3.4
+     D6  Coordinate meaning is specified; storage is left open.                         PART 5.1
+     D7  The payload carries full statuses and the policy used.                         PART 7
+     D8  start_from / start_policy; supplying both is an error.                         PART 8.2
+
+
+================================================================================================
+ PART 12   ORDER OF WORK
+================================================================================================
+
+ 0.  THE ARCHITECTURE IS SETTLED.  What follows is implementation, each contract's tests landing
+     with its change, not another round of naming.  Only D4 is open, and it blocks nothing here.
+ 1.  Delete the 0.7 deprecation layer: _renames.py, the module __getattr__, the class aliases,
+     the 32 deprecation tests, PART 4 of docs/glossary.txt.
+ 2.  Diagnostics: Status, Policy, Assessment, the expected inventory, the Diagnostics object.
+     Everything else in PART 3 and PART 4 depends on it.
+ 3.  Stability gating (PART 4), which needs Policy from step 2.  The residual fields are
+     populated; the classification stays gated until D4 is settled.
+ 4.  Horizon split (PART 2) -- reaches the schema, the engines and every example.
+ 5.  Containers, refine, solver exposure, signals, warm starts (PARTS 5, 6, 8).
+ 6.  Serialization and the schema version (PART 7), last, so it records the settled shape.
+ 7.  The T1-T12 tests; regenerate docs/api.md and docs/glossary.txt from the settled surface.
+     THE REFERENCE STATES THE SETTLED CONTRACTS DIRECTLY.  Every "Draft N said X, which was
+     wrong" note in this file is drafting history: it earns its place here, where the contracts
+     are still being argued, and does not belong in a reference someone reads to use the package.
+     Move those notes to docs/design/api_design_log.txt at this step.
+ 8.  Settle D4 (numerical work, independent of the above), then enable the verified-equilibrium
+     classification.  Nothing in steps 1-7 waits on it.
+
+================================================================================================

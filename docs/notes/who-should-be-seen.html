@@ -124,6 +124,32 @@
            text-transform:uppercase; padding:2px 7px; border-radius:2px; margin-left:7px; white-space:nowrap}
   .verdict.ok{background:var(--fill-stable); color:var(--stable)}
   .verdict.bad{background:var(--fill-unstable); color:var(--unstable)}
+  .dominant{font-family:var(--mono); font-size:12px; color:var(--ink); margin:8px 0 2px}
+  .adjusted{font-family:var(--sans); font-size:12px; color:var(--muted); margin:0 0 8px}
+
+  .result-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:22px 0 8px}
+  .result-card{background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:15px 16px}
+  .result-card .kicker{font-family:var(--sans); font-size:10.5px; font-weight:600; letter-spacing:.1em;
+                      text-transform:uppercase; color:var(--accent); margin:0 0 7px}
+  .result-card .big{font-family:var(--sans); font-size:17px; font-weight:600; line-height:1.3; margin:0 0 5px}
+  .result-card p{font-family:var(--sans); font-size:12.5px; line-height:1.5; color:var(--muted); margin:0}
+  .result-card.warn{border-top:2px solid var(--unstable)}
+  .result-card.good{border-top:2px solid var(--stable)}
+  .tag-inline{font-family:var(--sans); font-size:10px; font-weight:600; letter-spacing:.04em;
+              color:var(--unstable); background:var(--fill-unstable); padding:2px 5px; border-radius:2px; white-space:nowrap}
+
+  .model-grid{display:grid; grid-template-columns:1.05fr 1fr; gap:14px; margin:26px 0 18px}
+  .model-card{background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:18px 20px}
+  .model-card.wide{grid-column:1 / -1}
+  .model-card .kicker{font-family:var(--sans); font-size:10.5px; font-weight:600; letter-spacing:.1em;
+                      text-transform:uppercase; color:var(--accent); margin:0 0 9px}
+  .model-eq{font-size:20px; line-height:1.75; margin:0; white-space:nowrap; overflow-x:auto}
+  .model-card .plain{font-family:var(--sans); font-size:13px; line-height:1.55; color:var(--muted); margin:8px 0 0}
+  .model-card .plain b{color:var(--ink)}
+  .model-key{display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--rule); border:1px solid var(--rule);
+             border-radius:3px; overflow:hidden; margin-top:14px}
+  .model-key div{background:var(--surface); padding:11px 13px; font-family:var(--sans); font-size:12px; line-height:1.45; color:var(--muted)}
+  .model-key b{display:block; color:var(--ink); font-size:13px; margin-bottom:2px}
 
   table{border-collapse:collapse; width:100%; font-size:15px; font-variant-numeric:tabular-nums}
   th,td{text-align:right; padding:9px 12px; border-bottom:1px solid var(--rule)}
@@ -159,6 +185,13 @@
   @media (prefers-reduced-motion:no-preference){
     .dot{transition:r .2s ease}
   }
+  @media (max-width:720px){
+    .result-grid{grid-template-columns:1fr}
+    .model-grid{grid-template-columns:1fr}
+    .model-card.wide{grid-column:auto}
+    .model-key{grid-template-columns:1fr}
+    .verdict{display:inline-block; margin:5px 0 0}
+  }
 </style>
 <div class="wrap">
 <header class="measure">
@@ -181,6 +214,44 @@
   alone. The spectrum comes from precision and cost.</p>
   <p>Player 1 wins the tug-of-war at every configuration below: the equilibrium mean sits nearest its
   vertex, never the centroid. Cheap action beats sharp information in deciding where the state rests.</p>
+
+  <div class="model-grid" aria-label="Model specification">
+    <div class="model-card wide">
+      <p class="kicker">state &middot; what players move</p>
+      <p class="model-eq"><span class="m">dX<sub>t</sub></span> =
+        [<span class="m">D<sub>1t</sub></span> + <span class="m">D<sub>2t</sub></span> +
+        <span class="m">D<sub>3t</sub></span>]<span class="m">dt</span> + <span class="m">dW<sub>t</sub><sup>X</sup></span>,
+        &nbsp; <span class="m">X<sub>t</sub></span> &isin; &#8477;<sup>2</sup></p>
+      <p class="plain">Each control is a two-dimensional push. Their sum moves the common state; independent unit Brownian noise moves both coordinates.</p>
+    </div>
+    <div class="model-card">
+      <p class="kicker">private information &middot; what player i sees</p>
+      <p class="model-eq"><span class="m">dY<sub>it</sub></span> = &radic;<span class="m">p<sub>i</sub></span>
+        <span class="m">X<sub>t</sub>dt</span> + <span class="m">dW<sub>it</sub><sup>Y</sup></span></p>
+      <p class="plain">Higher <span class="m">p<sub>i</sub></span> means a sharper private view of the state. The baseline uses <b>p = (3, 10, 6)</b>.</p>
+    </div>
+    <div class="model-card">
+      <p class="kicker">objective &middot; what player i minimizes</p>
+      <p class="model-eq"><span class="m">J<sub>i</sub></span> = &#120124; [&frac12;&#8214;<span class="m">X<sub>t</sub></span>&#8214;<sup>2</sup>
+        &minus; <span class="m">v<sub>i</sub></span>&prime;<span class="m">X<sub>t</sub></span>
+        + &frac12;<span class="m">r<sub>i</sub></span>&#8214;<span class="m">D<sub>it</sub></span>&#8214;<sup>2</sup>]</p>
+      <p class="plain">The vertices <span class="m">v<sub>i</sub></span> are the triangle's corners. Effort costs are <b>r = (0.5, 1.0, 1.5)</b>.</p>
+    </div>
+    <div class="model-card wide">
+      <p class="kicker">experiment &middot; the added public signal</p>
+      <p class="model-eq"><span class="m">dF<sub>t</sub></span> =
+        [<span class="m">a<sub>1</sub>D<sub>1t</sub></span> + <span class="m">a<sub>2</sub>D<sub>2t</sub></span> +
+        <span class="m">a<sub>3</sub>D<sub>3t</sub></span>]<span class="m">dt</span> +
+        <span class="m">&sigma;<sub>f</sub>dW<sub>t</sub><sup>F</sup></span></p>
+      <p class="plain">Everyone sees this row. The visibility vector <b>a</b> determines whose action is revealed; smaller <span class="m">&sigma;<sub>f</sub></span> makes it more precise.</p>
+      <div class="model-key">
+        <div><b>a = (0, 0, 0)</b>no public signal</div>
+        <div><b>a = (1, 1, 1)</b>balanced aggregate action</div>
+        <div><b>a = (1, 0, 0)</b>only player 1 is visible</div>
+      </div>
+    </div>
+  </div>
+  <p style="font-family:var(--sans);font-size:12.5px;color:var(--muted)">All shocks are independent. The reported stationary flow losses use a lag window of 3; targets affect equilibrium means, while signal precision and effort costs determine the response kernels and stability spectrum.</p>
 
   <h2><span class="n">2</span>The wedge lives where information is worst</h2>
   <p>The first-order condition splits into a <b>physical</b> part &mdash; the marginal condition if nobody
@@ -227,7 +298,7 @@
           <tr><td>2.00</td><td class="num">0.7567</td><td class="num">0.3627</td><td class="num">0.7448</td><td class="num">0.6725</td><td class="num">5.5859</td></tr>
           <tr><td>1.00</td><td class="num">0.7642</td><td class="num">0.3467</td><td class="num">0.7391</td><td class="num">0.7135</td><td class="num">5.6885</td></tr>
           <tr><td>0.50</td><td class="num">0.8725</td><td class="num">0.3100</td><td class="num">0.7225</td><td class="num">0.8442</td><td class="num">6.0527</td></tr>
-          <tr><td>0.25</td><td class="num">1.0925</td><td class="num">0.2710</td><td class="num">0.6908</td><td class="num">1.1492</td><td class="num">7.0371</td></tr>
+          <tr><td>0.25 <span class="tag-inline">branch unchecked</span></td><td class="num">1.0925</td><td class="num">0.2710</td><td class="num">0.6908</td><td class="num">1.1492</td><td class="num">7.0371</td></tr>
         </tbody>
       </table>
     </div>
@@ -250,14 +321,14 @@
   <figure>
     <div class="tw">
       <table>
-        <thead><tr><th>public row</th><th>&rho;</th><th>|X|</th><th>total cost</th><th>against no signal</th></tr></thead>
+        <thead><tr><th>public row</th><th>total cost</th><th>&Delta; vs none</th><th>&rho;</th><th>full best response</th></tr></thead>
         <tbody>
-          <tr><td>only p1 visible (1,0,0)</td><td class="num">0.7450</td><td class="num">0.3680</td><td class="num">5.54271</td><td style="color:var(--stable);font-weight:600">better</td></tr>
-          <tr><td><b>no public signal</b></td><td class="num">0.6947</td><td class="num">0.3690</td><td class="num">5.55103</td><td>&mdash;</td></tr>
-          <tr><td>only p3 visible (0,0,1)</td><td class="num">0.7594</td><td class="num">0.3658</td><td class="num">5.57001</td><td style="color:var(--unstable)">worse</td></tr>
-          <tr><td>only p2 visible (0,1,0)</td><td class="num">0.7749</td><td class="num">0.3611</td><td class="num">5.64572</td><td style="color:var(--unstable)">worse</td></tr>
-          <tr><td>balanced &mdash; the plain sum (1,1,1)</td><td class="num">0.7642</td><td class="num">0.3467</td><td class="num">5.68847</td><td style="color:var(--unstable)">worse</td></tr>
-          <tr><td>others loud (1,4,4)</td><td class="num">1.0570</td><td class="num">0.2674</td><td class="num">6.92690</td><td style="color:var(--unstable);font-weight:600">far worse, &rho; &gt; 1</td></tr>
+          <tr><td>only p1 visible (1,0,0)</td><td class="num">5.54271</td><td class="num" style="color:var(--stable);font-weight:600">&minus;0.15%</td><td class="num">0.7450</td><td>converges</td></tr>
+          <tr><td><b>no public signal</b></td><td class="num">5.55103</td><td>baseline</td><td class="num">0.6947</td><td>converges</td></tr>
+          <tr><td>only p3 visible (0,0,1)</td><td class="num">5.57001</td><td class="num" style="color:var(--unstable)">+0.34%</td><td class="num">0.7594</td><td>converges</td></tr>
+          <tr><td>only p2 visible (0,1,0)</td><td class="num">5.64572</td><td class="num" style="color:var(--unstable)">+1.71%</td><td class="num">0.7749</td><td>converges</td></tr>
+          <tr><td>balanced &mdash; the plain sum (1,1,1)</td><td class="num">5.68847</td><td class="num" style="color:var(--unstable)">+2.48%</td><td class="num">0.7642</td><td>converges</td></tr>
+          <tr><td>others loud (1,4,4)</td><td class="num">6.92690</td><td class="num" style="color:var(--unstable);font-weight:600">+24.79%</td><td class="num">1.0570</td><td style="color:var(--unstable);font-weight:600">oscillates; dampable</td></tr>
         </tbody>
       </table>
     </div>
@@ -268,13 +339,34 @@
   </figure>
 </section>
 
+<section class="measure">
+  <div class="result-grid">
+    <div class="result-card good">
+      <p class="kicker">economic result</p>
+      <p class="big">Only the incumbent helps</p>
+      <p>Revealing p1 lowers total cost 0.15%. Every contender-weighted signal raises it.</p>
+    </div>
+    <div class="result-card warn">
+      <p class="kicker">dynamic result</p>
+      <p class="big">The extreme case overshoots</p>
+      <p>Its dominant mode is &minus;1.057: full simultaneous responses diverge by oscillation, while partial adjustment can converge.</p>
+    </div>
+    <div class="result-card">
+      <p class="kicker">numerical trust</p>
+      <p class="big">The ranking is resolved</p>
+      <p>Costs agree to five decimals at 16, 24 and 32 nodes. The &sigma;<sub>f</sub> = 0.25 branch remains unchecked.</p>
+    </div>
+  </div>
+</section>
+
 <section class="breakout">
   <figure>
     <div class="planes" id="planes"></div>
     <figcaption>The best-response Jacobian's spectrum against the unit circle, one panel per configuration.
     The diagonal blocks are identically zero in all four &mdash; a player's best response never depends on its
-    own current strategy &mdash; so the spectra carry the symmetry that structure forces. Under
-    <b>others loud</b> a real pair escapes the circle at &plusmn;1.057 and adjustment dynamics diverge.
+    own current strategy. Under <b>others loud</b> the dominant real mode reaches &minus;1.057: full simultaneous
+    adjustment overshoots with growing amplitude. The green marker shows that mode after a 50% update; it
+    returns well inside the circle, so the instability is dampable rather than self-reinforcing.
     Assembled directly at 10 nodes; &rho; and the costs agree with the 16-node solves to four decimals.</figcaption>
   </figure>
 </section>
@@ -439,10 +531,20 @@
   const host = document.getElementById("planes");
   for (const [key,label] of PANELS){
     const d = DATA[key], unstable = d.rho > 1;
+    const dominant = d.eig.reduce((a,b)=>Math.hypot(b[0],b[1])>Math.hypot(a[0],a[1])?b:a);
+    const damped = [0.5 + 0.5*dominant[0], 0.5*dominant[1]];
+    const dampedRho = Math.max(...d.eig.map(z=>Math.hypot(0.5+0.5*z[0],0.5*z[1])));
+    const alphaMax = Math.min(1,...d.eig.map(z=>{
+      const x=z[0]-1, y=z[1], bound=-2*x/(x*x+y*y); return bound>0?bound:0;
+    }));
     const box = document.createElement("div"); box.className = "plane";
     box.innerHTML = '<h4>' + label + '<span class="verdict ' + (unstable?"bad":"ok") + '">' +
-                    (unstable?"unstable":"stable") + '</span></h4>' +
-                    '<p class="sub">&rho; = ' + d.rho.toFixed(4) + ' &middot; cost ' + d.cost.toFixed(4) + '</p>';
+                    (unstable?"full response oscillates":"full response converges") + '</span></h4>' +
+                    '<p class="sub">cost ' + d.cost.toFixed(4) + ' &middot; spectral radius ' + d.rho.toFixed(4) + '</p>' +
+                    '<p class="dominant">dominant &lambda; = ' + dominant[0].toFixed(4) +
+                    (Math.abs(dominant[1])>1e-8 ? (dominant[1]>0?" + ":" − ")+Math.abs(dominant[1]).toFixed(4)+"i" : "") + '</p>' +
+                    '<p class="adjusted">50% update: spectral radius ' + dampedRho.toFixed(4) + ' &middot; converges' +
+                    (unstable?' &middot; stable for &alpha; &lt; '+alphaMax.toFixed(3):'') + '</p>';
     const svg = el("svg",{viewBox:"0 0 "+S+" "+S,width:"100%",height:"auto",role:"img",
                           "aria-label":"eigenvalues for "+label});
     svg.appendChild(el("line",{x1:8,y1:C,x2:S-8,y2:C,stroke:"var(--rule)","stroke-width":1}));
@@ -457,6 +559,9 @@
         fill: out?"var(--unstable)":"var(--accent)", "fill-opacity": out?.95:.68,
         stroke: out?"var(--unstable)":"none", "stroke-width": out?1.2:0}));
     }
+    svg.appendChild(el("line",{x1:C+dominant[0]*R,y1:C-dominant[1]*R,x2:C+damped[0]*R,y2:C-damped[1]*R,
+                               stroke:"var(--stable)","stroke-width":1.4,"stroke-dasharray":"4 3"}));
+    svg.appendChild(el("circle",{cx:C+damped[0]*R,cy:C-damped[1]*R,r:4.2,fill:"var(--stable)",stroke:"var(--surface)","stroke-width":1.3}));
     box.appendChild(svg); host.appendChild(box);
   }
 </script>

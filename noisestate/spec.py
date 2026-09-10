@@ -32,6 +32,8 @@ import ast
 import math
 import re
 import warnings
+
+from ._renames import renamed_method, renamed_property
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -273,11 +275,11 @@ class Model:
             solver_kw = {"naive_observers": dict(self.naive_observers), **(solver_kw or {})}
         return sweep(self, param, list(vals), numerics=numerics, solver_kw=solver_kw, solve_kw=solve_kw, verbose=verbose)
 
-    def finite(self, T: float, **fields) -> "Model":
+    def with_finite(self, T: float, **fields) -> "Model":
         """The same model on the finite horizon [0, T] (with_horizon(kind="finite", window=T, ...))."""
         return self.with_horizon(kind="finite", window=T, **fields)
 
-    def stationary(self, window: float, **fields) -> "Model":
+    def with_stationary(self, window: float, **fields) -> "Model":
         """The same model on a stationary horizon with lag window `window`."""
         return self.with_horizon(kind="stationary", window=window, **fields)
 
@@ -322,6 +324,21 @@ class Model:
                         continuation_nodes=st.get("nodes"), tol=hz.tol, damping=hz.damping, max_newton=hz.max_newton,
                         variable=hz.variable, settings=hz.settings)
 
+    def _rebuilt(self, d: dict) -> "Model":
+        """from_dict(d), carrying the two fields the file structure does not.
+
+        naive_observers is the expression form's own option rather than a model-file key, and
+        Model.solve() reads it off the model to pass to the solver -- so a with_*() that dropped it
+        would silently solve a different game.  remarks are the compiler's notes about this model,
+        and they still describe a transformed copy.  source is not carried: from_dict() rebuilds it
+        from d, which is how with_params() keeps the parameter expressions intact.
+        """
+        out = Model.from_dict(d)
+        out.remarks = list(self.remarks)
+        if self.naive_observers:
+            out.naive_observers = copy.deepcopy(self.naive_observers)
+        return out
+
     def with_numerics(self, numerics=None, **fields) -> "Model":
         """A new model with these numerics fields (a Numerics or dict, and/or keywords) laid over its own:
         the model's problem is unchanged, its resolution, engine or tolerances are not."""
@@ -329,7 +346,7 @@ class Model:
         num = Numerics.of(numerics).merged(Numerics.of(fields)) if fields else Numerics.of(numerics)
         d = self.to_dict()
         d["numerics"] = self.numerics.merged(num).to_dict()
-        return Model.from_dict(d)
+        return self._rebuilt(d)
 
     # ------------------------------------------------------------ lookups
     @property
@@ -344,7 +361,7 @@ class Model:
     def def_names(self) -> List[str]:
         return [d.name for d in self.definitions]
 
-    def owner(self, control: str) -> Agent:
+    def owner_of(self, control: str) -> Agent:
         for a in self.agents:
             if control in a.controls:
                 return a
@@ -383,7 +400,7 @@ class Model:
         return float(sum(c for atom, c in expr.items() if parse_atom(atom, self.params)[0] == CONST))
 
     @property
-    def means_driven(self) -> bool:
+    def drives_means(self) -> bool:
         """Whether anything moves the means: a linear loss term, a constant in a state's drift, an initial state."""
         return (any(len(t) == 2 for a in self.agents for t in a.loss) or any(self.constant(s.drift) != 0 for s in self.states)
                 or any(s.initial for s in self.states))
@@ -482,7 +499,7 @@ class Model:
                 out.append(f"state {s.name}: the constant drift {k:g} moves only the means (the kernels do not depend on it)" + self._means_note())
             if s.initial:
                 out.append(f"state {s.name}: the initial value {s.initial:g} moves only the means (the kernels do not depend on it)" + self._means_note())
-        if self.horizon.kind == "stationary" and self.means_driven:
+        if self.horizon.kind == "stationary" and self.drives_means:
             walks = [s.name for s in self.states if not self.expand(s.drift) and self.constant(s.drift) == 0]
             if walks:
                 out.append(f"state(s) {walks} are random walks with no inputs, which have no stationary mean: their means "
@@ -499,7 +516,7 @@ class Model:
                     "condition and the mean dynamics, one linear system (res.means; res.cost_parts splits each cost into its "
                     "variance and mean parts)")
         return ("; the finite engines solve the mean paths of every state and control on [0, T] from each control's mean "
-                "first-order condition and the mean dynamics, one linear system (res.means on the time nodes res.means_t; "
+                "first-order condition and the mean dynamics, one linear system (res.means on the time nodes res.mean_times; "
                 "res.cost_parts splits each cost into its variance and mean parts)")
 
     # --------------------------------------------------------- validation
@@ -852,7 +869,68 @@ class Model:
             raise ValueError(f"{unknown} are not parameters of the model (params: {sorted(d.get('params') or {})})")
         for k, v in values.items():
             d["params"][k] = float(v)
-        return Model.from_dict(d)
+        return self._rebuilt(d)
+
+    def with_signal(self, name: str, *, drift, noise, audience="all", delay=0.0) -> "Model":
+        """Return a copy with one observation row added to the selected agents.
+
+        ``audience`` is ``"all"`` (the default), one agent name, or an iterable of
+        agent names.  Noise channels named by ``noise`` are added to the model when
+        absent.  The operation is model construction only: it does not mutate or
+        solve this model.
+        """
+        return self.with_signals({name: {"drift": drift, "noise": noise, "delay": delay}}, audience=audience)
+
+    def with_signals(self, rows: dict, *, audience="all") -> "Model":
+        """Return a copy with several observation rows added to an audience.
+
+        ``rows`` maps each row name to its ordinary model-file signal block
+        (``drift``, ``noise`` and optional ``delay``).  Rebuilding through
+        :meth:`from_dict` gives transformed models the same validation and
+        serialisation guarantees as models loaded from files.
+        """
+        if not isinstance(rows, dict) or not rows:
+            raise ValueError("with_signals(): rows must be a non-empty mapping of signal names to signal blocks")
+        known = [a.name for a in self.agents]
+        if audience == "all":
+            selected = known
+        elif isinstance(audience, str):
+            selected = [audience]
+        else:
+            try:
+                selected = list(audience)
+            except TypeError:
+                raise TypeError("with_signals(): audience must be 'all', an agent name, or an iterable of agent names") from None
+        if not selected:
+            raise ValueError("with_signals(): audience is empty")
+        if len(set(selected)) != len(selected):
+            raise ValueError(f"with_signals(): audience repeats an agent name: {selected}")
+        unknown = sorted(set(selected) - set(known))
+        if unknown:
+            raise ValueError(f"with_signals(): unknown agent(s) {unknown}; agents: {known}")
+
+        d = self.to_dict()
+        d.setdefault("channels", [])
+        for row_name, block in rows.items():
+            if not isinstance(row_name, str) or not row_name:
+                raise ValueError(f"with_signals(): signal names must be non-empty strings, not {row_name!r}")
+            if not isinstance(block, dict):
+                raise ValueError(f"with_signals(): signal {row_name!r} must be a mapping")
+            self._check_keys("signal", block, self._KEYS["signal"], f" {row_name!r}")
+            if not isinstance(block.get("drift") or {}, dict) or not isinstance(block.get("noise") or {}, dict):
+                raise ValueError(f"with_signals(): signal {row_name!r} drift and noise must be mappings")
+            for channel in (block.get("noise") or {}):
+                if channel not in d["channels"]:
+                    d["channels"].append(channel)
+            clean = copy.deepcopy(block)
+            if clean.get("delay") == 0:
+                clean.pop("delay", None)
+            for agent in selected:
+                signals = d["agents"][agent].setdefault("signals", {})
+                if row_name in signals:
+                    raise ValueError(f"with_signals(): agent {agent!r} already has a signal named {row_name!r}")
+                signals[row_name] = copy.deepcopy(clean)
+        return self._rebuilt(d)
 
     def with_horizon(self, **fields) -> "Model":
         """A new model with these horizon fields (kind, window, discount, past, continuation, stationary).  A
@@ -875,7 +953,7 @@ class Model:
                 if k not in fields:
                     d["numerics"].pop(k, None)
         d["horizon"].update(fields)
-        return Model.from_dict(d)
+        return self._rebuilt(d)
 
     @classmethod
     def from_dict(cls, d: dict, base_dir: Optional[str] = None) -> "Model":
@@ -981,6 +1059,15 @@ class Model:
         if unused:
             raise ValueError(f"parameter(s) {unused} are defined but never used in the model (misspelled somewhere?)")
         return m
+
+
+#  The 0.7 renames; the old spellings still work and name what replaced them (noisestate/_renames.py).
+#  ModelBuilder keeps its own .finite()/.stationary(): those mutate the builder, while a Model's return
+#  a changed copy, and the with_ prefix is what marks the difference.
+Model.finite = renamed_method("Model.finite()", "with_finite")
+Model.stationary = renamed_method("Model.stationary()", "with_stationary")
+Model.owner = renamed_method("Model.owner()", "owner_of")
+Model.means_driven = renamed_property("Model.means_driven", "drives_means")
 
 
 def _numerics_block(d: dict):

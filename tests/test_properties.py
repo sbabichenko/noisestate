@@ -22,7 +22,7 @@ def _feasible_perturbation(S, agent, Zpass, rng):
 
 def test_stationary_best_response_is_optimal_kyle_back():
     d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml")); d["params"]["rho"] = 0.0   # the flow loss is the objective only at rho = 0
-    S = StationarySolver(ns.Model.from_dict(d)); res = S.solve().check()
+    S = StationarySolver(ns.Model.from_dict(d)); res = S.solve().require_converged()
     assert res.resolution_ok and max(res.representation_error.values()) < 1e-9     # well-resolved reference models
     a = S.model.agents[1]; c = S.c; nW = c.nW
     g, out = S.best_response(a, res.maps)
@@ -37,7 +37,7 @@ def test_stationary_best_response_is_optimal_kyle_back():
 
 def test_spectral_finite_best_response_is_optimal():
     d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 8
-    S = SpectralFiniteSolver(ns.Model.from_dict(d)); res = S.solve().check()
+    S = SpectralFiniteSolver(ns.Model.from_dict(d)); res = S.solve().require_converged()
     a = S.model.agents[0]; c = S.c; nW = c.nW
     maps = res.maps; g, out = S.best_response(a, maps)
     Zp = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls); Zpass, R = Zp[:, :nW], Zp[:, nW:]
@@ -52,13 +52,13 @@ def test_spectral_finite_best_response_is_optimal():
 
 def test_map_and_action_iterations_agree():
     m = ns.load(os.path.join(EX, "ch4_kyle_back.yaml"))
-    ra = StationarySolver(m).solve(variable="actions").check(); rm = StationarySolver(m).solve(variable="maps").check()
-    assert np.abs(ra.action_kernel("D1") - rm.action_kernel("D1")).max() < 1e-8
+    ra = StationarySolver(m).solve(variable="actions").require_converged(); rm = StationarySolver(m).solve(variable="maps").require_converged()
+    assert np.abs(ra.strategy_kernel("D1") - rm.strategy_kernel("D1")).max() < 1e-8
 
 
 def test_channel_relabelling_and_agent_order_invariance():
     d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml"))
-    base = ns.solve(ns.Model.from_dict(d)).check()
+    base = ns.solve(ns.Model.from_dict(d)).require_converged()
     # rename and reorder channels
     ren = {"wV": "fund", "wZ": "noise_flow", "w1": "sig"}
     d2 = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml")); d2["channels"] = ["sig", "fund", "noise_flow"]
@@ -69,7 +69,7 @@ def test_channel_relabelling_and_agent_order_invariance():
             row["noise"] = {ren[k]: v for k, v in row["noise"].items()}
     # and put the trader before the market maker
     d2["agents"] = {"trader1": d2["agents"]["trader1"], "market_maker": d2["agents"]["market_maker"]}
-    alt = ns.solve(ns.Model.from_dict(d2)).check()
+    alt = ns.solve(ns.Model.from_dict(d2)).require_converged()
     for name in ("V", "P", "D1"):
         for old, new in ren.items():
             assert np.abs(base.kernel(name)[:, base.compiled.channels.index(old)] - alt.kernel(name)[:, alt.compiled.channels.index(new)]).max() < 1e-9
@@ -91,12 +91,12 @@ def test_naive_observers_remove_the_wedge():
     """If every other agent is naive to trader1's deviations, the information-wedge part of its
     first-order condition vanishes and its equilibrium equals the no-reaction one."""
     m = ns.load(os.path.join(EX, "ch4_kyle_back.yaml"))
-    res = StationarySolver(m, naive_observers={"trader1": ["market_maker"]}).solve().check()
+    res = StationarySolver(m, naive_observers={"trader1": ["market_maker"]}).solve().require_converged()
     dec = res.foc["trader1"]["D1"]
     assert np.abs(dec["wedge"]).max() < 1e-9 * max(1.0, np.abs(dec["foc"]).max())
-    base = StationarySolver(m).solve().check()
+    base = StationarySolver(m).solve().require_converged()
     assert np.abs(base.foc["trader1"]["D1"]["wedge"]).max() > 1e-3          # the wedge is real in the full game
-    assert np.abs(base.action_kernel("D1") - res.action_kernel("D1")).max() > 1e-3
+    assert np.abs(base.strategy_kernel("D1") - res.strategy_kernel("D1")).max() > 1e-3
 
 
 def test_model_round_trips_through_to_dict():

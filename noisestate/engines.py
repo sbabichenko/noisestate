@@ -19,9 +19,9 @@ from .stationary import StationarySolver as stationary
 from .finite_spectral import SpectralFiniteSolver as spectral
 from .finite import FiniteSolver as cells
 
-ENGINES = {"stationary": stationary, "spectral": spectral, "cells": cells}
+ENGINE_CLASSES = {"stationary": stationary, "spectral": spectral, "cells": cells}
 
-__all__ = ["stationary", "spectral", "cells", "ENGINES", "build", "default_start"]
+__all__ = ["stationary", "spectral", "cells", "ENGINE_CLASSES", "build", "default_start"]
 
 
 def default_start(S, start=None) -> str:
@@ -41,8 +41,8 @@ def build(model: Model, numerics=None, *, verbose: bool = False, naive_observers
     num = model.numerics.merged(given).resolved(model.horizon.kind)
     if num != model.numerics.resolved(model.horizon.kind):
         model = model.with_numerics(num)                     # the engines read the grid off the model's horizon
-    if num.engine not in ENGINES:
-        raise ValueError(f"unknown engine {num.engine!r}; one of {sorted(ENGINES)}")
+    if num.engine not in ENGINE_CLASSES:
+        raise ValueError(f"unknown engine {num.engine!r}; one of {sorted(ENGINE_CLASSES)}")
     kw = {"verbose": verbose}
     if num.settings.changed():
         kw["settings"] = num.settings
@@ -61,4 +61,4 @@ def build(model: Model, numerics=None, *, verbose: bool = False, naive_observers
                 kw["continuation"] = continuation
         elif past is not None or continuation is not None:
             raise TypeError("the cell engine has no past or continuation; use numerics.engine 'spectral'")
-    return ENGINES[num.engine](model, **kw), num
+    return ENGINE_CLASSES[num.engine](model, **kw), num

@@ -18,10 +18,10 @@ def test_evaluation_budget_returns_the_best_iterate_unconverged():
     res = ns.solve(_ch3(), max_evaluations=3)
     assert not res.converged and res.evaluations == 3 and "evaluation budget" in res.message and "max_evaluations=3" in res.message
     assert "NOT converged" in res.summary() and "evaluation budget" in res.summary()
-    row = [d for d in res.diagnose() if d["name"] == "converged"][0]; assert row["ok"] is False and "evaluation budget" in row["advice"]
+    row = [d for d in res.diagnostic_rows() if d["name"] == "converged"][0]; assert row["ok"] is False and "evaluation budget" in row["advice"]
     assert res.solve_kw["max_evaluations"] == 3 and np.isfinite(res.costs["player1"])
     with pytest.raises(ns.ConvergenceError):
-        res.check()
+        res.require_converged()
     assert res.refine()["converged"]                                     # the bound is this solve's, not the refinement's
     # the budget counts the polish as well, and the best iterate comes back, not the last
     d = ns.read_yaml(CH3); d["params"]["p1"] = d["params"]["p2"] = 1e200        # Anderson stalls at 2.6e-7, then a long polish
@@ -65,13 +65,13 @@ def test_progress_is_called_per_evaluation_and_can_cancel():
 
 
 def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
-    S = ns.make_solver(_ch3(nodes=96, window=10.0)); full = S.solve(); w = full.maps
+    S = ns.solver(_ch3(nodes=96, window=10.0)); full = S.solve(); w = full.maps
     off = S.solve(init=w, diagnostics=False)
     assert off.converged and off.second_order == {} and off.foc == {} and off.representation_error == {} and off.resolution_ok is None
     assert full.second_order and full.foc and full.resolution_ok
     assert all(abs(off.costs[k] - full.costs[k]) < 1e-9 for k in full.costs) and off.solve_kw["diagnostics"] is False
-    assert "diagnostics skipped" in off.summary() and any(d["name"] == "diagnostics" and d["ok"] is None for d in off.diagnose())
-    assert "diagnostics skipped" not in full.summary() and "diagnostics" not in [d["name"] for d in full.diagnose()]
+    assert "diagnostics skipped" in off.summary() and any(d["name"] == "diagnostics" and d["ok"] is None for d in off.diagnostic_rows())
+    assert "diagnostics skipped" not in full.summary() and "diagnostics" not in [d["name"] for d in full.diagnostic_rows()]
     assert json.loads(json.dumps(off.to_dict()))["options"]["solve"]["diagnostics"] is False
     # the checks are the best responses after the fixed point (one per agent, with the decomposition, which
     # halves the time of this warm-started solve); with diagnostics=False none is made
@@ -131,11 +131,11 @@ def test_newton_polish_inner_budget_holds():
 
 
 def test_stability_budget_bounds_the_best_response_rounds(monkeypatch):
-    res = ns.solve(_ch3()).check()
-    monkeypatch.setattr(ns.BaseResult, "STABILITY_MAX_EVALUATIONS", 5)
+    res = ns.solve(_ch3()).require_converged()
+    monkeypatch.setattr(ns.Result, "STABILITY_MAX_EVALUATIONS", 5)
     st = res.stability()
     assert st["evaluations"] <= 5 and "evaluation budget" in st["method"] and 0 < st["radius"] < 1 and "power iteration" in res.summary()
-    monkeypatch.setattr(ns.BaseResult, "STABILITY_MAX_EVALUATIONS", 200)
+    monkeypatch.setattr(ns.Result, "STABILITY_MAX_EVALUATIONS", 200)
     full = res.stability()
     assert full["method"] == "arnoldi" and full["evaluations"] < 200 and abs(full["radius"] - st["radius"]) < 0.1
 

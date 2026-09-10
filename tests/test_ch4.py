@@ -33,7 +33,7 @@ def test_ch4_matches_kb_spectral_q(fname, rho, two):
     for j, tr in enumerate(ref["traders"] if ref else []):
         assert np.allclose(np.array(ref["lag"]), res.ages, atol=1e-12)
         c_ref = np.stack([np.array(tr["c"][k][0]) for k in range(nW)], axis=1)   # (N, channels)
-        c = res.action_kernel(f"D{j+1}")
+        c = res.strategy_kernel(f"D{j+1}")
         print(f"trader {j+1}: max|diff| {np.abs(c - c_ref).max():.2e}  scale {np.abs(c_ref).max():.3f}")
         if not two:
             assert np.abs(c - c_ref).max() < 5e-4      # window-edge discretization; 1e-5 at 48 nodes
@@ -46,6 +46,6 @@ def test_ch4_matches_kb_spectral_q(fname, rho, two):
                          [0.2476, -0.1635, 0.0647, -0.1880],
                          [0.1122, -0.0366, -0.0254, -0.0839]])
         I = res.compiled.grid.interp([0.5, 1.0, 2.0])
-        mine = I @ res.action_kernel("D1")
+        mine = I @ res.strategy_kernel("D1")
         print("vs Richardson limit of kb_multi:", np.abs(mine - rich).max())
         assert np.abs(mine - rich).max() < 2e-3

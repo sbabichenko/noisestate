@@ -5,6 +5,7 @@ transitions, sweeps, the guards, the settings, the error contract and the CLI.  
 
 | page | holds |
 |---|---|
+| [api.md](api.md) | every name `import noisestate as ns` gives you, grouped by the job it does: getting a model in, changing it, solving, reading the result, deciding whether to believe it, families of solves, and the CLI |
 | [model_file.md](model_file.md) | every key of a model file: type, meaning, default; the prose on atoms, states, definitions, signals, losses, ties, horizon and numerics |
 | [payload.md](payload.md) | every key of `to_dict()` and the CLI's JSON, with its meaning and shape |
 | [transitions.md](transitions.md) | a regime change from a stationary past: the construction, the result's fields, the identities that pin it, the two examples |

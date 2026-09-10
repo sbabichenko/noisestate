@@ -44,7 +44,7 @@ def test_failed_solve_is_reported_and_check_raises():
     res = StationarySolver(m).solve(tol=1e-15, max_newton=0)      # unattainable tolerance
     assert not res.converged and "residual" in res.message and "NOT converged" in res.summary()
     with pytest.raises(ConvergenceError):
-        res.check()
+        res.require_converged()
 
 
 def test_defective_state_matrix_is_handled():

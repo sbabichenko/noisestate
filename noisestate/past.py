@@ -65,12 +65,12 @@ class Past:
     def of(cls, obj, initial=None) -> "Past":
         """A Past from a Past, a StationaryResult, a stationary Model / ModelBuilder / dict / path (solved on
         the fly, which must converge) or a list of initial-shock dicts [{"name", "loads", "rows"}]."""
-        from .results import StationaryResult, BaseResult
+        from .results import StationaryResult, Result
         if isinstance(obj, Past):
             return obj
         if isinstance(obj, StationaryResult):
             return cls.from_result(obj, initial)
-        if isinstance(obj, BaseResult):
+        if isinstance(obj, Result):
             raise TypeError(f"past must be a stationary result, not a {obj.kind!r} one ({type(obj).__name__}): the time "
                             "before zero is a stationary regime")
         if isinstance(obj, (list, tuple)):

@@ -29,7 +29,7 @@ def test_loss_lag_that_does_not_divide_the_window_solves():
     d = _finite("ch1_two_player_finite.yaml", nodes=4)
     d["agents"]["player1"]["loss"].append([0.1, "D1@0.3", "X"])
     with pytest.warns(UserWarning, match="closed under the lag"):
-        res = ns.solve(ns.Model.from_dict(d)).check()
+        res = ns.solve(ns.Model.from_dict(d)).require_converged()
     assert len(res.compiled.g.pieces) == 28 and res.residual < 1e-7
     assert abs(res.costs["player1"] - 0.3947289) < 1e-3 and abs(res.costs["player2"] - 0.3973767) < 1e-3
 
@@ -39,7 +39,7 @@ def test_delay_at_a_trailing_breakpoint_solves():
     the one before) and was then rejected as 'not a breakpoint'; the panels are now {0, 0.1, 0.9, 1}."""
     d = _finite("ch1_two_player_finite.yaml", nodes=4); d["agents"]["player2"]["signals"]["y2"]["delay"] = 0.9
     with pytest.warns(UserWarning, match="closed under the lag"):
-        res = ns.solve(ns.Model.from_dict(d)).check()
+        res = ns.solve(ns.Model.from_dict(d)).require_converged()
     assert [round(float(b), 6) for b in res.compiled.g.bp] == [0.0, 0.1, 0.9, 1.0] and len(res.compiled.g.pieces) == 6
     t = np.array([0.92, 0.97])              # player 2 reads nothing younger than 0.9 and nothing before t = 0.9
     assert np.abs(res.evaluate("D2", "w2", t, t - 0.05)).max() == 0.0
@@ -53,7 +53,7 @@ def test_window_not_a_multiple_of_the_lag_solves_with_a_warning():
     Richardson 0.5502747 (2026-09-05); the game is symmetric."""
     d = _finite("ch1_delayed_finite.yaml", nodes=3, window=1.1); del d["agents"]["player2"]["signals"]["y2"]["delay"]
     with pytest.warns(UserWarning, match="9 panels, 45 pieces"):
-        res = ns.solve(ns.Model.from_dict(d)).check()
+        res = ns.solve(ns.Model.from_dict(d)).require_converged()
     assert len(res.compiled.g.pieces) == 45
     assert abs(res.costs["player1"] - 0.5502747) < 1e-3 and abs(res.costs["player1"] - res.costs["player2"]) < 1e-9
 

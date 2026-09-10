@@ -141,7 +141,7 @@ class MeanLayer:
     def _mean_part(self, res) -> None:
         """The means (targets, constant drifts, initial states) and the mean part of every cost, on the result
         with res.maps, res.world and res.costs already holding the variance part of every agent's cost: res.means
-        (name -> a float on the stationary engine, a path over res.means_t on the finite engines) for every
+        (name -> a float on the stationary engine, a path over res.mean_times on the finite engines) for every
         primary, definition and "agent.row" drift rate (at the time of the observation, its delay not applied),
         res.cost_parts[agent] = {"variance", "mean"}, and the mean part added to res.costs[agent].  Part of the
         answer, not a check: it runs with diagnostics=False too."""
@@ -155,7 +155,7 @@ class MeanLayer:
         res.means.update({d.name: value(m.expand({d.name: 1.0})) for d in m.definitions})
         res.means.update({f"{a.name}.{r.name}": value(m.expand(r.drift)) for a in m.agents for r in a.signals})
         if times is not None:
-            res.means_t = times.copy()
+            res.mean_times = times.copy()
         for a in m.agents:
             mean = self.mean_cost(a, zbar)
             res.cost_parts[a.name] = {"variance": res.costs[a.name], "mean": mean}

@@ -3,7 +3,7 @@
 A stationary window much longer than the kernel's support can admit a second fixed point of the
 truncated problem.  Up to L = 15 the solve finds the equilibrium; from L = 18 it converges to its
 tolerance and to something else, whose kernel has not decayed by the window's edge -- a closed loop
-that does not stabilise the state -- and whose cost is seven times the right one.  res.check() passes
+that does not stabilise the state -- and whose cost is seven times the right one.  res.require_converged() passes
 on it; only the window guard, and so res.require_ok(), refuses it.
 
     python extras/tools/ch3_long_window_branch.py [out.png]
@@ -42,7 +42,7 @@ def main(out=None):
                 print(f"{'':7} require_ok() refuses it: {str(exc)[:88]}")
     print()
     print("the same windows, each warm-started from the previous (continuation in L):")
-    prev = ns.solve(ns.load(MODEL).with_horizon(window=12.0).with_numerics(nodes=NODES)).check()
+    prev = ns.solve(ns.load(MODEL).with_horizon(window=12.0).with_numerics(nodes=NODES)).require_converged()
     for L in WINDOWS[1:]:
         wider = ns.load(MODEL).with_horizon(window=L).with_numerics(nodes=NODES)
         r = ns.solve(wider, init=ns.StationarySolver(wider).interpolate_maps(prev))

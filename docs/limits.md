@@ -87,7 +87,7 @@ enough that the fixed point stalls at a residual of 1.8e-04 and the solve report
 more evaluations do not help (2000 changed nothing: both Anderson and the Newton polish hit the
 same noise floor of the map).
 
-The window guard catches every one of these, and it is the only thing that does: `res.check()`
+The window guard catches every one of these, and it is the only thing that does: `res.require_converged()`
 passes at *L* = 18 because the solve did converge.  `res.require_ok()` (or `--require-ok`) is
 what refuses a cost of 3.14 for a game whose answer is 0.427.
 
@@ -105,7 +105,7 @@ Continuation in the window is the remedy, and it is complete: solving at 12 and 
 larger window from the previous holds the cost at 0.427295 through *L* = 24, with the residual at
 3.4e-11 and the tail falling to 7.9e-12.
 
-    prev = ns.solve(m.with_horizon(window=12.0)).check()
+    prev = ns.solve(m.with_horizon(window=12.0)).require_converged()
     for L in (15.0, 18.0, 21.0, 24.0):
         wider = m.with_horizon(window=L)
         prev = ns.solve(wider, init=ns.StationarySolver(wider).interpolate_maps(prev)).require_ok()

@@ -1,6 +1,6 @@
 # Guards against misleading results
 
-A converged solve is a solution of the discretised, truncated model.  `res.diagnose()` lists every check as a
+A converged solve is a solution of the discretised, truncated model.  `res.diagnostic_rows()` lists every check as a
 row `{name, value, threshold, ok, flag, advice}` (ok is None where a check gives no verdict); `res.status` is
 `{"ok", "flags", "rows"}`, `summary()` prints the rows that fail and `to_dict()["diagnostics"]` carries them
 all.  The thresholds are fields of `noisestate.Settings` ([settings.md](settings.md)).

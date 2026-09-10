@@ -16,7 +16,7 @@ def test_payload_round_trips_and_rebuilds_the_solve():
     assert d["options"]["solve"]["start"] == "zero" and d["options"]["solver"]["verbose"] is False
     assert d["agents"]["player2"] == {"controls": ["D2"], "signals": {"y2": {"delay": 0.0, "map_age": d["grid"]["ages"]}}}
     m2 = ns.Model.from_dict(d["model"]); assert m2.to_dict() == m.to_dict()
-    again = ns.make_solver(m2, **d["options"]["solver"]).solve(**d["options"]["solve"])
+    again = ns.solver(m2, **d["options"]["solver"]).solve(**d["options"]["solve"])
     assert all(abs(again.costs[k] - res.costs[k]) < 1e-12 for k in res.costs)
 
 
@@ -25,12 +25,12 @@ def test_delayed_row_map_axes_place_the_map():
     map_time (finite, where the map is stored at t - delay) say where each value belongs, and the map is
     zero exactly where those axes leave the window or the horizon."""
     d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["agents"]["player2"]["signals"]["y2"]["delay"] = 1.0; d.setdefault("numerics", {})["nodes"] = 8
-    r = ns.solve(d).check(); p = r.to_dict(); row = p["agents"]["player2"]["signals"]["y2"]
+    r = ns.solve(d).require_converged(); p = r.to_dict(); row = p["agents"]["player2"]["signals"]["y2"]
     g = np.array(p["maps"]["player2"]["D2"]["y2"]); age = np.array(row["map_age"]); L = p["horizon"]["window"]
     assert row["delay"] == 1.0 and np.allclose(age, r.ages + 1.0) and "map_age" in p["map_convention"]
     assert (age > L + 1e-9).sum() == 7 and np.abs(g[age > L + 1e-9]).max() == 0.0 and np.abs(g[age < L]).max() > 0.1
     d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 4
-    r = ns.solve(d).check(); p = json.loads(json.dumps(r.to_dict())); row = p["agents"]["player2"]["signals"]["y2"]
+    r = ns.solve(d).require_converged(); p = json.loads(json.dumps(r.to_dict())); row = p["agents"]["player2"]["signals"]["y2"]
     g = np.array(p["maps"]["player2"]["D2"]["y2"]); t = np.array(row["map_time"]); T = p["horizon"]["window"]
     assert row["delay"] == 0.25 and np.allclose(t, r.grid.t + 0.25) and np.allclose(row["map_age"], r.grid.a + 0.25)
     assert (t > T + 1e-9).any() and np.abs(g[t > T + 1e-9]).max() == 0.0 and np.abs(g[t <= T]).max() > 0.1
@@ -38,7 +38,7 @@ def test_delayed_row_map_axes_place_the_map():
 
 
 def test_solve_kw_records_the_start_option_and_repeats_the_solve():
-    S = ns.make_solver(ns.load(os.path.join(EX, "ch3_two_player.yaml")))
+    S = ns.solver(ns.load(os.path.join(EX, "ch3_two_player.yaml")))
     res = S.solve(start="coarse")
     assert res.solve_kw["start"] == "coarse" and json.dumps(res.solve_kw) and "coarse start" in res.message
     again = S.solve(**res.solve_kw)
@@ -47,7 +47,7 @@ def test_solve_kw_records_the_start_option_and_repeats_the_solve():
 
 
 def test_seconds_include_the_diagnostics(monkeypatch):
-    S = ns.make_solver(ns.load(os.path.join(EX, "ch3_two_player.yaml")))
+    S = ns.solver(ns.load(os.path.join(EX, "ch3_two_player.yaml")))
     finish = type(S)._finish
     monkeypatch.setattr(type(S), "_finish", lambda self, res: (time.sleep(0.2), finish(self, res)))
     assert S.solve().seconds >= 0.2

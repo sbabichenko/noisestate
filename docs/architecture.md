@@ -119,5 +119,5 @@ the mean paths, the mean state at time zero, whether anything drives the means, 
 ones), the mean first-order-condition operator (each agent's rows: the instantaneous derivative plus the
 discounted continuation through the passive-world impulse responses, the DC gain on the stationary engine),
 the loss atoms' mean paths and the discounted quadrature weights of the mean cost.  The base assembles the
-joint (xbar, ubar) system, solves it with the rcond guard and fills `res.means`, `res.means_t` and
+joint (xbar, ubar) system, solves it with the rcond guard and fills `res.means`, `res.mean_times` and
 `res.cost_parts`.

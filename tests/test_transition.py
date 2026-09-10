@@ -53,7 +53,7 @@ def test_same_model_stationary_past_reproduces_the_stationary_kernels():
     [T - 2L, T - L), 1 at T (the control vanishes there)."""
     m = example("ch3_two_player"); L, T = 3.0, 12.0
     stat = stationary(m, 16)
-    res = ns.solve(m.with_horizon(kind="finite", window=T).with_numerics(nodes=16), past=stat, tol=1e-10, start="coarse").check()
+    res = ns.solve(m.with_horizon(kind="finite", window=T).with_numerics(nodes=16), past=stat, tol=1e-10, start="coarse").require_converged()
     g = res.grid; gs = stat.compiled.grid
     assert g.L == L and g.T == T and int(g.upper.sum()) == 256 and res.compiled.N == 1280
     worst = {"interior": 0.0, "next": 0.0, "end": 0.0}
@@ -126,7 +126,7 @@ def test_prior_start_matches_the_discounted_closed_form(rho, informed):
     pins at 12 nodes: there the cost is 2.5e-6 off and the kernels 6e-5, at 20 nodes 6e-10 and 6e-8."""
     J, kernel = exact(rho, informed)
     shock = {"name": "xi", "loads": {"X": np.sqrt(P0)}, **({"rows": {"a.y": 1.0}} if informed else {})}
-    res = ns.solve(model(rho, 16), past=[shock]).check()
+    res = ns.solve(model(rho, 16), past=[shock]).require_converged()
     assert res.shocks == ["w0", "w1", "xi"] and res.maps["a"].shape == (1, 1, res.compiled.N + res.compiled.Nt)
     assert abs(res.costs["a"] - J) < 1e-7, (res.costs["a"], J)
     assert res.resolution_ok
@@ -142,7 +142,7 @@ def test_prior_start_matches_the_discounted_closed_form(rho, informed):
 def test_unobserved_prior_column_is_the_scaled_state_noise_column():
     """A prior on X with no row loading is a shock nobody sees: its column is sqrt(P0) times the column of
     the channel loading X with 1 (w0, in no row), on every node, to round-off."""
-    res = ns.solve(model(0.5), past=[{"name": "xi", "loads": {"X": np.sqrt(P0)}}]).check()
+    res = ns.solve(model(0.5), past=[{"name": "xi", "loads": {"X": np.sqrt(P0)}}]).require_converged()
     for name in ("X", "D"):
         assert np.abs(res.kernel(name, "xi") - np.sqrt(P0) * res.kernel(name, "w0")).max() < 1e-13
 
@@ -169,7 +169,7 @@ def test_same_model_continuation_is_exact_on_the_whole_region():
         gm, out = solver.best_response(a, maps)
         dev = np.abs(gm - maps[a.name]).max(axis=(0, 1)) / np.abs(maps[a.name]).max()
         assert dev.max() < 5e-8 and dev[last].max() < 5e-9, (a.name, dev.max(), dev[last].max())
-    res = solver.solve(init=maps, tol=1e-10).check()
+    res = solver.solve(init=maps, tol=1e-10).require_converged()
     assert res.evaluations <= 4 and res.settled < 1e-8 and res.continuation is stat
     for name in c.prim:
         dev = np.abs(res.kernel(name) - gs.interp(g.a) @ stat.kernel(name)).max(axis=1) / np.abs(stat.kernel(name)).max()
@@ -177,13 +177,13 @@ def test_same_model_continuation_is_exact_on_the_whole_region():
     parts = res.cost_parts["player1"]
     assert set(parts) == {"variance", "mean", "continuation"} and abs(parts["continuation"] - 3 * stat.costs["player1"]) < 1e-6
     assert res.costs["player1"] == parts["variance"] and 0 < res.costs["player1"] < 2 * parts["continuation"]
-    rows = {r["name"]: r for r in res.diagnose()}
+    rows = {r["name"]: r for r in res.diagnostic_rows()}
     assert rows["settled"]["ok"] and rows["settled"]["threshold"] == 1e-4 and "continuation window" in rows and "past window" in rows
-    assert res.to_dict()["continuation"]["window_tail"] == res.past.provenance["window_tail"] and res.grid_info()["buffer"] == [6.0, 9.0]
+    assert res.to_dict()["continuation"]["window_tail"] == res.past.provenance["window_tail"] and res.grid_summary()["buffer"] == [6.0, 9.0]
     if not os.environ.get("NOISESTATE_SLOW"):
         return
     stat12 = stationary(m, 12)
-    r0 = ns.solve(m.with_horizon(kind="finite", window=T).with_numerics(nodes=12), past=stat12, continuation=stat12, tol=1e-10).check()
+    r0 = ns.solve(m.with_horizon(kind="finite", window=T).with_numerics(nodes=12), past=stat12, continuation=stat12, tol=1e-10).require_converged()
     g0 = r0.grid; gs0 = stat12.compiled.grid
     for name in c.prim:
         assert np.abs(r0.kernel(name) - gs0.interp(g0.a) @ stat12.kernel(name)).max() / np.abs(stat12.kernel(name)).max() < 5e-5, name
@@ -206,12 +206,12 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     nodes: the collapsing corner's floor, not resolution), player1's 4.3e-5 in the interior, the transient
     at 0+ (2.1e-7 at 20 nodes: resolution)."""
     m = example("ch3_two_player")
-    old = ns.solve(m.with_params(p1=3.0)).check()
+    old = ns.solve(m.with_params(p1=3.0)).require_converged()
     new = m.with_params(p1=10.0).with_horizon(kind="finite", window=6.0).with_numerics(nodes=12)
-    res = ns.solve(new, past=old, continuation="stationary").check()
+    res = ns.solve(new, past=old, continuation="stationary").require_converged()
     assert abs(res.costs["player1"] - 2.55448876) < 1e-6 and abs(res.costs["player2"] - 2.55908247) < 1e-6, res.costs
     assert abs(res.cost_parts["player1"]["continuation"] - 1.26523081) < 1e-6
-    assert 4e-4 < res.settled < 6e-4 and not next(r for r in res.diagnose() if r["name"] == "settled")["ok"], res.settled
+    assert 4e-4 < res.settled < 6e-4 and not next(r for r in res.diagnostic_rows() if r["name"] == "settled")["ok"], res.settled
     assert "TRANSITION NOT SETTLED" in res.summary() and "against settled_tol 0.0001" in res.summary()
     cont = res.continuation
     assert cont.model.horizon.kind == "stationary" and cont.compiled.grid.L == 3.0 and cont.compiled.grid.n == 12
@@ -222,7 +222,7 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     p2 = res.representation_parts["player2"]
     assert p2["band tip"] > 10 * max(p2["interior"], p2["last window"], p2["buffer"]) and p2["band tip"] > 5e-4, p2
     assert res.representation_parts["player1"]["interior"] < 1e-4
-    flag = next(r for r in res.diagnose() if r["name"] == "resolution")["flag"]
+    flag = next(r for r in res.diagnostic_rows() if r["name"] == "resolution")["flag"]
     assert "band tip" in flag and "last window" in flag and "interior" in flag
     assert "representation_parts" in res.to_dict()
     g = res.grid; at0 = g.upper & (g.t < 1e-12)
@@ -236,7 +236,7 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     assert all(np.array_equal(res8.maps[k], res2.maps[k]) for k in res8.maps)
     assert res.evaluate("X", "w0", np.array([1.0, 1.0]), np.array([-1.0, 0.5])).shape == (2,)
     assert res.second_order["player1"]["ok"] and res.solver_kw["past"] is res.past
-    short = ns.solve(new.with_horizon(window=3.0), past=old, continuation=cont).check()
+    short = ns.solve(new.with_horizon(window=3.0), past=old, continuation=cont).require_converged()
     assert short.settled > 0.5 and "TRANSITION NOT SETTLED" in short.summary()
 
 
@@ -272,7 +272,7 @@ def test_mean_paths_start_from_the_past_means_and_initial_overrides():
     mt = ns.Model.from_dict(d)
     statt = stationary(mt, 16)
     assert abs(statt.means["X"] - 0.86621649) < 1e-8 and abs(statt.means["D1"] - 1.79893500) < 1e-8
-    res = ns.solve(mt.with_horizon(kind="finite", window=3.0).with_numerics(nodes=12), past=statt).check()
+    res = ns.solve(mt.with_horizon(kind="finite", window=3.0).with_numerics(nodes=12), past=statt).require_converged()
     at = np.array([0.0, 0.5, 1.0, 2.0, 3.0])
     assert abs(res.mean("X", 0.0)[0] - statt.means["X"]) < 1e-12
     assert np.abs(res.mean("X", at) - [0.86621649, 0.85546733, 0.86347325, 0.91547552, 0.95468024]).max() < 1e-6
@@ -283,7 +283,7 @@ def test_mean_paths_start_from_the_past_means_and_initial_overrides():
     d0 = mt.to_dict(); d0["states"]["X"]["initial"] = 0.0
     m0 = ns.Model.from_dict(d0)
     assert m0.states[0].initial == 0.0 and m0.to_dict()["states"]["X"]["initial"] == 0.0 and mt.states[0].initial is None
-    r0 = ns.solve(m0.with_horizon(kind="finite", window=3.0).with_numerics(nodes=12), past=statt).check()
+    r0 = ns.solve(m0.with_horizon(kind="finite", window=3.0).with_numerics(nodes=12), past=statt).require_converged()
     assert abs(r0.mean("X", 0.0)[0]) < 1e-12
     assert np.abs(r0.mean("X", at) - [0.0, 0.39555973, 0.61918718, 0.84513578, 0.92167413]).max() < 1e-6
     assert abs(r0.mean("D1", 0.0)[0] - 2.31569976) < 1e-5
@@ -319,7 +319,7 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
     stat = stationary(m, 6, L)
     solver = same_model_solver(m, stat, T, 6)
     c = solver.c; g = c.g
-    res = solver.solve(init=c.frozen, tol=1e-10).check()
+    res = solver.solve(init=c.frozen, tol=1e-10).require_converged()
     assert res.evaluations <= 6 and res.settled < 5e-6
     for name in c.prim:
         dev = np.abs(res.kernel(name) - stationary_on_strip(stat, g, name)).max() / np.abs(stat.kernel(name)).max()
@@ -329,7 +329,7 @@ def test_delayed_rows_with_a_past_reproduce_the_stationary_maps():
     assert ax["map_time"] == g.t.tolist() and ax["map_age"] == g.a.tolist() and "raw age" in res.MAP_CONVENTION
     assert json.loads(json.dumps(res.to_dict()))["agents"]["player2"]["signals"]["y2"]["delay"] == d
     if full:
-        r0 = solver.solve(tol=1e-10).check()
+        r0 = solver.solve(tol=1e-10).require_converged()
         assert np.abs(r0.world - res.world).max() < 1e-8 and r0.settled < 5e-6
 
 
@@ -340,7 +340,7 @@ def test_solve_routes_past_and_continuation_and_the_result_rebuilds_them():
     (kind, window, nodes, costs, window_tail), not its kernels, and it serialises."""
     m = example("ch3_two_player")
     stat = stationary(m, 8)
-    res = ns.solve(m.with_horizon(kind="finite", window=6.0).with_numerics(nodes=8), past=stat, continuation="stationary", tol=1e-8).check()
+    res = ns.solve(m.with_horizon(kind="finite", window=6.0).with_numerics(nodes=8), past=stat, continuation="stationary", tol=1e-8).require_converged()
     assert res.solver_kw["past"] is res.past and res.solver_kw["continuation"] is res.continuation
     assert res.continuation is not stat and np.array_equal(res.continuation.world, stat.world)      # solved on the fly at horizon.nodes
     fine = res._make_solver(res.model.with_horizon().with_numerics(nodes=12))
@@ -377,7 +377,7 @@ def test_own_lagged_control_read_across_the_band_returns_the_stationary_maps(kin
     sits at 1e-3) 1.4e-5 on the band and 1.4e-8 in the interior for player1, 4.6e-7 for player2.  Before the
     read took its side from side_d at those corners, the band's deviation was 3e-2."""
     m = chapter3_with_lag(kind, nodes)
-    stat = ns.solve(m).check()
+    stat = ns.solve(m).require_converged()
     dev, solver = one_shot_from_the_stationary_maps(m, stat, 2.0, nodes)
     g = solver.c.g
     assert [float(b) for b in g.bp] == [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5] and len(g.pieces) == 33
@@ -393,7 +393,7 @@ def test_two_firm_market_as_its_own_transition_returns_the_stationary_maps(T):
     from the stationary maps returns them to 2.3e-4 on every node at T = 2 and T = 3, the floor of the 5-node
     closed loop itself (1.4e-4 on P, 2.5e-4 on o against the stationary kernels); pinned at 5e-4."""
     m = two_firm_market(tau=1.0, L=2.0, nodes=5, unit_range=2.0, rP=0.1)
-    stat = ns.solve(m).check()
+    stat = ns.solve(m).require_converged()
     dev, solver = one_shot_from_the_stationary_maps(m, stat, T, 5, unit=1.0)
     assert len(solver.c.g.pieces) == {2.0: 14, 3.0: 16}[T] and solver.c.N == {2.0: 350, 3.0: 400}[T]
     assert all(v.max() < 5e-4 for v in dev.values()), {k: v.max() for k, v in dev.items()}
@@ -408,7 +408,7 @@ def test_past_validation():
         Past.of(ns.solve(m.with_horizon(kind="finite", window=1.0).with_numerics(nodes=6)))
     with pytest.raises(ValueError, match="did not converge"):
         Past.of(ns.solve(m, max_evaluations=1))
-    stat = ns.solve(m).check()
+    stat = ns.solve(m).require_converged()
     other = m.to_dict(); other["channels"] = ["w0", "w1", "w9"]
     other["agents"]["player2"]["signals"]["y2"]["noise"] = {"w9": 1.0}
     with pytest.raises(ValueError, match="channels"):
@@ -419,12 +419,12 @@ def test_past_validation():
     dpast = stationary(delayed, 6, 1.0)
     with pytest.raises(ValueError, match="differ from the model's .* \\(agent, row, delay\\)"):
         ns.SpectralFiniteSolver(delayed, past=dpast, continuation=ns.solve(ns.Model.from_dict({**delayed.to_dict(), "agents": {
-            **delayed.to_dict()["agents"], "player2": {**delayed.to_dict()["agents"]["player2"], "signals": {"y2": {"drift": {"X": "sqrt(p2)"}, "noise": {"w2": 1.0}}}}}}).with_horizon(kind="stationary", window=1.0).with_numerics(nodes=6)).check())
+            **delayed.to_dict()["agents"], "player2": {**delayed.to_dict()["agents"]["player2"], "signals": {"y2": {"drift": {"X": "sqrt(p2)"}, "noise": {"w2": 1.0}}}}}}).with_horizon(kind="stationary", window=1.0).with_numerics(nodes=6)).require_converged())
     fin = m.with_horizon(kind="finite", window=3.0).with_numerics(nodes=6)
     with pytest.raises(TypeError, match="StationaryResult"):
         ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(fin))
     with pytest.raises(ValueError, match="window"):
-        ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(m.with_horizon(window=2.0).with_numerics(nodes=6)).check())
+        ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(m.with_horizon(window=2.0).with_numerics(nodes=6)).require_converged())
     short = ns.SpectralFiniteSolver(m.with_horizon(kind="finite", window=2.0).with_numerics(nodes=6), past=stat, continuation=stat)   # T < L builds
     assert [float(b) for b in short.c.g.bp] == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0] and int((short.c.g.upper & short.c.buffer).sum()) == 36
     with pytest.raises(ValueError, match="needs a past with a window"):
@@ -432,7 +432,7 @@ def test_past_validation():
     with pytest.raises(ValueError, match="'stationary', 'end' or a StationaryResult"):
         ns.SpectralFiniteSolver(fin, past=stat, continuation="tail")
     with pytest.raises(ValueError, match="channels"):
-        ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(ns.Model.from_dict(other).with_horizon().with_numerics(nodes=6)).check())
+        ns.SpectralFiniteSolver(fin, past=stat, continuation=ns.solve(ns.Model.from_dict(other).with_horizon().with_numerics(nodes=6)).require_converged())
     from noisestate.triangle import TriangleGrid
     with pytest.raises(ValueError, match="age panels shifted"):
         TriangleGrid([0.0, 1.0, 2.0, 3.5], 4, 4, T=3.5, window=1.0, buffer=2.0)

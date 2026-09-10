@@ -30,12 +30,12 @@ print(ns.load("examples/ch3_two_player.yaml").describe())         # the model it
 res = ns.solve("examples/ch3_two_player.yaml")                    # the model file's own numerics
 res = ns.solve("examples/ch3_two_player.yaml", ns.Numerics(nodes=32, tol=1e-12))   # a change of resolution, not of model
 print(res.summary())
-res.check()                  # raises ConvergenceError unless converged -- convergence only, not the guards
+res.require_converged()                  # raises ConvergenceError unless converged -- convergence only, not the guards
 res.require_ok()             # check() and the guards: what to call before a number is used rather than read
 res.status["ok"]             # False while any guard fails; res.status["flags"] says which
 res.costs["player1"]         # the cost of each agent (res.cost_kind says what it is)
 res.kernel("X")              # closed-loop kernel of a state, one column per channel (the last axis); res.axes gives its coordinates
-res.action_kernel("D1")      # closed-loop kernel of a control
+res.strategy_kernel("D1")      # closed-loop kernel of a control
 res.maps["player1"]          # raw strategy g[u][r](b) on the agent's own signal rows
 res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"}: the first-order condition decomposed
 res.means["X"]               # the mean of a state or control: a constant here, a path on a finite horizon
@@ -56,7 +56,7 @@ res.costs["player1"]         # 0.42729 against 0.42895 on the short window -- th
 
 Four of the seven shipped examples flag something, each for a reason noted in its own file: three are
 statements about the model (a non-convex best response, a representation error a small grid cannot reach)
-and one is the dissertation's window.  `res.check()` does not consult the guards -- it raises only when
+and one is the dissertation's window.  `res.require_converged()` does not consult the guards -- it raises only when
 the fixed point did not converge -- so read `res.status` as well.
 
 Three objects: a `Model` (the economics, from a file, a dict or `ModelBuilder`), a `Numerics` (how it is
@@ -148,10 +148,32 @@ eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
 eq.status.ok; eq.costs["player1"]; eq.cost_parts["player1"]; eq.means["X"]
 k = eq.kernel("X", "w0"); k.values; k.axes; k.at(0.7)
 for point in game.sweep(p1=[0.3, 1, 3, 10]): point.value, point.result, point.jump
-old = game.solve(); new = game.with_params(p1=10.0).finite(T=6.0); path = new.solve(past=old)
+old = game.solve(); new = game.with_params(p1=10.0).with_finite(T=6.0); path = new.solve(past=old)
 game.save("ch1.yaml"); ns.Model.load("ch1.yaml")
-with ns.settings(second_order_tol=1e-3): game.solve()
+with ns.using_settings(second_order_tol=1e-3): game.solve()
 ```
+
+Observation experiments do not need a second hand-built model. `with_signal()` returns a new model,
+adds new noise channels, and puts the row in every agent's information by default; `with_signals()` adds
+several rows at once. The original model is unchanged.
+
+```python
+public = game.with_signal("flow", drift={"D1": 1, "D2": 1}, noise={"w_flow": 1})
+player1_only = game.with_signal("flow", drift={"D1": 1}, noise={"w_flow": 1})
+
+study = ns.compare({"none": game, "balanced": public, "only player 1": player1_only},
+                   baseline="none", stability=True)
+print(study.summary())
+study["balanced"].result                 # the ordinary noisestate Result
+study["balanced"].cost_changes           # each agent against the baseline
+study["balanced"].dynamics               # full and 50%-adjusted best responses
+study.to_dict(include_results=False)      # compact, JSON-ready comparison
+```
+
+`audience="player1"` or an iterable of agent names restricts a new row. `compare()` solves structurally
+different scenarios independently and requires the same agents, horizon, discount and window so its cost
+changes compare like with like. Adjustment convergence is certified only when the computed leading
+spectrum bounds the omitted modes; otherwise `adjusted_response` says `not certified`.
 
 The channels are the shocks used, in `shocks()` order; the parameters are the `Param`s used, with the
 values given (`Param.many` returns them in order; a coefficient may use `+ - * / **` and `sqrt exp log sin
@@ -160,7 +182,7 @@ is a definition, `ns.Finite(T)` and `ns.Transition(T, past=..., continuation=...
 `numerics=` the file's block.  `res.kernel()` returns a `Kernel`, an ndarray carrying `.axes` and `.at()`
 (the engine's own interpolant: an age on the stationary engine, `(t, s)` on the finite triangle, the nearest
 cell on the cell engine) and `.plot()`; `sweep()` rows carry `.value`, `.result`, `.jump` (they are still
-dicts); `ns.settings(...)` replaces the default `Settings` inside the block for every engine constructed
+dicts); `ns.using_settings(...)` replaces the default `Settings` inside the block for every engine constructed
 there (process-wide, not thread-safe).  One caution on the script above: the transition on `[0, 6]` with
 player 2's delayed row cuts the strip into pieces half a unit wide, 20k nodes at 16 nodes per piece; solve
 it at `ns.Numerics(nodes=4)` or drop the delay.  The YAML form stays the persistence format.
@@ -222,7 +244,7 @@ to every point.  Grids and their operator caches are shared across solves in a p
 
 ## The guards
 
-A converged solve is a solution of the discretised, truncated model.  `res.diagnose()` lists every check
+A converged solve is a solution of the discretised, truncated model.  `res.diagnostic_rows()` lists every check
 as a row `{name, value, threshold, ok, flag, advice}`; `summary()` prints the rows that fail.  The full
 descriptions, with thresholds and advice, are in [docs/guards.md](docs/guards.md).
 
@@ -306,7 +328,7 @@ the `Numerics` field it belongs to, or the `Numerics(settings=...)` route for a 
 (leads on the finite engines); a past on the cell engine is a `ValueError` from the numerics (`numerics.engine
 'cells' solves a finite horizon only`).  A
 `RuntimeError` is a solver problem: a Krylov best response not converging, a non-finite value from the
-best-response map, and `ConvergenceError` (a `RuntimeError`) from `res.check()`.  A fixed point that does
+best-response map, and `ConvergenceError` (a `RuntimeError`) from `res.require_converged()`.  A fixed point that does
 not reach `tol`, or is stopped at `max_evaluations` or `deadline`, does not raise: `solve()` returns the
 result with `converged=False` and `res.message`, `sweep()` records the row with `converged: False` and
 goes on, `check()` is the raise.  `converged` means the residual (the norm of the update over the larger

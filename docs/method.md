@@ -87,7 +87,7 @@ Riccati equations and the dissertation's Chapter 1 solver ([validation.md](valid
 `examples/ch1_mean_sweep.py` shows on the Chapter 1 game with targets.
 
 `res.means` has every state, control and definition and each signal row's mean drift rate
-(`"agent.row"`), as a constant (stationary) or as the path on the time nodes `res.means_t`
+(`"agent.row"`), as a constant (stationary) or as the path on the time nodes `res.mean_times`
 (finite; `res.mean(name, t)` interpolates on the spectral engine, and its `plot()` adds the paths
 as a last row); `res.cost_parts[agent]` is `{"variance", "mean"}`, the mean part being the flow
 `1/2 zbar'Q zbar + q'zbar` per unit time, or its discounted integral over [0, T] (the constant
@@ -133,7 +133,7 @@ dropping the least recently used grids beyond that.
 * `converged` means the residual of the fixed point is at or below `tol`, where the residual is
   the norm of the update divided by the larger of one and the norm of the iterate (so for a
   solution of norm below one it is an absolute residual).  `res.message` says what the outer
-  solver did, `res.summary()` shows it when the solve did not converge, and `res.check()` raises
+  solver did, `res.summary()` shows it when the solve did not converge, and `res.require_converged()` raises
   `ConvergenceError` so a pipeline cannot use a failed solve by accident.
 * Errors are typed by whose problem they are.  A `ValueError` is a model problem: a file that does
   not validate, a parameter that is not the model's, a lag off the panels, a singular best-response

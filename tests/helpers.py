@@ -55,7 +55,7 @@ def stationary(m, nodes, window=None):
     """`m` solved stationary at `nodes` per panel and checked: the past (and continuation) of a same-model
     transition.  With `window` the horizon is set to kind stationary at that window (the finite examples)."""
     hz = {} if window is None else dict(kind="stationary", window=window)
-    return ns.solve(m.with_horizon(**hz).with_numerics(nodes=nodes)).check()
+    return ns.solve(m.with_horizon(**hz).with_numerics(nodes=nodes)).require_converged()
 
 
 def same_model_solver(m, stat, T, nodes, continuation=True, settings=None, **hz):

@@ -101,7 +101,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                                      "the buffer after T is one window of the past, on which the stationary maps are read at the node's age")
                 if stationary.get("nodes") is not None:
                     nm["nodes"] = int(stationary["nodes"])
-            return solve(Model.from_dict(d)).check()
+            return solve(Model.from_dict(d)).require_converged()
         return continuation
 
     def stationary_start(self) -> Dict[str, np.ndarray]:

@@ -58,7 +58,7 @@ def test_one_agent_target_closed_form(a, r, theta, rho):
     / (a + rho): the solver reproduces the windowed closed form ubar_L = theta DC_L / (r + DC_L / a) to round-off (3e-15 seen)
     and the exact one to that truncation, e^{-(a + rho) L} on L = 16: 1.1e-7 at (a, rho) = (1, 0) (2.8e-8 seen), 3.4e-4 at
     (0.5, 0) (7.5e-5 seen), below 1e-10 from a + rho = 1.5 on.  The mean cost is (xbar - theta)^2 - theta^2 + r ubar^2."""
-    m = one_agent(a, r, theta, rho); res = ns.solve(m).check(); L = m.horizon.window
+    m = one_agent(a, r, theta, rho); res = ns.solve(m).require_converged(); L = m.horizon.window
     DC = (1.0 - np.exp(-(a + rho) * L)) / (a + rho)
     u_win, u_exact = theta * DC / (r + DC / a), theta * a / (1.0 + r * a * (a + rho))
     ub, xb = res.means["D"], res.means["X"]
@@ -73,7 +73,7 @@ def test_constant_drift_is_the_shifted_target():
     """dX = (-a X + D + kappa) dt with loss X^2 + r D^2 is, in X - kappa / a, the target model with theta = -kappa / a: the same
     ubar and kernels, xbar larger by kappa / a, and a mean cost larger by theta^2, the constant a target leaves out."""
     a, r, kappa = 1.0, 1.0, 0.7
-    rc = ns.solve(one_agent(a, r, 0.0, 0.0, const=kappa)).check(); rt = ns.solve(one_agent(a, r, -kappa / a, 0.0)).check()
+    rc = ns.solve(one_agent(a, r, 0.0, 0.0, const=kappa)).require_converged(); rt = ns.solve(one_agent(a, r, -kappa / a, 0.0)).require_converged()
     assert abs(rc.means["D"] - rt.means["D"]) < 1e-14 and abs(rc.means["X"] - rt.means["X"] - kappa / a) < 1e-14
     assert abs(rc.cost_parts["a"]["mean"] - rt.cost_parts["a"]["mean"] - (kappa / a) ** 2) < 1e-14
     assert rc.cost_parts["a"]["variance"] == rt.cost_parts["a"]["variance"] and np.array_equal(rc.kernel("X"), rt.kernel("X"))
@@ -92,7 +92,7 @@ def test_two_agents_between_open_loop_and_closed_loop_nash():
     assert abs(uo[0] - 2.0 / 3.0) < 1e-12 and abs(uc[0] - 0.5569995318) < 1e-9 and abs(xo) < 1e-12 and abs(xc) < 1e-12
     seen = {}
     for p in [1e-6, 1e-3, 1.0, 100.0, 1000.0]:
-        res = ns.solve(two_agents(p)).check(); seen[p] = res.means["D1"]
+        res = ns.solve(two_agents(p)).require_converged(); seen[p] = res.means["D1"]
         assert abs(res.means["D2"] + res.means["D1"]) < 1e-12 and abs(res.means["X"]) < 1e-12
     assert abs(seen[1e-6] - uo[0]) < 1e-7 and abs(seen[1e-3] - uo[0]) < 1e-4
     vals = [seen[p] for p in sorted(seen)]
@@ -104,7 +104,7 @@ def test_examples_unchanged_and_means_zero_without_a_driver():
     """No linear term and no constant drift: every mean is exactly zero, with no solve, and the costs are what they were."""
     for f, costs in (("ch3_two_player.yaml", {"player1": 0.42895400568415, "player2": 0.498143327906243}),
                      ("ch4_kyle_back.yaml", {"market_maker": -5.88370453385775, "trader1": -0.820818198321814})):
-        res = ns.solve(os.path.join(EX, f)).check()
+        res = ns.solve(os.path.join(EX, f)).require_converged()
         assert all(abs(res.costs[k] - v) < 1e-12 for k, v in costs.items())
         assert all(v == 0.0 for v in res.means.values()) and set(res.model.state_names + res.model.control_names) <= set(res.means)
         assert all(p["mean"] == 0.0 and p["variance"] == res.costs[k] for k, p in res.cost_parts.items())
@@ -114,13 +114,13 @@ def test_examples_unchanged_and_means_zero_without_a_driver():
 def test_tied_agents_and_the_cycle_market_get_identical_means():
     """Tied agents share a strategy and therefore a mean; the two-firm Chapter 5 market (linear terms -2 kappa on deliveries
     and sales, a random-walk demand level q pinned at 0) is solved on its symmetric path."""
-    res = ns.solve(two_agents(1.0, opposite=False, tie=True)).check()
+    res = ns.solve(two_agents(1.0, opposite=False, tie=True)).require_converged()
     assert abs(res.means["D1"] - res.means["D2"]) < 1e-14 and res.means["D1"] > 0.2
-    free = ns.solve(two_agents(1.0, opposite=False)).check()
+    free = ns.solve(two_agents(1.0, opposite=False)).require_converged()
     assert abs(free.means["D1"] - free.means["D2"]) < 1e-10 and abs(free.means["D1"] - res.means["D1"]) < 1e-8
     sys.path.insert(0, EX)
     from make_ch5_cycle_market import build
-    m = build(N=2, L=6.0, nodes=6, unit_range=3.0).build(); r5 = ns.solve(m, tol=1e-8).check()
+    m = build(N=2, L=6.0, nodes=6, unit_range=3.0).build(); r5 = ns.solve(m, tol=1e-8).require_converged()
     for u in ("P", "o"):
         assert abs(r5.means[f"{u}0"] - r5.means[f"{u}1"]) < 1e-12 and abs(r5.means[f"{u}0"]) > 0.2
     assert r5.means["q"] == 0.0 and r5.cost_parts["firm0"]["mean"] < 0 and r5.cost_parts["firm0"] == r5.cost_parts["firm1"]
@@ -129,7 +129,7 @@ def test_tied_agents_and_the_cycle_market_get_identical_means():
 
 
 def test_means_are_part_of_the_answer_payload_and_cli(tmp_path):
-    m = one_agent(1.0, 1.0, 1.0, 0.0); S = ns.make_solver(m)
+    m = one_agent(1.0, 1.0, 1.0, 0.0); S = ns.solver(m)
     off = S.solve(diagnostics=False); assert abs(off.means["D"] - 0.5) < 1e-6 and off.cost_parts["a"]["mean"] < 0
     d = json.loads(json.dumps(off.to_dict()))
     assert d["means"] == off.means and d["cost_parts"]["a"]["mean"] == off.cost_parts["a"]["mean"] and d["costs"]["a"] == off.costs["a"]
@@ -138,8 +138,8 @@ def test_means_are_part_of_the_answer_payload_and_cli(tmp_path):
     import yaml
     path.write_text(yaml.safe_dump(m.to_dict()))
     assert main(["solve", str(path), "-o", str(out)]) == 0 and abs(json.load(open(out))["means"]["D"] - 0.5) < 1e-6
-    fin = ns.solve(os.path.join(EX, "ch1_two_player_finite.yaml")).check()     # the spectral finite engine: paths, all zero here
-    assert all(np.array_equal(v, np.zeros(len(fin.means_t))) for v in fin.means.values()) and fin.cost_parts["player1"]["mean"] == 0.0
+    fin = ns.solve(os.path.join(EX, "ch1_two_player_finite.yaml")).require_converged()     # the spectral finite engine: paths, all zero here
+    assert all(np.array_equal(v, np.zeros(len(fin.mean_times))) for v in fin.means.values()) and fin.cost_parts["player1"]["mean"] == 0.0
 
 
 def test_validation_of_constants_and_singular_mean_systems():
@@ -160,14 +160,14 @@ def test_validation_of_constants_and_singular_mean_systems():
     with pytest.raises(ValueError, match="reserved"):
         ns.Model.from_dict(bad)
     fin = json.loads(json.dumps(d)); fin["horizon"] = {"kind": "finite", "window": 1.0}; fin["numerics"] = {"engine": "cells", "nodes": 4}     # the finite engines: paths
-    assert ns.solve(fin).check().means["D"].shape == (4,)
+    assert ns.solve(fin).require_converged().means["D"].shape == (4,)
     walk = json.loads(json.dumps(d)); walk["states"]["X"]["drift"] = {"const": 0.3}      # a random walk with a drift and no inputs
     with pytest.raises(ValueError, match="no stationary mean"):
         ns.solve(walk)
     # driven by the control, which offsets the drift: ubar = -0.3, and its first-order condition 2 r ubar + 2 (xbar - theta) DC = 0
     # puts xbar at theta - r ubar / DC with DC the windowed DC gain of a random walk, (1 - e^{-rho L}) / rho (L itself at rho = 0)
     walk["states"]["X"]["drift"] = {"D": 1.0, "const": 0.3}; walk["horizon"]["discount"] = 0.5
-    res = ns.solve(walk).check(); DC = (1.0 - np.exp(-0.5 * 16.0)) / 0.5
+    res = ns.solve(walk).require_converged(); DC = (1.0 - np.exp(-0.5 * 16.0)) / 0.5
     assert abs(res.means["D"] + 0.3) < 1e-12 and abs(res.means["X"] - (1.0 + 0.3 / DC)) < 1e-12
     # a random walk driven by a control whose first-order condition never reads it: its mean is undetermined
     sing = {"name": "s", "channels": ["w0", "w1"], "states": {"V": {"drift": {"D": 1.0}, "noise": {"w0": 1.0}}},
@@ -177,7 +177,7 @@ def test_validation_of_constants_and_singular_mean_systems():
         ns.solve(sing)
     # a random walk driven by a control whose target pins it: well posed, xbar = theta at any discount
     sing["agents"]["a"]["loss"] = [[1.0, "V", "V"], [-2.0 * 1.5, "V"], [1.0, "D", "D"]]; sing["horizon"]["discount"] = 0.5
-    res = ns.solve(sing).check(); assert abs(res.means["V"] - 1.5) < 1e-12 and abs(res.means["D"]) < 1e-12
+    res = ns.solve(sing).require_converged(); assert abs(res.means["V"] - 1.5) < 1e-12 and abs(res.means["D"]) < 1e-12
 
 
 @pytest.mark.parametrize("rho", [0.0, 0.5])
@@ -189,7 +189,7 @@ def test_lead_cross_term_in_a_driven_model(rho):
     is one and the lead is the lag's mean."""
     a, r, theta, c, tau = 1.0, 1.0, 1.0, 0.3, 2.0
     d = one_agent(a, r, theta, rho).to_dict(); d["agents"]["a"]["loss"].append([2.0 * c, "D", f"X@-{tau:g}"])
-    res = ns.solve(ns.Model.from_dict(d)).check(); L = d["horizon"]["window"]
+    res = ns.solve(ns.Model.from_dict(d)).require_converged(); L = d["horizon"]["window"]
     DC = (1.0 - np.exp(-(a + rho) * L)) / (a + rho); w = np.exp(rho * tau)
     ub = DC * theta / (r + c / a + DC / a + w * c * DC); xb = ub / a
     assert abs(res.means["D"] - ub) < 1e-10 and abs(res.means["X"] - xb) < 1e-10

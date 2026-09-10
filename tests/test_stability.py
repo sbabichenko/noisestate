@@ -6,23 +6,23 @@ def test_resolution_flag_and_stability_on_the_two_firm_market():
     map and action-kernel paths then disagree.  At 14 nodes they agree and the stability report is
     computed at a genuine fixed point."""
     from make_ch5_cycle_market import build
-    coarse = ns.solve(build(N=2, L=6.0, nodes=6, unit_range=3.0).build(), tol=1e-8).check()
+    coarse = ns.solve(build(N=2, L=6.0, nodes=6, unit_range=3.0).build(), tol=1e-8).require_converged()
     assert not coarse.resolution_ok and "UNDER-RESOLVED" in coarse.summary()
     d = build(N=2, L=6.0, nodes=14, unit_range=3.0).to_dict(); d["ties"] = []
-    ra = ns.solve(ns.Model.from_dict(d), tol=1e-8).check(); rm = ns.solve(ns.Model.from_dict(d), {"variable": "maps"}, tol=1e-8).check()
+    ra = ns.solve(ns.Model.from_dict(d), tol=1e-8).require_converged(); rm = ns.solve(ns.Model.from_dict(d), {"variable": "maps"}, tol=1e-8).require_converged()
     assert abs(ra.costs["firm0"] - rm.costs["firm0"]) < 1e-3
     st = rm.stability(); assert st["fixed_point_residual"] < 1e-6 and st["radius"] > 0 and "stability" in rm.to_dict()
     # the two-firm market's negative curvature is the window's truncation of the lagged loss terms (README): the
     # same direction is positive on a window longer by two lags, so the check passes and reports the edge
     so = rm.second_order["firm0"]; assert so["ok"] and so["edge"] and so["min"] < -1e-4 and so["embedded"] > 0 and "NOT A MINIMUM" not in rm.summary()
-    assert "window edge" in rm.summary() and any(d["name"] == "second_order_edge:firm0" for d in rm.diagnose())
+    assert "window edge" in rm.summary() and any(d["name"] == "second_order_edge:firm0" for d in rm.diagnostic_rows())
 
 
 def test_stability_of_the_chapter_3_game_and_finite_engine():
-    r = ns.solve(example_path("ch3_two_player")).check(); s = r.stability()
+    r = ns.solve(example_path("ch3_two_player")).require_converged(); s = r.stability()
     assert s["stable"] and s["radius"] < 1.0 and s["fixed_point_residual"] < 1e-8
     df = example_dict("ch1_two_player_finite"); df.setdefault("numerics", {})["nodes"] = 6
-    rf = ns.solve(ns.Model.from_dict(df)).check(); sf = rf.stability()
+    rf = ns.solve(ns.Model.from_dict(df)).require_converged(); sf = rf.stability()
     assert sf["stable"] and sf["radius"] < 1.0
 
 
@@ -39,7 +39,7 @@ def test_a_shrinking_negative_curvature_is_the_grid_not_a_saddle():
     cv = rep["second_order"]["trader1"]
     assert cv["shrinking"] and cv["min"] < cv["fine_min"] < 0        # less negative on the finer grid
     assert not any("NOT A MINIMUM" in f for f in r.status["flags"])  # the verdict is overturned
-    assert any(d["name"] == "second_order_grid:trader1" and d["ok"] for d in r.diagnose())
+    assert any(d["name"] == "second_order_grid:trader1" and d["ok"] for d in r.diagnostic_rows())
 
 
 def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
@@ -57,7 +57,7 @@ def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
     assert np.abs(K[a > 0.95 * 15.0]).max() / np.abs(K).max() < 1e-6      # decayed by the edge
 
     spurious = ns.solve(base.with_horizon(window=18.0).with_numerics(nodes=64))
-    assert spurious.converged and spurious.check() is spurious            # it really did converge
+    assert spurious.converged and spurious.require_converged() is spurious            # it really did converge
     assert spurious.costs["player1"] > 3.0                                # and to the wrong thing
     Ks = np.asarray(spurious.kernel("X")); asp = np.asarray(spurious.ages)
     assert np.abs(Ks[asp > 0.95 * 18.0]).max() / np.abs(Ks).max() > 0.5   # a closed loop that does not stabilise
