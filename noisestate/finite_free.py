@@ -33,7 +33,7 @@ import numpy as np
 from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
 from scipy.sparse.linalg import LinearOperator, gmres
 
-from .engine import singular_system_message
+from .engine import dense_curvature_form, singular_system_message
 from .spec import Agent
 from .spectral_operators import FocOps, PanelRows, PathOp, ProjOps, RespOps, RowOps
 
@@ -447,35 +447,7 @@ def _dense_form(solver, agent: Agent, system: FocSystem, idx: np.ndarray) -> np.
     if ncol > nW:
         w = np.zeros(N); w[c.diag] = c.time_mass(c.rho)[:c.Nd]
         forms.append((loss_form(diags(w, format="csr")), slice(nW, ncol)))
-    nz = np.where(np.any(np.stack([np.any(Rv != 0, axis=1) for Rv in Resp]), axis=0))[0]         # primaries' nodes that respond
-    Rnz = [np.ascontiguousarray(Rv[nz]) for Rv in Resp]                                          # (nz, N)
-    groups = []                                                                                   # per loss form: G Resp_v and its column groups
-    for G, sl in forms:
-        GR = [G[np.ix_(nz, nz)] @ Rv for Rv in Rnz]
-        rowsof = {}                                                                               # rows with a nonzero block -> columns
-        for k in range(sl.start, sl.stop):
-            rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * Nm:(r + 1) * Nm]))
-            if rows_k:
-                rowsof.setdefault(rows_k, []).append(k)
-        parts = []
-        for rows_k, ks in rowsof.items():
-            cols = np.concatenate([np.arange(r * Nm, (r + 1) * Nm) for r in rows_k])
-            parts.append((cols, np.ascontiguousarray(Gk[ks][:, :, cols])))                       # (n_k, N, |cols|)
-        groups.append((GR, parts))
-    nG = nU * nR * Nm
-    Mall = np.zeros((nG, nG))
-    for ui in range(nU):
-        for vi in range(ui, nU):
-            Muv = np.zeros((nR * Nm, nR * Nm))
-            for GR, parts in groups:
-                Huv = Rnz[ui].T @ GR[vi]                                                          # (N, N)
-                for cols, Gg in parts:
-                    HG = Huv @ Gg                                                                 # every column of the group
-                    Muv[np.ix_(cols, cols)] += Gg.reshape(-1, cols.size).T @ HG.reshape(-1, cols.size)
-            Mall[ui * nR * Nm:(ui + 1) * nR * Nm, vi * nR * Nm:(vi + 1) * nR * Nm] = Muv
-            if vi != ui:
-                Mall[vi * nR * Nm:(vi + 1) * nR * Nm, ui * nR * Nm:(ui + 1) * nR * Nm] = Muv.T   # H_vu = H_uv'
-    return Mall if idx.size == nG else Mall[np.ix_(idx, idx)]
+    return dense_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx)
 
 
 def reconstruction(solver, agent: Agent, Zfull: np.ndarray, g: np.ndarray) -> np.ndarray:

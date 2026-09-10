@@ -699,15 +699,7 @@ class StationarySolver(EngineBase):
     def _diagnostics(self, res) -> None:
         """The first-order-condition decomposition, the second-order check and the representation error of
         every agent's best response at the equilibrium."""
-        self._second_order_cache.clear()                               # the equilibrium's own check, not a stale one
-        order = [a for a in self.model.agents if self.c.rep[a.name] == a.name] + [a for a in self.model.agents if self.c.rep[a.name] != a.name]
-        for a in order:
-            g, out = self.best_response(a, res.maps, want_decomp=True)
-            res.foc[a.name] = out["decomp"]
-            if out["second_order"] is not None:
-                res.second_order[a.name] = out["second_order"]
-            res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
-        self._loss_forms.clear()                  # the second-order check is done: its (n_prim N)^2 form is not kept
+        self._fill_diagnostics(res)
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
         """Stationary flow loss per unit time of the agent in the world Z (exact Gram quadrature): the

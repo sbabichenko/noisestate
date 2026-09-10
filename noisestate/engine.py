@@ -27,6 +27,51 @@ def _is_eye(M: np.ndarray) -> bool:
     return M.ndim == 2 and M.shape[1] == n and np.count_nonzero(M) == n and bool(np.all(np.diagonal(M) == 1.0))
 
 
+def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx) -> np.ndarray:
+    """The second-order form on the kept strategies `idx`, built explicitly: (len(idx), len(idx)).
+
+    M = sum_k T_k' G_(k) T_k with T_k = [Resp_u G_k]_u and G_(k) the column's loss form, associated
+    as M[u, v] = sum_k G_k' (Resp_u' G_(k) Resp_v) G_k: the inner form H_uv is N x N (through the
+    responding primaries' nodes only), and the sum over the columns of one loss form is one product
+    of the stacked row operators, restricted per column to the rows whose block of G_k is not
+    identically zero.
+
+    The two engines reach this with the same three operands and built it in the same twenty-five
+    lines each: Engine._second_order from its own structures, finite_free._dense_form from the
+    matrix-free operators' dense rows.  Only the assembly is shared -- how Resp, Gk and forms are
+    obtained is exactly what differs between them, and stays where it is.
+    """
+    nz = np.where(np.any(np.stack([np.any(Rv != 0, axis=1) for Rv in Resp]), axis=0))[0]   # primaries' nodes that respond
+    Rnz = [np.ascontiguousarray(Rv[nz]) for Rv in Resp]                                    # (nz, N)
+    groups = []                                                                             # per loss form: G Resp_v and its column groups
+    for G, sl in forms:
+        GR = [G[np.ix_(nz, nz)] @ Rv for Rv in Rnz]
+        rowsof = {}                                                                         # rows with a nonzero block -> columns
+        for k in range(sl.start, sl.stop):
+            rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * Nm:(r + 1) * Nm]))
+            if rows_k:
+                rowsof.setdefault(rows_k, []).append(k)
+        parts = []
+        for rows_k, ks in rowsof.items():
+            cols = np.concatenate([np.arange(r * Nm, (r + 1) * Nm) for r in rows_k])
+            parts.append((cols, np.ascontiguousarray(Gk[ks][:, :, cols])))                 # (n_k, N, |cols|)
+        groups.append((GR, parts))
+    nG = nU * nR * Nm
+    Mall = np.zeros((nG, nG))
+    for ui in range(nU):
+        for vi in range(ui, nU):
+            Muv = np.zeros((nR * Nm, nR * Nm))
+            for GR, parts in groups:
+                Huv = Rnz[ui].T @ GR[vi]                                                    # (N, N)
+                for cols, Gg in parts:
+                    HG = Huv @ Gg                                                           # every column of the group
+                    Muv[np.ix_(cols, cols)] += Gg.reshape(-1, cols.size).T @ HG.reshape(-1, cols.size)
+            Mall[ui * nR * Nm:(ui + 1) * nR * Nm, vi * nR * Nm:(vi + 1) * nR * Nm] = Muv
+            if vi != ui:
+                Mall[vi * nR * Nm:(vi + 1) * nR * Nm, ui * nR * Nm:(ui + 1) * nR * Nm] = Muv.T   # H_vu = H_uv'
+    return Mall if idx.size == nG else Mall[np.ix_(idx, idx)]
+
+
 def singular_system_message(name: str) -> str:
     """The error every engine raises on a singular best-response system, naming its usual causes."""
     return (f"the best-response system of {name} is singular: two of its rows may carry the same information, a "
@@ -484,34 +529,7 @@ class EngineBase(MeanLayer):
             # (through the responding primaries' nodes only), and the sum over the columns of one loss form is
             # one product of the stacked row operators, restricted per column to the rows whose block of G_k is
             # not identically zero
-            nz = np.where(np.any(np.stack([np.any(Rv != 0, axis=1) for Rv in Resp]), axis=0))[0]   # primaries' nodes that respond
-            Rnz = [np.ascontiguousarray(Rv[nz]) for Rv in Resp]                                    # (nz, N)
-            groups = []                                                                             # per loss form: G Resp_v and its column groups
-            for G, sl in forms:
-                GR = [G[np.ix_(nz, nz)] @ Rv for Rv in Rnz]
-                rowsof = {}                                                                         # rows with a nonzero block -> columns
-                for k in range(sl.start, sl.stop):
-                    rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * Nm:(r + 1) * Nm]))
-                    if rows_k:
-                        rowsof.setdefault(rows_k, []).append(k)
-                parts = []
-                for rows_k, ks in rowsof.items():
-                    cols = np.concatenate([np.arange(r * Nm, (r + 1) * Nm) for r in rows_k])
-                    parts.append((cols, np.ascontiguousarray(Gk[ks][:, :, cols])))                 # (n_k, N, |cols|)
-                groups.append((GR, parts))
-            Mall = np.zeros((nU * nR * Nm, nU * nR * Nm))
-            for ui in range(nU):
-                for vi in range(ui, nU):
-                    Muv = np.zeros((nR * Nm, nR * Nm))
-                    for GR, parts in groups:
-                        Huv = Rnz[ui].T @ GR[vi]                                                    # (N, N)
-                        for cols, Gg in parts:
-                            HG = Huv @ Gg                                                           # every column of the group
-                            Muv[np.ix_(cols, cols)] += Gg.reshape(-1, cols.size).T @ HG.reshape(-1, cols.size)
-                    Mall[ui * nR * Nm:(ui + 1) * nR * Nm, vi * nR * Nm:(vi + 1) * nR * Nm] = Muv
-                    if vi != ui:
-                        Mall[vi * nR * Nm:(vi + 1) * nR * Nm, ui * nR * Nm:(ui + 1) * nR * Nm] = Muv.T   # H_vu = H_uv'
-            Mfull = Mall if n == Mall.shape[0] else Mall[np.ix_(idx, idx)]
+            Mfull = dense_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx)
             w, V = np.linalg.eigh((Mfull + Mfull.T) / 2)
             lo, hi = float(w[0]), float(w[-1]); vmin = V[:, 0]
         else:
@@ -831,7 +849,33 @@ class EngineBase(MeanLayer):
         """Hook (stationary, spectral; the cell engine keeps the no-op): the checks at the equilibrium,
         filled on the result: res.foc[agent] (the "decomp" of best_response), res.second_order[agent]
         (when the check applies) and res.representation_error[agent].  Runs after _mean_part, skipped
-        when the solve was made with diagnostics=False; the checks then report `skipped`."""
+        when the solve was made with diagnostics=False; the checks then report `skipped`.
+
+        An engine that HAS these calls _fill_diagnostics below; the default stays a no-op so that an
+        engine without a decomposition (the cell engine) inherits nothing it cannot honour."""
+
+    def _fill_diagnostics(self, res) -> None:
+        """One best response per agent at the equilibrium, recording its decomposition, its curvature
+        and its representation error.
+
+        Shared by the stationary and spectral engines, which had it twice, because the agent ORDER is
+        an invariant and not a detail: a tied agent's representative must be evaluated before the
+        agents that follow it, or the followers read a map the representative has not produced yet.
+        """
+        self._second_order_cache.clear()                               # the equilibrium's own check, not a stale one
+        order = ([a for a in self.model.agents if self.c.rep[a.name] == a.name]
+                 + [a for a in self.model.agents if self.c.rep[a.name] != a.name])
+        for a in order:
+            g, out = self.best_response(a, res.maps, want_decomp=True)
+            res.foc[a.name] = out["decomp"]
+            if out["second_order"] is not None:
+                res.second_order[a.name] = out["second_order"]
+            res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
+            self._diagnostics_extra(res, a)
+        self._loss_forms.clear()                  # the second-order check is done: its (n_prim N)^2 form is not kept
+
+    def _diagnostics_extra(self, res, agent) -> None:
+        """Hook: anything else an engine records per agent (the spectral engine's representation_parts)."""
 
     def actions_from_maps(self, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Action kernels the raw maps produce in their own closed loop."""

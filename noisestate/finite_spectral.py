@@ -655,14 +655,9 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
     def _diagnostics(self, res) -> None:
         """The first-order-condition decomposition, the second-order check and the representation error of
         every agent's best response at the equilibrium (the stationary engine's, on this grid)."""
-        self._second_order_cache.clear()
-        order = [a for a in self.model.agents if self.c.rep[a.name] == a.name] + [a for a in self.model.agents if self.c.rep[a.name] != a.name]
-        for a in order:
-            g, out = self.best_response(a, res.maps, want_decomp=True)
-            res.foc[a.name] = out["decomp"]
-            if out["second_order"] is not None:
-                res.second_order[a.name] = out["second_order"]
-            res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
-            if a.name in self._rep_parts:
-                res.representation_parts[a.name] = dict(self._rep_parts[a.name])
-        self._loss_forms.clear()                  # the second-order check is done: its (n_prim N)^2 form is not kept
+        self._fill_diagnostics(res)
+
+    def _diagnostics_extra(self, res, agent) -> None:
+        """With a past, where the representation error sits: interior, band tip, last window, buffer."""
+        if agent.name in self._rep_parts:
+            res.representation_parts[agent.name] = dict(self._rep_parts[agent.name])

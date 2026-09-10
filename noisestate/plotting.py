@@ -83,6 +83,18 @@ def _result_plot_title(res, suffix: str = "") -> str:
     return _plot_title(res.model.name, res.residual, res.diagnostics.rows, suffix)
 
 
+def _mean_paths_row(axes, res, names) -> None:
+    """The bottom row: every mean path on one axis, the rest of the row blank.  Drawn the same way
+    from the transition figure and from the by-shock-time figure, which each had their own copy."""
+    ax = axes[-1, 0]
+    for name in names:
+        ax.plot(res.mean_times, res.means[name], lw=1, label=name)
+    ax.axhline(0, color="k", lw=0.4); ax.set_title("mean paths", fontsize=9); ax.set_xlabel("t")
+    ax.legend(fontsize=6, frameon=False)
+    for blank in axes[-1, 1:]:
+        blank.axis("off")
+
+
 def _plot_transition(res, path: str) -> None:
     plt = _pyplot()
     names = res.model.state_names + res.model.control_names; chans = res.channels
@@ -122,12 +134,7 @@ def _plot_transition(res, path: str) -> None:
         for ax in axes[r, len(agents):]:
             ax.axis("off")
     if means:
-        ax = axes[-1, 0]
-        for name in names:
-            ax.plot(res.mean_times, res.means[name], lw=1, label=name)
-        ax.axhline(0, color="k", lw=0.4); ax.set_title("mean paths", fontsize=9); ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
-        for ax in axes[-1, 1:]:
-            ax.axis("off")
+        _mean_paths_row(axes, res, names)
     suffix = f", settled {res.settled:.1e}" if res.settled is not None else ""
     fig.suptitle(_result_plot_title(res, suffix), fontsize=11)
     fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
@@ -149,12 +156,7 @@ def _plot_by_shock_time(res, curves, path: str) -> None:
             if i == 0 and k == 0:
                 ax.legend(fontsize=6, frameon=False)
     if means:
-        ax = axes[-1, 0]
-        for name in names:
-            ax.plot(res.mean_times, res.means[name], lw=1, label=name)
-        ax.axhline(0, color="k", lw=0.4); ax.set_title("mean paths", fontsize=9); ax.set_xlabel("t"); ax.legend(fontsize=6, frameon=False)
-        for ax in axes[-1, 1:]:
-            ax.axis("off")
+        _mean_paths_row(axes, res, names)
     fig.suptitle(_result_plot_title(res), fontsize=11); fig.tight_layout(); fig.savefig(path, dpi=150)
 
 
