@@ -944,26 +944,67 @@ class Model:
             d["params"][k] = float(v)
         return self._rebuilt(d)
 
-    def with_signal(self, name: str, *, drift, noise, audience="all", delay=0.0) -> "Model":
+    def with_signal(self, signal=None, *, name=None, drift=None, noise=None, audience="all", delay=0.0) -> "Model":
         """Return a copy with one observation row added to the selected agents.
 
-        ``audience`` is ``"all"`` (the default), one agent name, or an iterable of
-        agent names.  Noise channels named by ``noise`` are added to the model when
-        absent.  The operation is model construction only: it does not mutate or
-        solve this model.
+        TWO SPELLINGS OF ONE ROW, and the same type as the expression form:
+
+            model.with_signal(Signal("flow", D1 + sigma * w.wZ))     # a Signal object
+            model.with_signal(name="flow", drift={"D1": 1}, noise={"wZ": 0.5})
+
+        The object form is the one to reach for when the model was built as equations -- it is the
+        same Signal the Agent takes, so a row is written once and used in either workflow.  The
+        block form stays because a model loaded from a FILE has no Signal object to hand, and
+        building one only to take it apart again would be ceremony.
+
+        ``audience`` is ``"all"`` (the default), one agent name, or an iterable of agent names.
+        Noise channels named by the row are added to the model when absent.  Adding a name an
+        agent already has is an error, never a silent replacement -- use without_signal() first.
+        The operation is model construction only: it does not mutate or solve this model.
         """
+        from .expr import Signal as _Signal
+        #  overloaded on the FIRST argument: a Signal, or the row's name followed by its blocks
+        if isinstance(signal, _Signal):
+            if any(v is not None for v in (name, drift, noise)) or delay:
+                raise TypeError("with_signal(): give a Signal OR name/drift/noise, not both -- the "
+                                "Signal already carries its drift, noise and delay")
+            return self.with_signals([signal], audience=audience)
+        if isinstance(signal, str):
+            if name is not None:
+                raise TypeError("with_signal(): the row's name was given twice, positionally and as name=")
+            name = signal
+        elif signal is not None:
+            raise TypeError(f"with_signal(): the first argument is a Signal or the row's name, not "
+                            f"{type(signal).__name__}")
+        if name is None or drift is None or noise is None:
+            raise TypeError("with_signal(): needs a Signal, or a name with drift= and noise=")
         return self.with_signals({name: {"drift": drift, "noise": noise, "delay": delay}}, audience=audience)
 
-    def with_signals(self, rows: dict, *, audience="all") -> "Model":
+    def with_signals(self, rows, *, audience="all") -> "Model":
         """Return a copy with several observation rows added to an audience.
 
-        ``rows`` maps each row name to its ordinary model-file signal block
-        (``drift``, ``noise`` and optional ``delay``).  Rebuilding through
-        :meth:`from_dict` gives transformed models the same validation and
+        `rows` is a SEQUENCE OF SIGNALS, or a mapping of row name to its model-file block
+        (``drift``, ``noise`` and an optional ``delay``).  Mixing the two in one call is an error:
+        a call says which form it is written in.
+
+        Rebuilding through :meth:`from_dict` gives transformed models the same validation and
         serialisation guarantees as models loaded from files.
         """
+        from .expr import Signal as _Signal
+        if isinstance(rows, (list, tuple)):
+            if not rows:
+                raise ValueError("with_signals(): no signals given")
+            bad = [r for r in rows if not isinstance(r, _Signal)]
+            if bad:
+                raise TypeError("with_signals(): a sequence must hold Signals, not "
+                                f"{type(bad[0]).__name__}; a mapping holds file-form blocks")
+            #  Signal.compile() already produces the block this method consumes -- the same one the
+            #  expression form writes into a model file -- so the two workflows share the type
+            #  rather than each having their own way of saying a row.
+            rows = {r.name: r.compile() for r in rows}
         if not isinstance(rows, dict) or not rows:
-            raise ValueError("with_signals(): rows must be a non-empty mapping of signal names to signal blocks")
+            raise ValueError("with_signals(): rows must be a non-empty mapping of signal names to "
+                             "signal blocks, or a non-empty sequence of Signals")
         known = [a.name for a in self.agents]
         if audience == "all":
             selected = known
@@ -1003,6 +1044,39 @@ class Model:
                 if row_name in signals:
                     raise ValueError(f"with_signals(): agent {agent!r} already has a signal named {row_name!r}")
                 signals[row_name] = copy.deepcopy(clean)
+        return self._rebuilt(d)
+
+    def without_signal(self, name: str, *, audience="all") -> "Model":
+        """Return a copy with an observation row removed from the selected agents.
+
+        The partner of with_signal(), which refuses a name an agent already has rather than
+        replacing it silently: replacing is two decisions -- remove this, add that -- and a caller
+        who means both should say both.  Removing a name an agent does not have is an error too,
+        for the same reason a typo should not pass quietly.
+        """
+        d = self.to_dict()
+        known = [a.name for a in self.agents]
+        selected = known if audience == "all" else ([audience] if isinstance(audience, str) else list(audience))
+        unknown = sorted(set(selected) - set(known))
+        if unknown:
+            raise ValueError(f"without_signal(): unknown agent(s) {unknown}; agents: {known}")
+        for agent in selected:
+            signals = d["agents"][agent].get("signals") or {}
+            if name not in signals:
+                raise ValueError(f"without_signal(): agent {agent!r} has no signal named {name!r}; "
+                                 f"its rows are {sorted(signals)}")
+            del signals[name]
+            if not signals:
+                raise ValueError(f"without_signal(): removing {name!r} would leave agent {agent!r} with no "
+                                 "rows at all, and an agent that observes nothing cannot act")
+        #  with_signals ADDS the channels a row loads, so removal drops the ones that are now
+        #  unloaded -- the model refuses a channel nothing uses, and the two operations have to be
+        #  each other's inverse or a round trip does not validate.
+        used = {c for st in d["states"].values() for c in (st.get("noise") or {})}
+        for spec in d["agents"].values():
+            for row in (spec.get("signals") or {}).values():
+                used |= set(row.get("noise") or {})
+        d["channels"] = [c for c in d.get("channels", []) if c in used]
         return self._rebuilt(d)
 
     def with_horizon(self, horizon=None, **fields) -> "Model":

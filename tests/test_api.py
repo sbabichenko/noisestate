@@ -342,3 +342,54 @@ def test_a_saved_transition_keeps_its_past_beside_it():
     ns.load(os.path.join(EX, "ch3_precision_change.yaml")).save(os.path.join(elsewhere, "tr.yaml"))
     saved = yaml.safe_load(open(os.path.join(elsewhere, "tr.yaml")))["horizon"]["past"]["model"]
     assert os.path.isabs(saved) and os.path.exists(saved)
+
+
+def test_a_signal_is_one_type_across_both_workflows():
+    """PART 8.1: the expression form and the transform form say a row with the SAME object.
+    Signal.compile() already produced the block with_signals consumes, so the object form is not a
+    parallel path -- it compiles to the same thing the file form writes."""
+    from noisestate import Signal, State, shocks
+    m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
+    w, X = shocks("wf"), State("X")
+    by_object = m.with_signal(Signal("flow", X + w.wf))
+    by_name = m.with_signal("flow", drift={"X": 1.0}, noise={"wf": 1.0})
+    by_keyword = m.with_signal(name="flow", drift={"X": 1.0}, noise={"wf": 1.0})
+    assert by_object.to_dict(numeric=True) == by_name.to_dict(numeric=True) == by_keyword.to_dict(numeric=True)
+    #  several at once, in either form
+    assert m.with_signals([Signal("a", X + w.wf), Signal("b", X + w.wf)]).agents[0].signals[-1].name == "b"
+    with pytest.raises(TypeError, match="a sequence must hold Signals"):
+        m.with_signals([{"drift": {"X": 1.0}, "noise": {"wf": 1.0}}])
+
+
+def test_with_signal_refuses_the_ambiguous_calls():
+    from noisestate import Signal, State, shocks
+    m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
+    w, X = shocks("wf"), State("X")
+    with pytest.raises(TypeError, match="given twice"):
+        m.with_signal("flow", name="flow", drift={"X": 1.0}, noise={"wf": 1.0})
+    with pytest.raises(TypeError, match="a Signal OR name/drift/noise"):
+        m.with_signal(Signal("f", X + w.wf), drift={"X": 1.0})
+    with pytest.raises(TypeError, match="a Signal or the row's name"):
+        m.with_signal(7)
+
+
+def test_removing_a_row_is_the_inverse_of_adding_one():
+    """with_signal refuses a name an agent already has rather than replacing it, so there has to be
+    a way to say "remove, then add".  The two are inverses down to the CHANNELS: with_signals adds
+    the ones a row loads, so without_signal drops the ones left unloaded -- the model refuses a
+    channel nothing uses, and a round trip would not validate otherwise."""
+    m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
+    added = m.with_signal("flow", drift={"X": 1.0}, noise={"wf": 1.0})
+    assert "wf" in added.channels and "wf" not in m.channels
+    back = added.without_signal("flow")
+    assert back.to_dict(numeric=True) == m.to_dict(numeric=True)     # byte-identical round trip
+    assert "wf" not in back.channels
+
+    with pytest.raises(ValueError, match="already has a signal"):
+        added.with_signal("flow", drift={"X": 1.0}, noise={"wf": 1.0})
+    with pytest.raises(ValueError, match="has no signal named"):
+        m.without_signal("nope")
+    with pytest.raises(ValueError, match="no rows at all"):
+        m.without_signal("y1")
+    with pytest.raises(ValueError, match="unknown agent"):
+        m.without_signal("y1", audience="nobody")
