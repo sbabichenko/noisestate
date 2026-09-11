@@ -70,7 +70,7 @@ model = ns.load(ns.example("ch1_two_player_finite"))
 print(model.describe())                   # the equations, the observations, the conventions -- no solve
 
 res = ns.solve(model)
-res.require_ok()                          # raises unless the answer is trustworthy; see below
+res.require_ok()                          # raises unless the required checks pass; see below
 print(res.summary())
 ```
 
@@ -101,20 +101,31 @@ res.kernel("X", "w0").plot("kernel.png")     # the state's response to the commo
 
 ![the state's response to a unit common shock](docs/figs/first_kernel.png)
 
-Each curve is one date `t`; the horizontal axis is the *shock time* `s`, the moment the shock struck.
-The distance `t - s` is the shock's **age**.  Reading one curve from right to left is watching a
-single shock get older:
+Each curve fixes one **date** `t`; the horizontal axis is the **shock time** `s`, the moment a shock
+struck.  The distance `t - s` is that shock's **age**.  The two directions answer different
+questions, and it is worth keeping them apart.
+
+Reading *along one curve* compares shocks of different ages, all as they stand at the same date:
 
 ```python
 k = res.kernel("X", "w0")
-k.at(1.0, 1.0)      # +1.0000   age 0:    a unit shock moves X one for one, at once
-k.at(1.0, 0.5)      # +0.7539   age 0.5:  the players have pushed some of it back
-k.at(1.0, 0.0)      # +0.4926   age 1.0:  half of it is still there
+k.at(1.0, 1.0)      # +1.0000   at t=1, a shock just struck: it moves X one for one, at once
+k.at(1.0, 0.5)      # +0.7539   at t=1, a shock of age 0.5 is still four-fifths there
+k.at(1.0, 0.0)      # +0.4926   at t=1, a shock of age 1.0 is still half there
 ```
 
-A positive value means the state is still displaced in the direction of the shock.  The decay is the
-players working: without them `X` would keep the whole shock forever, since nothing else pulls it
-back.
+Following *one* shock means fixing `s` and moving **across** curves, watching the same disturbance
+age:
+
+```python
+k.at(0.50, 0.5)     # +1.0000   the shock at s=0.5, the instant it lands
+k.at(0.75, 0.5)     # +0.8773   the same shock, a quarter later
+k.at(1.00, 0.5)     # +0.7539   the same shock at the end of the game
+```
+
+A positive value means the state is still displaced in the direction of the shock.  The decay in
+either reading is the players working: without them `X` would keep the whole shock forever, since
+nothing else pulls it back.
 
 The controls tell the other half of the story, and their signs are the opposite:
 
@@ -151,15 +162,17 @@ sharper.costs      # player1 0.359950,  player2 0.331103
 
 Player 1 sees better and does better -- and **player 2 gains almost twice as much**.  Better
 information for one player is close to a public good here: player 1 spends its own effort stabilising
-`X`, and a steadier `X` is worth just as much to player 2, who pays nothing for it.  That asymmetry
+`X`, and a steadier `X` is worth just as much to player 2, who does not pay for player 1's extra
+effort (it still pays for its own).  That asymmetry
 is the kind of thing the solver is for, and it is two lines away from the first solve.
 
 `with_params()` returns a new model; `model` is untouched, so you can sweep without rebuilding.
 
-### Is the answer trustworthy
+### Did the required checks pass
 
-`res.require_ok()` above was not decoration.  A converged solve is an exact solution of the
-**discretised, truncated** model, which is not the same as the model you wrote:
+`res.require_ok()` above was not decoration.  A converged solve is a numerical solution, within the
+solver's tolerance, of the **discretised, truncated** model -- which is not the same as the model you
+wrote:
 
 * **converged** -- the fixed-point iteration reached its tolerance.  `res.converged`.
 * **accepted** -- every check a stated policy requires actually passed.  `res.diagnostics.assess()`.
@@ -182,9 +195,10 @@ res.require_ok()                 # DiagnosticsError: converged, but window [fail
                                  #    of the window: raise horizon.window)
 ```
 
-That is the whole of the contract for a first read.  The checks themselves, the six statuses a check
-can report, validation policies, and what to do about each failure are in
-[docs/guards.md](docs/guards.md).
+These are evidence, not a guarantee: they say that the checks a policy names were run and passed, on
+this grid and this window.  They cannot tell you the model is the one you meant.  The checks
+themselves, the six statuses a check can report, validation policies, and what to do about each
+failure are in [docs/guards.md](docs/guards.md).
 
 ### Which example should I start from
 
@@ -197,7 +211,7 @@ each for a reason written in its own file, so pick by the question you are askin
 | `ch1_delayed_finite` | the same, when one player sees the state late | finite, T = 1 | accepted |
 | `ch3_two_player` | the same tracking game with no end date | stationary | **window too short** -- the dissertation's own window; `with_stationary(9.0)` clears it |
 | `ch4_kyle_back` | an informed trader against a market maker who prices order flow | stationary, discounted | accepted |
-| `kyle_back_prior` | the same, started from a prior on the fundamental | transition | **not a minimum** -- a real claim about the model, not a tuning problem |
+| `kyle_back_prior` | the same, started from a prior on the fundamental | transition | **not a minimum** -- the strip quadrature on the `D P` cross term at a small trading cost, not a saddle: it shrinks like `n^-0.85` under refinement and is gone at `eps: 1` |
 | `ch5_cycle_market` | a ring of firms buying and selling with a delivery lag | stationary | **under-resolved** -- and does not clear at a sane cost |
 | `ch3_precision_change` | a regime change: one player's precision jumps | transition | **several** -- the one to read when learning transitions |
 

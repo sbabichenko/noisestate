@@ -12,7 +12,8 @@ are fields of `noisestate.Settings` ([settings.md](settings.md)).
 
 ## Converged, and accepted
 
-A converged solve is an exact solution of the *discretised, truncated* model.  Whether that model is
+A converged solve is a numerical solution, within the solver's tolerance, of the *discretised,
+truncated* model.  Whether that model is
 close enough to the one you wrote is what these checks answer, and the two questions have two calls:
 `require_converged()` is convergence alone, `require_ok(policy)` is the whole verdict.
 

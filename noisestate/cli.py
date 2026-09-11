@@ -27,7 +27,7 @@ from .schema import schema, validate as schema_errors
 
 def _exit_code(res, args) -> int:
     """0 when the solve converged, 1 when it did not.  With --require-ok a failing guard is also 1: a
-    converged solve is a solution of the discretised, truncated model, and a script that reads only the
+    converged solve is a numerical solution of the discretised, truncated model, and a script that reads only the
     exit status would otherwise take an UNDER-RESOLVED or WINDOW TOO SHORT result as sound."""
     if not res.converged:
         return 1

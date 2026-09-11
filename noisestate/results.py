@@ -274,7 +274,8 @@ class Result:
     def require_converged(self):
         """Return self, or raise ConvergenceError if the solve did not reach its tolerance.
 
-        Convergence ONLY.  A converged solve is a solution of the *discretised, truncated* model, so this
+        Convergence ONLY.  A converged solve is a numerical solution, within tolerance, of the *discretised,
+        truncated* model, so this
         passes on a result whose window is too short or whose grid is too coarse: those are the checks,
         and res.diagnostics.assess(policy) is what weighs them.  require_ok() is this plus the checks,
         and is the call to put in front of a number that will be used rather than looked at."""
