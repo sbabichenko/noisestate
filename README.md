@@ -383,7 +383,7 @@ carries; `summary()` prints the ones that fail.  The full descriptions, with thr
 in [docs/guards.md](docs/guards.md).
 
 **Resolution.**  The representation error of the action kernels on the seen rows above 1e-6 prints
-`UNDER-RESOLVED (representation error 1.3e-05: raise horizon.nodes)`.  `solve(..., refine=True)` or
+`UNDER-RESOLVED (representation error 1.3e-05: raise numerics.nodes)`.  `solve(..., refine=True)` or
 `res.refine()` re-solves at 1.5 times the nodes and reports the change of every cost and kernel, with
 `resolved=False` when either moves more than its tolerance.
 

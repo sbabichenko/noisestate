@@ -473,8 +473,8 @@ class Result:
                 where[k] = max(where.get(k, 0.0), float(v))
         at = " (" + ", ".join(f"{k} {v:.1e}" for k, v in where.items()) + ")" if where else ""
         row("resolution", rep, self.RESOLUTION_TOL, self._resolution_ok,
-            f"UNDER-RESOLVED (representation error {rep:.1e}{at}: raise horizon.nodes" + ("; an error only on the band tip or the last "
-            "window is the geometry there, not the interior's resolution)" if where else ")") if rep is not None else "", "raise horizon.nodes")
+            f"UNDER-RESOLVED (representation error {rep:.1e}{at}: raise numerics.nodes" + ("; an error only on the band tip or the last "
+            "window is the geometry there, not the interior's resolution)" if where else ")") if rep is not None else "", "raise numerics.nodes")
         tail = getattr(self, "window_tail", None)
         if tail is not None:
             row("window", float(tail), self.WINDOW_TAIL_TOL, bool(tail <= self.WINDOW_TAIL_TOL),
@@ -503,7 +503,7 @@ class Result:
             row("refinement", {"cost_change": f.cost_change, "kernel_change": f.kernel_change, "nodes": f.nodes},
                 {"cost_change": self.REFINE_COST_TOL, "kernel_change": self.REFINE_KERNEL_TOL}, f.resolved,
                 f"refinement to {f.nodes} nodes moves costs by {f.cost_change:.1e} and kernels by {f.kernel_change:.1e}"
-                + ("" if f.resolved in (True, None) else " (NOT RESOLVED)"), "raise horizon.nodes")
+                + ("" if f.resolved in (True, None) else " (NOT RESOLVED)"), "raise numerics.nodes")
             for a, cv in (f.curvature or {}).items():
                 row(f"second_order_grid:{a}", cv["fine_min"], None, bool(cv["shrinking"]),
                     (f"the negative curvature of {a!r} shrinks with the grid ({cv['min']:.1e} here, "

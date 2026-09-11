@@ -49,7 +49,7 @@ class Settings:
     mean_rcond: float = 1e-12           # a mean system whose reciprocal condition estimate is below this is singular
     lead_weight_warn: float = 100.0     # warn when a lead's past flows outweigh the current one by more than this (exp(rho tau))
     # ---- the result's checks
-    resolution_tol: float = 1e-6        # representation error above which a result is under-resolved (raise horizon.nodes)
+    resolution_tol: float = 1e-6        # representation error above which a result is under-resolved (raise numerics.nodes)
     window_tail_tol: float = 0.02       # a kernel still moving by more of its peak over the last tenth of the window: window too short
     settled_tol: float = 1e-4           # a transition is settled when its maps on [T - L, T] are within this (relative to the map's peak) of the stationary continuation: the closed-loop decay per unit of t (1e-2 on Chapter 3), not the grid's floor
     mean_zero: float = 1e-12            # below this a mean is round-off (printed as an unsigned zero, not counted as driven)

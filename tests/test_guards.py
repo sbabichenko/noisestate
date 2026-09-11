@@ -56,3 +56,31 @@ def test_an_agent_with_no_signal_rows_is_refused_by_name():
          "horizon": {"kind": "stationary", "window": 3.0}, "numerics": {"nodes": 8}}
     with pytest.raises(ValueError, match="agent a has no signal rows"):
         ns.Model.from_dict(d).validate()
+
+
+def test_guard_advice_names_keys_the_model_file_actually_accepts():
+    """The under-resolved guard told every reader to "raise horizon.nodes", which the model file
+    REFUSES -- `unknown key(s) ['nodes'] in horizon`.  The key is numerics.nodes.
+
+    The advice drifted because model.horizon.nodes is a real PYTHON attribute: the resolved numerics
+    are merged onto the horizon after loading.  So the sentence was true of the object and false of
+    the file it was telling someone to edit, which is the file they have.
+
+    Any `raise <block>.<key>` in a guard's flag or advice has to name a key from_dict() accepts.
+    """
+    import re
+    import noisestate as ns
+    model_schema = ns.schema("model")["properties"]
+    coarse = {"ch3_precision_change": {"nodes": 5}, "ch5_cycle_market": {"nodes": 6}}
+    seen = 0
+    for name in ns.examples():
+        res = ns.solve(ns.example(name), coarse.get(name, {"nodes": 8}))
+        for row in res.diagnostics.rows:
+            for text in (row.get("flag") or "", row.get("advice") or ""):
+                for block, key in re.findall(r"raise (\w+)\.(\w+)", text):
+                    seen += 1
+                    assert block in model_schema, f"{name}/{row['name']}: no block {block!r} in a model file"
+                    props = (model_schema[block].get("properties") or {})
+                    assert key in props, (f"{name}/{row['name']}: advises {block}.{key}, which a model "
+                                          f"file does not accept; {block} takes {sorted(props)}")
+    assert seen > 0, "no guard advice was exercised, so this checked nothing"
