@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.8.1 (2026-09-10) -- the first ten minutes
+## 1.0.0 (2026-09-10) -- the first ten minutes
+
+The first published release.  The version is 1.0.0 rather than a continuation of
+the 0.x line because this is the first build meant for someone who did not write
+it: the examples ship inside the wheel, the documentation is checked against the
+code by tests, and the first workflow in the README is one a reader can run.  The
+solver itself is the one validated in 0.5 to 0.8 against the dissertation's own
+computations (docs/validation.md); what changed since is the surface.
+
 
 DIAGNOSTICS A TRANSITION CAN PASS
 
