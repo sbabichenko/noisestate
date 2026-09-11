@@ -5,27 +5,59 @@ on:
   schedule:
     - cron: '0 3 * * 1'
   workflow_dispatch:
+
+#  A new push supersedes the previous run on the same ref: the suite takes longer than the gap
+#  between pushes, so otherwise two runs of it queue behind each other for no benefit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  #  The push gate: one interpreter, current dependencies.  A check, not a certification.
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - {python-version: "3.12", pins: ""}
-          - {python-version: "3.10", pins: "numpy==1.24.4 scipy==1.13.0 pyyaml==6.0"}   # the declared floor
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: {python-version: "${{ matrix.python-version }}"}
-      - run: pip install -e ".[dev]" ${{ matrix.pins }}
-      - run: python -m pyflakes noisestate tests examples extras
-      - run: python -m pytest -q tests
-  slow:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - run: pip install -e ".[dev]"
+      #  tests/conftest.py caps the BLAS at 4 threads, a number measured on a 16-core machine.  A
+      #  hosted runner has a fraction of that, so asking for 4 oversubscribes it -- the same thrash
+      #  the cap exists to prevent, from the other side.  conftest uses setdefault, so this wins.
+      #  nproc is printed so the next person picks the number from evidence rather than from this
+      #  comment.
+      - run: |
+          echo "runner cores: $(nproc)"
+          for v in OMP OPENBLAS MKL NUMEXPR; do echo "${v}_NUM_THREADS=1" >> $GITHUB_ENV; done
+      - run: python -m pyflakes noisestate tests examples extras
+      - run: python -m pytest -q --durations=15 tests
+
+  #  The declared floor: Python 3.10 with the oldest numpy and scipy pyproject admits.  It is the
+  #  slowest job by a wide margin -- three-year-old numerical libraries -- and what it checks, that
+  #  the published floor actually works, changes only when a dependency does.  Weekly and on
+  #  demand rather than on every push.  It earned its place by catching scipy>=1.12 being a
+  #  version too low: NoConvergence is only re-exported from scipy.optimize at 1.13.
+  floor:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.10"}
+      - run: pip install -e ".[dev]" numpy==1.24.4 scipy==1.13.0 pyyaml==6.0
+      - run: for v in OMP OPENBLAS MKL NUMEXPR; do echo "${v}_NUM_THREADS=1" >> $GITHUB_ENV; done
+      - run: python -m pytest -q --durations=15 tests
+
+  slow:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -e ".[dev]"
+      - run: for v in OMP OPENBLAS MKL NUMEXPR; do echo "${v}_NUM_THREADS=1" >> $GITHUB_ENV; done
       - run: NOISESTATE_SLOW=1 python -m pytest -q tests -m slow     # the gated tests, tests/SLOW.md
