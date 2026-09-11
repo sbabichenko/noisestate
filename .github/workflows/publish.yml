@@ -1,0 +1,79 @@
+name: publish
+
+#  Publishing to PyPI, by trusted publishing (OIDC): no API token is stored in this repository.
+#  PyPI must be told who is allowed to publish before the first run -- register a publisher under
+#  the project's settings with EXACTLY these strings:
+#
+#      owner        sbabichenko
+#      repository   noisestate
+#      workflow     publish.yml          <- this file's name; renaming it breaks publishing
+#      environment  pypi                 (and a second publisher with testpypi, for the rehearsal)
+#
+#  A tag pushes to TestPyPI, which is the rehearsal.  A published GitHub Release goes to PyPI.
+#  They are separate because a PyPI version number is permanent: once 1.0.0 is uploaded it can
+#  never be re-uploaded, even after deleting it, so the real upload is behind a deliberate act.
+on:
+  push:
+    tags: ["v*"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install build twine
+
+      #  The version is read from pyproject at import and written into every payload, so a tag that
+      #  disagrees with it would publish a distribution whose own metadata contradicts its name.
+      #  Refuse before building rather than after uploading, which cannot be undone.
+      - name: the tag and pyproject must agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pin=$(python -c "import re;print(re.search(r'^version = \"([^\"]+)\"', open('pyproject.toml').read(), re.M).group(1))")
+          echo "tag $tag, pyproject $pin"
+          test "$tag" = "$pin" || { echo "::error::tag $tag does not match pyproject version $pin"; exit 1; }
+
+      - run: python -m build
+      - run: python -m twine check dist/*
+      #  A last look at what is about to become permanent.
+      - run: ls -la dist/ && python -c "import zipfile,sys;z=zipfile.ZipFile([f'dist/{n}' for n in __import__('os').listdir('dist') if n.endswith('.whl')][0]);print('\n'.join(n for n in z.namelist() if n.endswith('METADATA')))"
+      - uses: actions/upload-artifact@v4
+        with: {name: dist, path: dist/}
+
+  #  Rehearsal: every v* tag.  TestPyPI is a separate index with its own version namespace, so a
+  #  mistake here costs a version number nobody will ever look for.
+  testpypi:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: dist, path: dist/}
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  #  The real thing: only a PUBLISHED GitHub Release.  The `pypi` environment is where a required
+  #  reviewer goes, so this can be made to need an approval click.
+  pypi:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {name: dist, path: dist/}
+      - uses: pypa/gh-action-pypi-publish@release/v1
