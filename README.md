@@ -665,4 +665,4 @@ runs and limits BLAS threads to keep timings comparable and avoid thread overhea
 * [docs/limits.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/limits.md): what the grammar and the engines do not do.
 * [docs/architecture.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/architecture.md): the modules, one best response and one transition through them.
 * [docs/design/](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/design/README.md): the design record, and the dated reviews behind it.
-* [CHANGELOG.md](https://github.com/sbabichenko/noisestate/blob/HEAD/CHANGELOG.md): every change by release.
+* [CHANGELOG.md](https://github.com/sbabichenko/noisestate/blob/HEAD/CHANGELOG.md): public releases, starting with 1.0.0.

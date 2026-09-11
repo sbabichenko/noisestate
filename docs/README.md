@@ -19,4 +19,5 @@ These pages provide detailed reference material, numerical methods, and developm
 | [architecture.md](architecture.md) | the modules and what each holds; one best response and one transition followed through them |
 | [design/](design/README.md) | the design record: the 0.8 API specification and what it left behind, the transition engine's plan and design notes, the dissertation passages it implements, the size brief, the consolidation plan, and dated reviews kept as history |
 
-`CHANGELOG.md` at the root records every change by release.
+The [changelog](../CHANGELOG.md) records public releases starting with 1.0.0.
+Earlier development notes are in the [pre-release archive](design/pre-release-history.md).

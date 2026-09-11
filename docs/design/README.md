@@ -1,11 +1,11 @@
 # Design record
 
-Working documents copied verbatim from the stages that produced them, each with a one-line header saying
-where it came from.  They describe intent and alternatives at the time of writing; where they disagree
-with the code, the code and the pages above are current.
+Development plans, reviews, and archived release notes. These describe decisions and alternatives
+at the time of writing. For current behavior, consult the user documentation and source code.
 
 | file | stage |
 |---|---|
+| [pre-release-history.md](pre-release-history.md) | internal 0.x release history and preparation notes for the first public release, 1.0.0 |
 | [transition_plan.md](transition_plan.md) | the transition engine: the plan, 2026-09-05 |
 | [transition_design_grid.md](transition_design_grid.md) | the transition engine: the domain and grid |
 | [transition_design_equations.md](transition_design_equations.md) | the transition engine: the equations |

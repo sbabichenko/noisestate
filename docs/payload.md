@@ -10,7 +10,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 
 | key | type | meaning |
 |---|---|---|
-| `payload_version` | const 2 | the payload format, 2 ([CHANGELOG](../CHANGELOG.md) lists what 2 renamed) |
+| `payload_version` | const 2 | the payload format, 2 (the [pre-release history](design/pre-release-history.md#serialisation) records the changes from version 1) |
 | `version` | string | the package version that wrote it |
 | `name` | string | the model's name |
 | `engine` | `stationary` \| `spectral` \| `cells` | the engine that solved it (`numerics.engine` resolved) |
