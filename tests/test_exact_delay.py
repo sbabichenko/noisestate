@@ -121,3 +121,71 @@ def test_lagged_undelayed_finite_model_is_resolved_at_six_nodes():
     d.setdefault("numerics", {})["nodes"] = 6; r6 = ns.solve(d).require_converged(); d.setdefault("numerics", {})["nodes"] = 10; r10 = ns.solve(d).require_converged()
     assert max(r6.representation_error.values()) < 1e-6
     assert abs(r6.costs["player1"] - r10.costs["player1"]) < 1e-6
+
+
+#  --------------------------------------------------------- the delay under a discount
+#  The closed form above is at average cost.  What the discount adds is two factors in the
+#  dissertation's first variation: e^{-rho tau} on the agent's own delayed read of its own control,
+#  and e^{-rho Delta} on the continuation that reaches it through ANOTHER agent's delayed row.  The
+#  first is written out (engine.py, "delayed read of the control itself"); the second is not, and
+#  these tests are why it does not need to be.
+
+def _cross_delayed(rho, window=3.0, nodes=16, only_delayed=False):
+    """p2 watches p1's state through a row observed with a delay of 0.5."""
+    import noisestate as ns
+    b = ns.ModelBuilder("cross", r=0.5)
+    b.channel("w0", "v1", "v3") if only_delayed else b.channel("w0", "v1", "v2", "v3")
+    b.state("X", drift={"D1": 1.0, "D2": 1.0}, noise={"w0": 1.0})
+    b.agent("p1", controls=["D1"], loss=[[1.0, "X", "X"], ["r", "D1", "D1"]])
+    b.signal("p1", "y1", drift={"X": 1.0}, noise={"v1": 1.0})
+    b.agent("p2", controls=["D2"], loss=[[1.0, "X", "X"], ["r", "D2", "D2"]])
+    if not only_delayed:
+        b.signal("p2", "y2", drift={"X": 1.0}, noise={"v2": 1.0})
+    b.signal("p2", "flow", drift={"X": 1.0}, noise={"v3": 0.5}, delay=0.5)
+    b.stationary(discount=rho, window=window, nodes=nodes)
+    return b.build()
+
+
+def test_a_delayed_observer_cannot_react_before_the_delay():
+    """Why the continuation through another agent needs no explicit exp(-rho Delta).
+
+    The dissertation's first variation carries e^{-rho Delta_k} on the term that reaches player i
+    through player k's DELAYED row.  The engine writes no such factor: its continuation operator is
+    the rho-discounted correlation of the impulse response, and the delay is in that response's
+    SUPPORT -- so the integral weights the delayed reaction by e^{-rho Delta} and later of its own
+    accord.  That argument is only sound if the support really does start at the delay.
+
+    With the delayed row as the agent's ONLY information the reaction is exactly zero before it.
+    (With an undelayed row as well it is not, and correctly so: that part arrives through the state
+    at once.  An earlier version of this check missed the distinction.)
+    """
+    import noisestate as ns
+    m = _cross_delayed(0.5, only_delayed=True)
+    res = ns.solve(m).require_converged()
+    c = ns.engines.stationary(m).c
+    R = c.closed_loop(res.maps, excluded="p1", impulse_controls=["D1"])[:, c.nW:]
+    i = list(c.prim).index("D2")
+    reaction = R[i * c.N:(i + 1) * c.N, 0]
+    ages = c.grid.nodes
+    assert np.abs(reaction[ages < 0.5 - 1e-9]).max() == 0.0        # nothing before the delay
+    assert np.abs(reaction[ages > 0.5 + 1e-9]).max() > 1e-3        # and a real reaction after it
+
+
+@slow("slow (two discounts x two engines on a delayed two-agent model); set NOISESTATE_SLOW=1")
+def test_the_discount_does_not_degrade_the_delayed_cross_engine_agreement():
+    """A missing or mis-signed discount on a delayed term would show up as the stationary and finite
+    engines agreeing at rho = 0 and drifting apart at rho > 0.  They do not: the residual gap is the
+    ordinary discretisation difference between the two engines at this resolution, the same size
+    either way.
+    """
+    import noisestate as ns
+    gaps = {}
+    for rho in (0.0, 0.5):
+        stat = ns.solve(_cross_delayed(rho, window=3.0, nodes=14)).require_converged()
+        m = _cross_delayed(rho).with_horizon(ns.Finite(T=3.0, discount=rho))
+        fin = ns.solve(m, {"nodes": 4}).require_converged()
+        s = float(stat.kernel("D1", "w0").at(0.5))
+        f = float(fin.kernel("D1", "w0").at(1.5, 1.0))
+        gaps[rho] = abs(s - f) / abs(s)
+    assert max(gaps.values()) < 0.06, gaps
+    assert abs(gaps[0.5] - gaps[0.0]) < 0.02, gaps      # the discount adds no error of its own

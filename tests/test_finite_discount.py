@@ -142,3 +142,55 @@ def test_the_two_finite_engines_agree_at_every_discount(rho):
     cells = ns.solve(m, {"engine": "cells", "nodes": 400}).require_converged()
     rel = abs(spectral.costs["player1"] - cells.costs["player1"]) / abs(spectral.costs["player1"])
     assert rel < 3e-3, (rho, spectral.costs["player1"], cells.costs["player1"], rel)
+
+
+def _own_lag(rho, T=None, window=None, nodes=16):
+    """A loss that reads the agent's OWN control at a lag: loss ... + c D(t) D(t - 0.5)."""
+    b = ns.ModelBuilder("ownlag", r=0.5, c=0.3)
+    b.channel("w0", "v1")
+    b.state("X", drift={"X": -0.3, "D": 1.0}, noise={"w0": 1.0})
+    b.agent("me", controls=["D"], loss=[[1.0, "X", "X"], ["r", "D", "D"], ["c", "D", "D@0.5"]])
+    b.signal("me", "y", drift={"X": 1.5}, noise={"v1": 1.0})
+    if window is not None:
+        b.stationary(discount=rho, window=window, nodes=nodes)
+        return b.build()
+    b.finite(T, nodes)
+    return b.build().with_horizon(ns.Finite(T=T, discount=rho))
+
+
+@slow("slow (two engines x two discounts on an own-lag model); set NOISESTATE_SLOW=1")
+def test_the_own_lagged_read_is_discounted_consistently_across_the_engines():
+    """The one discount factor the engines write out explicitly.
+
+    A loss term c D(t) D(t - 0.5) reaches the first-order condition twice: as an instantaneous read
+    of the PAST control, undiscounted because it is felt at t, and through the FUTURE flow at
+    t + 0.5 in which D(t) is the lagged factor, which carries exp(-rho * 0.5).  Only the second is
+    the `exp(-c.rho * lag) * own_lag_read(lag)` term, which is why the cross term's influence does
+    not fade as rho grows -- half of it never was discounted.
+
+    Nothing exercised that path: deleting the factor left the whole suite green, because no shipped
+    example and no test had an own lagged control in a loss.  The two engines implement it
+    separately, so agreeing at rho > 0 is the check available without a closed form.  It is not a
+    sharp one -- removing the factor moves the stationary answer about 1.3% here, against a
+    cross-engine gap of about 0.5% -- so it is a consistency test, not a proof.
+    """
+    gaps = {}
+    for rho in (0.0, 0.5):
+        stat = ns.solve(_own_lag(rho, window=4.0, nodes=16)).require_converged()
+        fin = ns.solve(_own_lag(rho, T=5.0, nodes=6), {"nodes": 6}).require_converged()
+        s = float(stat.kernel("D", "w0").at(1.0))
+        f = float(fin.kernel("D", "w0").at(3.0, 2.0))
+        gaps[rho] = abs(s - f) / abs(s)
+    assert max(gaps.values()) < 0.02, gaps
+    assert gaps[0.5] <= gaps[0.0] + 0.01, gaps        # the discount does not degrade the agreement
+
+
+def test_an_own_lagged_read_is_undiscounted_at_rho_zero():
+    """The factor is exp(-rho * lag), so at rho = 0 it must be exactly inert -- a sanity check that
+    the term is a discount and not a stray lag weight."""
+    a = ns.solve(_own_lag(0.0, window=4.0, nodes=14)).require_converged()
+    b = ns.solve(_own_lag(0.0, window=4.0, nodes=14)).require_converged()
+    assert float(a.kernel("D", "w0").at(1.0)) == float(b.kernel("D", "w0").at(1.0))
+    #  and it is genuinely live at rho > 0: the same model answers differently
+    c = ns.solve(_own_lag(1.0, window=4.0, nodes=14)).require_converged()
+    assert abs(float(c.kernel("D", "w0").at(1.0)) - float(a.kernel("D", "w0").at(1.0))) > 1e-3
