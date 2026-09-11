@@ -58,7 +58,7 @@ def model(rho, kind, nodes):
 TS = np.array([0.5, 1.0, 1.0, 2.0, 2.0, 2.8, 2.8]); SS = TS - np.array([0.1, 0.1, 0.5, 0.5, 1.5, 0.1, 2.0])
 
 
-@pytest.mark.parametrize("rho", [0.0, 0.5])
+@pytest.mark.parametrize("rho", [0.0, 0.5, 2.0])
 def test_spectral_finite_engine_matches_the_discounted_closed_form(rho):
     """12 nodes per side: the cost to 1e-8 (measured -5e-9 at rho = 0 and -1e-8 at 0.5; 3e-5 at 8 nodes, 2e-4 at 6)
     and the kernels to 6e-5 (D on w1, the one that reads K(t) and G(s) directly; 1e-5 and below on the others)."""
@@ -133,16 +133,12 @@ def test_the_stationary_cost_is_the_flow_and_the_finite_cost_is_the_integral():
     assert fin.costs["player1"] < stat.costs["player1"] / 0.5
 
 
-@pytest.mark.parametrize("rho", [0.0, 0.5, 2.0])
-def test_the_two_finite_engines_agree_at_every_discount(rho):
-    """A cross-check that does not depend on the closed form above: two independently written
-    engines, the same discounted problem."""
-    m = ns.load(ns.example("ch1_two_player_finite")).with_horizon(ns.Finite(T=1.0, discount=rho))
-    spectral = ns.solve(m, {"nodes": 14}).require_converged()
-    cells = ns.solve(m, {"engine": "cells", "nodes": 400}).require_converged()
-    rel = abs(spectral.costs["player1"] - cells.costs["player1"]) / abs(spectral.costs["player1"])
-    assert rel < 3e-3, (rho, spectral.costs["player1"], cells.costs["player1"], rel)
-
+#  A cross-engine comparison at every discount used to sit here.  It cost 152 s of a 303 s suite --
+#  half the runtime in three tests -- because agreement between a spectral method and a FIRST-ORDER
+#  cell scheme needs 400 cells to reach 3e-3.  It was also the weaker check: both engines are
+#  already pinned against the exact solution above, so agreement between them follows, and two
+#  engines wrong in the same way would have passed it.  Its one unique contribution was covering a
+#  third discount, which the closed-form test now does in 0.6 s against an exact reference.
 
 def _own_lag(rho, T=None, window=None, nodes=16):
     """A loss that reads the agent's OWN control at a lag: loss ... + c D(t) D(t - 0.5)."""
