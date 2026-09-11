@@ -8,11 +8,10 @@ The solver returns both responses to the primitive shocks (the noise-state repre
 strategies on each agent's own signal history.  It also decomposes the first-order conditions into
 the instantaneous part, the physical continuation and the information wedge.
 
-The framework is the decentralized LQG game of
-*Forecasting and Manipulating the Forecasts of Others* (Babichenko, 2026): a linear state driven by the
-agents' controls and Brownian channels, each agent observing noisy linear rows of the states and of the
-other agents' controls, possibly with delay, and minimising a discounted (or average) quadratic flow
-loss over causal linear strategies on its own observation history.
+The framework follows the dissertation *Noise-State Calculus for Dynamic Games with Strategic
+Information* (Babichenko, 2026).
+Agents influence a shared state through their controls and observe noisy signals of states and
+other agents' actions.  Each minimises a discounted or average quadratic loss.
 
 ## Can this solve my problem?
 
@@ -103,14 +102,13 @@ ch1_two_player_finite: converged residual 5.90e-09 in 15 evaluations, 0.9s; tria
   player2: discounted cost = +0.39690577
 ```
 
-Both players pay the same, which is what you would expect from a game symmetric in `p` and `r`.
+The players have equal costs, consistent with their identical precisions and effort penalties.
 
 ### Read the answer
 
-The costs are the headline number, one per agent.  Smaller is better: each is the expected loss
-integrated over the game, averaging over the possible noise histories, rather than the loss from
-one simulated run.  Here the discount rate is zero, so there is no discounting despite the summary's
-general label "discounted cost":
+`res.costs` contains each agent's expected loss over the game.  Smaller is better.  The expectation
+averages over noise histories, so this is not the cost of one simulated run.  In this example the
+discount rate is zero; the summary's label "discounted cost" also covers this case.
 
 ```python
 res.costs["player1"]      # 0.39690577   (res.cost_kind: "discounted integral over [0, T]")
@@ -131,7 +129,7 @@ res.kernel("X", "w0").plot("kernel.png")     # the state's response to the commo
 Each curve fixes one **date** `t`; the horizontal axis is the **shock time** `s`, the moment a shock
 struck.  The distance `t - s` is that shock's **age**.
 
-Reading *along one curve* compares shocks of different ages, all as they stand at the same date:
+Along one curve, the observation date stays fixed while the shock's age varies:
 
 ```python
 k = res.kernel("X", "w0")
@@ -140,8 +138,7 @@ k.at(1.0, 0.5)      # +0.7539   at t=1, about three-quarters of a shock of age 0
 k.at(1.0, 0.0)      # +0.4926   at t=1, a shock of age 1.0 is still half there
 ```
 
-Following *one* shock means fixing `s` and moving **across** curves, watching the same disturbance
-age:
+To follow a single shock over time, fix `s` and vary `t`:
 
 ```python
 k.at(0.50, 0.5)     # +1.0000   the shock at s=0.5, the instant it lands
@@ -162,9 +159,8 @@ d.at(0.5, 0.4)      # -0.2256   age 0.1: player 1 pushes back, against the shock
 d.at(1.0, 0.9)      # +0.0000   at t = T there is no horizon left to control
 ```
 
-The reaction at age zero is **exactly zero**: a player learns about `X`
-only by integrating a noisy signal, so it cannot respond to a shock the instant it lands.  And the
-sign is negative against a positive shock, which is what "push the state back to zero" looks like.
+The reaction at age zero is zero because learning about `X` requires accumulating observations.
+The subsequent negative response counteracts the positive shock.
 
 `kernel()` returns the *closed-loop* response to primitive shocks.  The implementable strategy is
 `res.maps["player1"]`: the weights the player puts on its **own signal history**.  Kernels describe
@@ -185,10 +181,9 @@ sharper.costs      # player1 0.359950,  player2 0.331103
 | player1 | 0.396906 | 0.359950 | **-9.3%** |
 | player2 | 0.396906 | 0.331103 | **-16.6%** |
 
-Player 1 sees better and does better -- and **player 2 gains almost twice as much**.  Better
-information for one player is close to a public good here: player 1 spends its own effort stabilising
-`X`, and a steadier `X` is worth just as much to player 2, who does not pay for player 1's extra
-effort (it still pays for its own).
+Both players benefit from player 1's better information.  Player 2's cost falls by almost twice as
+much: it benefits from a more stable state while player 1 pays for its own control effort.
+Both losses place the same weight on deviations of `X` from zero.
 
 `with_params()` returns a new model; `model` is untouched, so you can sweep without rebuilding.
 To keep an editable copy of the changed model and load it in a later session:
@@ -225,10 +220,9 @@ res.require_ok()                 # DiagnosticsError: converged, but window [fail
                                  #    of the window: raise horizon.window)
 ```
 
-These are evidence, not a guarantee: they say that the checks a policy names were run and passed, on
-this grid and this window.  They cannot tell you the model is the one you meant.  The checks
-themselves, the six statuses a check can report, validation policies, and what to do about each
-failure are in [docs/guards.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/guards.md).
+Acceptance means the required numerical checks passed for this solve.  It does not establish that
+the model represents the intended problem.  See [docs/guards.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/guards.md)
+for check statuses, policies, and advice on failures.
 
 ### Which example should I start from
 
@@ -327,13 +321,18 @@ horizon: {kind: stationary, discount: rho, window: 8.0}
 numerics: {nodes: 24}
 ```
 
-An atom is a state, a control or a definition, `name@tau` its value `tau` earlier.  A state has a
-linear `drift` in atoms (plus `const`), a `noise` loading on the channels and, on a finite horizon, an
-`initial` value.  A signal row has a `drift`, a `noise` and an optional `delay`.  A loss is a list of
-terms `[coef, a, b]` (quadratic) and `[coef, a]` (linear); linear terms, constant drifts and initial
-states move the means only.  `ties` make agents share one strategy; `numerics` is how it is solved.
-Coefficients may be expressions in the parameters.  The full reference, every key with its type and
-default, is [docs/model_file.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/model_file.md); `noisestate schema model` prints the JSON Schema.
+An *atom* names a state, control, or definition; `name@tau` refers to its value `tau` earlier.
+A state's `drift` is linear in these atoms, with an optional `const` term.  Its `noise` specifies
+the loading on each Brownian channel.  Finite-horizon states can also have an `initial` value.
+Signal rows have a `drift`, a `noise` loading, and an optional observation `delay`.
+
+Losses sum quadratic terms `[coef, a, b]` and linear terms `[coef, a]`.  Linear loss terms,
+constant drifts, and initial states affect only the means.  Coefficients can be expressions in
+the model's parameters.  `ties` imposes a shared strategy on a group of agents, and `numerics`
+sets the solver options.
+
+See [docs/model_file.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/model_file.md) for each field's type and default.
+`noisestate schema model` prints the JSON Schema.
 
 ### The horizon: two different lengths
 
@@ -352,19 +351,20 @@ horizon: {kind: finite, T: 1.0}                            # ends at 1, no lag w
 horizon: {kind: transition, T: 6.0, window: 3.0, past: ...}   # both
 ```
 
-`discount` is the rate *rho*.  It defaults to 0, which gives the average-cost formulation for a
-stationary model.  The verification behind the
-stationary equations assumes *rho > 0*: at *rho = 0* the solver is solving the formal average-cost
-form of the same system, with the lag window standing in for the transversality condition, which is
-how an undiscounted model can converge on a window and still be a window artefact.  And a stationary
-`res.costs` is the **flow loss per unit time** at every discount, not the discounted objective --
-*rho* enters the first-order condition, not the reported scalar -- while a finite horizon reports
-the discounted integral over [0, T].  `res.cost_kind` says which you have; both are in
+`discount` is the rate *rho* and defaults to 0.  For stationary models, this gives the formal
+average-cost equations.  The stationary verification assumes *rho > 0*; at zero discount, the
+finite lag window substitutes numerically for the transversality condition.  A converged result
+can therefore depend on the window rather than represent the untruncated game.
+
+Stationary `res.costs` reports **flow loss per unit time**, even at a positive discount.  The rate
+affects the equilibrium through the first-order conditions, but the reported cost is not the
+discounted objective.  Finite-horizon costs are discounted integrals over [0, T].  Check
+`res.cost_kind` when comparing results.  Further details are in
 [docs/limits.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/limits.md).
 
-Asking a horizon for the length it does not have is an error that names the one it does.  In Python the
-kinds are separate types, so `with_stationary(L)`, `with_finite(T)` and `with_transition(T, past)`
-change one field of the same kind, and `with_horizon(obj)` replaces the horizon outright:
+The three horizon kinds have separate Python types.  `with_stationary(L)`, `with_finite(T)`, and
+`with_transition(T, past)` update a horizon of the corresponding kind.  Use `with_horizon(obj)`
+to replace it with a different kind.  Requesting a length that does not apply raises an error.
 
 ```python
 model.with_stationary(9.0)                       # a stationary model's lag window
@@ -374,15 +374,18 @@ model.with_horizon(ns.Finite(T=6.0))             # replace the horizon, whatever
 
 ## Other ways to build a model
 
-The first workflow above loads a file.  The same model can be written as equations or built up in a
-loop; all three produce the same `Model`, and `to_dict()` is the file in every case.
+Models can also be written as Python expressions or assembled with a builder.  Both produce a
+`Model` whose `to_dict()` method returns the same structure used by the YAML format.
 
 ### As equations
 
-With `Param`, `State`, `Control`, `Signal`, `Agent` and `shocks`: a state's drift is assigned (its
-quantity terms are the drift, its shock terms the noise loading, a constant becomes `const`), a signal
-is one linear expression with at least one shock, a loss is quadratic in the quantities (`(X - 1)**2`
-is `X^2 - 2X` with the constant dropped and noted in `model.notes`; `x.lag(tau)` is `x@tau`).
+Use `Param`, `State`, `Control`, `Signal`, `Agent`, and `shocks` to write the model as expressions.
+In an assignment to a state's `drift`, quantity terms define the drift, shock terms define the
+noise loading, and a constant becomes `const`.  A signal is a linear expression containing at
+least one shock; a loss is quadratic in the quantities.
+
+Constant loss terms are omitted: `(X - 1)**2` becomes `X^2 - 2X`, with the omission recorded in
+`model.notes`.  Write `x.lag(tau)` for the YAML atom `x@tau`.
 
 ```python
 import noisestate as ns
@@ -403,13 +406,15 @@ game.save("ch1.yaml"); ns.Model.load("ch1.yaml")
 with ns.using_settings(second_order_tol=1e-3): game.solve()
 ```
 
-The channels are the shocks used, in `shocks()` order; the parameters are the `Param`s used, with the
-values given (`Param.many` returns them in order; a coefficient may use `+ - * / **` and `sqrt exp log
-sin cos tanh abs min max`, and renders to the file's expression: `p1**0.5` is `"sqrt(p1)"`);
-`define(name, expr)` is a definition, `ns.Finite(T)` and `ns.Transition(T, past=..., continuation=...)`
-the other horizons, `numerics=` the file's block.  `examples/expr_examples.py` writes every shipped
-example this way and `tests/test_expr.py` checks that each equals its YAML file.  The YAML form stays
-the persistence format.
+The model collects the shocks and parameters used in its expressions.  Channels retain their
+`shocks()` order, and `Param.many` returns parameters in argument order.  Coefficients support
+`+ - * / **` and `sqrt exp log sin cos tanh abs min max`; saved expressions preserve their parameter
+dependence, so `p1**0.5` is written as `"sqrt(p1)"`.
+
+Use `define(name, expr)` for a named definition, `ns.Finite(T)` or
+`ns.Transition(T, past=..., continuation=...)` for other horizons, and `numerics=` for solver
+options.  `examples/expr_examples.py` expresses all shipped examples this way;
+`tests/test_expr.py` checks them against their YAML equivalents.  Models are saved as YAML.
 
 ### With ModelBuilder
 
@@ -431,9 +436,9 @@ the rest of the block.
 
 ## Changing what agents see
 
-Observation experiments do not need a second hand-built model.  `with_signal()` returns a new model,
-adds new noise channels, and puts the row in every agent's information by default; `with_signals()`
-adds several rows at once and `without_signal()` is the inverse.  The original model is unchanged.
+`with_signal()` adds an observation row and any new noise channels, returning a new model.
+By default, every agent observes the row.  `with_signals()` adds several rows at once;
+`without_signal()` removes a row.
 
 ```python
 public = game.with_signal("flow", drift={"D1": 1, "D2": 1}, noise={"w_flow": 1})
@@ -456,10 +461,12 @@ spectrum bounds the omitted modes; otherwise `adjusted_response` says `not certi
 
 ## Transitions
 
-A regime change: the game runs in one stationary equilibrium until time zero, its coefficients change,
-and the new path is solved on [0, T] from the old shocks (the *past*: the old model, its converged
-result, or a list of initial shocks such as a prior on a state), closed by the new model's stationary
-equilibrium on a buffer [T, T + L] (`continuation: stationary`) or by the game's end (`end`).
+A transition describes the path after a regime change at time zero.  The solver computes this path
+on [0, T], inheriting the effects of earlier shocks from a *past*.  Supply the old model, its
+converged result, or initial shocks representing a prior on the state.
+
+With `continuation: stationary`, the new model's stationary equilibrium supplies the continuation
+on a buffer [T, T + L].  With `continuation: end`, the game ends at T.
 
 ```python
 import noisestate as ns
@@ -501,8 +508,9 @@ res = ns.solve(ns.example("ch3_two_player"), max_evaluations=3, deadline=30.0,
 res.converged, res.message          # False, the bound that stopped it; nothing raises
 ```
 
-`max_evaluations` caps the best-response evaluations and `deadline` the wall time in seconds; past
-either the best iterate comes back with `converged=False` and `res.message` naming the bound.
+`max_evaluations` limits best-response evaluations; `deadline` limits elapsed time in seconds.
+If either limit stops the solve, it returns the best iterate with `converged=False` and identifies
+the limit in `res.message`.
 `progress` is called after every evaluation with `{"evaluation", "residual", "phase", "seconds"}`; an
 exception it raises cancels the solve.  `diagnostics=False` skips the checks at the end (`res.foc` and
 `res.second_order` stay empty, those checks report `skipped`) and halves a warm-started re-solve.

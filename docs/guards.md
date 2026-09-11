@@ -1,7 +1,7 @@
 # Guards against misleading results
 
-A converged solve is a solution of the discretised, truncated model.  Whether that model is close
-enough to the one you wrote is what these checks answer.
+Diagnostics check convergence, numerical resolution, and the conditions needed to interpret a
+result.  Convergence alone does not establish that the discretisation is adequate.
 
 `res.diagnostics.rows` lists every check as a row `{name, value, threshold, ok, flag, advice}` (`ok` is
 None where a check gives no verdict); `res.diagnostics.statuses` gives each check's status, and
@@ -12,12 +12,11 @@ are fields of `noisestate.Settings` ([settings.md](settings.md)).
 
 ## Converged, and accepted
 
-A converged solve is a numerical solution, within the solver's tolerance, of the *discretised,
-truncated* model.  Whether that model is
-close enough to the one you wrote is what these checks answer, and the two questions have two calls:
-`require_converged()` is convergence alone, `require_ok(policy)` is the whole verdict.
+A converged solve satisfies the discretised equations within the solver's tolerance.
+`require_converged()` checks this condition.  `require_ok(policy)` also checks the diagnostics
+required by the policy.
 
-Every check reports one of six statuses, and the differences between them carry weight:
+Each check reports one of six statuses:
 
 | status | meaning |
 |---|---|
@@ -28,21 +27,19 @@ Every check reports one of six statuses, and the differences between them carry 
 | `not_applicable` | the check has no meaning for this **model** (a lag window on a plain finite horizon) |
 | `missing` | applicable, supported, was to run, produced no record |
 
-`not_applicable` and `unsupported` are never merged: the first says nothing is missing, the second
-says something is.  An engine that cannot run a check does not thereby pass it.
+An `unsupported` check leaves a requirement unmet.  A `not_applicable` check does not block
+acceptance because it is irrelevant to the model.  Neither status emits a failing row.
 
-Which checks a model has depends on what its horizon CARRIES, not on its kind.  A stationary model
-has its own lag `window`.  A transition has none of its own -- the windows it is solved on belong to
-the past it inherits and the stationary continuation it is closed by -- so it carries `past window`
-and `continuation window` instead, plus `settled`.  A transition closed by the game's `end` has
-nothing to settle against and reports `settled` as `not_applicable`; one whose past is a prior on the
-state rather than an inherited regime has no `past window` either.
+A stationary model has a `window` check.  For a transition, the lag-window checks apply to the
+inherited past and stationary continuation separately: `past window` and `continuation window`.
+The `settled` check measures agreement with the continuation near the end of the solved interval.
+It is `not_applicable` when the game ends at T.  A prior on the initial state has no `past window`
+check.  Each applicable window or settling check can block acceptance under a policy that requires it.
 
 ### Policies
 
-A policy names which checks a particular use requires.  `Policy.PUBLICATION` (the default) requires
-all of them; `Policy.EXPLORATORY` requires only convergence.  A weaker standard is legitimate and has
-to be asked for by name:
+A policy specifies the required checks.  `Policy.PUBLICATION` is the default;
+`Policy.EXPLORATORY` requires only convergence and must be requested explicitly:
 
 ```python
 res.diagnostics.statuses                                   # every applicable check and its status
@@ -55,16 +52,6 @@ print(res.diagnostics.summary())                           # the grouped verdict
 On the command line the same split is `--require-ok`, with `--policy exploratory` for the weaker
 standard.  A check the engine cannot compute is reported as `cannot be checked here` rather than as a
 failure, and says whether any setting could change it.
-
-A row that fails is not the same as a check that could not run: a status of `unsupported` (the engine
-cannot compute it) or `not_applicable` (the model gives it no meaning) emits no failing row, and only
-the first of the two leaves the requirement unmet.
-
-Which checks apply is decided by what the model's horizon CARRIES.  A stationary model has its own lag
-`window`; a transition's windows belong to its past and its continuation, so it carries `past window`
-and `continuation window` instead, together with `settled`.  A transition closed by the game's `end`
-has no continuation to settle against, and a past that is a prior on the state has no window.  All four
-are names a policy can require, so a failing `past window` blocks acceptance rather than only printing.
 
 ## The rows and their flags
 
