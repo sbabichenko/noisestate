@@ -40,8 +40,8 @@ repository only.
 
 ## A first game, start to finish
 
-One model, all the way through: what the game is, solving it, reading the answer, and changing it.
-Everything below uses `ch1_two_player_finite`, the Chapter 1 tracking game.
+This walkthrough uses `ch1_two_player_finite`, the Chapter 1 tracking game, to introduce the model
+format, solve a game, interpret the result, and change a parameter.
 
 ### The game
 
@@ -116,9 +116,8 @@ general label "discounted cost":
 res.costs["player1"]      # 0.39690577   (res.cost_kind: "discounted integral over [0, T]")
 ```
 
-Underneath them is what the players actually do, and it is worth looking at before trusting any
-cost.  A **kernel** is a response to a shock: how much of a unit shock, struck at one moment, is
-still showing up later.
+A **kernel** describes how a state or action responds to a shock: how much of a unit shock at one
+moment is still present later.
 
 The curves below show these responses, not simulated sample paths of `X`.  A realised path would
 combine contributions from all three noise channels over time.
@@ -130,8 +129,7 @@ res.kernel("X", "w0").plot("kernel.png")     # the state's response to the commo
 ![the state's response to a unit common shock](https://raw.githubusercontent.com/sbabichenko/noisestate/HEAD/docs/figs/first_kernel.png)
 
 Each curve fixes one **date** `t`; the horizontal axis is the **shock time** `s`, the moment a shock
-struck.  The distance `t - s` is that shock's **age**.  The two directions answer different
-questions, and it is worth keeping them apart.
+struck.  The distance `t - s` is that shock's **age**.
 
 Reading *along one curve* compares shocks of different ages, all as they stand at the same date:
 
@@ -152,10 +150,10 @@ k.at(1.00, 0.5)     # +0.7539   the same shock at the end of the game
 ```
 
 A positive value means the state is still displaced in the direction of the shock.  The decay in
-either reading is the players working: without them `X` would keep the whole shock forever, since
-nothing else pulls it back.
+either reading reflects the players' control actions: without them, `X` would retain the full
+effect of the shock, since the state has no other restoring force.
 
-The controls tell the other half of the story, and their signs are the opposite:
+The control response has the opposite sign:
 
 ```python
 d = res.kernel("D1", "w0")
@@ -164,14 +162,13 @@ d.at(0.5, 0.4)      # -0.2256   age 0.1: player 1 pushes back, against the shock
 d.at(1.0, 0.9)      # +0.0000   at t = T there is no horizon left to control
 ```
 
-Two things to read there.  The reaction at age zero is **exactly zero**: a player learns about `X`
+The reaction at age zero is **exactly zero**: a player learns about `X`
 only by integrating a noisy signal, so it cannot respond to a shock the instant it lands.  And the
 sign is negative against a positive shock, which is what "push the state back to zero" looks like.
 
-`kernel()` is the *closed-loop* response, the thing you plot.  It is not the strategy the player
-runs: that is `res.maps["player1"]`, the weights the player puts on its **own signal history**, which
-is what it can actually condition on.  The two answer different questions -- "what happens when a
-shock lands" against "what does this player do with what it sees".
+`kernel()` returns the *closed-loop* response to primitive shocks.  The implementable strategy is
+`res.maps["player1"]`: the weights the player puts on its **own signal history**.  Kernels describe
+the effects of shocks; maps describe how the player uses its observations.
 
 ### Change one thing
 
@@ -191,7 +188,7 @@ sharper.costs      # player1 0.359950,  player2 0.331103
 Player 1 sees better and does better -- and **player 2 gains almost twice as much**.  Better
 information for one player is close to a public good here: player 1 spends its own effort stabilising
 `X`, and a steadier `X` is worth just as much to player 2, who does not pay for player 1's extra
-effort (it still pays for its own).  That asymmetry is the kind of thing the solver is for.
+effort (it still pays for its own).
 
 `with_params()` returns a new model; `model` is untouched, so you can sweep without rebuilding.
 To keep an editable copy of the changed model and load it in a later session:
@@ -203,15 +200,15 @@ saved_model = ns.load("sharper.yaml")
 
 ### Did the required checks pass
 
-`res.require_ok()` above was not decoration.  A converged solve is a numerical solution, within the
+`res.require_ok()` checks more than convergence.  A converged solve is a numerical solution, within the
 solver's tolerance, of the **discretised, truncated** model -- which is not the same as the model you
 wrote:
 
 * **converged** -- the fixed-point iteration reached its tolerance.  `res.converged`.
 * **accepted** -- every check a stated policy requires actually passed.  `res.diagnostics.assess()`.
 
-A result can converge perfectly and still be wrong to use, because its grid was too coarse or its lag
-window too short.  So there are two calls, and the second is the one to put in a script:
+A result can converge on a grid that is too coarse or a lag window that is too short.
+Use `require_ok()` to check the result before using it in a script:
 
 ```python
 res.require_converged()          # ConvergenceError unless the iteration converged -- convergence only
@@ -275,9 +272,10 @@ another example may use different ones.
 
 ### Three objects
 
-That is the whole loop.  It is built out of three things, and the rest of this document is their
-reference: a **`Model`** (the economics), a **`Numerics`** (how it is discretised -- `ns.solve(model,
-ns.Numerics(nodes=32))` changes the resolution without touching the model), and a **`Result`**.
+The API centres on three objects: a **`Model`** describes the game, **`Numerics`** specifies how it
+is solved, and a **`Result`** holds the solution and diagnostics.  For example,
+`ns.solve(model, ns.Numerics(nodes=32))` changes the resolution without changing the game.
+The remaining sections provide the reference for these objects.
 
 ## What a Result holds
 
@@ -339,14 +337,14 @@ default, is [docs/model_file.md](https://github.com/sbabichenko/noisestate/blob/
 
 ### The horizon: two different lengths
 
-`horizon` is the economics of time, and it carries **two quantities that are never the same thing**:
+`horizon` specifies the time structure of the game.  Its two length parameters have different roles:
 
 * `window` is **L, the lag-truncation length**: how far back a strategy may look.  Stationary models
   have one; transitions have one too.
 * `T` is the **terminal time**: the end of the interval that is solved for.  Finite horizons and
   transitions have one.  On a finite horizon the game does end at `T`.  On a transition it usually
   does not: `T` is where the solved path stops and a stationary continuation takes over on a buffer
-  after it, so `T` is "how long the transition is followed", not "when the world stops".
+  after it.
 
 ```yaml
 horizon: {kind: stationary, discount: 0.5, window: 8.0}    # L = 8, no terminal time
@@ -354,8 +352,8 @@ horizon: {kind: finite, T: 1.0}                            # ends at 1, no lag w
 horizon: {kind: transition, T: 6.0, window: 3.0, past: ...}   # both
 ```
 
-`discount` is the rate *rho*, and it defaults to 0, which is the average-cost problem.  Two things
-follow that are worth knowing before you read a stationary number.  The verification behind the
+`discount` is the rate *rho*.  It defaults to 0, which gives the average-cost formulation for a
+stationary model.  The verification behind the
 stationary equations assumes *rho > 0*: at *rho = 0* the solver is solving the formal average-cost
 form of the same system, with the lag window standing in for the transversality condition, which is
 how an undiscounted model can converge on a window and still be a window artefact.  And a stationary
@@ -474,7 +472,7 @@ res = ns.transition(old, new, settle=1e-4, numerics={"nodes": 12})   # or finds 
 res.settled, res.excess_costs, res.loss_path["player1"], res.belief_error("player2", "X")
 ```
 
-Every transition starts from the continuation's stationary maps.  Two exact identities pin the
+Every transition starts from the continuation's stationary maps.  Two exact identities check the
 construction: a model as its own past and continuation returns its stationary kernels on every node,
 and a prior on the state of the one-agent model reproduces the Kalman filter.  The construction, the
 result's fields and the two shipped examples are in [docs/transitions.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/transitions.md).
@@ -494,8 +492,7 @@ which carries the Kyle-Back sweep down to a trading cost of 0.01 where a plain r
 whose `change` is more than five times the sweep's median is a `jump`, so a branch change between
 neighbouring points is visible instead of plotted as a curve.
 
-A warm-started point costs a handful of best responses, which is what a slider needs, and a solve can
-be bounded and watched:
+For interactive use, a solve can have evaluation and time limits and report its progress:
 
 ```python
 log = []
@@ -535,18 +532,18 @@ twice the window, with a benchmark range.  A tail whose increments are not shrin
 automatic extension suggestion and instead warns that the stationary problem may not exist, as in
 undiscounted Kyle-Back.
 
-**Second order.**  A negative curvature is a claim about the model, and the grid can make the same claim
-falsely: `res.refine()` re-solves on a finer grid and records the curvature there
-(`res.refinement.curvature`), and one that shrinks towards zero overturns the verdict --- the direction
-is the quadrature's, not a strategy (on the triangle it sits on the diagonal `a = t` and alternates in
-sign between neighbouring age nodes).  `examples/kyle_back_prior.yaml` is the case: the smallest
+**Second order.**  Negative curvature can indicate a saddle or a discretisation artifact.
+`res.refine()` re-solves on a finer grid and records the curvature there
+(`res.refinement.curvature`).  Curvature that shrinks towards zero under refinement indicates a
+discretisation artifact.  In `examples/kyle_back_prior.yaml`, the corresponding direction sits on
+the triangle's diagonal `a = t` and alternates in sign between neighbouring age nodes.  The smallest
 curvature runs -1.45e-02, -1.02e-02, -8.26e-03, -6.71e-03, -5.63e-03 at 8, 12, 16, 20 and 24 nodes,
 about n^-0.85.  The objective is a quadratic form in the agent's strategy, and a smallest curvature
 below -1e-4 of the largest prints
 `NOT A MINIMUM (the best response of 'trader1' is a saddle: its loss is not convex in its own
 strategy, smallest curvature -1.8e-03 of the largest)`.  A negative direction that is positive on a
 window longer by two lags is reported as `window edge: ... a truncation of the lagged loss terms at the
-edge, not a saddle` instead.  A **discount does not take the check away**: the discounted objective is
+edge, not a saddle` instead.  The check also applies with a positive discount: the discounted objective is
 a quadratic form whose joint running Hessian carries no discount, since `rho` enters only as the
 strictly positive weight `e^{-rho t}`, so the verdict is the same at every `rho` and the check is
 made on the average-cost system.  The cell engine is the one that reports `unsupported` here: it
@@ -584,7 +581,7 @@ The table is [docs/settings.md](https://github.com/sbabichenko/noisestate/blob/H
 
 ## Errors
 
-Errors are typed by whose problem they are.  A `ValueError` is a model problem: a file that does not
+Exception types distinguish invalid inputs from solver failures.  A `ValueError` is a model problem: a file that does not
 validate, a parameter that is not the model's, a lag off the panels, a singular best-response system, a
 solve bound out of range.  A `TypeError` is a wrong argument: an unknown solve option (the message names
 the `Numerics` field it belongs to, or the `Numerics(settings=...)` route for a `Settings` field),
@@ -593,8 +590,7 @@ the `Numerics` field it belongs to, or the `Numerics(settings=...)` route for a 
 (`numerics.engine 'cells' solves a finite horizon only`).  A `RuntimeError` is a solver problem: a Krylov
 best response not converging, a non-finite value from the best-response map.
 
-`ResultValidationError` is the family for a result that will not do, with two siblings that are not
-interchangeable:
+`ResultValidationError` is the base class for two distinct result-validation exceptions:
 
 * `ConvergenceError` --- the iteration did not converge.  From `require_converged()`, and from
   `require_ok()` when convergence is what blocked.
@@ -645,10 +641,8 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 NOISESTATE_SLOW=1 ./run-tests      # everything, about 6 minutes
 ```
 
-Always through `./run-tests`, never `pytest` directly: it takes a lock so two suites cannot overlap
-(concurrent runs corrupt every timing they touch) and caps the BLAS threads, without which the small
-solves here run 16-way and the suite takes six times as long.  [CONTRIBUTING.md](https://github.com/sbabichenko/noisestate/blob/HEAD/CONTRIBUTING.md) has the details
-and the measuring conventions.
+Run the suite through `./run-tests`, not `pytest` directly.  The wrapper prevents overlapping test
+runs and limits BLAS threads to keep timings comparable and avoid thread overhead on small solves.
 
 ## Where things are
 

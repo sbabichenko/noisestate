@@ -179,3 +179,14 @@ def test_historical_reviews_are_labelled_as_history():
     for name in ("2026-09-09-external-ux-review.txt", "2026-09-10-pre-0.8-glossary.txt"):
         head = open(os.path.join(ROOT, "docs/design/reviews", name)).read()[:1200].upper()
         assert "HISTORICAL" in head or "SUPERSEDED" in head, name
+
+
+def test_the_api_page_counts_and_covers_every_exported_name():
+    """docs/api.md states how many names ns.__all__ has and claims to cover all of them.  The count
+    went stale the moment example()/examples() were added -- it said 43 against 45 -- and a stale
+    count is the kind of thing nobody re-checks by hand."""
+    doc = open(os.path.join(ROOT, "docs/api.md")).read()
+    stated = int(re.search(r"`ns\.__all__` has (\d+)", doc).group(1))
+    assert stated == len(ns.__all__), f"docs/api.md says {stated}, __all__ has {len(ns.__all__)}"
+    missing = [n for n in ns.__all__ if not re.search(r"\b" + re.escape(n) + r"\b", doc)]
+    assert not missing, f"docs/api.md does not mention {missing}"

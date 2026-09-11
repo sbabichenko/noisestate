@@ -1,6 +1,6 @@
-# The API, by what you are trying to do
+# API reference
 
-Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 43
+Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 45
 names; this page covers all of them, plus the methods on the objects they return.
 
 The shortest useful path is three calls:
@@ -12,8 +12,8 @@ res.require_ok()                                        # refuse it unless every
 res.costs, res.kernel("D1")                             # read it
 ```
 
-The middle line is the one worth keeping. A solve can converge to its tolerance and still not be a
-number you should quote:
+`require_ok()` checks convergence and the required diagnostics. A converged result can still fail
+those checks:
 
 ```python
 >>> ns.solve("examples/ch3_two_player.yaml").require_ok()
@@ -137,7 +137,7 @@ signatures and return types do not.
 
 `ns.Kernel` is an ndarray with four additions: `.axes`, `.at(*coords)`, `.plot(path)`, `.values`.
 
-## 6. Deciding whether to believe it
+## 6. Assessing a result
 
 The distinction this package cares about most. **A status describes one check; a policy says which
 checks a use requires; an assessment is what the two produce together.**
@@ -168,10 +168,9 @@ means something is.
 | `res.stability(untied=True, policy=…)` | a `Stability` — see below |
 
 `Policy.PUBLICATION` requires `converged`, `resolution`, `window`, `second_order`, `settled`;
-`Policy.EXPLORATORY` requires only `converged`. A weaker policy is legitimate and must be *named*:
-under `PUBLICATION` the cell engine cannot produce an accepted result, because it computes neither a
-representation error nor a second-order form. That is the honest report, not a defect to route
-around.
+`Policy.EXPLORATORY` requires only `converged` and must be requested explicitly.
+Under `PUBLICATION` the cell engine cannot produce an accepted result, because it computes neither a
+representation error nor a second-order form.
 
 **Exceptions are siblings, not nested:**
 
@@ -242,8 +241,8 @@ models and the path between them.
 | `ns.schema("model")` / `ns.schema("payload")` | the JSON Schema of either |
 | `ns.read_yaml(path)` / `ns.read_json(path)` | read either without building a model |
 
-The payload's `options.solve` and `options.solver` enumerate their keys and refuse the rest, so a
-key change is a version bump rather than something nobody notices.
+The payload's `options.solve` and `options.solver` accept only their documented keys.
+Changes to this contract require a payload version change.
 
 ## 10. The command line
 
