@@ -5,8 +5,8 @@ enough to the one you wrote is what these checks answer.
 
 `res.diagnostics.rows` lists every check as a row `{name, value, threshold, ok, flag, advice}` (`ok` is
 None where a check gives no verdict); `res.diagnostics.statuses` gives each check's status, and
-`res.diagnostics.assess(policy)` is the verdict a policy makes of them --- see "Converged is not the
-same as trustworthy" in the [README](../README.md).  `summary()` prints the rows that fail,
+`res.diagnostics.assess(policy)` is the verdict a policy makes of them --- see
+[Did the required checks pass](../README.md#did-the-required-checks-pass).  `summary()` prints the rows that fail,
 `to_dict()["diagnostics"]` carries them all and `to_dict()["assessment"]` the verdict.  The thresholds
 are fields of `noisestate.Settings` ([settings.md](settings.md)).
 
@@ -164,8 +164,8 @@ computed.
 * `refine()` and `stability()` rebuild the engine that produced the result, with the same options
   (naive observers, tolerances, iteration variable).  A built model is single-sourced: its
   coefficients are numbers, so `model.params` is read-only and `model.with_params(p=4.0)` returns a
-  new model, while the horizon fields (`nodes`, `window`, ...) may be changed on the object or
-  through `model.with_horizon(nodes=32)`; `solve`, `sweep`, `refine` and `stability` all see the
-  same model.
+  new model.  Use `model.with_numerics(nodes=32)` to change resolution or, for a stationary model,
+  `model.with_stationary(9.0)` to change its lag window.  Both return new models; pass the changed
+  model to `solve` or `sweep`.  A result's `refine()` and `stability()` use the model it was solved from.
 * `ties` are checked structurally: rows, losses, delays and coefficients up to relabelling, the
   dynamics of each agent's private states, and whether a row's noise channel also drives a state.

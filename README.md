@@ -1,16 +1,33 @@
 # noisestate
 
-Equilibrium solver for linear-quadratic-Gaussian games with private information.  You describe the model
-as data (a YAML file or a few lines of Python) and the solver returns the equilibrium in noise-state
-linear strategies: every agent's action as a kernel over the primitive shocks, its raw strategy on its
-own signal history, and the decomposition of each first-order condition into the instantaneous part,
-the physical continuation and the information wedge.  The framework is the decentralized LQG game of
+Equilibrium solver for linear-quadratic-Gaussian games with private information.  Describe the states,
+what each agent observes, and what each agent wants to minimise in YAML or Python.  Solve for causal
+linear strategies, then inspect each agent's cost and how states and actions respond to shocks.
+
+The solver returns both responses to the primitive shocks (the noise-state representation) and
+strategies on each agent's own signal history.  It also decomposes the first-order conditions into
+the instantaneous part, the physical continuation and the information wedge.
+
+The framework is the decentralized LQG game of
 *Forecasting and Manipulating the Forecasts of Others* (Babichenko, 2026): a linear state driven by the
 agents' controls and Brownian channels, each agent observing noisy linear rows of the states and of the
 other agents' controls, possibly with delay, and minimising a discounted (or average) quadratic flow
 loss over causal linear strategies on its own observation history.
 
+## Can this solve my problem?
+
+Use noisestate for games with linear state dynamics and observations, Brownian noise, and quadratic
+running objectives.  It solves for causal linear strategies: each agent's action depends on its own
+observations up to the current time.  Models can have a finite horizon, a stationary regime, or a
+transition between regimes, with supported observation and action delays.
+
+Hard control constraints such as `D >= 0`, nonlinear dynamics, and terminal penalties such as
+`X(T)^2` are outside the model grammar.  The solution is sought within the causal linear strategy
+class; see [limits](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/limits.md) for the assumptions and restrictions of each engine.
+
 ## Install
+
+From the repository's root directory:
 
 ```bash
 pip install ".[plot]"             # from a checkout of this repository; [plot] adds matplotlib
@@ -37,7 +54,12 @@ dYi = sqrt(pi) X dt + dWi                 player i sees X through its own noise;
 player i minimises  E int_0^T (X^2 + ri Di^2) dt
 ```
 
-That is the whole model, and this is the same model as a file:
+The state starts at the known value `X(0) = 0`.  The Brownian channels `W0`, `W1`, and `W2` are
+independent.  Player i observes only its own signal history `Yi` up to the current time; it does
+not directly observe `X`, the shocks, or the other player's signal.  The common shock moves the
+shared state; "common" does not mean that the players see it directly.
+
+This is the same model as a file (an omitted state `initial` defaults to zero here):
 
 ```yaml
 name: ch1_two_player_finite
@@ -85,7 +107,10 @@ Both players pay the same, which is what you would expect from a game symmetric 
 
 ### Read the answer
 
-The costs are the headline number, one per agent:
+The costs are the headline number, one per agent.  Smaller is better: each is the expected loss
+integrated over the game, averaging over the possible noise histories, rather than the loss from
+one simulated run.  Here the discount rate is zero, so there is no discounting despite the summary's
+general label "discounted cost":
 
 ```python
 res.costs["player1"]      # 0.39690577   (res.cost_kind: "discounted integral over [0, T]")
@@ -95,11 +120,14 @@ Underneath them is what the players actually do, and it is worth looking at befo
 cost.  A **kernel** is a response to a shock: how much of a unit shock, struck at one moment, is
 still showing up later.
 
+The curves below show these responses, not simulated sample paths of `X`.  A realised path would
+combine contributions from all three noise channels over time.
+
 ```python
 res.kernel("X", "w0").plot("kernel.png")     # the state's response to the common shock
 ```
 
-![the state's response to a unit common shock](docs/figs/first_kernel.png)
+![the state's response to a unit common shock](https://raw.githubusercontent.com/sbabichenko/noisestate/HEAD/docs/figs/first_kernel.png)
 
 Each curve fixes one **date** `t`; the horizontal axis is the **shock time** `s`, the moment a shock
 struck.  The distance `t - s` is that shock's **age**.  The two directions answer different
@@ -110,7 +138,7 @@ Reading *along one curve* compares shocks of different ages, all as they stand a
 ```python
 k = res.kernel("X", "w0")
 k.at(1.0, 1.0)      # +1.0000   at t=1, a shock just struck: it moves X one for one, at once
-k.at(1.0, 0.5)      # +0.7539   at t=1, a shock of age 0.5 is still four-fifths there
+k.at(1.0, 0.5)      # +0.7539   at t=1, about three-quarters of a shock of age 0.5 remains
 k.at(1.0, 0.0)      # +0.4926   at t=1, a shock of age 1.0 is still half there
 ```
 
@@ -147,7 +175,7 @@ shock lands" against "what does this player do with what it sees".
 
 ### Change one thing
 
-Give player 1 four times the precision and solve again.  Nothing else moves:
+Give player 1 four times the precision, keeping the other model parameters fixed, and solve again:
 
 ```python
 sharper = ns.solve(model.with_params(p1=12.0))
@@ -155,7 +183,7 @@ sharper.require_ok()
 sharper.costs      # player1 0.359950,  player2 0.331103
 ```
 
-| | `p1 = 3` | `p1 = 12` | |
+| agent | cost at `p1 = 3` | cost at `p1 = 12` | change |
 |---|---|---|---|
 | player1 | 0.396906 | 0.359950 | **-9.3%** |
 | player2 | 0.396906 | 0.331103 | **-16.6%** |
@@ -163,10 +191,15 @@ sharper.costs      # player1 0.359950,  player2 0.331103
 Player 1 sees better and does better -- and **player 2 gains almost twice as much**.  Better
 information for one player is close to a public good here: player 1 spends its own effort stabilising
 `X`, and a steadier `X` is worth just as much to player 2, who does not pay for player 1's extra
-effort (it still pays for its own).  That asymmetry
-is the kind of thing the solver is for, and it is two lines away from the first solve.
+effort (it still pays for its own).  That asymmetry is the kind of thing the solver is for.
 
 `with_params()` returns a new model; `model` is untouched, so you can sweep without rebuilding.
+To keep an editable copy of the changed model and load it in a later session:
+
+```python
+model.with_params(p1=12.0).save("sharper.yaml")
+saved_model = ns.load("sharper.yaml")
+```
 
 ### Did the required checks pass
 
@@ -198,24 +231,47 @@ res.require_ok()                 # DiagnosticsError: converged, but window [fail
 These are evidence, not a guarantee: they say that the checks a policy names were run and passed, on
 this grid and this window.  They cannot tell you the model is the one you meant.  The checks
 themselves, the six statuses a check can report, validation policies, and what to do about each
-failure are in [docs/guards.md](docs/guards.md).
+failure are in [docs/guards.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/guards.md).
 
 ### Which example should I start from
 
-Seven models ship with the package; `ns.examples()` lists them.  Four flag something deliberately,
-each for a reason written in its own file, so pick by the question you are asking:
+Seven models ship with the package; `ns.examples()` lists them.  After this walkthrough, try
+`ch1_delayed_finite`: it keeps the tracking objective while adding a delay to both controls and
+to player 2's observation.  Inspect `model.describe()` and compare its kernels with this game's.
+For a different economic application, try `ch4_kyle_back` next.
+
+Those three are introductory examples with accepted defaults.  The remaining four are benchmarks
+or advanced examples for studying numerical checks and transitions; each documents its flags in
+its own file.  Use the table to choose a model and interpret its default outcome:
 
 | example | the question it asks | horizon | out of the box |
 |---|---|---|---|
 | `ch1_two_player_finite` | two players track one state over a fixed period | finite, T = 1 | accepted |
-| `ch1_delayed_finite` | the same, when one player sees the state late | finite, T = 1 | accepted |
+| `ch1_delayed_finite` | tracking with delayed controls and a delayed observation | finite, T = 1 | accepted; recommended next example |
 | `ch3_two_player` | the same tracking game with no end date | stationary | **window too short** -- the dissertation's own window; `with_stationary(9.0)` clears it |
 | `ch4_kyle_back` | an informed trader against a market maker who prices order flow | stationary, discounted | accepted |
-| `kyle_back_prior` | the same, started from a prior on the fundamental | transition | **not a minimum** -- the strip quadrature on the `D P` cross term at a small trading cost, not a saddle: it shrinks like `n^-0.85` under refinement and is gone at `eps: 1` |
-| `ch5_cycle_market` | a ring of firms buying and selling with a delivery lag | stationary | **under-resolved** -- and does not clear at a sane cost |
-| `ch3_precision_change` | a regime change: one player's precision jumps | transition | **several** -- the one to read when learning transitions |
+| `kyle_back_prior` | the same, started from a prior on the fundamental | transition | **not a minimum** -- attributed to a discretisation artifact; see the [example's notes](https://github.com/sbabichenko/noisestate/blob/HEAD/examples/kyle_back_prior.yaml) |
+| `ch5_cycle_market` | a ring of firms buying and selling with a delivery lag | stationary | **under-resolved** -- increasing resolution can be expensive; see the [example's notes](https://github.com/sbabichenko/noisestate/blob/HEAD/examples/ch5_cycle_market.yaml) |
+| `ch3_precision_change` | a regime change: one player's precision jumps | transition | **several** -- see the [transition walkthrough](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/transitions.md) for interpretation |
 
 `ns.example(name)` gives the path and `ns.load(...)` the model, as above.
+
+### Find the names in another model
+
+The strings passed to `kernel()` and used as keys in `costs` come from the model.  After loading a
+file, inspect them before solving; for the first tracking game:
+
+```python
+model.state_names                   # ['X']
+model.control_names                 # ['D1', 'D2']
+model.channels                      # ['w0', 'w1', 'w2']
+[agent.name for agent in model.agents]  # ['player1', 'player2']
+```
+
+Use a state or control name as the first argument to `res.kernel()`, a channel as its optional
+second argument, and an agent name in `res.costs` or `res.maps`.  `print(model.describe())` explains
+which controls and signal rows belong to each agent.  These names belong to the loaded model;
+another example may use different ones.
 
 ### Three objects
 
@@ -279,7 +335,7 @@ linear `drift` in atoms (plus `const`), a `noise` loading on the channels and, o
 terms `[coef, a, b]` (quadratic) and `[coef, a]` (linear); linear terms, constant drifts and initial
 states move the means only.  `ties` make agents share one strategy; `numerics` is how it is solved.
 Coefficients may be expressions in the parameters.  The full reference, every key with its type and
-default, is [docs/model_file.md](docs/model_file.md); `noisestate schema model` prints the JSON Schema.
+default, is [docs/model_file.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/model_file.md); `noisestate schema model` prints the JSON Schema.
 
 ### The horizon: two different lengths
 
@@ -306,7 +362,7 @@ how an undiscounted model can converge on a window and still be a window artefac
 `res.costs` is the **flow loss per unit time** at every discount, not the discounted objective --
 *rho* enters the first-order condition, not the reported scalar -- while a finite horizon reports
 the discounted integral over [0, T].  `res.cost_kind` says which you have; both are in
-[docs/limits.md](docs/limits.md).
+[docs/limits.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/limits.md).
 
 Asking a horizon for the length it does not have is an error that names the one it does.  In Python the
 kinds are separate types, so `with_stationary(L)`, `with_finite(T)` and `with_transition(T, past)`
@@ -421,7 +477,7 @@ res.settled, res.excess_costs, res.loss_path["player1"], res.belief_error("playe
 Every transition starts from the continuation's stationary maps.  Two exact identities pin the
 construction: a model as its own past and continuation returns its stationary kernels on every node,
 and a prior on the state of the one-agent model reproduces the Kalman filter.  The construction, the
-result's fields and the two shipped examples are in [docs/transitions.md](docs/transitions.md).
+result's fields and the two shipped examples are in [docs/transitions.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/transitions.md).
 
 ## Sweeps and interactive use
 
@@ -462,7 +518,7 @@ across solves in a process (`ns.clear_grid_cache()` releases them).
 `res.diagnostics.rows` lists every check as a row `{name, value, threshold, ok, flag, advice}` plus the
 stable `code`, `category`, `severity`, `meaning`, `action` and `suggested_options` fields the payload
 carries; `summary()` prints the ones that fail.  The full descriptions, with thresholds and advice, are
-in [docs/guards.md](docs/guards.md).
+in [docs/guards.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/guards.md).
 
 **Resolution.**  The representation error of the action kernels on the seen rows above 1e-6 prints
 `UNDER-RESOLVED (representation error 1.3e-05: raise numerics.nodes)`.  `solve(..., refine=True)` or
@@ -524,7 +580,7 @@ the means and the result's checks (`resolution_tol` 1e-6, `window_tail_tol` 0.02
 ...).  They are the `settings` field of `Numerics`: `ns.Numerics(settings=ns.Settings(second_order_tol=1e-3))`,
 or `{"settings": {"second_order_tol": 1e-3}}`; the fields that differ from the defaults are recorded in
 `res.numerics` and the payload, so `refine()`, `stability()` and a re-solve from the payload keep them.
-The table is [docs/settings.md](docs/settings.md).
+The table is [docs/settings.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/settings.md).
 
 ## Errors
 
@@ -578,7 +634,7 @@ error the package raises, printed as `error: ...` on stderr.  `--require-ok` mak
 unaccepted result exit 1 as well, which is what a batch script wants; `--policy exploratory` asks for
 the weaker standard by name.  A check the engine cannot compute is reported as `cannot be checked here`
 rather than as a failure, and says whether any setting could change it.  The JSON written by `-o` is
-`res.to_dict()`, documented key by key in [docs/payload.md](docs/payload.md); it validates against
+`res.to_dict()`, documented key by key in [docs/payload.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/payload.md); it validates against
 `noisestate.schema("payload")`.
 
 ## Working on noisestate
@@ -591,20 +647,20 @@ NOISESTATE_SLOW=1 ./run-tests      # everything, about 6 minutes
 
 Always through `./run-tests`, never `pytest` directly: it takes a lock so two suites cannot overlap
 (concurrent runs corrupt every timing they touch) and caps the BLAS threads, without which the small
-solves here run 16-way and the suite takes six times as long.  [CONTRIBUTING.md](CONTRIBUTING.md) has the details
+solves here run 16-way and the suite takes six times as long.  [CONTRIBUTING.md](https://github.com/sbabichenko/noisestate/blob/HEAD/CONTRIBUTING.md) has the details
 and the measuring conventions.
 
 ## Where things are
 
-* [docs/model_file.md](docs/model_file.md): every key of a model file, with its type and default.
-* [docs/payload.md](docs/payload.md): every key of `to_dict()` and the CLI's JSON.
-* [docs/transitions.md](docs/transitions.md): the transition engine in full, with the two examples.
-* [docs/guards.md](docs/guards.md): the checks, their statuses, thresholds and advice.
-* [docs/settings.md](docs/settings.md): the tuning constants.
-* [docs/api.md](docs/api.md): every public function and method, with its use case.
-* [docs/validation.md](docs/validation.md): what the tests reproduce, with the numbers.
-* [docs/method.md](docs/method.md): how it works, the means, the grids, the stability guarantees.
-* [docs/limits.md](docs/limits.md): what the grammar and the engines do not do.
-* [docs/architecture.md](docs/architecture.md): the modules, one best response and one transition through them.
-* [docs/design/](docs/design/README.md): the design record, and the dated reviews behind it.
-* [CHANGELOG.md](CHANGELOG.md): every change by release.
+* [docs/model_file.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/model_file.md): every key of a model file, with its type and default.
+* [docs/payload.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/payload.md): every key of `to_dict()` and the CLI's JSON.
+* [docs/transitions.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/transitions.md): the transition engine in full, with the two examples.
+* [docs/guards.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/guards.md): the checks, their statuses, thresholds and advice.
+* [docs/settings.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/settings.md): the tuning constants.
+* [docs/api.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/api.md): every public function and method, with its use case.
+* [docs/validation.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/validation.md): what the tests reproduce, with the numbers.
+* [docs/method.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/method.md): how it works, the means, the grids, the stability guarantees.
+* [docs/limits.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/limits.md): what the grammar and the engines do not do.
+* [docs/architecture.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/architecture.md): the modules, one best response and one transition through them.
+* [docs/design/](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/design/README.md): the design record, and the dated reviews behind it.
+* [CHANGELOG.md](https://github.com/sbabichenko/noisestate/blob/HEAD/CHANGELOG.md): every change by release.

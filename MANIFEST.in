@@ -1,0 +1,12 @@
+# The sdist carries the package, the shipped models and the licence.
+#
+# tests/ is excluded deliberately: tests/refs holds 5.4 MB of reference data (one 4.8 MB
+# grid), and the suite cannot run without it, so shipping the tests without the refs would
+# ship files that fail on contact.  Clone the repository to run them -- CONTRIBUTING in the
+# README says how.
+prune tests
+prune docs
+prune extras
+prune build
+prune examples/__pycache__
+global-exclude *.pyc .DS_Store

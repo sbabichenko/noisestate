@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased -- the first ten minutes
+## 0.8.1 (2026-09-10) -- the first ten minutes
 
 DIAGNOSTICS A TRANSITION CAN PASS
 
