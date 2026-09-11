@@ -57,11 +57,12 @@ def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
         r.require_ok()
     #  a model whose every required check actually RAN and passed
     assert ns.solve(os.path.join(EX, "ch1_two_player_finite.yaml")).require_ok().diagnostics.assess().accepted
-    #  and one where a required check could not be run at all: the second-order curvature is built
-    #  as an exact quadratic form, which the stationary engine with a positive discount does not
-    #  have.  Nothing performed the check, so the result is not accepted for it.
+    #  and one where a required check could not be run at all: the cell engine computes no
+    #  second-order form.  Nothing performed the check, so the result is not accepted for it.
+    #  (This stanza used to use ch4_kyle_back, on the wrong ground that a positive discount takes
+    #  the curvature away; it does not, and that example is accepted now.)
     with pytest.raises(ns.DiagnosticsError, match="second_order"):
-        ns.solve(os.path.join(EX, "ch4_kyle_back.yaml")).require_ok()
+        ns.solve(os.path.join(EX, "ch1_two_player_finite.yaml"), {"engine": "cells", "nodes": 10}).require_ok()
     assert main(["solve", os.path.join(EX, "ch3_two_player.yaml")]) == 0
     capsys.readouterr()
     assert main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--require-ok"]) == 1
@@ -72,11 +73,15 @@ def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
     assert main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--diagnostics"]) == 0
     detailed = capsys.readouterr().out
     assert "meaning: Whether stationary kernels" in detailed and "suggested: --window 6" in detailed
-    #  the CLI splits the same way: a model whose required checks all ran and passed exits 0, and
-    #  ch4_kyle_back exits 1 because nothing could perform its second-order check
+    #  the CLI splits the same way: a model whose required checks all ran and passed exits 0 --
+    #  ch4_kyle_back among them, now that the discount no longer excludes its second-order check --
+    #  and a model where one of them cannot be run at all exits 1
     assert main(["solve", os.path.join(EX, "ch1_two_player_finite.yaml"), "--require-ok"]) == 0
     capsys.readouterr()
-    assert main(["solve", os.path.join(EX, "ch4_kyle_back.yaml"), "--require-ok"]) == 1
+    assert main(["solve", os.path.join(EX, "ch4_kyle_back.yaml"), "--require-ok"]) == 0
+    capsys.readouterr()
+    assert main(["solve", os.path.join(EX, "ch1_two_player_finite.yaml"), "--engine", "cells",
+                 "--nodes", "10", "--require-ok"]) == 1
 
 
 def test_describe_prints_the_model_as_equations():
@@ -84,27 +89,28 @@ def test_describe_prints_the_model_as_equations():
 
 
 def test_require_ok_says_cannot_be_checked_rather_than_failed(capsys):
-    """ch4_kyle_back at 40 nodes printed "failed diagnostic checks: second_order" above a summary
-    reading "0 failed, 3 passed": two lines about one result contradicting each other, because the
-    status was UNSUPPORTED and nothing had failed.  A check this engine cannot run is not a check the
-    model failed, and the CLI must not collapse the two any more than the library does.
+    """It used to print "failed diagnostic checks: X" whatever the status was, so a result whose
+    summary read "0 failed, 3 passed" was refused for a check that had FAILED according to one line
+    and passed according to the next.  A check the engine cannot run is not a check the model
+    failed, and the CLI must not collapse the two any more than the library does.
     """
     import noisestate as ns
-    assert main(["solve", ns.example("ch4_kyle_back"), "--nodes", "24", "--require-ok"]) == 1
+    assert main(["solve", ns.example("ch1_two_player_finite"), "--engine", "cells",
+                 "--nodes", "10", "--require-ok"]) == 1
     err = capsys.readouterr().err
-    assert "cannot be checked here: second_order" in err
+    assert "cannot be checked here" in err and "second_order" in err
     assert "failed diagnostic checks" not in err
-    assert "no setting will change it" in err                  # and that it is permanent
-    assert "positive discount" in err                          # named, not a general apology
+    assert "no setting will change it" in err                  # it is the engine, not the tuning
+    assert "'spectral'" in err                                 # and the engine that can is named
 
 
 def test_a_weaker_standard_can_be_asked_for_by_name(capsys):
     """The library has had policies since 0.8 and the CLI hardcoded PUBLICATION, so the weaker
     standard it insists be NAMED could not be named from the command line at all."""
     import noisestate as ns
-    assert main(["solve", ns.example("ch4_kyle_back"), "--nodes", "24",
-                 "--require-ok", "--policy", "exploratory"]) == 0
-    assert main(["solve", ns.example("ch4_kyle_back"), "--nodes", "24", "--require-ok"]) == 1
+    argv = ["solve", ns.example("ch1_two_player_finite"), "--engine", "cells", "--nodes", "10", "--require-ok"]
+    assert main(argv + ["--policy", "exploratory"]) == 0
+    assert main(argv) == 1
     capsys.readouterr()
 
 
@@ -115,3 +121,11 @@ def test_a_real_failure_is_still_reported_as_a_failure(capsys):
     err = capsys.readouterr().err
     assert "failed diagnostic checks:" in err and "window" in err
     assert "cannot be checked here" not in err
+
+
+def test_the_flagship_example_is_acceptable(capsys):
+    """ch4_kyle_back is the model the README prints in full, and --require-ok refused it at every
+    resolution: the second-order check was excluded at a positive discount, wrongly."""
+    import noisestate as ns
+    assert main(["solve", ns.example("ch4_kyle_back"), "--nodes", "24", "--require-ok"]) == 0
+    capsys.readouterr()

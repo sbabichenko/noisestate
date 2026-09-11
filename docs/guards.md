@@ -80,8 +80,12 @@ computed.
   the check finds a negative direction it re-evaluates that direction, zero-extended, on a window
   longer by two lags with the same maps (one operator build, no new fixed point): positive there
   means truncation, reported as `embedded` and a `window edge` note rather than a saddle.
-  Discounted stationary models are not checked (their objective is not a quadratic form in the
-  stationary kernel).  Up to a strategy dimension of 1000 the form is built densely and always
+  A DISCOUNT DOES NOT TAKE THE CHECK AWAY.  The discounted stationary objective is a quadratic form,
+  and its joint running Hessian carries no discount: rho enters only as the strictly positive weight
+  `e^{-rho t}`, which cannot change the sign of a form that is semidefinite pointwise in t.  The
+  check is therefore made on the average-cost system and its verdict holds at every rho, as the
+  dissertation's Kyle-Back chapter does ("the second-order checks are made on the average-cost
+  system and do not rely on the rho > 0 hypothesis").  Up to a strategy dimension of 1000 the form is built densely and always
   settles; above that a Lanczos iteration is used, and when it does not settle the report says so
   (`converged: False`) instead of staying silent.  The undiscounted Kyle-Back model at a
   trading cost of 0.01 crosses the threshold (-1.6e-4) on the window of 8: the truncation

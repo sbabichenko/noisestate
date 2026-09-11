@@ -92,7 +92,7 @@ Every check reports one of six statuses, and the differences between them matter
 | `passed` | ran; the model met it |
 | `failed` | ran; the model did not meet it |
 | `skipped` | this engine could have run it here; `solve(diagnostics=False)` meant it did not |
-| `unsupported` | this **engine** cannot compute it (the cell engine has no representation error) |
+| `unsupported` | this **engine** cannot compute it (the cell engine builds neither a representation error nor a second-order form) |
 | `not_applicable` | the check has no meaning for this **model** (a lag window on a plain finite horizon) |
 | `missing` | applicable, supported, was to run, produced no record |
 
@@ -393,13 +393,16 @@ falsely: `res.refine()` re-solves on a finer grid and records the curvature ther
 is the quadrature's, not a strategy (on the triangle it sits on the diagonal `a = t` and alternates in
 sign between neighbouring age nodes).  `examples/kyle_back_prior.yaml` is the case: the smallest
 curvature runs -1.45e-02, -1.02e-02, -8.26e-03, -6.71e-03, -5.63e-03 at 8, 12, 16, 20 and 24 nodes,
-about n^-0.85.  On undiscounted stationary and on every finite-horizon result the objective is a
-quadratic form in the agent's strategy, and a smallest curvature below -1e-4 of the largest prints
+about n^-0.85.  The objective is a quadratic form in the agent's strategy, and a smallest curvature
+below -1e-4 of the largest prints
 `NOT A MINIMUM (the best response of 'trader1' is a saddle: its loss is not convex in its own
 strategy, smallest curvature -1.8e-03 of the largest)`.  A negative direction that is positive on a
 window longer by two lags is reported as `window edge: ... a truncation of the lagged loss terms at the
-edge, not a saddle` instead.  On a **discounted** stationary model the curvature is not a quadratic form
-in the stationary kernel and this engine cannot build it: the check reports `unsupported`, not passed.
+edge, not a saddle` instead.  A **discount does not take the check away**: the discounted objective is
+a quadratic form whose joint running Hessian carries no discount, since `rho` enters only as the
+strictly positive weight `e^{-rho t}`, so the verdict is the same at every `rho` and the check is
+made on the average-cost system.  The cell engine is the one that reports `unsupported` here: it
+builds no second-order form at all.
 
 **Settled.**  A transition whose maps on [T - L, T] are more than 1e-4 of their peak from the
 stationary continuation prints `TRANSITION NOT SETTLED by T - L` and suggests a larger `--T`; the

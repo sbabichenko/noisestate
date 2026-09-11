@@ -87,24 +87,6 @@ def _closed_by_a_continuation(model) -> bool:
     return _is_transition(model) and (model.horizon.continuation or "stationary") != "end"
 
 
-def curvature_is_obtainable(model) -> bool:
-    """Whether THIS package can compute the second-order check for `model`.
-
-    A capability question, not an applicability one.  Second-order optimality of a best response is
-    meaningful for every model here: the agent's problem has a second-order condition whether or
-    not its objective is quadratic.  What is narrower is the method -- Engine._second_order builds
-    the curvature as an exact quadratic form M = T' G T and returns None when the objective is not
-    one in the strategy, which is the stationary engine with a positive discount (the discounted
-    objective is not a quadratic form in the stationary kernel).
-
-    So the check APPLIES and the engine CANNOT RUN IT: that is UNSUPPORTED, and it blocks under a
-    policy that requires it.  Calling it NOT_APPLICABLE would claim the condition has no meaning
-    for the model, which is a mathematical claim this package has not established and does not
-    need -- and it would let a result be accepted for a check nothing performed.
-    """
-    return not (model.horizon.kind == "stationary" and float(model.horizon.discount) > 0.0)
-
-
 CHECKS = {
     "converged": lambda model: True,
     "resolution": lambda model: True,

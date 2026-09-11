@@ -477,8 +477,11 @@ class EngineBase(MeanLayer):
         Lanczos on matvecs.  With a past the world has the initial shocks' columns after the channels',
         each under the point form of the line s = 0 (_loss_form(agent, start_from=True)), as expected_cost
         integrates them.  Returns {"min", "max", "ok", "converged"} with min/max the eigenvalues
-        of M scaled by max; None when the objective is not a quadratic form in the strategy (the
-        stationary engine with rho > 0: the discounted objective is not one in the stationary kernel).
+        of M scaled by max; None when the engine declares the objective is not a quadratic form in the
+        strategy (SECOND_ORDER_QUADRATIC).  No shipped engine does: the discount does not take that
+        away, because it enters the objective only as the strictly positive weight e^{-rho t} on a
+        time-local Hessian, so the form's SIGN -- which is the whole verdict -- is the same at every
+        rho and the check is made on the average-cost system.
         The objective is truncated at the window, so a strategy can push a little loss past the edge:
         curvatures within SECOND_ORDER_TOL of the largest are treated as that, not as a saddle.
         When the form is not positive and the engine defines _embedded_curvature(agent, maps, idx,

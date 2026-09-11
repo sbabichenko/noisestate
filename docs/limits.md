@@ -18,8 +18,10 @@ weighted by up to *exp(rho tau)* relative to the current flow, so a lead with a 
 discount is a different problem from the undiscounted one: on the Chapter 3 game with a
 cross term of 0.1 in *X@-0.5* the cost is unchanged to a few percent up to *rho tau* of
 2.5, a thousand times larger at 10, and the fixed point fails above that; the compile warns
-when *exp(rho tau)* exceeds 100, and the second-order check is not made at a positive
-discount.  The finite engines reject leads.  With lagged *state* feedback in a drift
+when *exp(rho tau)* exceeds 100.  The second-order check IS made at a positive discount: the
+discounted objective is a quadratic form whose joint running Hessian carries no *rho*, so the
+verdict is the same at every discount and the check runs on the average-cost system.  The
+finite engines reject leads.  With lagged *state* feedback in a drift
 (`X@0.5` in the drift of `X`), the map and action-kernel iterations agree only to
 first order in the node count (1.6e-5 at 24 nodes per panel on the Chapter 3 game);
 the action-kernel path is the default and the more accurate one.  A game can have

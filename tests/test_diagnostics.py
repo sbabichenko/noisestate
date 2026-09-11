@@ -131,22 +131,48 @@ def test_a_failing_past_window_blocks_acceptance():
 
 
 def test_a_check_this_engine_cannot_build_is_unsupported_not_inapplicable():
-    """Engine._second_order builds the curvature as an exact quadratic form and returns None on the
-    stationary engine with a positive discount.  That is a limit of the METHOD, not of the
-    question: second-order optimality is meaningful for the model whether or not its objective is
-    quadratic, so the check APPLIES and the engine cannot run it.
+    """The cell engine computes neither a representation error nor a second-order form.  That is a
+    limit of the METHOD, not of the question: both are meaningful for the model, so the checks APPLY
+    and the engine cannot run them.
 
-    Calling it NOT_APPLICABLE -- as an earlier commit did -- would assert that the condition has no
-    meaning here, a mathematical claim this package has not established, and would let the result
-    be accepted for a check nothing performed."""
-    kb = ns.solve(example("ch4_kyle_back"))
-    assert kb.model.horizon.discount > 0 and kb.model.horizon.kind == "stationary"
-    assert kb.diagnostics.statuses["second_order"] is Status.UNSUPPORTED
+    Calling that NOT_APPLICABLE would assert the conditions have no meaning here, and would let the
+    result be accepted for checks nothing performed.
+    """
+    cells = ns.solve(model("finite", engine="cells", nodes=10))
+    assert cells.diagnostics.statuses["second_order"] is Status.UNSUPPORTED
+    assert cells.diagnostics.statuses["resolution"] is Status.UNSUPPORTED
     with pytest.raises(ns.DiagnosticsError, match="second_order"):
-        kb.require_ok()
-    assert kb.require_ok(Policy.EXPLORATORY) is kb          # a weaker use, named
-    #  and it is the MODEL that decides, not the engine class: rho = 0 on the same engine is fine
-    assert ns.solve(example("ch3_two_player")).diagnostics.statuses["second_order"] is Status.PASSED
+        cells.require_ok()
+    assert cells.require_ok(Policy.EXPLORATORY) is cells          # a weaker use, named
+    #  the same model on the spectral engine computes both: it is the ENGINE that cannot, not the model
+    spectral = ns.solve(model("finite", nodes=10))
+    assert spectral.diagnostics.statuses["second_order"] is Status.PASSED
+
+
+def test_the_discount_does_not_take_the_second_order_check_away():
+    """It was excluded at rho > 0, on the ground that "the discounted objective is not a quadratic
+    form in the stationary kernel".  That is wrong, and it made ch4_kyle_back -- the example the
+    README prints in full -- permanently unacceptable.
+
+    The dissertation writes the discounted stationary objective as a quadratic form explicitly,
+    "with the joint running Hessian positive semidefinite".  That Hessian is TIME-LOCAL and carries
+    no rho: the discount enters only as the strictly positive weight e^{-rho t}, which cannot change
+    the sign of a form that is semidefinite pointwise in t.  So the verdict is the same at every rho,
+    the check is made on the average-cost system, and the Kyle-Back chapter says exactly that: "The
+    second-order checks are made on the average-cost system and do not rely on the rho > 0
+    hypothesis."
+    """
+    kb = ns.solve(example("ch4_kyle_back"), {"nodes": 20})
+    assert kb.model.horizon.discount > 0 and kb.model.horizon.kind == "stationary"
+    assert kb.diagnostics.statuses["second_order"] is Status.PASSED
+    assert kb.require_ok() is kb                       # the flagship example is acceptable
+    #  and the SIGN of the curvature -- the verdict -- does not move with the discount
+    verdicts = {}
+    for rho in (1e-9, 0.1, 0.5, 1.0):
+        res = ns.solve(example("ch4_kyle_back").with_params(rho=rho), {"nodes": 16})
+        verdicts[rho] = {a: d["ok"] for a, d in res.second_order.items()}
+        assert all(d["min"] > 0 for d in res.second_order.values()), f"rho={rho}: {res.second_order}"
+    assert all(v == verdicts[1e-9] for v in verdicts.values()), verdicts
 
 
 # ------------------------------------------------------------------ the aggregate is not a status

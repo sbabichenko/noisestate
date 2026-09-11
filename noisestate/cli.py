@@ -71,11 +71,11 @@ def _why_not_accepted(res, verdict) -> list:
 
 
 def _unsupported_hint(res, checks) -> str:
-    """The one case the package knows how to explain, rather than a general apology."""
-    if "second_order" in checks and res.model.horizon.kind == "stationary" and float(res.model.horizon.discount) > 0:
-        return ("\n       second_order: the curvature is built as an exact quadratic form, which the "
-                "stationary engine cannot do at a positive discount (horizon.discount "
-                f"{float(res.model.horizon.discount):g}); a finite horizon can.")
+    """The cases the package knows how to explain, rather than a general apology."""
+    engine = (res.numerics.engine or "").lower()
+    if engine == "cells" and {"second_order", "resolution"} & set(checks):
+        return ("\n       the cell engine computes neither a representation error nor a second-order "
+                "form; numerics.engine 'spectral' solves the same finite horizon and does both.")
     return ""
 
 

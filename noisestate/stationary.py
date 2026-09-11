@@ -69,8 +69,7 @@ class Compiled(CompiledBase):
                 if self.rho * tau > np.log(self.LEAD_WEIGHT_WARN):
                     warnings.warn(f"lead {n}@-{tau:g} under the discount rate {self.rho:g}: the flows before t that read the quantity "
                                   f"after t enter the first-order condition weighted by up to exp(rho tau) = {np.exp(self.rho * tau):.1e} "
-                                  "relative to the current flow, which dominates the best-response system; its second-order "
-                                  "condition is not checked at a positive discount (README, Limits)", stacklevel=2)
+                                  "relative to the current flow, which dominates the best-response system (README, Limits)", stacklevel=2)
         self._atom_cache: Dict[tuple, np.ndarray] = {}
         self._elim: Dict[frozenset, tuple] = {}
         self._elim_wzero: Dict[frozenset, bool] = {}
@@ -495,7 +494,20 @@ class Compiled(CompiledBase):
 class StationarySolver(EngineBase):
     RESULT = StationaryResult
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.6, 60       # with Anderson memory 15 (0.3 was needed at memory 6 for Kyle-Back)
-    SECOND_ORDER_QUADRATIC = False   # the flow loss is a quadratic form in the stationary strategy only at rho = 0
+    #  The second-order verdict does not depend on the discount, so this engine can check a
+    #  discounted model.  The dissertation writes the discounted stationary objective (Chapter
+    #  "Stationary infinite-horizon LQG", eq. stationary-objective) as
+    #
+    #      J = 1/2 E int_0^inf e^{-rho t} [X' G^XX X + 2 G^X' X + 2 D' G^DX X + D' G^DD D] dt
+    #
+    #  "with the joint running Hessian positive semidefinite".  That Hessian is TIME-LOCAL and
+    #  carries no rho: the discount enters only as the strictly positive weight e^{-rho t}, which
+    #  cannot change the sign of a form that is semidefinite pointwise in t.  So the check may be
+    #  made on the average-cost system and its answer holds at every rho >= 0 -- which is what the
+    #  Kyle-Back chapter does: "The second-order checks are made on the average-cost system and do
+    #  not rely on the rho > 0 hypothesis", reporting the exact quadratic form positive definite
+    #  with smallest eigenvalue 2 eps.  cost_mass() is that average-cost Gram at every rho.
+    SECOND_ORDER_QUADRATIC = True
 
     def __init__(self, model: Model, verbose: bool = False, naive_observers: Optional[Dict[str, List[str]]] = None, settings=None):
         """naive_observers: {agent: [observers]} lists agents whose strategies do NOT react to that agent's

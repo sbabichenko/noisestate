@@ -30,17 +30,47 @@ Fixing applicability alone would have UNMASKED this one -- nothing was accepted
 before, so nothing was accepted while printing a failure -- which is why the two
 went together.
 
+THE SECOND-ORDER CHECK AT A POSITIVE DISCOUNT -- A MATHEMATICAL ERROR CORRECTED
+
+The stationary engine refused to compute the second-order form at rho > 0, on the
+stated ground that "the discounted objective is not a quadratic form in the
+stationary kernel".  That is false.  The dissertation writes the discounted
+stationary objective as a quadratic form explicitly,
+
+    J = 1/2 E int_0^inf e^{-rho t}
+        [X' G^XX X + 2 G^X' X + 2 D' G^DX X + D' G^DD D] dt,   rho > 0
+
+"with the joint running Hessian positive semidefinite".  That Hessian is
+TIME-LOCAL and carries no rho: the discount enters only as the strictly positive
+weight e^{-rho t}, which cannot change the sign of a form that is semidefinite
+pointwise in t.  So the verdict does not depend on the discount, the check is
+made on the average-cost system, and the Kyle-Back chapter says exactly that --
+"The second-order checks are made on the average-cost system and do not rely on
+the rho > 0 hypothesis" -- reporting the exact quadratic form positive definite
+with smallest eigenvalue 2 eps.
+
+The stationary engine's cost Gram was ALREADY the average-cost one at every rho,
+so the check it refused to run was the very one the dissertation makes.
+SECOND_ORDER_QUADRATIC is True and curvature_is_obtainable is gone.  Measured
+across rho = 1e-9, 0.1, 0.5 and 1.0, the curvature stays positive and the verdict
+does not move, as the argument says it cannot.
+
+ch4_kyle_back -- the model the README prints in full -- passes its second-order
+check and is publication-accepted.  It could not be, at any resolution, before.
+
+UNSUPPORTED keeps a live case: the cell engine builds neither a representation
+error nor a second-order form, so the distinction the status exists for is still
+exercised, and it is what the CLI's hint now names.
+
 THE CLI STOPPED CONTRADICTING ITSELF
 
     noisestate solve examples/ch4_kyle_back.yaml --nodes 40 --require-ok
     not ok: failed diagnostic checks: second_order (see summary)
     Diagnostics: 0 failed, 3 passed
 
-Two lines about one result.  The status was UNSUPPORTED and nothing had failed:
-Kyle-Back is discounted stationary, where the curvature is not a quadratic form
-in the stationary kernel and this engine cannot build it at all.  No --nodes
-value could ever change the verdict, and nothing said so, so the obvious response
-was wasted effort -- on the example the README prints in full.
+Two lines about one result.  The status was UNSUPPORTED and nothing had failed.
+The refusal itself turned out to be the error above; what remains true is that
+the output gave a reader no way to tell a permanent refusal from a tunable one.
 
 It now reads "cannot be checked here ... no setting will change it", names why,
 and points at `--policy exploratory`, which had to be added: the library has had

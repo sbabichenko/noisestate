@@ -52,7 +52,7 @@ from ._settings import DEFAULT, Settings, tunable
 from .schema import PAYLOAD_VERSION      # the format's version lives with the format
 from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, RESIDUAL_NORM, RESIDUAL_TOLERANCE,
                           Assessment, Policy, Refinement, Stability, Status, applicable, assess, classify,
-                          curvature_is_obtainable, verification)
+                          verification)
 from .kernel import Kernel
 from .spec import Model
 
@@ -214,14 +214,18 @@ class Result:
     def supported_checks(self) -> frozenset:
         """Which checks THIS engine can compute for THIS model.
 
-        Capability is a property of the pair, not of the class alone: the second-order check is
-        built as an exact quadratic form and cannot be built at all on the stationary engine with a
-        positive discount, whatever the engine otherwise supports.
+        A property of the ENGINE: the cell engine computes neither a representation error nor a
+        second-order form, and says so in its SUPPORTED_CHECKS.
+
+        This used to subtract the second-order check on a discounted stationary model, on the
+        ground that the discounted objective is not a quadratic form in the stationary kernel.  That
+        was wrong, and the dissertation says so: the discounted objective IS written as a quadratic
+        form, and its joint running Hessian carries no discount -- rho enters only as the strictly
+        positive weight e^{-rho t}, which cannot change the sign of a form that is semidefinite
+        pointwise in t.  The check is made on the average-cost system and holds at every rho, which
+        is what the Kyle-Back chapter does.  See StationarySolver.SECOND_ORDER_QUADRATIC.
         """
-        out = set(self.SUPPORTED_CHECKS)
-        if not curvature_is_obtainable(self.model):
-            out.discard("second_order")
-        return frozenset(out)
+        return frozenset(self.SUPPORTED_CHECKS)
 
     @property
     def diagnostics(self) -> "Diagnostics":

@@ -45,11 +45,10 @@
  precisely the distinction 0.8 exists to preserve -- and it is the library that is right here, not
  the message.
 
- Worse, it is PERMANENT.  Kyle-Back is a discounted stationary model, where the second-order form
- is not a quadratic form in the stationary kernel and this engine cannot build it at all
- (diagnostics.curvature_is_obtainable).  No value of --nodes will ever change the verdict, and
- nothing in the output says so, so the obvious response -- raise the resolution and try again -- is
- wasted effort.  A user who does exactly that arrives at the output above.
+ This finding first said the refusal was PERMANENT, because Kyle-Back is discounted stationary and
+ the code held that the curvature cannot be built there at all (curvature_is_obtainable).  THAT WAS
+ WRONG, and the error was the package's rather than this note's: see the correction under FIXED.
+ What is true is that the output gave no way to tell a permanent refusal from a tunable one.
 
  This is the FLAGSHIP example: ch4_kyle_back is the model the README prints in full to explain the
  model file.
@@ -66,12 +65,34 @@
 
  FOUND BY running --require-ok on each shipped example and reading the exit codes.
 
- FIXED 2026-09-10.  _exit_code now reports FAILED and UNSUPPORTED apart: "cannot be checked here:
- second_order -- this engine cannot compute it for this model, so no setting will change it", with
- the reason named (the curvature is an exact quadratic form, which the stationary engine cannot
- build at a positive discount; a finite horizon can).  `--policy exploratory` was added, because the
- message wanted to point at a weaker standard and the CLI had no way to ask for one -- the library
- has had policies since 0.8 and the CLI hardcoded PUBLICATION.
+ FIXED 2026-09-10, in two parts, the second of which was a mathematical error in the package.
+
+ THE WORDING.  _exit_code now reports FAILED and UNSUPPORTED apart -- "cannot be checked here: X ...
+ no setting will change it" -- and names the engine that can do it instead.  `--policy exploratory`
+ was added, because the message wanted to point at a weaker standard and the CLI had no way to ask
+ for one: the library has had policies since 0.8 and the CLI hardcoded PUBLICATION.
+
+ THE MATHEMATICS.  The exclusion itself was wrong.  Sam challenged it -- "you should be able to do
+ stationary with a discount" -- and the dissertation settles it.  The discounted stationary
+ objective is written there as a quadratic form,
+
+     J = 1/2 E int_0^inf e^{-rho t} [X' G^XX X + 2 G^X' X + 2 D' G^DX X + D' G^DD D] dt,  rho > 0
+
+ "with the joint running Hessian positive semidefinite".  That Hessian is TIME-LOCAL and carries no
+ rho: the discount enters only as the strictly positive weight e^{-rho t}, which cannot change the
+ sign of a form that is semidefinite pointwise in t.  So the verdict does not depend on rho, the
+ check is made on the average-cost system, and the Kyle-Back chapter says exactly that -- "The
+ second-order checks are made on the average-cost system and do not rely on the rho > 0 hypothesis",
+ reporting the exact quadratic form positive definite with smallest eigenvalue 2 eps.
+
+ The stationary engine's cost Gram was ALREADY the average-cost one at every rho, so the check it
+ was refusing to run was the very one the dissertation makes.  StationarySolver's
+ SECOND_ORDER_QUADRATIC is now True and curvature_is_obtainable is gone.  ch4_kyle_back passes its
+ second-order check and is publication-accepted.  Measured across rho = 1e-9, 0.1, 0.5, 1.0: the
+ curvature stays positive and the verdict does not move, as the argument says it cannot.
+
+ UNSUPPORTED keeps a live case -- the cell engine builds neither a representation error nor a
+ second-order form -- so the distinction the status exists for is still exercised.
 
 
 ================================================================================================
