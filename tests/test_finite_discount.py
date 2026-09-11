@@ -14,6 +14,7 @@ Gram) would move the cost by a factor of order e^{rho T} = 4.5 and the kernels b
 import numpy as np, pytest
 from scipy.integrate import solve_ivp
 import noisestate as ns
+from helpers import slow
 
 a, h, r, T = -0.3, 1.5, 0.5, 3.0
 IVP = dict(method="DOP853", rtol=1e-12, atol=1e-14)
@@ -77,3 +78,67 @@ def test_cell_engine_is_first_order_and_its_richardson_pair_matches_the_closed_f
     e96 = ns.solve(model(rho, "finite_cells", 96)).require_converged().costs["a"] - J
     assert 1.9 < e48 / e96 < 2.1
     assert abs(2 * e96 - e48) < 1e-3
+
+
+#  --------------------------------------------------------------- the stationary side of the discount
+#  The tests above pin the FINITE engines against a closed form.  The stationary engine has no closed
+#  form to hand, but the dissertation makes a sharp claim about what the discount does there, and it
+#  is testable: a positive discount makes the stationary problem well posed, so the answer stops
+#  depending on the lag window that truncates it.  At rho = 0 the same model has no stationary
+#  solution and its kernels are window artefacts.
+
+@slow("slow (3 windows x 2 discounts on Kyle-Back); set NOISESTATE_SLOW=1")
+def test_a_discount_makes_the_stationary_answer_independent_of_the_window():
+    """Why ch4_kyle_back ships with rho = 0.5 rather than 0.
+
+    The stationary verification assumes rho > 0, and at rho = 0 the lag window stands in for the
+    transversality condition -- so an undiscounted model can converge on a window and still be
+    reporting the window rather than the model.  The Kyle-Back trader is the case: undiscounted, its
+    profit settles neither in the window nor in the resolution; discounted, it is the same to five
+    digits on windows of 8, 16 and 32.
+    """
+    kb = ns.load(ns.example("ch4_kyle_back"))
+    assert kb.horizon.discount == 0.5, "the example ships discounted for this reason"
+
+    profits = {}
+    for L in (8.0, 16.0, 32.0):
+        res = ns.solve(kb.with_stationary(L), {"nodes": 24}).require_converged()
+        profits[L] = -res.costs["trader1"]
+    assert max(profits.values()) - min(profits.values()) < 1e-4, profits
+    assert abs(profits[8.0] - 0.8208) < 1e-3, profits          # the value guards.md quotes
+
+    #  undiscounted, the same quantity moves with the window and the guard says the result is not sound
+    undiscounted = {}
+    for L in (8.0, 16.0):
+        res = ns.solve(kb.with_params(rho=1e-9).with_stationary(L), {"nodes": 24})
+        undiscounted[L] = -res.costs["trader1"]
+        assert not res.diagnostics.assess().accepted          # flagged, not silently reported
+    assert abs(undiscounted[8.0] - undiscounted[16.0]) > 0.1, undiscounted
+
+
+def test_the_stationary_cost_is_the_flow_and_the_finite_cost_is_the_integral():
+    """Two normalisations, and cost_kind is what distinguishes them.
+
+    A stationary result reports the flow loss per unit time at EVERY discount -- rho enters the
+    first-order condition, not the reported scalar -- while a finite horizon reports the discounted
+    integral over [0, T].  Reading one as the other is a factor of rho.
+    """
+    m = ns.load(ns.example("ch3_two_player"))
+    stat = ns.solve(m.with_horizon(ns.Stationary(window=6.0, discount=0.5)), {"nodes": 12})
+    assert stat.cost_kind == "stationary flow loss per unit time"
+    fin = ns.solve(m.with_horizon(ns.Finite(T=2.0, discount=0.5)), {"nodes": 8})
+    assert fin.cost_kind == "discounted integral over [0, T]"
+    #  the finite integral over a horizon this short is well under the stationary flow's own scale,
+    #  which is the point: they are not comparable numbers
+    assert fin.costs["player1"] < stat.costs["player1"] / 0.5
+
+
+@pytest.mark.parametrize("rho", [0.0, 0.5, 2.0])
+def test_the_two_finite_engines_agree_at_every_discount(rho):
+    """A cross-check that does not depend on the closed form above: two independently written
+    engines, the same discounted problem."""
+    m = ns.load(ns.example("ch1_two_player_finite")).with_horizon(ns.Finite(T=1.0, discount=rho))
+    spectral = ns.solve(m, {"nodes": 14}).require_converged()
+    cells = ns.solve(m, {"engine": "cells", "nodes": 400}).require_converged()
+    rel = abs(spectral.costs["player1"] - cells.costs["player1"]) / abs(spectral.costs["player1"])
+    assert rel < 3e-3, (rho, spectral.costs["player1"], cells.costs["player1"], rel)

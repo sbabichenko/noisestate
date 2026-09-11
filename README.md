@@ -216,6 +216,16 @@ horizon: {kind: finite, T: 1.0}                            # ends at 1, no lag w
 horizon: {kind: transition, T: 6.0, window: 3.0, past: ...}   # both
 ```
 
+`discount` is the rate *rho*, and it defaults to 0, which is the average-cost problem.  Two things
+follow that are worth knowing before you read a stationary number.  The verification behind the
+stationary equations assumes *rho > 0*: at *rho = 0* the solver is solving the formal average-cost
+form of the same system, with the lag window standing in for the transversality condition, which is
+how an undiscounted model can converge on a window and still be a window artefact.  And a stationary
+`res.costs` is the **flow loss per unit time** at every discount, not the discounted objective --
+*rho* enters the first-order condition, not the reported scalar -- while a finite horizon reports
+the discounted integral over [0, T].  `res.cost_kind` says which you have; both are in
+[docs/limits.md](docs/limits.md).
+
 Asking a horizon for the length it does not have is an error that names the one it does.  In Python the
 kinds are separate types, so `with_stationary(L)`, `with_finite(T)` and `with_transition(T, past)`
 change one field of the same kind, and `with_horizon(obj)` replaces the horizon outright:

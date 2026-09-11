@@ -63,9 +63,13 @@ computed.
   flagged.  The means' continuation integrals (the DC gains of the impulse responses) are truncated
   at the window as well, so the same guard covers them, and the flag says so when the means are
   nonzero.  The Kyle-Back example with `rho: 0` is flagged: with no discounting the trader's
-  stationary problem has no solution and the kernels are window artefacts (profit 0.93 on a window
-  of 8, 0.38 on 16); the example ships with `rho: 0.5`, where the profit is 0.8208 on both.
-* Stationary results with `discount: 0`, and finite-horizon results at any discount, carry
+  stationary problem has no solution and the kernels are window artefacts, so its profit settles
+  neither in the window nor in the resolution -- 0.35, 0.93, 0.93 on a window of 8 and 0.63, 0.76,
+  0.66 on 16, at 12, 24 and 48 nodes.  There is no number to quote, which is the point; an earlier
+  version of this line pinned two of them.  The example ships with `rho: 0.5`, where the profit is
+  0.820818, 0.820871 and 0.820871 on windows of 8, 16 and 32: a discount makes the problem
+  well posed and the answer stops depending on the truncation.
+* Every stationary result, at any discount, and every finite-horizon result carry
   `res.second_order[agent]`: the agent's objective is a quadratic form in its strategy, computed
   exactly on the feasible strategies from the cost's own Gram matrix, and its smallest eigenvalue
   relative to the largest says whether the first-order condition is a minimum.  The

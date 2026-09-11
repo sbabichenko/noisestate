@@ -28,6 +28,27 @@ the action-kernel path is the default and the more accurate one.  A game can hav
 several equilibria: `ties` selects the symmetric one, an untied solve from a zero
 start may land on another.
 
+**The undiscounted stationary problem is the formal one.**  The dissertation's stationary
+verification fixes a *stationary admissible* profile, and admissibility requires *rho > 0* together
+with a transversality condition on the discounted belief prices; the proof's terminal term vanishes
+as *T* grows by exactly that condition.  At *rho = 0* the argument does not run, and those
+computations solve the formal average-cost stationary equations, the *rho = 0* form of that system,
+rather than a verified optimum.  The finite lag window stands in for the transversality
+numerically, which is why an undiscounted model can converge on a window and still be a window
+artefact: the Kyle-Back case in [guards.md](guards.md), whose profit settles neither in the window
+nor in the resolution at *rho = 0* and is stable to five digits across windows of 8, 16 and 32 at
+*rho = 0.5*.  `horizon.discount` defaults to 0 because the tracking examples are posed at average
+cost, not because it is the safer choice.
+
+**A stationary cost at a positive discount is the flow, not the objective.**  `res.costs` on the
+stationary engine is the flow loss per unit time at every *rho*, an undiscounted Gram applied to the
+equilibrium kernels; `res.cost_kind` says so.  The agent's objective is the discounted integral of
+that flow.  The discount is not absent from the solve -- it enters the first-order condition through
+the discounted correlation tensor, which is what makes the equilibrium depend on it -- only from the
+reported scalar.  A finite horizon reports the discounted integral over [0, T] instead, so a
+stationary cost and a finite one are not on the same scale, and `cost_kind` is the field that says
+which you are holding.
+
 The finite engines start every state at its `initial` value (a known number, zero when
 not given, which moves the mean path only; with a past, a state without one starts at
 the past's constant mean, and `initial: 0` overrides it) and integrate flow losses only.

@@ -62,6 +62,46 @@ UNSUPPORTED keeps a live case: the cell engine builds neither a representation
 error nor a second-order form, so the distinction the status exists for is still
 exercised, and it is what the CLI's hint now names.
 
+WHAT THE DISCOUNT IS, SAID ONCE
+
+Auditing rho across the package after the correction above turned up no further
+arithmetic defect -- the stationary first-order condition discounts through the
+correlation tensor, the two finite engines agree to 1e-3 at every rho tried and
+one of them is pinned against a closed form, and a transition's excess cost is
+the rho-weighted integral it claims to be (checked against an independent
+quadrature, whose gap shrinks with the grid).  What was missing was the prose.
+
+Two facts a reader needs before reading a stationary number, now in the README
+where the horizon is introduced and in full in limits.md:
+
+  * THE UNDISCOUNTED STATIONARY PROBLEM IS THE FORMAL ONE.  The dissertation's
+    stationary verification fixes a stationary ADMISSIBLE profile, and
+    admissibility requires rho > 0 together with a transversality condition; the
+    proof's terminal term vanishes as T grows by exactly that condition.  At
+    rho = 0 the argument does not run, and the solver is solving the formal
+    average-cost form of the same system, with the lag window standing in for
+    transversality.  That is how an undiscounted model converges on a window and
+    is still a window artefact.  horizon.discount defaults to 0 because the
+    tracking examples are posed at average cost, not because it is safer.
+
+  * A STATIONARY COST AT A POSITIVE DISCOUNT IS THE FLOW, NOT THE OBJECTIVE.
+    res.costs on the stationary engine is the flow loss per unit time at every
+    rho; a finite horizon reports the discounted integral over [0, T].  rho
+    enters the first-order condition, not the reported scalar.  cost_kind is the
+    field that says which of the two you are holding.
+
+guards.md pinned two numbers for the undiscounted Kyle-Back profit, "0.93 on a
+window of 8, 0.38 on 16".  The first reproduces; the second does not at any
+resolution tried.  It cannot: the undiscounted problem has no stationary
+solution, so the profit settles neither in the window nor in the resolution
+(0.35, 0.93, 0.93 on a window of 8 and 0.63, 0.76, 0.66 on 16, at 12, 24 and 48
+nodes).  The measured spread replaces the pin, beside the discounted case, which
+is 0.820818, 0.820871, 0.820871 on windows of 8, 16 and 32.
+
+The stationary side of the discount had no test.  Three were added, one of them
+the window-independence above, which catches a 10 per cent error in the
+correlation tensor's discount weight.
+
 THE CLI STOPPED CONTRADICTING ITSELF
 
     noisestate solve examples/ch4_kyle_back.yaml --nodes 40 --require-ok
