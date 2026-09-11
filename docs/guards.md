@@ -10,6 +10,51 @@ same as trustworthy" in the [README](../README.md).  `summary()` prints the rows
 `to_dict()["diagnostics"]` carries them all and `to_dict()["assessment"]` the verdict.  The thresholds
 are fields of `noisestate.Settings` ([settings.md](settings.md)).
 
+## Converged, and accepted
+
+A converged solve is an exact solution of the *discretised, truncated* model.  Whether that model is
+close enough to the one you wrote is what these checks answer, and the two questions have two calls:
+`require_converged()` is convergence alone, `require_ok(policy)` is the whole verdict.
+
+Every check reports one of six statuses, and the differences between them carry weight:
+
+| status | meaning |
+|---|---|
+| `passed` | ran; the model met it |
+| `failed` | ran; the model did not meet it |
+| `skipped` | this engine could have run it here; `solve(diagnostics=False)` meant it did not |
+| `unsupported` | this **engine** cannot compute it (the cell engine builds no second-order form) |
+| `not_applicable` | the check has no meaning for this **model** (a lag window on a plain finite horizon) |
+| `missing` | applicable, supported, was to run, produced no record |
+
+`not_applicable` and `unsupported` are never merged: the first says nothing is missing, the second
+says something is.  An engine that cannot run a check does not thereby pass it.
+
+Which checks a model has depends on what its horizon CARRIES, not on its kind.  A stationary model
+has its own lag `window`.  A transition has none of its own -- the windows it is solved on belong to
+the past it inherits and the stationary continuation it is closed by -- so it carries `past window`
+and `continuation window` instead, plus `settled`.  A transition closed by the game's `end` has
+nothing to settle against and reports `settled` as `not_applicable`; one whose past is a prior on the
+state rather than an inherited regime has no `past window` either.
+
+### Policies
+
+A policy names which checks a particular use requires.  `Policy.PUBLICATION` (the default) requires
+all of them; `Policy.EXPLORATORY` requires only convergence.  A weaker standard is legitimate and has
+to be asked for by name:
+
+```python
+res.diagnostics.statuses                                   # every applicable check and its status
+res.diagnostics.assess()                                   # an Assessment: .accepted, .blocking, .uncomputed
+res.diagnostics.assess(ns.Policy.EXPLORATORY).accepted     # True while you are still exploring
+res.require_ok(ns.Policy.EXPLORATORY)
+print(res.diagnostics.summary())                           # the grouped verdict the CLI prints
+```
+
+On the command line the same split is `--require-ok`, with `--policy exploratory` for the weaker
+standard.  A check the engine cannot compute is reported as `cannot be checked here` rather than as a
+failure, and says whether any setting could change it.
+
 A row that fails is not the same as a check that could not run: a status of `unsupported` (the engine
 cannot compute it) or `not_applicable` (the model gives it no meaning) emits no failing row, and only
 the first of the two leaves the requirement unmet.

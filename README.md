@@ -13,31 +13,65 @@ loss over causal linear strategies on its own observation history.
 ## Install
 
 ```bash
-pip install .                     # from a checkout of this repository
-pip install ".[plot]"             # with matplotlib, for plot() and the CLI's --plot
+pip install ".[plot]"             # from a checkout of this repository; [plot] adds matplotlib
 ```
 
-Python >= 3.10.  Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml.  MIT licence.  The shipped model
-files install with the package, so `ns.example(...)` below works from a plain install; the reference
-data (`tests/refs/`) lives in the repository only.
+Python >= 3.10.  Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml; matplotlib for the figures, which
+the walkthrough below draws.  MIT licence.  The shipped model files install with the package, so
+`ns.example(...)` works from a plain install; the reference data (`tests/refs/`) lives in the
+repository only.
 
-## A first solve
+## A first game, start to finish
 
-Five steps: load a model, solve it, ask whether the answer is trustworthy, read the costs, plot a kernel.
+One model, all the way through: what the game is, solving it, reading the answer, and changing it.
+Everything below uses `ch1_two_player_finite`, the Chapter 1 tracking game.
+
+### The game
+
+Two players share one state and each watches it through their own noisy signal.  Both want the state
+at zero, and both pay for the effort of pushing it there:
+
+```
+dX  = (D1 + D2) dt + sigma dW0            one state, moved by both players and by a common shock
+dYi = sqrt(pi) X dt + dWi                 player i sees X through its own noise; pi is its precision
+player i minimises  E int_0^T (X^2 + ri Di^2) dt
+```
+
+That is the whole model, and this is the same model as a file:
+
+```yaml
+name: ch1_two_player_finite
+params: {p1: 3.0, p2: 3.0, r1: 0.1, r2: 0.1, sigma: 1.0}
+channels: [w0, w1, w2]                                   # the Brownian shocks
+states:
+  X: {drift: {D1: 1.0, D2: 1.0}, noise: {w0: sigma}}     # dX = (D1 + D2) dt + sigma dW0
+agents:
+  player1:
+    controls: [D1]
+    signals: {y1: {drift: {X: "sqrt(p1)"}, noise: {w1: 1.0}}}
+    loss: [[1.0, X, X], [r1, D1, D1]]                    # X^2 + r1 D1^2
+  player2:
+    controls: [D2]
+    signals: {y2: {drift: {X: "sqrt(p2)"}, noise: {w2: 1.0}}}
+    loss: [[1.0, X, X], [r2, D2, D2]]
+horizon: {kind: finite, T: 1.0}                          # the game runs on [0, 1]
+numerics: {nodes: 12}                                    # how finely it is discretised
+```
+
+A loss term is `[coefficient, a, b]` for a quadratic and `[coefficient, a]` for a linear one, so
+`[1.0, X, X]` is `X^2` and `[r1, D1, D1]` is `r1 D1^2`.  `params` are named so you can vary them.
+
+### Solve it
 
 ```python
 import noisestate as ns
 
-model = ns.load(ns.example("ch1_two_player_finite"))   # ns.examples() lists the seven shipped models
-model                                     # <Model 'ch1_two_player_finite' finite T=1: 1 state, 2 agents, 3 channels>
-print(model.describe())                   # the equations, delays, losses and conventions; no solve
+model = ns.load(ns.example("ch1_two_player_finite"))
+print(model.describe())                   # the equations, the observations, the conventions -- no solve
 
 res = ns.solve(model)
-res.require_ok()                          # raises unless every required check passed -- see below
+res.require_ok()                          # raises unless the answer is trustworthy; see below
 print(res.summary())
-
-res.costs["player1"]                      # 0.39690577  (res.cost_kind: "discounted integral over [0, T]")
-res.kernel("X", "w0").plot("kernel.png")  # the state's response to the common shock
 ```
 
 ```
@@ -47,103 +81,133 @@ ch1_two_player_finite: converged residual 5.90e-09 in 15 evaluations, 0.9s; tria
   player2: discounted cost = +0.39690577
 ```
 
-Two agents control one state, each watching it through its own noisy signal; the solve returns their
-equilibrium strategies and what the game costs each of them.  `res.require_ok()` returned quietly, which
-is the claim that this number can be used rather than merely looked at.
+Both players pay the same, which is what you would expect from a game symmetric in `p` and `r`.
 
-Three objects carry everything: a `Model` (the economics), a `Numerics` (how it is solved) and a
-`Result`.  A second argument to `solve()` changes the resolution without touching the model:
+### Read the answer
+
+The costs are the headline number, one per agent:
 
 ```python
-res = ns.solve(model, ns.Numerics(nodes=32, tol=1e-12))
+res.costs["player1"]      # 0.39690577   (res.cost_kind: "discounted integral over [0, T]")
 ```
 
-## Converged is not the same as trustworthy
+Underneath them is what the players actually do, and it is worth looking at before trusting any
+cost.  A **kernel** is a response to a shock: how much of a unit shock, struck at one moment, is
+still showing up later.
 
-A converged solve is an exact solution of the **discretised, truncated** model.  Whether that model is
-close enough to the one you wrote is a separate question, and it is what the checks answer.
+```python
+res.kernel("X", "w0").plot("kernel.png")     # the state's response to the common shock
+```
 
-* **Convergence** is one check: did the fixed-point iteration reach its tolerance?  `res.converged`.
-* **Acceptance** is a verdict over all of them under a stated policy: `res.diagnostics.assess()`.
+![the state's response to a unit common shock](docs/figs/first_kernel.png)
 
-A result can converge perfectly and still be wrong for use, because its lag window was too short or its
-grid too coarse.  That is why `require_converged()` and `require_ok()` are different calls:
+Each curve is one date `t`; the horizontal axis is the *shock time* `s`, the moment the shock struck.
+The distance `t - s` is the shock's **age**.  Reading one curve from right to left is watching a
+single shock get older:
+
+```python
+k = res.kernel("X", "w0")
+k.at(1.0, 1.0)      # +1.0000   age 0:    a unit shock moves X one for one, at once
+k.at(1.0, 0.5)      # +0.7539   age 0.5:  the players have pushed some of it back
+k.at(1.0, 0.0)      # +0.4926   age 1.0:  half of it is still there
+```
+
+A positive value means the state is still displaced in the direction of the shock.  The decay is the
+players working: without them `X` would keep the whole shock forever, since nothing else pulls it
+back.
+
+The controls tell the other half of the story, and their signs are the opposite:
+
+```python
+d = res.kernel("D1", "w0")
+d.at(0.5, 0.5)      # +0.0000   age 0:  no reaction at all to a shock just struck
+d.at(0.5, 0.4)      # -0.2256   age 0.1: player 1 pushes back, against the shock
+d.at(1.0, 0.9)      # +0.0000   at t = T there is no horizon left to control
+```
+
+Two things to read there.  The reaction at age zero is **exactly zero**: a player learns about `X`
+only by integrating a noisy signal, so it cannot respond to a shock the instant it lands.  And the
+sign is negative against a positive shock, which is what "push the state back to zero" looks like.
+
+`kernel()` is the *closed-loop* response, the thing you plot.  It is not the strategy the player
+runs: that is `res.maps["player1"]`, the weights the player puts on its **own signal history**, which
+is what it can actually condition on.  The two answer different questions -- "what happens when a
+shock lands" against "what does this player do with what it sees".
+
+### Change one thing
+
+Give player 1 four times the precision and solve again.  Nothing else moves:
+
+```python
+sharper = ns.solve(model.with_params(p1=12.0))
+sharper.require_ok()
+sharper.costs      # player1 0.359950,  player2 0.331103
+```
+
+| | `p1 = 3` | `p1 = 12` | |
+|---|---|---|---|
+| player1 | 0.396906 | 0.359950 | **-9.3%** |
+| player2 | 0.396906 | 0.331103 | **-16.6%** |
+
+Player 1 sees better and does better -- and **player 2 gains almost twice as much**.  Better
+information for one player is close to a public good here: player 1 spends its own effort stabilising
+`X`, and a steadier `X` is worth just as much to player 2, who pays nothing for it.  That asymmetry
+is the kind of thing the solver is for, and it is two lines away from the first solve.
+
+`with_params()` returns a new model; `model` is untouched, so you can sweep without rebuilding.
+
+### Is the answer trustworthy
+
+`res.require_ok()` above was not decoration.  A converged solve is an exact solution of the
+**discretised, truncated** model, which is not the same as the model you wrote:
+
+* **converged** -- the fixed-point iteration reached its tolerance.  `res.converged`.
+* **accepted** -- every check a stated policy requires actually passed.  `res.diagnostics.assess()`.
+
+A result can converge perfectly and still be wrong to use, because its grid was too coarse or its lag
+window too short.  So there are two calls, and the second is the one to put in a script:
 
 ```python
 res.require_converged()          # ConvergenceError unless the iteration converged -- convergence only
 res.require_ok()                 # the full assessment: raises unless every required check PASSED
 ```
 
-`require_ok()` is the one to put in a script before a number is used.
-
-### Reading the checks
-
-```python
-res.diagnostics.statuses         # {"converged": passed, "window": failed, "settled": not_applicable, ...}
-res.diagnostics.assess()         # an Assessment: .accepted, .blocking, .statuses, .uncomputed, .policy
-res.diagnostics.flags            # the failing checks' text, e.g. ("WINDOW TOO SHORT (...)",)
-print(res.diagnostics.summary()) # the grouped verdict the CLI prints
-```
-
-Every check reports one of six statuses, and the differences between them matter:
-
-| status | meaning |
-|---|---|
-| `passed` | ran; the model met it |
-| `failed` | ran; the model did not meet it |
-| `skipped` | this engine could have run it here; `solve(diagnostics=False)` meant it did not |
-| `unsupported` | this **engine** cannot compute it (the cell engine builds neither a representation error nor a second-order form) |
-| `not_applicable` | the check has no meaning for this **model** (a lag window on a plain finite horizon) |
-| `missing` | applicable, supported, was to run, produced no record |
-
-`not_applicable` and `unsupported` are never merged: the first says nothing is missing, the second says
-something is.  An engine that cannot run a check does not thereby pass it.
-
-Which checks a model has depends on what its horizon **carries**, not on its kind.  A stationary model
-has its own lag `window`.  A transition has none of its own: the windows it is solved on belong to the
-past it inherits and the stationary continuation it is closed by, so it carries `past window` and
-`continuation window` instead, plus `settled`.  A transition closed by the game's `end` has nothing to
-settle against and reports `settled` as `not_applicable`; one whose past is a prior on the state rather
-than an inherited regime has no `past window` either.
-
-### Policies
-
-A policy names which checks a particular use requires.  `Policy.PUBLICATION` (the default) requires all
-of them; `Policy.EXPLORATORY` requires only convergence.  A weaker standard is legitimate and has to be
-asked for by name:
-
-```python
-res.diagnostics.assess(ns.Policy.EXPLORATORY).accepted     # True while you are still exploring
-res.require_ok(ns.Policy.EXPLORATORY)
-```
-
-### When a check fails
-
-`examples/ch3_two_player.yaml` carries the dissertation's `window: 3.0`, where the state kernel is still
-2.4% of its peak at the edge of the lag window:
+When it raises, the message names the check, what it measured and what to change:
 
 ```python
 res = ns.solve(ns.example("ch3_two_player"))
 res.converged                    # True
-res.diagnostics.assess()         # publication: NOT accepted
-                                 #   window [failed] WINDOW TOO SHORT (a kernel still moves by 2.4% of
-                                 #   its peak over the last tenth of the window: raise horizon.window)
-for b in res.diagnostics.assess().blocking:
-    b.check, b.status, b.reason  # ("window", failed, "WINDOW TOO SHORT ...")
+res.require_ok()                 # DiagnosticsError: converged, but window [failed] WINDOW TOO SHORT
+                                 #   (a kernel still moves by 2.4% of its peak over the last tenth
+                                 #    of the window: raise horizon.window)
 ```
 
-The guard names the field to raise.  Raising it, on a copy of the model, settles the question:
+That is the whole of the contract for a first read.  The checks themselves, the six statuses a check
+can report, validation policies, and what to do about each failure are in
+[docs/guards.md](docs/guards.md).
 
-```python
-better = ns.solve(ns.load(ns.example("ch3_two_player")).with_stationary(9.0).with_numerics(nodes=32))
-better.require_ok()              # returns: the tail is 5.4e-05 and the representation error 9e-12
-better.costs["player1"]          # 0.427295 against 0.428954 on the short window -- the truncation, not noise
-```
+### Which example should I start from
 
-Four of the seven shipped examples flag something, each for a reason noted in its own file: three are
-statements about the model (a non-convex best response, a representation error a small grid cannot
-reach) and one is the dissertation's window.  The checks themselves, with their thresholds and advice,
-are in [docs/guards.md](docs/guards.md).
+Seven models ship with the package; `ns.examples()` lists them.  Four flag something deliberately,
+each for a reason written in its own file, so pick by the question you are asking:
+
+| example | the question it asks | horizon | out of the box |
+|---|---|---|---|
+| `ch1_two_player_finite` | two players track one state over a fixed period | finite, T = 1 | accepted |
+| `ch1_delayed_finite` | the same, when one player sees the state late | finite, T = 1 | accepted |
+| `ch3_two_player` | the same tracking game with no end date | stationary | **window too short** -- the dissertation's own window; `with_stationary(9.0)` clears it |
+| `ch4_kyle_back` | an informed trader against a market maker who prices order flow | stationary, discounted | accepted |
+| `kyle_back_prior` | the same, started from a prior on the fundamental | transition | **not a minimum** -- a real claim about the model, not a tuning problem |
+| `ch5_cycle_market` | a ring of firms buying and selling with a delivery lag | stationary | **under-resolved** -- and does not clear at a sane cost |
+| `ch3_precision_change` | a regime change: one player's precision jumps | transition | **several** -- the one to read when learning transitions |
+
+`ns.example(name)` gives the path and `ns.load(...)` the model, as above.
+
+### Three objects
+
+That is the whole loop.  It is built out of three things, and the rest of this document is their
+reference: a **`Model`** (the economics), a **`Numerics`** (how it is discretised -- `ns.solve(model,
+ns.Numerics(nodes=32))` changes the resolution without touching the model), and a **`Result`**.
 
 ## What a Result holds
 
@@ -162,6 +226,7 @@ res.numerics                 # the resolved Numerics
 res.evaluations, res.seconds, res.residual, res.message
 res.world                    # every closed-loop kernel stacked
 res.extra                    # the engine's extras
+res.diagnostics              # the checks: .statuses, .rows, .flags, .assess(policy), .summary()
 res.summary(); res.to_dict() # the text report; the JSON-ready payload
 ```
 
@@ -208,7 +273,10 @@ default, is [docs/model_file.md](docs/model_file.md); `noisestate schema model` 
 
 * `window` is **L, the lag-truncation length**: how far back a strategy may look.  Stationary models
   have one; transitions have one too.
-* `T` is the **terminal time**: when the game ends.  Finite horizons and transitions have one.
+* `T` is the **terminal time**: the end of the interval that is solved for.  Finite horizons and
+  transitions have one.  On a finite horizon the game does end at `T`.  On a transition it usually
+  does not: `T` is where the solved path stops and a stationary continuation takes over on a buffer
+  after it, so `T` is "how long the transition is followed", not "when the world stops".
 
 ```yaml
 horizon: {kind: stationary, discount: 0.5, window: 8.0}    # L = 8, no terminal time
