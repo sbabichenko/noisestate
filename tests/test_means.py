@@ -124,7 +124,16 @@ def test_tied_agents_and_the_cycle_market_get_identical_means():
     m = build(N=2, L=6.0, nodes=6, unit_range=3.0).build(); r5 = ns.solve(m, tol=1e-8).require_converged()
     for u in ("P", "o"):
         assert abs(r5.means[f"{u}0"] - r5.means[f"{u}1"]) < 1e-12 and abs(r5.means[f"{u}0"]) > 0.2
-    assert r5.means["q"] == 0.0 and r5.cost_parts["firm0"]["mean"] < 0 and r5.cost_parts["firm0"] == r5.cost_parts["firm1"]
+    assert r5.means["q"] == 0.0 and r5.cost_parts["firm0"]["mean"] < 0
+    #  The two firms are symmetric, so their cost parts agree -- but each is integrated separately
+    #  over its own loss atoms, so the two sums are not the same sequence of floating-point
+    #  operations and need not agree to the last bit.  Asserting `==` passed on one machine's BLAS
+    #  and failed on a CI runner's by one ULP (4.628987723316478 against ...473).  The claim is
+    #  symmetry, which a relative tolerance states without also claiming bit-identity.
+    for part in ("variance", "mean"):
+        a, b = r5.cost_parts["firm0"][part], r5.cost_parts["firm1"][part]
+        assert abs(a - b) <= 1e-12 * max(1.0, abs(a)), (part, a, b)
+    assert set(r5.cost_parts["firm0"]) == set(r5.cost_parts["firm1"])
     assert any("random walks with no inputs" in n for n in m.notes) and any("linear loss term" in n for n in m.notes)
     assert "the means' continuation integrals are truncated there as well" in r5.summary()      # its window is flagged
 
