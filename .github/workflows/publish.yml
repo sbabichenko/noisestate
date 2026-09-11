@@ -7,11 +7,13 @@ name: publish
 #      owner        sbabichenko
 #      repository   noisestate
 #      workflow     publish.yml          <- this file's name; renaming it breaks publishing
-#      environment  pypi                 (and a second publisher with testpypi, for the rehearsal)
+#      environment  pypi
 #
-#  A tag pushes to TestPyPI, which is the rehearsal.  A published GitHub Release goes to PyPI.
-#  They are separate because a PyPI version number is permanent: once 1.0.0 is uploaded it can
-#  never be re-uploaded, even after deleting it, so the real upload is behind a deliberate act.
+#  Publishing happens on a published GitHub RELEASE, and only then.  A v* TAG runs the build job
+#  alone: it checks that the tag and pyproject agree, builds, and runs twine check, without
+#  uploading anything -- a dry run of everything except the upload, for free.  The separation is
+#  deliberate because a PyPI version number is permanent: once 1.0.0 is uploaded it can never be
+#  re-uploaded, even after being deleted.
 on:
   push:
     tags: ["v*"]
@@ -46,23 +48,6 @@ jobs:
       - run: ls -la dist/ && python -c "import zipfile,sys;z=zipfile.ZipFile([f'dist/{n}' for n in __import__('os').listdir('dist') if n.endswith('.whl')][0]);print('\n'.join(n for n in z.namelist() if n.endswith('METADATA')))"
       - uses: actions/upload-artifact@v4
         with: {name: dist, path: dist/}
-
-  #  Rehearsal: every v* tag.  TestPyPI is a separate index with its own version namespace, so a
-  #  mistake here costs a version number nobody will ever look for.
-  testpypi:
-    needs: build
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    environment: testpypi
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with: {name: dist, path: dist/}
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
 
   #  The real thing: only a PUBLISHED GitHub Release.  The `pypi` environment is where a required
   #  reviewer goes, so this can be made to need an approval click.
