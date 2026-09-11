@@ -1,5 +1,5 @@
---- kb_spectral_q.cpp	2026-09-02 16:44:19.160789015 -0400
-+++ kb_spectral_q.cpp	2026-09-04 08:28:01.387337899 -0400
+--- kb_spectral_q.cpp
++++ kb_spectral_q.cpp
 @@ -287,6 +287,16 @@
              if (pre && !dg) yj[j] = pre_solve(Gj, Hj[j] * cs[j], pre->Glu[j]);
              else { Eigen::PartialPivLU<MatrixXd> lu(Gj); yj[j] = lu.solve(Hj[j] * cs[j]); if (dg) { dg->Glu[j] = lu; dg->Htj[j] = Htj[j]; dg->Hj[j] = Hj[j]; dg->yj[j] = yj[j]; } }
