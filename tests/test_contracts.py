@@ -17,7 +17,6 @@ import numpy as np
 import pytest
 
 import noisestate as ns
-from noisestate import engines
 from helpers import example
 
 PUBLIC_TYPES = (ns.Model, ns.Result)

@@ -7,7 +7,6 @@ import pytest
 
 import noisestate as ns
 from noisestate.schema import PAYLOAD_VERSION
-from noisestate import engines
 from noisestate.diagnostics import Status
 from noisestate import Numerics
 

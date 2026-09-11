@@ -4,7 +4,6 @@ Each test here is one clause of that contract, and several correspond to defects
 was written to close -- an engine passing a verdict it could not test, and a solve with the guards
 turned off passing the guards.
 """
-import warnings
 
 import pytest
 
