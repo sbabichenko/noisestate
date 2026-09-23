@@ -6,8 +6,8 @@ examples/kyle_back_prior.yaml.  A record (tests/helpers.solve_record) holds the 
 repr, the evaluation count, the residual, `settled`, the means where they are scalars, Z's shape and the
 SHA-256 of Z's raw bytes (information: a last-bit change moves it); Z itself is stored as float64 in the .npz
 next to the .json.  The check compares the costs to COST_TOL, the evaluation counts and Z's shape exactly, and
-Z by max |dZ| / max |Z| against Z_TOL (the value is reported per case: BLAS rounding sits at 1e-16 to 1e-13,
-a change of the formulation far above 1e-12).
+Z by max |dZ| / max |Z| against Z_TOL (the value is reported per case: BLAS rounding sits at 1e-16 to 2e-12,
+a change of the formulation far above 1e-11).
 
     python extras/compare_baseline.py write tests/refs/baseline_0.4.json      # record the current package (+ .npz)
     python extras/compare_baseline.py check tests/refs/baseline_0.4.json      # compare; exit 1 on a difference
@@ -31,8 +31,10 @@ import noisestate as ns
 from helpers import example, example_path, stationary, solve_record
 from ch1_mean_sweep import model as ch1_targets
 
-COST_TOL = 1e-12
-Z_TOL = 1e-12                    # max |dZ| / max |Z| per case
+# Relative.  The Chapter 5 market moves 3e-13 in cost and 2e-12 in Z between 1 and 4 BLAS threads, inside its own
+# fixed-point residual (8.6e-11); a change of formulation is orders above either.
+COST_TOL = 1e-11
+Z_TOL = 1e-11                    # max |dZ| / max |Z| per case
 
 
 def npz_path(path: str) -> str:
@@ -87,7 +89,7 @@ def differences(ref, got, Zref=None):
             bits = "" if g["Z_bits"] == r["Z_bits"] else ", bits differ"
             (fails if dist > Z_TOL else notes).append(f"{name}: Z max |dZ| / max |Z| = {dist:.2e}{bits}")
         for k in r["costs"]:
-            if k not in g["costs"] or abs(g["costs"][k] - r["costs"][k]) > COST_TOL:
+            if k not in g["costs"] or abs(g["costs"][k] - r["costs"][k]) > COST_TOL * max(abs(r["costs"][k]), 1.0):
                 fails.append(f"{name}: cost {k} {g['costs'].get(k)!r} against {r['costs'][k]!r}")
         if g["evaluations"] != r["evaluations"]:
             fails.append(f"{name}: {g['evaluations']} evaluations against {r['evaluations']}")

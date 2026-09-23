@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.1 (2026-09-23)
+
+- Lower peak memory on the stationary engine: the second-order check computes eigenvalues only
+  (the lowest eigenvector only when a failed check needs it), symmetrises its form in place, and
+  the first-order system is released before the checks run. The Chapter 5 example's peak falls
+  from about 430 MB to 350 MB, with no change in time.
+- The finite spectral engine reads multi-column kernels along quadrature paths with a batched
+  product, about 5% faster on the Chapter 3 transition. Results change only in the last bits.
+- The baseline regression test compares costs and kernels to 1e-11 relative (was 1e-12, costs
+  absolute). The Chapter 5 example differs by up to 2e-12 between BLAS thread counts, inside its
+  own fixed-point residual, which failed the weekly slow test job.
+
 ## 1.0.0 (2026-09-10) — Initial public release
 
 Equilibrium solver for linear-quadratic-Gaussian games with private information,

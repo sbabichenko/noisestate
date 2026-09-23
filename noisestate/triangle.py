@@ -683,7 +683,10 @@ class LinePath:
         F = np.zeros((len(self.rows), m))
         for pc, sel, Rt, Rx in factors:
             KB = K[pc.offset:pc.offset + pc.n].reshape(pc.nt, pc.na * m)
-            F[sel] = np.einsum("qjc,qj->qc", (Rt @ KB).reshape(len(sel), pc.na, m), Rx)
+            A = (Rt @ KB).reshape(len(sel), pc.na, m)
+            # the sum over the piece's age nodes per point: a batched (1 x na) (na x m) product for several
+            # columns (a third faster at m = 3), the einsum for one (twice as fast as the product there)
+            F[sel] = (Rx[:, None, :] @ A)[:, 0, :] if m > 1 else np.einsum("qjc,qj->qc", A, Rx)
         return F if kernels.ndim == 2 else F[:, 0]
 
     def read(self, kernels: np.ndarray) -> np.ndarray:

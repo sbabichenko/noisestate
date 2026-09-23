@@ -72,6 +72,20 @@ def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx) -> np.
     return Mall if idx.size == nG else Mall[np.ix_(idx, idx)]
 
 
+def symmetrize(M: np.ndarray, block: int = 256) -> np.ndarray:
+    """M replaced in place by (M + M')/2, bit for bit the same entries, without the two full temporaries of the
+    expression: the lower triangle one row block at a time (the columns a block reads above its own rows are
+    not yet written), then the upper from it."""
+    n = M.shape[0]
+    for i0 in range(0, n, block):
+        i1 = min(i0 + block, n)
+        M[i0:i1, :i1] = (M[i0:i1, :i1] + M[:i1, i0:i1].T) / 2
+    for i0 in range(0, n, block):
+        i1 = min(i0 + block, n)
+        M[:i0, i0:i1] = M[i0:i1, :i0].T
+    return M
+
+
 def singular_system_message(name: str) -> str:
     """The error every engine raises on a singular best-response system, naming its usual causes."""
     return (f"the best-response system of {name} is singular: two of its rows may carry the same information, a "
@@ -532,9 +546,12 @@ class EngineBase(MeanLayer):
             # (through the responding primaries' nodes only), and the sum over the columns of one loss form is
             # one product of the stacked row operators, restricted per column to the rows whose block of G_k is
             # not identically zero
-            Mfull = dense_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx)
-            w, V = np.linalg.eigh((Mfull + Mfull.T) / 2)
-            lo, hi = float(w[0]), float(w[-1]); vmin = V[:, 0]
+            # eigenvalues only (no n x n eigenvectors and their workspace); the lowest direction is
+            # computed only when the embedding below needs it
+            Mfull = symmetrize(dense_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx))
+            w = np.linalg.eigvalsh(Mfull)
+            lo, hi = float(w[0]), float(w[-1])
+            vmin = lambda: sla.eigh(Mfull, subset_by_index=[0, 0])[1][:, 0]
         else:
             vmin = None
             res = self._lanczos_extremes(matvec, n)
@@ -547,7 +564,7 @@ class EngineBase(MeanLayer):
             # the windowed objective omits the flows past the edge that read the strategy within the last lag:
             # a negative direction is a truncation artefact if the same direction, zero-extended onto a window
             # longer by two lags, has positive curvature under the same maps
-            emb = self._embedded_curvature(agent, maps, idx, vmin)
+            emb = self._embedded_curvature(agent, maps, idx, vmin())
             if emb is not None:
                 out["embedded"] = float(emb / scale)
                 out["edge"] = bool(emb >= 0.0)
@@ -694,6 +711,7 @@ class EngineBase(MeanLayer):
         # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp_v Gk gamma_v)) = 0 for all controls
         Amat, bvec = self._foc_system(agent, ytil, yinst, Zpass, Resp, Fu)
         gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
+        del Amat, bvec                                          # (nU nR N)^2: not kept through the diagnostics
         cact = np.stack([(Gk @ gamma[ui].reshape(-1)).T for ui in range(nU)])
         Zfull = Zpass.copy()
         for ui in range(nU):

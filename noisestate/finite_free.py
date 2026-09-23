@@ -33,7 +33,7 @@ import numpy as np
 from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
 from scipy.sparse.linalg import LinearOperator, gmres
 
-from .engine import dense_curvature_form, singular_system_message
+from .engine import dense_curvature_form, singular_system_message, symmetrize
 from .spec import Agent
 from .spectral_operators import FocOps, PanelRows, PathOp, ProjOps, RespOps, RowOps
 
@@ -411,7 +411,7 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
     n = idx.size
     if n <= solver.SECOND_ORDER_DENSE:
         Mfull = _dense_form(solver, agent, system, idx)
-        w = np.linalg.eigvalsh((Mfull + Mfull.T) / 2)
+        w = np.linalg.eigvalsh(symmetrize(Mfull))
         lo, hi = float(w[0]), float(w[-1])
     else:
         res = solver._lanczos_extremes(lambda v: matvec(v)[:, 0], n)
