@@ -67,3 +67,13 @@ def test_a_saved_vector_model_loads_as_the_same_model(tmp_path):
     g = game(window=4.0, nodes=8)[0]
     path = str(tmp_path / "v.yaml"); g.save(path)
     assert ns.load(path).to_dict(numeric=True) == g.to_dict(numeric=True)
+
+
+def test_the_strategy_of_a_control_vector_projects_back_to_it():
+    """strategy() with the Hessian block (G^DD a matrix): the agent's estimate of each component's strategy is that
+    control, to the grid's accuracy (1.25e-2 at 14 nodes, 2.8e-2 at 10; the scalar case's test allows 2e-2)."""
+    g, X, D, me = game(T=2.0, nodes=14)
+    res = g.solve().require_converged()
+    for i, S in enumerate(res.strategy(D)):
+        K = res.kernel(f"D{i}")
+        assert np.abs(res._project("me", np.asarray(S)) - K).max() < 2e-2 * np.abs(K).max()

@@ -230,7 +230,7 @@ def test_settle_march_finds_the_window_and_equals_the_explicit_solve(regime, mar
     e6 = ns.transition(old, m.with_params(p1=10.0), T=6.0, numerics={"nodes": 12}, continuation=res.continuation)
     assert ex.settled < 1e-4 < e6.settled and 0.25 < gaps[1] / e6.settled < 4, (e6.settled, ex.settled)
     d = res.to_dict()
-    assert d["window"] == 9.0 and d["march_stop"] == "settled" and len(d["march"]) == 4 and d["march"][2]["gap"]["player1"] > 0
+    assert d["T"] == 9.0 and d["march_stop"] == "settled" and len(d["march"]) == 4 and d["march"][2]["gap"]["player1"] > 0
 
 
 @slow()

@@ -388,27 +388,31 @@ class Result:
         """The strategy kernel of `control` on its agent's noise-state (Chapter 1, Definition 1.4): the weight the
         action at time t puts on the agent's estimate of the shock at time u.  From the first-order condition
         (Remark 1.13) the action is the agent's estimate of -(G^DD)^-1 (G^DX X + B' H), so this kernel is
-        D_W - phi / G^DD, with D_W the control's kernel, phi the kernel of its first-order condition (res.foc) and
-        G^DD the curvature of the agent's loss in the control; the agent's estimate of it is the control's kernel
-        again.  Defined for an agent with one control and no delayed or lead terms, solved with diagnostics.
-        shock picks one, as in res.kernel(name, shock)."""
+        D_W - (G^DD)^-1 phi, with D_W the controls' kernels, phi the kernels of their first-order conditions
+        (res.foc) and G^DD the Hessian of the agent's loss in its controls (a matrix for an agent with several, a
+        vector control); the agent's estimate of it is the control's kernel again.  Defined for a game without
+        delayed or lead terms, solved with diagnostics.  shock picks one, as in res.kernel(name, shock); a vector
+        control (Control("D", 2)) gives a list, one kernel per component."""
+        if not isinstance(control, str) and hasattr(control, "items") and isinstance(control.items, list):
+            return [self.strategy(c, shock) for c in control.items]
         control, shock = _nm(control), _nm(shock)
         agent = next((a for a in self.model.agents if control in a.controls), None)
         if agent is None:
             raise KeyError(f"{control!r} is not a control")
-        if len(agent.controls) != 1:
-            raise NotImplementedError("strategy() is defined for an agent with one control")
         atoms, Q, _ = self.compiled.loss[agent.name]
-        if any(lag for (nm, lag) in atoms if nm == control) or self.model.all_lags():
+        if any(lag for (nm, lag) in atoms if nm in agent.controls) or self.model.all_lags():
             raise NotImplementedError("strategy() is defined for a game without delayed or lead terms in the control")
-        if (control, 0.0) not in atoms:
-            raise NotImplementedError(f"the loss of {agent.name} has no quadratic term in {control}")
-        g = float(Q[atoms.index((control, 0.0)), atoms.index((control, 0.0))])
-        foc = (self.foc.get(agent.name) or {}).get(control)
-        if foc is None or g <= 0:
+        missing = [u for u in agent.controls if (u, 0.0) not in atoms]
+        if missing:
+            raise NotImplementedError(f"the loss of {agent.name} has no quadratic term in {missing}")
+        ix = [atoms.index((u, 0.0)) for u in agent.controls]
+        G = Q[np.ix_(ix, ix)]                                       # G^DD, the Hessian in the agent's controls
+        focs = [(self.foc.get(agent.name) or {}).get(u) for u in agent.controls]
+        if any(f is None for f in focs) or np.linalg.eigvalsh(0.5 * (G + G.T))[0] <= 0:
             raise NotImplementedError("strategy() needs the first-order-condition kernels (solve with diagnostics) "
-                                      "and a positive curvature in the control")
-        K = self._kernel(control) - np.asarray(foc["foc"], dtype=float) / g
+                                      "and a positive definite curvature in the agent's controls")
+        row = np.linalg.solve(G, np.eye(len(ix)))[agent.controls.index(control)]      # the control's row of (G^DD)^-1
+        K = self._kernel(control) - sum(w * np.asarray(f["foc"], dtype=float) for w, f in zip(row, focs))
         return Kernel.of(K if shock is None else K[:, self.shocks.index(shock)], self, f"strategy of {control}", shock)
 
     def response(self, quantity, to, at: float = 0.0, seen_by=None) -> "Response":

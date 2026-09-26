@@ -107,7 +107,12 @@ class TimeLineOps:
             else:
                 t = self.tm - key
                 a = t if self.g.L is None else np.zeros(self.Nt)          # the line s = 0, or (cut at L) the row's age-0 node
-                self._mean_reads[key] = self.g.interp(t, a, side_t=self.tm_side) @ self.mean_embed
+                M = self.g.interp(t, a, side_t=self.tm_side) @ self.mean_embed
+                # a node whose t - lag is 0 read from the left is the path just before zero, the history (the old
+                # means, _mean_before's), never the path's value at 0+: the grid has no piece below zero to read, and
+                # took the one above, putting a jump into the node's panel (a 3e-3 error on every later mean)
+                M[(np.abs(t) <= 1e-12) & (self.tm_side < 0)] = 0.0
+                self._mean_reads[key] = M
         return self._mean_reads[key]
 
 
@@ -136,12 +141,8 @@ class SpectralMeans:
                 or (c.cont is not None and any(c.cont.means.get(n, 0.0) for n in c.prim)))
 
     def _on_line(self, line: Optional[bool]) -> bool:
-        #  Both systems are kept on purpose.  Where the line s = 0 reaches T they agree to rounding without delays
-        #  (1e-15 on Chapter 1), but with delays the diagonal system is converged to 1e-7 from 6 nodes while the
-        #  time-line one approaches it at second order (ch1_delayed with targets: 1.2e-3 at 6 nodes, 2.6e-4 at 12,
-        #  1.4e-4 at 16, on means of size 8), so the diagonal one is used wherever it exists.  The time-line
-        #  system's slower convergence with delays (a transition with T > L) is open: its reads at age 0 are
-        #  interpolated, the diagonal's are grid nodes.
+        #  The two systems agree to rounding wherever both exist (5e-15 on the delayed example with targets, the
+        #  check tests/test_transition_means.py makes); the diagonal one, on grid nodes, is used where it exists.
         return self.c.Nd < self.c.Nt if line is None else line
 
     def _mean_system_diag(self, maps: Dict[str, np.ndarray]):

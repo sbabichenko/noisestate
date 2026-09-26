@@ -60,6 +60,11 @@ A model reads like its equations, in a file and in Python.
   (9e-7 at window 10).
 - Fixed: `res.estimate()` and `response(..., seen_by=)` on the spectral engine failed for an agent with more than
   one control.
+- Fixed: the mean paths of a transition with a lagged input and T beyond the window (the time-line mean system)
+  read the lagged input at t - lag = 0 as its value just after zero instead of the history before it, leaving an
+  error of order 1e-3 on every later mean (3e-3 on the delayed example's scale of 8) that shrank only slowly with
+  the nodes.  The two mean systems now agree to rounding.
+- `res.strategy()` works for an agent with several controls (a vector control), with the Hessian block G^DD.
 - **Terminal losses are solved.**  `terminal: "q (X - b)^2"` on an agent (Python: `Agent(..., terminal=...)`) is a loss
   paid at T on the states, entering the first-order conditions as the adjoint's terminal condition
   `H^X_T = G^XX(T) X_T + G^X_T`, the mean system, the cost (its variance, mean and constant parts, discounted from T)

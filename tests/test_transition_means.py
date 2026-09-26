@@ -25,6 +25,19 @@ def test_time_line_mean_system_equals_the_diagonal_one_where_both_exist():
     assert np.abs(np.linalg.solve(Md, bd) - np.linalg.solve(Ml, bl)).max() < 1e-13
 
 
+def test_the_two_mean_systems_agree_with_a_lagged_input():
+    """The delayed example (a control lag in the drift, a delayed row) with targets, where both systems exist: the
+    time-line system read a lagged input at t - lag = 0 from the left as the path at 0+ (the grid has no piece
+    below zero), a jump in the first panel that left 3e-3 on every later mean and made the time-line system look
+    second order (1.4e-4 at 16 nodes).  They now agree to rounding at every resolution (5e-15 at 6 to 16 nodes)."""
+    d = example("ch1_delayed_finite").to_dict()
+    d["agents"]["player1"]["loss"].append([-2.0, "X"]); d["agents"]["player2"]["loss"].append([2.0, "X"])
+    d["states"]["X"]["initial"] = 0.3
+    S = ns.engines.solver(ns.Model.from_dict(d).with_numerics(nodes=6)); res = S.solve()
+    Md, bd = S._mean_system_diag(res.maps); Ml, bl = S._mean_system_line(res.maps)
+    assert np.abs(np.linalg.solve(Md, bd) - np.linalg.solve(Ml, bl)).max() < 1e-12
+
+
 @slow("slow (7 s at 16 nodes; the 12-node means with a past are tests/test_transition.py's); set NOISESTATE_SLOW=1")
 def test_same_model_means_are_the_stationary_constants():
     """Chapter 3 with a target -2 X for player1, its stationary solution (16 nodes) as past and continuation,
