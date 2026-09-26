@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `deviation_response` on the stationary engine, all-naive corner: a spike of a control whose level others observe
+  (`{level: P}`) now carries the instant reactions it draws, as the solve's own spike responses always did. The market
+  maker's quote spike in Chapter 6's market left out the trader's same-instant order, so the inventory started at 0
+  instead of 2.5. The finite engine already had it right.
+
 ## 2.0.0 (2026-09-26)
 
 A model reads like its equations, in a file and in Python.

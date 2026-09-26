@@ -204,3 +204,12 @@ def test_monitoring_with_a_past_is_refused_on_the_finite_engine():
     d = ch3({"player1": ["player2"]}).to_dict()
     with pytest.raises(NotImplementedError, match="without a past"):
         ns.solve(ns.Model.from_dict(d).with_finite(2.0), past=ns.solve(ch3({})), continuation="stationary")
+
+
+@pytest.mark.parametrize("transparent", [True, False])
+def test_a_deviation_response_starts_with_the_instant_reactions_the_spike_draws(transparent):
+    """The trader sees the quote's level, so a quote spike draws its order at the same instant, privy or naive: the
+    market maker's inventory jumps by -h = 1/(2 eps) = 2.5 at age 0.  The naive branch once spiked the quote alone
+    (inventory 0 at age 0), though the solve's own spike responses carried the reaction."""
+    res = ns.solve(market(0.1, transparent=transparent))
+    assert res.deviation_response("mm", ["Q"]).over([0.0])[0, 0] == pytest.approx(2.5, rel=1e-6)

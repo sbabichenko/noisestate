@@ -1294,8 +1294,9 @@ class StationaryResult(Result):
         S = self._solver(); c = self.compiled
         if len(self.model.privy(origin)) > 1:
             return S._monitoring(self.maps)[1][origin][:, o]
-        a = next(x for x in self.model.agents if x.name == origin)
-        return c.closed_loop(self.maps, excluded=origin, impulse_controls=a.controls)[:, c.nW + o]
+        # the spike with the instant reactions it draws (a trader seeing the quote's level trades at once, whether or not
+        # it is privy), as the solve's own spike responses have them
+        return S._spikes(c, self.maps, next(x for x in self.model.agents if x.name == origin))[1][:, o]
 
     def _spike_responses(self, agent) -> np.ndarray:
         S = self._solver()
