@@ -434,7 +434,9 @@ class Model:
                 key = (name, float(lag))
                 out[key] = out.get(key, 0.0) + coef
             else:
-                raise ValueError(f"unknown quantity {name!r}")
+                from .names import unknown
+                raise ValueError(unknown("quantity", name, self.state_names + self.control_names + list(defs),
+                                         "states, controls and definitions"))
 
         for atom, coef in expr.items():
             n, l = parse_atom(atom, self.params)

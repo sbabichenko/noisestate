@@ -28,7 +28,7 @@ from .expr import dt, Differential, params, Game
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
 
-__all__ = ["Model", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_json", "as_model",
+__all__ = ["Model", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "load_result", "solve", "sweep", "transition", "transition_gap", "read_json", "as_model",
            "compare", "ComparisonResult", "ScenarioResult", "Assessment", "Policy", "Status", "clear_grid_cache", "schema",
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
            "Kernel", "level", "sqrt", "exp", "log", "sin", "cos", "tanh", "dt", "Differential", "params", "Game"]
@@ -166,6 +166,16 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
         tuning = [k for k in bad if k in {f.name for f in dataclasses.fields(Settings)}]
         hint = (f"; {fields} are fields of Numerics: solve(model, Numerics({fields[0]}=...))" if fields else "") + \
                (f"; {tuning} are fields of Settings: solve(model, Numerics(settings={{{tuning[0]!r}: ...}}))" if tuning else "")
+        if not hint:
+            import inspect
+            from .names import nearest
+            known = [p for p in inspect.signature(solve).parameters if p not in ("model", "unknown")] + \
+                    list(Numerics.field_names()) + [f.name for f in dataclasses.fields(Settings)]
+            synonyms = {"max_iter": "max_evaluations", "maxiter": "max_evaluations", "max_iterations": "max_evaluations",
+                        "max_evals": "max_evaluations", "tolerance": "tol", "rtol": "tol", "atol": "tol",
+                        "timeout": "deadline", "time_limit": "deadline", "callback": "progress", "n_nodes": "nodes"}
+            near = {k: ([synonyms[k]] if k in synonyms else nearest(k, known, 2)) for k in bad}
+            hint = "".join(f"; {k}: did you mean {' or '.join(v)}?" for k, v in near.items() if v)
         raise TypeError(f"unknown option(s) {bad} for solve()" + (hint or "; see help(noisestate.solve)"))
     if model.horizon.kind == "transition" and model.horizon.settle is not None:      # the horizon is the march's output
         from .transition import march_model
@@ -182,3 +192,26 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
     res = S.solve(start_from=start_from, start_policy=engines.default_start(S, start_policy), max_evaluations=max_evaluations, deadline=deadline, progress=progress,
                   diagnostics=diagnostics, **kw)
     return _after_solve(res, refine, stability, diagnostics)
+
+
+def load_result(path: str, **solve_kw) -> Result:
+    """A result saved with res.save(path) (or `noisestate solve --json`), back as a live Result: the saved model and
+    numerics, solved again from the saved maps, which converges in an evaluation or two instead of a full solve.
+    Every reader (res.kernel, res.response, res.strategy, ...) then works as on the original.  solve_kw go to
+    solve() (diagnostics=False skips the checks, e.g.)."""
+    import numpy as np
+    payload = read_json(path) if isinstance(path, str) else path
+    missing = [k for k in ("model", "numerics", "maps") if k not in payload]
+    if missing:
+        raise ValueError(f"{path}: not a saved result (no {missing}); save one with res.save(path)")
+    model = Model.from_dict(payload["model"])
+    maps = {}
+    for a in model.agents:
+        saved = payload["maps"].get(a.name)
+        if saved is None:
+            raise ValueError(f"{path}: the saved maps have no agent {a.name!r}")
+        maps[a.name] = np.array([[saved[u][r.name] for r in a.signals] for u in a.controls], dtype=float)
+    kw = {k: v for k, v in (payload.get("options", {}).get("solve") or {}).items()
+          if k in ("tol", "damping", "max_newton", "variable")}
+    kw.update(solve_kw)
+    return solve(model, payload["numerics"], start_from=maps, **kw)

@@ -117,6 +117,20 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
     t0 = time.time() if t0 is None else t0
     phase = ["anderson"]
     state = {"evals": 0, "best_x": None, "best_rn": np.inf}
+    if verbose:
+        # one line per evaluation, the elapsed time first, whatever the phase (scipy's own verbose output
+        # is its own format and is left off); the caller's progress still gets every evaluation
+        user_progress, shown = progress, [None]
+
+        def progress(info):
+            if info["phase"] != shown[0]:
+                shown[0] = info["phase"]
+                print(f"  -- {info['phase']}" + (f" polish (anderson stopped at {state['best_rn']:.2e})"
+                                                 if info["phase"] == "newton" else ""), flush=True)
+            print(f"  [{info['seconds']:7.2f}s] {info['phase']:<8} eval {info['evaluation']:4d}  resid {info['residual']:.3e}",
+                  flush=True)
+            if user_progress is not None:
+                user_progress(info)
 
     def Fb(x):
         # the map with the bookkeeping: the bounds are checked before an evaluation (so one is always made),
@@ -141,7 +155,7 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
 
     msg = []
     try:
-        z, rn, ev, ok, stalled = anderson(Fb, z0, tol=tol, M=M, beta=damping, maxiter=anderson_iters, reg=reg, verbose=verbose)
+        z, rn, ev, ok, stalled = anderson(Fb, z0, tol=tol, M=M, beta=damping, maxiter=anderson_iters, reg=reg)
     except _Stop as stop:
         z, rn, ev = state["best_x"], state["best_rn"], state["evals"]
         return z, rn, ev, rn <= tol, f"anderson: {ev} evaluations, residual {rn:.2e}; {stop}"
@@ -158,7 +172,7 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
             # evaluation of F each); a step also re-multiplies the up to outer_k=10 directions carried from
             # earlier steps (store_outer_Av is False) and makes the line search's, 16 to 26 in all
             z2 = newton_krylov(Fb, z, f_tol=tol * max(1.0, float(np.linalg.norm(z))), maxiter=max_newton,
-                               method="lgmres", inner_inner_m=inner_m, verbose=verbose)
+                               method="lgmres", inner_inner_m=inner_m)
             note = "newton polish: {n} evaluations, residual {r:.2e}"
         except NoConvergence as e:
             z2 = np.asarray(e.args[0])

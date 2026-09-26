@@ -21,6 +21,15 @@ A model reads like its equations, in a file and in Python.
 - **`describe()`** writes coefficients in the parameters (`sqrt(p1) * X dt`, `sigma * dW[W0]`), not their values.
 - **`solve(model, nodes=24)`**: a Numerics field given directly is laid over the numerics, in solve() and
   transition() (refused since 0.6).
+- **Solver quality of life.** A misspelled quantity, shock, agent, control or mean fails at the call (res.response
+  no longer defers it to `.over()`) and names the nearest ones; `solve(max_iter=...)` suggests `max_evaluations`.
+  The repr names the failed checks ("failed: under-resolved, window too short, trader not a minimum") instead of
+  "publication: not accepted", and `summary()` gives each failed check its own line.  `res.status` tells a near miss
+  ("near tolerance": the residual within 10x of the tolerance) from a failure; `res.converged` is unchanged.
+  `res.save(path)` / `ns.load_result(path)` bring a result back from its payload by re-solving from the saved maps
+  (1 to 3 evaluations).  `verbose=True` prints every evaluation with its elapsed time and phase, the switch to the
+  Newton polish, and the outcome.  The upper-case tuning constants are out of `dir(res)`.
+  `res.foc_residual(agent, seed=origin)` checks Chapter 6's response kernels independently of the solver.
 - **Risk aversion, declared (not yet solved).** `risk_aversion: theta` on an agent (`ns.Agent(..., risk_aversion=gamma)`,
   a number or a parameter) is the entropic objective theta^-1 log E exp(theta C) of the realised cost C, CARA with
   coefficient theta when the loss is minus wealth (the Ch1 appendix, thm:risk_sensitive_appendix).  It is validated

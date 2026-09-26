@@ -522,10 +522,17 @@ class EngineBase(MeanLayer):
             message = f"coarse start: {coarse_evals} evaluations at {self._coarse_nodes} nodes; " + message
         solve_kw = {"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start_policy": start_policy,
                     **{k: v for k, v in (("max_evaluations", max_evaluations), ("deadline", deadline)) if v is not None}}
+        if self.verbose:
+            print(f"  -- {message}", flush=True)
+            if diagnostics:
+                print("  -- costs and diagnostics", flush=True)
+        t1 = time.time()
         res = self._result(maps, converged=converged, residual=resid, evaluations=evals[0], message=message,
                            solve_kw=solve_kw, diagnostics=diagnostics,
                            actions=unpack(z) if variable == "actions" else None)
         res.seconds = time.time() - t0            # the diagnostics of _finish are part of the solve's time
+        if self.verbose:
+            print(f"  -- done in {res.seconds:.2f}s (checks {res.seconds - (t1 - t0):.2f}s): {res!r}", flush=True)
         return res
 
     def _result(self, maps, *, converged: bool, residual: float, evaluations: int, message: str, solve_kw: dict,

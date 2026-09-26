@@ -52,6 +52,7 @@ from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, RESIDUAL_NORM, RESIDUAL_TOLER
                           Assessment, Policy, Refinement, Stability, Status, applicable, assess, classify,
                           verification)
 from .kernel import Kernel
+from .names import NameNotFound, unknown
 from .spec import Model
 
 
@@ -130,6 +131,11 @@ class Diagnostics:
         return f"<Diagnostics {self.assess()}>"
 
 
+_NEAR_TOLERANCE = 10.0          # res.status "near tolerance": not converged, residual within this factor of the tolerance
+_SHORT = {"resolution": "under-resolved", "window": "window too short", "stability": "unstable",
+          "refinement": "moves under refinement", "window_tail": "window tail", "representation": "under-resolved"}
+
+
 def _nm(x):
     """A name from a name or an object of the equations form (a State, Control, Agent, Shock or Param)."""
     return x if x is None or isinstance(x, str) else getattr(x, "name", x)
@@ -185,6 +191,29 @@ class SeedResponse2:
 
     def __repr__(self) -> str:
         return f"SeedResponse2({', '.join(self.names)})"
+
+
+@dataclass
+class SeedFoc:
+    """res.foc_residual(agent, seed=origin): the derivative of `agent`'s cost along `origin`'s deviation world in
+    the direction of a spike of each of the agent's controls at the times `times`, computed by quadrature from the
+    loss's quadratic form -- independently of the engine's own first-order-condition operator.  Every gradient is
+    zero when the response kernels are right; `relative` is the largest one over the largest of the terms it sums."""
+    agent: str
+    seed: str
+    times: np.ndarray                    # the spike times (finite) or ages after the seed (stationary)
+    gradient: np.ndarray                 # (len(times), agent's controls)
+    scale: float                         # the largest |term| entering any gradient
+
+    @property
+    def relative(self) -> float:
+        return float(np.abs(self.gradient).max() / self.scale) if self.scale > 0 else float("nan")
+
+    def __repr__(self) -> str:
+        if not self.scale > 0:
+            return f"SeedFoc({self.agent} in {self.seed}'s deviation world: no term of the loss moves in it, nothing to check)"
+        return (f"SeedFoc({self.agent} in {self.seed}'s deviation world: largest gradient {np.abs(self.gradient).max():.2e}, "
+                f"relative {self.relative:.2e} over {len(self.times)} spike times)")
 
 
 class Responses:
@@ -387,6 +416,7 @@ class Result:
         coordinates), .at(*coords) (the engine's own interpolant) and .plot(path=None).  name and shock are
         names or the objects of the equations form (X, dW0)."""
         name, shock = _nm(name), _nm(shock)
+        self._check_names(name, shock)
         return Kernel.of(self._kernel(name, shock), self, name, shock)
 
     def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
@@ -396,6 +426,22 @@ class Result:
     def shocks(self) -> List[str]:
         """The columns of the kernels: the model's shocks (a transition adds the initial shocks of its past)."""
         return list(self.compiled.channels)
+
+    def _shock_ix(self, shock: str) -> int:
+        """The column of `shock` in the kernels, or a KeyError naming the nearest shocks."""
+        if shock not in self.shocks:
+            raise NameNotFound(unknown("shock", shock, self.shocks))
+        return self.shocks.index(shock)
+
+    def _check_names(self, quantity=None, shock=None, agent=None) -> None:
+        """Fail now, with the nearest names, on a quantity, shock or agent the model does not have: a reader that
+        returns a lazy object (res.response) would otherwise fail only when it is evaluated."""
+        if quantity is not None:
+            self.model.expand({quantity: 1.0})                  # its ValueError names the nearest quantities
+        if shock is not None:
+            self._shock_ix(shock)
+        if agent is not None and agent not in [a.name for a in self.model.agents]:
+            raise NameNotFound(unknown("agent", agent, [a.name for a in self.model.agents]))
 
     def _project(self, agent, K: np.ndarray) -> np.ndarray:
         """Hook: the kernel of E[L_t | agent's information at t] for the process L with kernel K at this result's
@@ -410,8 +456,9 @@ class Result:
         res.kernel(name) is the agent's estimation error, whose variance res.belief_error integrates; an agent's
         estimate of its own control is the control.  shock picks one, as in res.kernel(name, shock)."""
         agent, name, shock = _nm(agent), _nm(name), _nm(shock)
+        self._check_names(name, shock, agent)
         K = self._project(agent, self._kernel(name))
-        return Kernel.of(K if shock is None else K[:, self.shocks.index(shock)], self, f"E[{name} | {agent}]", shock)
+        return Kernel.of(K if shock is None else K[:, self._shock_ix(shock)], self, f"E[{name} | {agent}]", shock)
 
     def strategy(self, control: str, shock: Optional[str] = None) -> Kernel:
         """The strategy kernel of `control` on its agent's noise-state (Chapter 1, Definition 1.4): the weight the
@@ -427,7 +474,7 @@ class Result:
         control, shock = _nm(control), _nm(shock)
         agent = next((a for a in self.model.agents if control in a.controls), None)
         if agent is None:
-            raise KeyError(f"{control!r} is not a control")
+            raise NameNotFound(unknown("control", control, self.model.control_names))
         atoms, Q, _ = self.compiled.loss[agent.name]
         if any(lag for (nm, lag) in atoms if nm in agent.controls) or self.model.all_lags():
             raise NotImplementedError("strategy() is defined for a game without delayed or lead terms in the control")
@@ -442,7 +489,7 @@ class Result:
                                       "and a positive definite curvature in the agent's controls")
         row = np.linalg.solve(G, np.eye(len(ix)))[agent.controls.index(control)]      # the control's row of (G^DD)^-1
         K = self._kernel(control) - sum(w * np.asarray(f["foc"], dtype=float) for w, f in zip(row, focs))
-        return Kernel.of(K if shock is None else K[:, self.shocks.index(shock)], self, f"strategy of {control}", shock)
+        return Kernel.of(K if shock is None else K[:, self._shock_ix(shock)], self, f"strategy of {control}", shock)
 
     def response(self, quantity, to, at: float = 0.0, seen_by=None) -> "Response":
         """One shock followed through time: the response of `quantity` (or, with seen_by, that agent's estimate of
@@ -452,10 +499,106 @@ class Result:
             res.response(X, to=dW0, seen_by=player1).over(t)       # player 1's estimate of it
         A vector quantity (State("X", 3)) gives every component: .over(t) has a last axis of its length."""
         if not isinstance(quantity, str) and hasattr(quantity, "items") and isinstance(quantity.items, list):
+            for q in quantity.items:
+                self._check_names(_nm(q), _nm(to), _nm(seen_by))
             return Responses([Response(self, _nm(q), _nm(to), float(at), _nm(seen_by)) for q in quantity.items])
+        self._check_names(_nm(quantity), _nm(to), _nm(seen_by))
         return Response(self, _nm(quantity), _nm(to), float(at), _nm(seen_by))
 
     def grid_summary(self) -> dict:
+        raise NotImplementedError
+
+    def foc_residual(self, agent, seed, control=None, points: int = 24, quadrature: int = 48) -> SeedFoc:
+        """Check `agent`'s first-order condition in `seed`'s deviation world (the world res.deviation_response(seed)
+        describes: a unit deviation of the seed's control, the first unless `control` names one), independently of
+        the engine's first-order-condition operator: for spike times s on `points` interior points, the derivative
+        of the agent's discounted loss along that world in the direction of its frozen spike at s (the players privy
+        to it responding as in the solve, the rest filtering it), by Gauss quadrature split at every kink
+        (`quadrature` nodes per piece) of z_W(t)' Q z_R(t), plus the spike's own instant and the terminal loss
+        (the loss is 1/2 z'Qz + q'z; the linear part and the means drop out of the deviation world).
+        `agent` must be privy to the seed (the seed itself, or one that monitors it); a naive player filters a
+        deviation instead of best-responding to it.
+        What it tests: the response kernels of the monitored deviations (Chapter 6's rectangular system), which the
+        solve imposes inside every evaluation -- so it holds at any maps, not only at the equilibrium, and says
+        nothing about the on-path equilibrium (res.foc and res.converged do).  It is zero to the grid's accuracy
+        when the response kernels are right; `relative` is NaN when the deviation world has no term in the loss.
+        Games with lead terms, a past or a continuation are refused."""
+        agent, seed = _nm(agent), _nm(seed)
+        self._check_names(agent=agent); self._check_names(agent=seed)
+        if any(lag < 0 for a in self.model.agents for (_, lag) in self.compiled.loss[a.name][0]):
+            raise NotImplementedError("foc_residual() does not handle lead terms")
+        if getattr(self, "past", None) is not None or getattr(self, "continuation", None) is not None:
+            raise NotImplementedError("foc_residual() is for a game without a past or a continuation")
+        privy = self.model.privy(seed)
+        if len(privy) == 1 or agent not in privy:
+            raise ValueError(f"{agent} does not best-respond in {seed}'s deviation world: only the players privy to {seed}'s "
+                             f"deviations do ({privy if len(privy) > 1 else 'none: no agent monitors ' + seed}); a naive "
+                             "player filters a deviation, and its equilibrium condition is the ordinary one (res.foc)")
+        me = next(a for a in self.model.agents if a.name == agent)
+        src = next(a for a in self.model.agents if a.name == seed)
+        o = 0 if control is None else src.controls.index(_nm(control))
+        c = self.compiled
+        atoms, Q, _ = c.loss[agent]
+        terminal = (c.terminal or {}).get(agent)
+        W = self._seed_world(seed, o)
+        R = self._spike_responses(me)                                   # (n_prim N, nU)
+        end = self._check_end()
+        rho = float(self.model.horizon.discount)
+        lags = sorted({float(l) for (_, l) in atoms} | {0.0})
+        x, w = np.polynomial.legendre.leggauss(quadrature)
+        times = np.linspace(0.0, end, points + 2)[1:-1]
+        grad = np.zeros((len(times), len(me.controls))); scale = 0.0
+
+        def path(K, t, s0):                                              # (len(t), m): the atoms along K, seed at s0
+            out = np.zeros((len(t), len(atoms)))
+            for j, (nm, lag) in enumerate(atoms):
+                tl = t - lag; live = tl >= s0 - 1e-14
+                if live.any():
+                    out[live, j] = self._read(K[c.block(nm)], tl[live], s0)
+            return out
+        for i, s in enumerate(times):
+            cuts = sorted({s, end} | {b for l in lags for b in (s + l, l) if s < b < end})
+            tq = np.concatenate([0.5 * (b - a) * x + 0.5 * (a + b) for a, b in zip(cuts[:-1], cuts[1:])])
+            wq = np.concatenate([0.5 * (b - a) * w for a, b in zip(cuts[:-1], cuts[1:])]) * np.exp(-rho * (tq - s))
+            zW = path(W, tq, 0.0) @ Q                                   # Q symmetric: z_W' Q, one row per time
+            for u, name in enumerate(me.controls):
+                terms = wq * np.sum(zW * path(R[:, u], tq, s), axis=1)
+                flow = float(terms.sum())
+                inst = 0.0                          # the spike's own delta, in the control and the instant reactions it draws
+                for v, coef in ((c.composite or {}).get(name) or {name: 1.0}).items():
+                    for j, (nm, lag) in enumerate(atoms):
+                        if nm == v and s + lag < end:
+                            inst += coef * np.exp(-rho * lag) * float((path(W, np.array([s + lag]), 0.0) @ Q)[0, j])
+                tail = 0.0
+                if terminal:
+                    ta, QT, _ = terminal
+                    zT = np.array([self._read(W[c.block(nm)], np.array([end - l]), 0.0)[0] for (nm, l) in ta])
+                    rT = np.array([self._read(R[:, u][c.block(nm)], np.array([end - l]), s)[0] for (nm, l) in ta])
+                    tail = np.exp(-rho * (end - s)) * float(zT @ QT @ rT)
+                grad[i, u] = flow + inst + tail
+                scale = max(scale, float(np.abs(terms).sum()), abs(inst), abs(tail))
+        return SeedFoc(agent, seed, times, grad, scale)
+
+    def _solver(self):
+        """The engine that made this result, rebuilt once and kept (the seed-world readers share it)."""
+        if getattr(self, "_solver_cache", None) is None:
+            self._solver_cache = self._make_solver(self.model)
+        return self._solver_cache
+
+    def _seed_world(self, origin: str, o: int) -> np.ndarray:
+        """Hook: the closed loop's kernels (n_prim N,) in `origin`'s deviation world, its control o spiked at 0."""
+        raise NotImplementedError(f"foc_residual() is not available on the {self.kind} engine")
+
+    def _spike_responses(self, agent) -> np.ndarray:
+        """Hook: (n_prim N, nU) the responses to a frozen spike of each of the agent's controls, as the solve used them."""
+        raise NotImplementedError(f"foc_residual() is not available on the {self.kind} engine")
+
+    def _read(self, K: np.ndarray, t: np.ndarray, s0: float) -> np.ndarray:
+        """Hook: the kernel K (one quantity's block) at times t for an impulse at time s0."""
+        raise NotImplementedError
+
+    def _check_end(self) -> float:
+        """Hook: where the deviation world ends: T (finite) or the window (stationary)."""
         raise NotImplementedError
 
     #  summary() and plot() are DECLARED here, though every engine overrides them, because a reader
@@ -486,8 +629,15 @@ class Result:
         and (with `diagnostics`) the checks that failed.  print(res.summary()) is the usual first look
         at a result; res.diagnostics.summary() is the checks alone."""
         f = self.COST_FIGURES
-        lines = [f"{self.model.name}: {self._status(compact=not diagnostics)} residual {self.residual:.2e} "
-                 f"in {self.evaluations} evaluations, {self.seconds:.1f}s; {self._grid_line()}"]
+        head = f"converged, residual {self.residual:.2e}" if self.converged else self._convergence_phrase()
+        lines = [f"{self.model.name}: {head}; {self.evaluations} evaluations, {self.seconds:.1f}s; {self._grid_line()}"]
+        if not self.converged and self.message:
+            lines.append(f"  solver: {self.message}")
+        if diagnostics:
+            lines.extend(f"  - {d['flag']}" for d in self._check_rows()
+                         if d["name"] != "converged" and d["flag"]
+                         and (d["ok"] is False or d["name"] in ("refinement", "stability", "diagnostics")
+                              or (d["ok"] is None and d["name"].startswith("second_order"))))
         for a in self.model.agents:
             parts = self.cost_parts.get(a.name)
             lines.append(f"  {a.name}: {self.COST_LABEL} = {self.costs.get(a.name, float('nan')):+.{f}f}"
@@ -520,12 +670,16 @@ class Result:
         except Exception:
             costs = ""
         try:
-            verdict = "accepted" if self.diagnostics.assess().accepted else "not accepted"
+            state = self._convergence_phrase()
+            if self.solve_kw.get("diagnostics") is False:
+                verdict = "checks not run"
+            else:
+                failed = self._failed_short()
+                verdict = ("failed: " + ", ".join(failed)) if failed else "checks passed" if self.converged else "other checks passed"
         except Exception:                       # a repr must not raise, whatever the result holds
             verdict = "?"
-        return (f"<{type(self).__name__} {self.model.name!r} {self.kind}: {state} "
-                f"(residual {self.residual:.2e}, {self.evaluations} evaluations, {self.seconds:.1f}s); "
-                f"costs {costs or 'none'}; publication: {verdict}>")
+        return (f"<{type(self).__name__} {self.model.name!r} {self.kind}: {state}, "
+                f"{self.evaluations} evaluations, {self.seconds:.1f}s; costs {costs or 'none'}; {verdict}>")
 
     @property
     def cost_kind(self) -> str:
@@ -600,7 +754,7 @@ class Result:
         def row(name, value, threshold, ok, flag, advice=""):
             rows.append({"name": name, "value": value, "threshold": threshold, "ok": ok, "flag": flag, "advice": advice})
         row("converged", float(self.residual), self.solve_kw.get("tol"), bool(self.converged),
-            "NOT converged", self.message)
+            self._convergence_phrase(), self.message)
         if self.solve_kw.get("diagnostics") is False:
             row("diagnostics", None, None, None, "diagnostics skipped (solve(diagnostics=False): no second-order check, "
                 "first-order-condition decomposition or representation error)", "solve again with diagnostics=True")
@@ -754,17 +908,61 @@ class Result:
                 lines.extend((f"  INFO  {d['name']}", f"        meaning: {d['meaning']}", f"        detail: {d['flag']}"))
         return "\n".join(lines)
 
+    def save(self, path: str) -> None:
+        """Write the result's JSON payload (res.to_dict()) to `path`; ns.load_result(path) brings it back."""
+        import json
+        with open(path, "w") as fh:
+            json.dump(self.to_dict(), fh)
+
+    def __dir__(self):
+        """The public surface without the upper-case tuning constants (REFINE_COST_TOL, STABILITY_K, ...), which
+        crowded the readers out of an editor's completion.  They are still there by name; the tunable ones are
+        res.settings' fields."""
+        return [k for k in super().__dir__() if not (k[:1].isupper() and k.upper() == k)]
+
+    @property
+    def status(self) -> str:
+        """The solve's outcome in one word for scripts: "converged"; "near tolerance" (not converged, but the
+        residual is within NEAR_TOLERANCE times the tolerance: usually the rounding floor of the fixed-point map,
+        not a failure; res.converged stays False); or "not converged"."""
+        if self.converged:
+            return "converged"
+        tol = self.solve_kw.get("tol")
+        if tol and np.isfinite(self.residual) and self.residual <= _NEAR_TOLERANCE * tol:
+            return "near tolerance"
+        return "not converged"
+
+    def _convergence_phrase(self) -> str:
+        """'converged', or NOT converged with the residual against the tolerance, a near miss said so."""
+        if self.converged:
+            return "converged"
+        tol = self.solve_kw.get("tol")
+        vs = f"residual {self.residual:.2e} vs tol {tol:.0e}" if tol else f"residual {self.residual:.2e}"
+        if self.status == "near tolerance":
+            return f"NOT converged, near tolerance ({vs}: likely the rounding floor, not a failure)"
+        return f"NOT converged ({vs})"
+
+    def _failed_short(self) -> List[str]:
+        """The failed checks other than convergence, a few words each, for the one-line repr."""
+        out = []
+        for d in self._check_rows():
+            if d["name"] == "converged" or d["ok"] is not False:
+                continue
+            root, _, who = d["name"].partition(":")
+            out.append(f"{who} not a minimum" if root == "second_order" and who else _SHORT.get(root, root.replace("_", " ")))
+        return out
+
     def _status(self, compact: bool = False) -> str:
         """One line: the outcome, then every check that failed or has no verdict, and the informational
         rows (refinement, stability, a skipped diagnostics pass) whenever they were computed."""
         rows = self._check_rows()
         if compact:
             converged = next(d for d in rows if d["name"] == "converged")
-            return "converged" if converged["ok"] else f"NOT converged ({converged['advice']})"
+            return "converged" if converged["ok"] else f"{converged['flag']} ({converged['advice']})"
         parts = []
         for d in rows:
             if d["name"] == "converged":
-                parts.append("converged" if d["ok"] else f"NOT converged ({d['advice']})")
+                parts.append("converged" if d["ok"] else f"{d['flag']} ({d['advice']})")
             elif d["name"] in ("refinement", "stability", "diagnostics") or d["ok"] is False or (d["ok"] is None and d["name"].startswith("second_order")):
                 if d["flag"]:
                     parts.append(d["flag"])
@@ -1007,7 +1205,7 @@ class StationaryResult(Result):
         """Closed-loop kernel of a quantity at the shock ages: (N, nW), or (N,) for one channel."""
         c = self.compiled
         K = self.world[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.world
-        return K if channel is None else K[:, self.shocks.index(channel)]
+        return K if channel is None else K[:, self._shock_ix(channel)]
 
     def deviation_response(self, origin, quantities, control=None) -> "SeedResponse":
         """How quantities respond to a unit deviation seed of `origin` (a unit impulse of its control, the first
@@ -1018,17 +1216,31 @@ class StationaryResult(Result):
         origin = _nm(origin)
         a = next((x for x in self.model.agents if x.name == origin), None)
         if a is None:
-            raise KeyError(f"no agent {origin!r}; the agents are {[x.name for x in self.model.agents]}")
+            raise NameNotFound(unknown("agent", origin, [x.name for x in self.model.agents]))
         o = 0 if control is None else a.controls.index(_nm(control))
-        S = self._make_solver(self.model); c = self.compiled
-        if len(self.model.privy(origin)) > 1:
-            W = S._monitoring(self.maps)[1][origin][:, o]
-        else:
-            W = c.closed_loop(self.maps, excluded=origin, impulse_controls=a.controls)[:, c.nW + o]
+        c = self.compiled
+        W = self._seed_world(origin, o)
         names = [quantities] if isinstance(quantities, str) or not hasattr(quantities, "__iter__") else list(quantities)
         names = [_nm(q) for q in names]
         K = np.stack([W[c.block(n)] if n in c.index else c.expr_op(c.model.expand({n: 1.0})) @ W for n in names], axis=1)
         return SeedResponse(c.grid, K, names)
+
+    def _seed_world(self, origin: str, o: int) -> np.ndarray:
+        S = self._solver(); c = self.compiled
+        if len(self.model.privy(origin)) > 1:
+            return S._monitoring(self.maps)[1][origin][:, o]
+        a = next(x for x in self.model.agents if x.name == origin)
+        return c.closed_loop(self.maps, excluded=origin, impulse_controls=a.controls)[:, c.nW + o]
+
+    def _spike_responses(self, agent) -> np.ndarray:
+        S = self._solver()
+        return S._impulse_responses(agent, self.maps, S._spikes(self.compiled, self.maps, agent)[1])
+
+    def _read(self, K, t, s0):
+        return self.compiled.grid.interp(np.asarray(t) - s0) @ K
+
+    def _check_end(self) -> float:
+        return float(self.compiled.grid.L)
 
     def plot(self, path: str) -> None:
         """Kernels by shock for every state and control, one panel per quantity (needs matplotlib)."""
@@ -1065,7 +1277,7 @@ def _stationary_projection(res, agent, K: np.ndarray) -> np.ndarray:
     agent = _nm(agent)
     a = next((x for x in res.model.agents if x.name == agent), None)
     if a is None:
-        raise KeyError(f"no agent {agent!r}; the agents are {[x.name for x in res.model.agents]}")
+        raise NameNotFound(unknown("agent", agent, [x.name for x in res.model.agents]))
     S = res._make_solver(res.model); Z = res.world; nW = S.c.nW
     K = np.asarray(K, dtype=float)
     g = S._project(a, Z, np.repeat(K[None], len(a.controls), axis=0))
@@ -1139,7 +1351,7 @@ class TriangleResult(Result):
         is meaningful on the nodes with s = 0)."""
         c = self.compiled
         K = self.world[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.world
-        return K if channel is None else K[:, self.shocks.index(channel)]
+        return K if channel is None else K[:, self._shock_ix(channel)]
 
     def plot(self, path: str) -> None:
         """Each kernel as a function of the shock time s at five dates t (needs matplotlib)."""
@@ -1163,7 +1375,7 @@ class TriangleResult(Result):
         agent = _nm(agent)
         a = next((x for x in self.model.agents if x.name == agent), None)
         if a is None:
-            raise KeyError(f"no agent {agent!r}; the agents are {[x.name for x in self.model.agents]}")
+            raise NameNotFound(unknown("agent", agent, [x.name for x in self.model.agents]))
         solver = self._make_solver(self.model)
         if not hasattr(solver, "maps_from_world"):
             raise NotImplementedError(f"estimates need the spectral finite engine, not {type(solver).__name__}")
@@ -1179,17 +1391,33 @@ class TriangleResult(Result):
         origin = _nm(origin)
         a = next((x for x in self.model.agents if x.name == origin), None)
         if a is None:
-            raise KeyError(f"no agent {origin!r}; the agents are {[x.name for x in self.model.agents]}")
+            raise NameNotFound(unknown("agent", origin, [x.name for x in self.model.agents]))
         o = 0 if control is None else a.controls.index(_nm(control))
-        S = self._make_solver(self.model); c = self.compiled
-        if len(self.model.privy(origin)) > 1:
-            W = S._monitoring(self.maps)[1][origin][:, o]
-        else:
-            W = S._spikes(c, self.maps, a)[1][:, o]
+        c = self.compiled
+        W = self._seed_world(origin, o)
         names = [quantities] if isinstance(quantities, str) or not hasattr(quantities, "__iter__") else list(quantities)
         names = [_nm(q) for q in names]
         K = np.stack([W[c.block(n)] if n in c.index else c.expr_op(c.model.expand({n: 1.0})) @ W for n in names], axis=1)
         return SeedResponse2(self.grid, K, names)
+
+    def _seed_world(self, origin: str, o: int) -> np.ndarray:
+        S = self._solver(); c = self.compiled
+        if len(self.model.privy(origin)) > 1:
+            return S._monitoring(self.maps)[1][origin][:, o]
+        return S._spikes(c, self.maps, next(x for x in self.model.agents if x.name == origin))[1][:, o]
+
+    def _spike_responses(self, agent) -> np.ndarray:
+        S = self._solver()
+        if not hasattr(S, "_spikes"):
+            raise NotImplementedError("foc_residual() needs the spectral finite engine")
+        return S._impulse_responses(agent, self.maps, S._spikes(self.compiled, self.maps, agent)[1])
+
+    def _read(self, K, t, s0):
+        t = np.asarray(t, dtype=float)
+        return self.grid.interp(t, t - s0) @ K
+
+    def _check_end(self) -> float:
+        return float(self.model.horizon.T)
 
     def evaluate(self, name: str, shock: str, t, s) -> np.ndarray:
         """Kernel value at (t, s) points: response at time t to a unit `shock` at time s."""
@@ -1199,6 +1427,9 @@ class TriangleResult(Result):
 
     def mean(self, name: str, t) -> np.ndarray:
         """The mean path of `name` (any key of res.means) interpolated at the times t (from above at a breakpoint)."""
+        name = _nm(name)
+        if name not in self.means:
+            raise NameNotFound(unknown("mean", name, list(self.means), "names with a mean"))
         t = np.atleast_1d(np.asarray(t, dtype=float)); g = self.grid
         a = t if g.L is None else np.zeros_like(t)              # the line s = 0, or (a strip, cut at age L) the age-0 line
         return g.interp(t, a) @ (self.compiled.mean_embed @ np.asarray(self.means[name], dtype=float))
@@ -1334,7 +1565,7 @@ class TransitionResult(TriangleResult):
         weighted least-squares Gram per date), integrated over the shocks alive."""
         a = next((x for x in self.model.agents if x.name == agent), None)
         if a is None:
-            raise KeyError(f"no agent {agent!r}; the agents are {[x.name for x in self.model.agents]}")
+            raise NameNotFound(unknown("agent", agent, [x.name for x in self.model.agents]))
         return self._make_solver(self.model).belief_error(a, name, self.world)
 
     def grid_summary(self) -> dict:

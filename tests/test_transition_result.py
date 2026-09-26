@@ -59,7 +59,7 @@ def test_regime_change_loss_path_runs_from_the_old_state_to_the_new_flow(tmp_pat
     assert abs(res.excess_costs["player1"] - 0.024027) < 1e-5 and abs(res.excess_costs["player2"] - 0.028619) < 1e-5
     be = res.belief_error("player2", "X")
     assert be.shape == res.times.shape and be.min() > 0 and be[0] > be[iT]                 # a sharper signal: the error falls
-    with pytest.raises(KeyError, match="no agent"):
+    with pytest.raises(KeyError, match="unknown agent"):
         res.belief_error("player3", "X")
     res.plot(str(tmp_path / "transition.png"))
     assert (tmp_path / "transition.png").stat().st_size > 1000

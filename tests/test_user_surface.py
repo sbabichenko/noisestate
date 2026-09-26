@@ -63,7 +63,7 @@ def test_result_repr_is_one_readable_line():
     res = ns.solve(ns.example("ch1_two_player_finite"))
     text = repr(res)
     assert len(text) < 400 and "\n" not in text
-    for expected in ("ch1_two_player_finite", "finite", "converged", "player1", "accepted"):
+    for expected in ("ch1_two_player_finite", "finite", "converged", "player1", "checks passed"):
         assert expected in text
     assert "compiled=" not in text and "array(" not in text
 

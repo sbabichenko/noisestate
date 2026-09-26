@@ -1,6 +1,6 @@
 # API reference
 
-Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 48
+Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 49
 names; this page covers all of them, plus the methods on the objects they return.
 
 The shortest useful path is three calls:
@@ -105,6 +105,7 @@ Adding a row an agent already has is an **error**, never a silent replacement â€
 | call | use it when |
 |---|---|
 | `ns.solve(model, numerics=None, **kw)` | the standard entry point. Returns a `Result`; it does **not** raise when the solve fails to converge |
+| `ns.load_result(path, **kw)` | a result saved with `res.save(path)`, back as a live `Result`: re-solved from the saved maps in an evaluation or two |
 | `model.solve(numerics=None, **kw)` | the same as a method |
 | `ns.Numerics(engine=, nodes=, tol=, â€¦)` | the numerical choices. Every field optional; `None` keeps the model's own |
 | `ns.Settings(...)` | the full frozen tunable set |
@@ -137,8 +138,10 @@ signatures and return types do not.
 | `res.axes` / `.map_axes(delay)` | what the kernel indices mean; where a delayed row's map values belong |
 | `res.maps` / `.world` | the raw solved objects |
 | `res.converged` / `.residual` / `.evaluations` / `.seconds` / `.message` | what the solve did |
+| `res.status` | `"converged"`, `"near tolerance"` (not converged, the residual within 10x of the tolerance: usually the rounding floor) or `"not converged"` |
+| `res.foc_residual(agent, seed=origin)` | Chapter 6: the agent's first-order condition in the origin's deviation world, by quadrature from the loss, independent of the solver's operator; checks the monitored response kernels (not the on-path equilibrium) |
 | `res.numerics` / `.grid_summary()` | the grid and tolerances it ran with |
-| `res.summary()` / `.plot(path)` / `.to_dict()` | readable text, figures, JSON-ready data |
+| `res.summary()` / `.plot(path)` / `.to_dict()` / `.save(path)` | readable text (one line per failed check), figures, JSON-ready data, that data written to a file |
 
 `ns.Kernel` is an ndarray with four additions: `.axes`, `.at(*coords)`, `.plot(path)`, `.values`.
 
