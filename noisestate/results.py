@@ -158,6 +158,20 @@ class Response:
         return f"Response({who}{self.quantity} to a unit {self.shock} at t = {self.at:g})"
 
 
+class SeedResponse:
+    """res.deviation_response(...): kernels in the age of a deviation seed; .over(ages) evaluates them, (len(ages),
+    number of quantities)."""
+
+    def __init__(self, grid, K: np.ndarray, names: List[str]):
+        self.grid, self.K, self.names = grid, K, names
+
+    def over(self, ages) -> np.ndarray:
+        return np.asarray(self.grid.interp(np.asarray(ages, dtype=float)) @ self.K, dtype=float)
+
+    def __repr__(self) -> str:
+        return f"SeedResponse({', '.join(self.names)})"
+
+
 class Responses:
     """res.response(X, ...) for a vector X: one Response per component; .over(t) stacks them on a last axis."""
 
@@ -979,6 +993,27 @@ class StationaryResult(Result):
         c = self.compiled
         K = self.world[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.world
         return K if channel is None else K[:, self.shocks.index(channel)]
+
+    def deviation_response(self, origin, quantities, control=None) -> "SeedResponse":
+        """How quantities respond to a unit deviation seed of `origin` (a unit impulse of its control, the first
+        unless `control` names one), as functions of the seed's age: `.over(ages)`, one column per quantity.  The
+        players privy to the origin (Chapter 6's monitoring relation) respond through their response kernels, the
+        origin itself resuming play after the blip; naive players filter it.  Without privy players it is the
+        impulse response with the origin's own reaction frozen, the all-naive corner's."""
+        origin = _nm(origin)
+        a = next((x for x in self.model.agents if x.name == origin), None)
+        if a is None:
+            raise KeyError(f"no agent {origin!r}; the agents are {[x.name for x in self.model.agents]}")
+        o = 0 if control is None else a.controls.index(_nm(control))
+        S = self._make_solver(self.model); c = self.compiled
+        if len(self.model.privy(origin)) > 1:
+            W = S._monitoring(self.maps)[1][origin][:, o]
+        else:
+            W = c.closed_loop(self.maps, excluded=origin, impulse_controls=a.controls)[:, c.nW + o]
+        names = [quantities] if isinstance(quantities, str) or not hasattr(quantities, "__iter__") else list(quantities)
+        names = [_nm(q) for q in names]
+        K = np.stack([W[c.block(n)] if n in c.index else c.expr_op(c.model.expand({n: 1.0})) @ W for n in names], axis=1)
+        return SeedResponse(c.grid, K, names)
 
     def plot(self, path: str) -> None:
         """Kernels by shock for every state and control, one panel per quantity (needs matplotlib)."""

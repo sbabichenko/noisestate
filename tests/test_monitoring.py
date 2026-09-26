@@ -4,9 +4,8 @@ The relation: `monitors: [i]` on agent j is j |> i, j privy to deviations origin
 reflexive implicitly, transitive by Assumption 6.4 (refused otherwise).  No `monitors` anywhere is the all-naive
 corner (Proposition 6.11 (ii)), what the engines have always solved.
 
-The engine targets are marked xfail(strict) until the engines solve monitored deviations: they fail now with the
-engines' NotImplementedError, and an engine that meets one turns it into an XPASS, which fails the suite until the
-marker is removed.  Each target is independent of noisestate:
+The stationary engine solves monitored deviations (the spectral engine refuses them).  Each target is independent of
+noisestate:
 
 * The all-privy corner of the Chapter 3 tracking game (r = 1, discount 0).  A seed is known to every player and moves
   only conditional means, so the players' responses solve the deterministic game in the deviation, whose Markov
@@ -69,18 +68,26 @@ def test_no_monitors_is_the_all_naive_corner_the_engines_solve():
     assert ns.solve(ch3({})).costs == ns.solve(example("ch3_two_player")).costs
 
 
-@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="the engines do not solve monitored deviations yet")
 def test_all_privy_tracking_responds_with_the_feedback_nash_gain():
-    res = ns.solve(ch3({"player1": ["player2"], "player2": ["player1"]})).require_converged()
+    """Window 8 at 24 nodes: X and D2 to 1e-7 (measured 4e-9 and 5e-9; at the shipped window 3 the window truncation
+    leaves 4e-3 at seed age 2)."""
+    res = ns.solve(ch3({"player1": ["player2"], "player2": ["player1"]}).with_stationary(8.0).with_numerics(nodes=24))
+    res.require_converged()
     a = np.linspace(0.0, 2.5, 11)
     r = res.deviation_response("player1", ["X", "D2"]).over(a)          # to a unit state impulse from player 1
-    assert np.abs(r[:, 0] - np.exp(-2 * K_PRIVY * a)).max() < 1e-4
-    assert np.abs(r[:, 1] + K_PRIVY * np.exp(-2 * K_PRIVY * a)).max() < 1e-4
+    assert np.abs(r[:, 0] - np.exp(-2 * K_PRIVY * a)).max() < 1e-7
+    assert np.abs(r[:, 1] + K_PRIVY * np.exp(-2 * K_PRIVY * a)).max() < 1e-7
+    # the naive corner's response is the frozen one: player 2 filters the impulse, it does not see a deviation
+    naive = ns.solve(ch3({}).with_stationary(8.0).with_numerics(nodes=24)).deviation_response("player1", ["D2"]).over(a)
+    assert np.abs(naive[:, 0] - r[:, 1]).max() > 0.1
 
 
-@pytest.mark.xfail(raises=NotImplementedError, strict=True, reason="the engines do not solve monitored deviations yet")
 def test_a_privy_market_maker_leaves_the_trader_a_nonpositive_cost():
+    """The market maker nets the trader's deviations out of the flow, so they move no price; the trader's cost is
+    -0.4999997 (the withdrawn naive_observers gave +8.0, the on-path world built with the deviation's responses)."""
     kb = ns.load(ns.example("ch4_kyle_back")).to_dict()
     kb["agents"]["market_maker"]["monitors"] = "trader1"
     res = ns.solve(kb).require_converged()
     assert res.costs["trader1"] <= 1e-8
+    assert res.costs["trader1"] == pytest.approx(-0.4999997, abs=1e-6)
+    assert all(res.second_order[a]["ok"] for a in res.second_order)

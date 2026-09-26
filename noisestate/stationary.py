@@ -232,8 +232,11 @@ class Compiled(CompiledBase):
         `impulse_controls` (whose owning agent's reactions are switched off when it is
         `excluded`).  maps[agent] has shape (n_controls, n_rows, N).
         Returns Z with shape (n_prim N, nW + len(impulse_controls)).  The states are eliminated
-        through the cached propagator part (see _state_elimination); the solve is over the controls."""
-        if self.sym is not None and self._maps_symmetric(maps):
+        through the cached propagator part (see _state_elimination); the solve is over the controls.
+        `excluded` may also be a tuple of agents, every one of them switched off (a deviation's privy set)."""
+        if isinstance(excluded, (tuple, list)) and len(excluded) == 1:
+            excluded = excluded[0]
+        if self.sym is not None and not isinstance(excluded, (tuple, list)) and self._maps_symmetric(maps):
             return self.closed_loop_symmetric(maps, excluded, impulse_controls)
         return self._closed_loop_eliminated(maps, excluded, impulse_controls)
 
@@ -241,7 +244,8 @@ class Compiled(CompiledBase):
         nX, nU, N = self.nX, self.nU, self.N
         n = len(self.prim) * N; nxs = nX * N
         ncol = self.nW + len(impulse_controls)
-        excl = frozenset(self.model.agents[[a.name for a in self.model.agents].index(excluded)].controls) if excluded else frozenset()
+        off = set(excluded) if isinstance(excluded, (tuple, list)) else ({excluded} if excluded else set())
+        excl = frozenset(u for a in self.model.agents if a.name in off for u in a.controls)
         B = np.zeros((n, ncol))
         if nX:
             lu, W, P0X, perm = self._state_elimination(excl)
@@ -258,7 +262,7 @@ class Compiled(CompiledBase):
         # control rows: the strategies
         MU = np.zeros((nU * N, n))
         for a in self.model.agents:
-            if a.name == excluded:
+            if a.name in off:
                 continue
             g = maps[a.name]
             for ui, u in enumerate(a.controls):
@@ -494,6 +498,7 @@ class Compiled(CompiledBase):
 # ------------------------------------------------------------------- solver
 class StationarySolver(EngineBase):
     RESULT = StationaryResult
+    MONITORING = True                   # monitored deviations (Chapter 6): _impulse_responses below
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.6, 60       # with Anderson memory 15 (0.3 was needed at memory 6 for Kyle-Back)
     #  The second-order verdict does not depend on the discount, so this engine can check a
     #  discounted model.  The dissertation writes the discounted stationary objective (Chapter
@@ -517,6 +522,7 @@ class StationarySolver(EngineBase):
         super().__init__(model, verbose, settings=settings)
         self.c = Compiled(model, settings=self.settings)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
+        self._monitored = None                          # (maps key, {agent: monitored R}, {origin: seed world}) of the last maps
 
     # -------------------------------------------- overridable model pieces
     # ------------------------------------------- the best response (the kernel algebra of the age grid)
@@ -827,21 +833,26 @@ class StationarySolver(EngineBase):
         c = self.c; N, nW = c.N, c.nW
         nR, nU = len(agent.signals), len(agent.controls)
         Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
-        Zpass, R = Zp[:, :nW], Zp[:, nW:]
-        R = self._impulse_responses(agent, maps, R)
-        Zpass = self._passive_world(agent, maps, Zpass, R)
+        Zpass, R0 = Zp[:, :nW], Zp[:, nW:]
+        # two uses of the impulse responses, kept apart: the on-path world is the passive world plus the agent's
+        # actions as every other player sees them on the path (their filters, R0); the first-order condition and
+        # the second-order form are about the agent's deviations, to which the players privy to it respond
+        # through their response kernels (the monitored R; R0 itself without monitoring)
+        R = self._impulse_responses(agent, maps, R0)
+        Zpass = self._passive_world(agent, maps, Zpass, R0)
         ytil, yinst = self._passive_rows(agent, Zpass)
         Gk = self._row_operator(agent, ytil, yinst)
-        Resp = self._response_operators(agent, R)
+        Resp0 = self._response_operators(agent, R0)
+        Resp = Resp0 if R is R0 else self._response_operators(agent, R)
         Fu = self._foc_operators(agent, R)
-        # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp_v Gk gamma_v)) = 0 for all controls
-        Amat, bvec = self._foc_system(agent, ytil, yinst, Zpass, Resp, Fu)
+        # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp0_v Gk gamma_v)) = 0 for all controls
+        Amat, bvec = self._foc_system(agent, ytil, yinst, Zpass, Resp0, Fu)
         gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
         del Amat, bvec                                          # (nU nR N)^2: not kept through the diagnostics
         cact = np.stack([(Gk @ gamma[ui].reshape(-1)).T for ui in range(nU)])
         Zfull = Zpass.copy()
         for ui in range(nU):
-            Zfull += Resp[ui] @ cact[ui]
+            Zfull += Resp0[ui] @ cact[ui]
         out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
         if want_decomp:
             self._decompose(agent, out, Fu, Resp, Gk, maps)
@@ -859,6 +870,119 @@ class StationarySolver(EngineBase):
             recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(self.c.nW)], axis=1)
             worst = max(worst, float(np.abs(recon - actions[ui]).max() / max(1e-300, np.abs(actions[ui]).max())))
         return worst
+
+    # ------------------------------------------------------- monitored deviations (Chapter 6)
+    #  With a monitoring relation, a unit deviation seed of agent i (a control impulse) is resolved by the players
+    #  privy to it, P_i (i itself among them, which resumes play after the blip): they do not filter its effects
+    #  through their maps but respond through response kernels D^{v<-i}, one per privy control v, in the seed's age.
+    #  The naive players filter it as always.  By linearity the seed world is
+    #      W_i = Z0_i[:, i] + sum_v C_v D^{v<-i},
+    #  Z0_i the closed loop with every privy player's map off and an impulse column per privy control, C_v the
+    #  convolution with v's impulse column (and the identity on v's own block: v's kernel is D^{v<-i}).  Each privy
+    #  player j's first-order condition on W_i vanishes (Definition 6.3 (ii), sequential rationality), with j's
+    #  continuation through its own monitored impulse responses R_j^mon, the responses to a seed of j with j's own
+    #  reaction frozen (Lemma 6.6: the first-order condition is the same under the blip convention) and P_j \ {j}
+    #  responding through their kernels D^{.<-j}.  The kernels for different origins depend on each other through
+    #  R^mon, so they are found by iterating: kernels from the R^mon, R^mon from the kernels.  Every agent's best
+    #  response then uses its R^mon (Definition 6.3 (i)).
+
+    def _maps_key(self, maps) -> bytes:
+        import hashlib
+        h = hashlib.sha1()
+        for a in self.model.agents:
+            h.update(np.ascontiguousarray(maps[a.name]).tobytes())
+        return h.digest()
+
+    def _seed_setup(self, maps, origin: str):
+        """(ctrls, Z0, C): the privy controls (origin's first), the closed loop with the privy players' maps off
+        and their impulse columns (n_prim N, len(ctrls)), and per privy control the stacked convolution
+        (n_prim N x N) with its impulse column, the identity on its own block."""
+        c = self.c; N = c.N; nP = len(c.prim)
+        owner = {a.name: a for a in self.model.agents}
+        P = self.model.privy(origin)
+        ctrls = [u for n in P for u in owner[n].controls]
+        Z0 = c.closed_loop(maps, excluded=tuple(P), impulse_controls=ctrls)[:, c.nW:]
+        C = {}
+        for k, v in enumerate(ctrls):
+            Cv = np.zeros((nP * N, N))
+            for p in range(nP):
+                Cv[p * N:(p + 1) * N] = c.grid.conv_op(Z0[p * N:(p + 1) * N, k])
+            Cv[c.block(v)] = np.eye(N)
+            C[v] = Cv
+        return ctrls, Z0, C
+
+    def _monitoring(self, maps):
+        """({agent: R^mon (n_prim N, nU)}, {origin: W (n_prim N, n origin controls)}) for the agents with privy
+        others, the response kernels found by the iteration described above (to 1e-12 relative)."""
+        key = self._maps_key(maps)
+        if self._monitored is not None and self._monitored[0] == key:
+            return self._monitored[1], self._monitored[2]
+        c = self.c; N = c.N
+        owner = {a.name: a for a in self.model.agents}
+        origins = [a.name for a in self.model.agents if len(self.model.privy(a.name)) > 1]
+        setup = {i: self._seed_setup(maps, i) for i in origins}
+        Rmon = {}
+        for a in self.model.agents:                     # to start: the naive responses
+            Rmon[a.name] = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)[:, c.nW:]
+        D = {}                                          # origin -> (n origin controls, n privy controls, N)
+        W = {}
+        for it in range(200):
+            Fu = {n: self._foc_operators(owner[n], Rmon[n]) for n in {m for i in origins for m in self.model.privy(i)}}
+            change = 0.0
+            for i in origins:
+                ctrls, Z0, C = setup[i]
+                responders = [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))]
+                A = np.block([[Fu[n][ui] @ C[v] for v in ctrls] for (n, ui) in responders])
+                nO = len(owner[i].controls)
+                Di = np.zeros((nO, len(ctrls), N)); Wi = np.zeros((len(c.prim) * N, nO))
+                for o in range(nO):
+                    b = -np.concatenate([Fu[n][ui] @ Z0[:, o] for (n, ui) in responders])
+                    x = np.linalg.solve(A, b).reshape(len(ctrls), N)
+                    Di[o] = x
+                    Wi[:, o] = Z0[:, o] + sum(C[v] @ x[k] for k, v in enumerate(ctrls))
+                if i in D:
+                    change = max(change, float(np.abs(Di - D[i]).max() / max(1e-300, np.abs(Di).max())))
+                else:
+                    change = np.inf
+                D[i] = Di; W[i] = Wi
+            for j in origins:
+                Rmon[j] = self._frozen_responses(j, setup[j], D[j], len(owner[j].controls))
+            if change < 1e-12:
+                break
+        else:
+            raise RuntimeError(f"the monitored response kernels did not settle in 200 rounds (last change {change:.1e})")
+        self._monitored = (key, Rmon, W)
+        return Rmon, W
+
+    def _frozen_responses(self, j: str, setup, Dj: np.ndarray, own: int) -> np.ndarray:
+        """R^mon_j (n_prim N, own): the responses to a frozen spike of each of j's controls, the players privy to j
+        responding.  They read j's control path under the blip convention, a seed followed by j's continuation
+        D^{j<-j}, so a frozen spike (no continuation) is the seeds sigma with sigma + D^{j<-j} * sigma = delta: a
+        spike at 0 and, after it, the seeds s that cancel the continuation, s_u + sum_o' D^{u<-j,o'} * s_o' =
+        -D^{u<-j,o} (a Volterra equation of the second kind in the seed's age).  The privy controls v respond to
+        sigma, D^{v<-j,o} + sum_o' D^{v<-j,o'} * s_o'; j's own controls are the spike alone."""
+        c = self.c; N = c.N
+        ctrls, Z0, C = setup
+        conv = [[c.grid.conv_op(Dj[o2, u]) for o2 in range(own)] for u in range(own)]      # conv[u][o'] g = D^{u<-j,o'} * g
+        M = np.eye(own * N) + np.block([[conv[u][o2] for o2 in range(own)] for u in range(own)])
+        out = np.zeros((len(c.prim) * N, own))
+        for o in range(own):
+            s = np.linalg.solve(M, -np.concatenate([Dj[o, u] for u in range(own)])).reshape(own, N)
+            col = Z0[:, o].copy()
+            for k, v in enumerate(ctrls):
+                if k < own:
+                    continue
+                x = Dj[o, k] + sum(c.grid.conv_op(Dj[o2, k]) @ s[o2] for o2 in range(own))
+                col += C[v] @ x
+            out[:, o] = col
+        return out
+
+    def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
+        """With a monitoring relation, the agent's impulse responses with the players privy to its deviations
+        responding through their response kernels (Chapter 6); without one, R."""
+        if len(self.model.privy(agent.name)) == 1:
+            return R
+        return self._monitoring(maps)[0][agent.name]
 
     def _lead_term(self, agent: Agent, Ru: np.ndarray, name: str, lag: float) -> np.ndarray:
         """(N, N) operator on the led atom's (Q zeta) kernel: the past-date term of a lead (see EngineBase)."""
