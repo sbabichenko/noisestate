@@ -174,3 +174,78 @@ def test_an_own_lagged_read_is_undiscounted_at_rho_zero():
     #  and it is genuinely live at rho > 0: the same model answers differently
     c = ns.solve(_own_lag(1.0, window=4.0, nodes=14)).require_converged()
     assert abs(float(c.kernel("D", "w0").at(1.0)) - float(a.kernel("D", "w0").at(1.0))) > 1e-3
+
+
+#  --------------------------------------------------------------- a terminal loss: the adjoint's terminal condition
+#  A terminal loss q_T X_T^2 changes the closed form above in one place, the Riccati terminal condition S(T) = q_T
+#  (the adjoint's H^X_T = G^XX(T) X_T + G^X_T), and adds e^{-rho T} q_T E X_T^2 = e^{-rho T} q_T (Sigma(T) + P(T)) to
+#  the cost.  With a terminal target, q_T (X_T - b)^2, the mean control is -(S xbar + v) / r with
+#  v' = (rho - a + S / r) v, v(T) = -q_T b.  The terminal condition steepens the gain near T, so the engine needs a
+#  few more nodes than without one: the cost error with q_T = 2 is 8e-4, 1e-6, 3e-8, 8e-10 at 8, 12, 16, 20 nodes.
+
+QT, B = 2.0, 1.0
+
+
+def exact_terminal(rho):
+    Sb = solve_ivp(lambda t, y: [rho * y[0] - 2 * a * y[0] + y[0] ** 2 / r - 1], (T, 0.0), [QT], dense_output=True, **IVP)
+    Pf = solve_ivp(lambda t, y: [2 * a * y[0] - h * h * y[0] ** 2 + 1], (0.0, T), [0.0], dense_output=True, **IVP)
+    S = lambda t: float(Sb.sol(t)[0]); K = lambda t: S(t) / r; P = lambda t: float(Pf.sol(t)[0]); G = lambda t: P(t) * h
+    f = solve_ivp(lambda t, y: [2 * (a - K(t)) * y[0] + G(t) ** 2, np.exp(-rho * t) * ((1 + r * K(t) ** 2) * y[0] + P(t))],
+                  (0.0, T), [0.0, 0.0], **IVP)
+    J = float(f.y[1, -1]) + np.exp(-rho * T) * QT * (float(f.y[0, -1]) + P(T))
+    vb = solve_ivp(lambda t, y: [(rho - a + S(t) / r) * y[0]], (T, 0.0), [-QT * B], dense_output=True, **IVP)
+    v = lambda t: float(vb.sol(t)[0])
+    xb = solve_ivp(lambda t, y: [a * y[0] - (S(t) * y[0] + v(t)) / r,
+                                 np.exp(-rho * t) * (y[0] ** 2 + r * ((S(t) * y[0] + v(t)) / r) ** 2)],
+                   (0.0, T), [0.0, 0.0], dense_output=True, **IVP)
+    xT = float(xb.y[0, -1])
+    mean = float(xb.y[1, -1]) + np.exp(-rho * T) * (QT * xT ** 2 - 2 * QT * B * xT)
+
+    def kernel(name, channel, t, s):
+        out = np.zeros(len(t))
+        for si in np.unique(s):
+            y0 = [1.0, 0.0] if channel == "w0" else [0.0, G(si)]
+            sol = solve_ivp(lambda u, y: [a * y[0] - K(u) * y[1], G(u) * h * y[0] + (a - K(u) - G(u) * h) * y[1]],
+                            (si, T), y0, dense_output=True, **IVP)
+            for i in np.flatnonzero(s == si):
+                X, xhat = sol.sol(t[i]); out[i] = X if name == "X" else -K(t[i]) * xhat
+        return out
+    return J, kernel, xb, mean
+
+
+@pytest.mark.parametrize("rho", [0.0, 0.5])
+def test_terminal_loss_is_the_riccati_terminal_condition(rho):
+    """q_T X_T^2 at 16 nodes: the cost to 2e-7 (measured 3.5e-8 at rho = 0.5, 1.3e-7 at 0) and the kernels to 2e-4 (1.2e-4)."""
+    J, kernel, _, _ = exact_terminal(rho)
+    d = model(rho, "finite", 16); d["agents"]["a"]["terminal"] = [[QT, "X", "X"]]
+    res = ns.solve(d).require_converged()
+    assert abs(res.costs["a"] - J) < 2e-7
+    for name, ch in (("D", "w1"), ("D", "w0"), ("X", "w0"), ("X", "w1")):
+        assert np.abs(res.evaluate(name, ch, TS, SS) - kernel(name, ch, TS, SS)).max() < 2e-4, (name, ch)
+    assert res.second_order["a"]["ok"]
+
+
+@pytest.mark.parametrize("rho", [0.0, 0.5])
+def test_terminal_target_moves_the_mean_path_to_the_closed_form(rho):
+    """q_T (X_T - b)^2 written as its terms and its constant: the mean path to 1e-9 and the mean part of the cost to
+    1e-9 at 16 nodes (measured 1e-12 and 1e-11), the constant e^{-rho T} q_T b^2 exactly."""
+    J, _, xb, mean = exact_terminal(rho)
+    d = model(rho, "finite", 16)
+    d["agents"]["a"]["terminal"] = [[QT, "X", "X"], [-2 * QT * B, "X"]]; d["agents"]["a"]["terminal_constant"] = QT * B * B
+    res = ns.solve(d).require_converged()
+    t = res.mean_times[res.mean_times <= T]
+    assert np.abs(res.means["X"][:t.size] - xb.sol(t)[0]).max() < 1e-9
+    assert abs(res.cost_parts["a"]["mean"] - mean) < 1e-9
+    assert res.cost_parts["a"]["constant"] == pytest.approx(np.exp(-rho * T) * QT * B * B, rel=1e-14)
+    assert abs(res.costs["a"] - (J + mean + np.exp(-rho * T) * QT * B * B)) < 3e-7      # the variance part: 1.3e-7 at rho = 0
+
+
+def test_a_terminal_loss_needs_a_game_that_ends_without_a_past():
+    """The stationary engine has no T, and a transition's terminal term on its old and initial shocks is not built:
+    both are refused rather than solved without the terminal loss."""
+    d = model(0.5, "finite", 8); d["agents"]["a"]["terminal"] = [[QT, "X", "X"]]
+    with pytest.raises(ValueError, match="ends at T"):
+        ns.Model.from_dict({**d, "horizon": {"kind": "stationary", "window": 3.0, "discount": 0.5}})
+    kb = ns.load(ns.example("kyle_back_prior")).to_dict(); kb["agents"]["trader1"]["terminal"] = [[1.0, "V", "V"]]
+    with pytest.raises(NotImplementedError, match="terminal loss"):
+        ns.solve(kb)

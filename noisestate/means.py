@@ -55,7 +55,8 @@ class MeanLayer:
         """Mean hook: whether anything moves the means (a constant drift, a target q, a nonzero initial state);
         when nothing does solve_means returns zeros with no solve."""
         c = self.c
-        return bool(c.const.any() or any(q.any() for atoms, Q, q in c.loss.values()) or self._mean_start().any())
+        return bool(c.const.any() or any(q.any() for atoms, Q, q in c.loss.values()) or self._mean_start().any()
+                    or any(q.any() for atoms, Q, q in (getattr(c, "terminal", None) or {}).values()))
 
     def _mean_dynamics(self, **variant):
         """Mean hook (abstract): the states' rows of the mean system, (Mx (nX Nt, nP Nt), bx (nX Nt,), pinned):
@@ -136,7 +137,16 @@ class MeanLayer:
         unit time, or its discounted integral over [0, T] by the engine's quadrature (_mean_weights)."""
         atoms, Q, q = self.c.loss[agent.name]
         zeta = self._mean_atoms(zbar, atoms); w = self._mean_weights()[:zeta.shape[1]]
-        return float(sum(wt * (0.5 * z @ Q @ z + q @ z) for wt, z in zip(w, np.ascontiguousarray(zeta.T))))
+        flow = float(sum(wt * (0.5 * z @ Q @ z + q @ z) for wt, z in zip(w, np.ascontiguousarray(zeta.T))))
+        return flow + self._terminal_mean_cost(agent, zbar)
+
+    def _terminal_mean_cost(self, agent: Agent, zbar: np.ndarray) -> float:
+        """Hook (the spectral engine): the mean part of a terminal loss, discounted from T; zero by default."""
+        return 0.0
+
+    def _terminal_constant(self, agent: Agent) -> float:
+        """Hook (the spectral engine): a terminal loss's constant, discounted from T; zero by default."""
+        return 0.0
 
     def _mean_part(self, res) -> None:
         """The means (targets, constant drifts, initial states) and the mean part of every cost, on the result
@@ -160,8 +170,10 @@ class MeanLayer:
             mean = self.mean_cost(a, zbar)
             res.cost_parts[a.name] = {"variance": res.costs[a.name], "mean": mean}
             res.costs[a.name] += mean
+            const = self._terminal_constant(a)
             if a.constant:
                 # the loss's constant: moves no strategy, but is part of the cost (its flow, or its discounted integral)
-                const = float(a.constant) * float(np.sum(self._mean_weights()[:Nt]))
+                const += float(a.constant) * float(np.sum(self._mean_weights()[:Nt]))
+            if const:
                 res.cost_parts[a.name]["constant"] = const
                 res.costs[a.name] += const

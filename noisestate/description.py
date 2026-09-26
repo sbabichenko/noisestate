@@ -61,6 +61,7 @@ def _pieces(model):
             observes = {agent.signals[0].name: observes}
         agents.append(dict(
             name=agent.name, controls=list(agent.controls), loss=eq["agents"][agent.name]["loss"],
+            terminal=eq["agents"][agent.name].get("terminal"),
             signals=list(zip(_align([f'd{row.name} = {text(observes[row.name])}' for row in agent.signals]),
                              [row.delay for row in agent.signals]))))
     return dict(
@@ -133,6 +134,8 @@ def _text(p):
         lines += _field('observes', rows[0] if rows else 'nothing (no signal rows)', indent=4)
         lines += [' ' * len(_lead('observes', 4, 11)) + row for row in rows[1:]]
         lines += _field('flow loss', agent['loss'], indent=4)
+        if agent['terminal']:
+            lines += _field('at T', agent['terminal'], indent=4)
         lines += ['']
     if lines[-1] == '':
         lines.pop()
@@ -203,7 +206,9 @@ def _html(p):
         body += (f'<tr><td style="{CELL}">{escape(agent["name"])}</td>'
                  f'<td style="{CELL}">{" ".join(_mono(c) for c in agent["controls"])}</td>'
                  f'<td style="{CELL}">{signals}</td>'
-                 f'<td style="{CELL}">{_mono(agent["loss"])}</td></tr>')
+                 f'<td style="{CELL}">{_mono(agent["loss"])}'
+                 + (f'<br><span style="{DIM}">at T:</span> {_mono(agent["terminal"])}' if agent["terminal"] else '')
+                 + '</td></tr>')
     out.append(_section('Agents', f'<table style="border-collapse:collapse;width:100%">'
                                   f'<tr>{header_row}</tr>{body}</table>'))
 

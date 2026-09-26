@@ -20,8 +20,8 @@ running objectives.  It solves for causal linear strategies: each agent's action
 observations up to the current time.  Models can have a finite horizon, a stationary regime, or a
 transition between regimes, with supported observation and action delays.
 
-Hard control constraints such as `D >= 0`, nonlinear dynamics, and terminal penalties such as
-`X(T)^2` are outside the model grammar.  The solution is sought within the causal linear strategy
+Hard control constraints such as `D >= 0` and nonlinear dynamics are outside the model grammar.  A
+finite game may add a terminal loss on the states, such as `terminal: "q (X - b)^2"`.  The solution is sought within the causal linear strategy
 class; see [limits](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/limits.md) for the assumptions and restrictions of each engine.
 
 ## Install

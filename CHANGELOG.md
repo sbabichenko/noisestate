@@ -53,6 +53,12 @@ A model reads like its equations, in a file and in Python.
 - **`sweep()` and `compare()` take `solve()`'s options as keywords** (`sweep(m, "p1", values, nodes=12,
   max_evaluations=40)`); `solver_kw=` and `solve_kw=` are gone.  A sweep now applies the `tol` and `damping` of
   its numerics, which it ignored.
+- **Terminal losses are solved.**  `terminal: "q (X - b)^2"` on an agent (Python: `Agent(..., terminal=...)`) is a loss
+  paid at T on the states, entering the first-order conditions as the adjoint's terminal condition
+  `H^X_T = G^XX(T) X_T + G^X_T`, the mean system, the cost (its variance, mean and constant parts, discounted from T)
+  and the second-order check.  Checked against the discounted Riccati closed form with `S(T) = q_T` (cost to 3.5e-8
+  and kernels to 1.2e-4 at 16 nodes, exponential in the nodes) and its terminal-target mean path (1e-12).  A
+  transition with a past refuses one for now.
 - **`ns.Game(...)` is the Python form's constructor** (`params=` fixes the order the file writes them);
   `ns.Model(...)` is the type and no longer builds.
 - **Transitions in the equations form:** `horizon: {T: 6, past: ch3_two_player.yaml}` (or `past:` a list of initial

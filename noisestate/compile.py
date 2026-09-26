@@ -35,6 +35,8 @@ class Structure:
     loss: Dict[str, Tuple[List[Atom], np.ndarray, np.ndarray]]               # agent -> (atoms, Q, q): 1/2 z'Qz + q'z
     rep: Dict[str, str]                              # agent -> representative of its tie group
     reps: List[str]
+    terminal: Dict[str, Tuple[List[Atom], np.ndarray, np.ndarray]] = None    # agent -> the loss at T, the same form (agents with one)
+    terminal_constant: Dict[str, float] = None       # agent -> the terminal loss's constant
 
     @property
     def nW(self) -> int:
@@ -45,7 +47,8 @@ class CompiledBase(KernelAlgebra):
     """What every engine's compiled model starts from: the validated model and its Structure, whose
     fields are adopted as attributes (c.rows, c.loss, c.rep, ...); the kernel algebra (algebra.KernelAlgebra)
     each engine's compiled model implements on top."""
-    FIELDS = ("channels", "nW", "prim", "index", "nX", "nU", "A", "state_inputs", "sigma", "const", "x0", "rows", "loss", "rep", "reps")
+    FIELDS = ("channels", "nW", "prim", "index", "nX", "nU", "A", "state_inputs", "sigma", "const", "x0", "rows", "loss", "rep", "reps",
+              "terminal", "terminal_constant")
 
     def __init__(self, model: Model):
         model.validate()
@@ -84,38 +87,45 @@ def compile_structure(model: Model) -> Structure:
                 E[channels.index(ch)] = c
             rr.append((r.name, model.expand(r.drift), E, float(r.delay)))
         rows[a.name] = rr
-    loss = {}
-    for a in model.agents:
-        atoms: List[Atom] = []
-        terms = []
-        for term in a.loss:
-            coef = float(term[0])
-            ex = [model.expand({s: 1.0}) for s in term[1:]]
-            for e in ex:
-                for k in e:
-                    if k not in atoms:
-                        atoms.append(k)
-            terms.append((coef, ex))
-        m = len(atoms)
-        Q = np.zeros((m, m)); q = np.zeros(m)
-        for coef, ex in terms:
-            if len(ex) == 1:
-                for k, c in ex[0].items():
-                    q[atoms.index(k)] += coef * c
-            else:
-                for k1, c1 in ex[0].items():
-                    for k2, c2 in ex[1].items():
-                        i, j = atoms.index(k1), atoms.index(k2)
-                        Q[i, j] += coef * c1 * c2
-                        Q[j, i] += coef * c1 * c2
-        loss[a.name] = (atoms, Q, q)
+    loss = {a.name: _quadratic(model, a.loss) for a in model.agents}
+    terminal = {a.name: _quadratic(model, a.terminal) for a in model.agents if a.terminal}
+    terminal_constant = {a.name: float(a.terminal_constant) for a in model.agents if a.terminal_constant}
     rep = {a.name: a.name for a in model.agents}
     for group in model.ties:
         for n in group:
             rep[n] = group[0]
     reps = [a.name for a in model.agents if rep[a.name] == a.name]
     return Structure(model=model, channels=channels, prim=prim, index=index, nX=nX, nU=nU, A=A,
-                     state_inputs=state_inputs, sigma=sigma, const=const, x0=x0, rows=rows, loss=loss, rep=rep, reps=reps)
+                     state_inputs=state_inputs, sigma=sigma, const=const, x0=x0, rows=rows, loss=loss, rep=rep, reps=reps,
+                     terminal=terminal, terminal_constant=terminal_constant)
+
+
+def _quadratic(model: Model, terms) -> Tuple[List[Atom], np.ndarray, np.ndarray]:
+    """The loss terms [[coef, a, b], [coef, a], ...] as (atoms, Q, q) with the loss 1/2 z'Qz + q'z over the atoms
+    (each term's quantities expanded into primaries at their lags)."""
+    atoms: List[Atom] = []
+    parsed = []
+    for term in terms:
+        coef = float(term[0])
+        ex = [model.expand({s: 1.0}) for s in term[1:]]
+        for e in ex:
+            for k in e:
+                if k not in atoms:
+                    atoms.append(k)
+        parsed.append((coef, ex))
+    m = len(atoms)
+    Q = np.zeros((m, m)); q = np.zeros(m)
+    for coef, ex in parsed:
+        if len(ex) == 1:
+            for k, c in ex[0].items():
+                q[atoms.index(k)] += coef * c
+        else:
+            for k1, c1 in ex[0].items():
+                for k2, c2 in ex[1].items():
+                    i, j = atoms.index(k1), atoms.index(k2)
+                    Q[i, j] += coef * c1 * c2
+                    Q[j, i] += coef * c1 * c2
+    return atoms, Q, q
 
 
 def reject_leads(model: Model, engine: str) -> None:

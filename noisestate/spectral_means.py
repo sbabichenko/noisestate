@@ -43,6 +43,32 @@ class TimeLineOps:
         return self._time_mass[key]
 
     @cached_property
+    def terminal_reads(self):
+        """The reads at the end of the game T, for a terminal loss: (IZ, IR, disc) with IZ (N x N, CSR) reading a
+        kernel at (T, age T - s_k) for every node k (the node's shock at T), IR at (T, age T - t_k) (an impulse at
+        the node's time t_k, seen at T) and disc = e^{-rho (T - t_k)}."""
+        g = self.g; T = float(self.T); ones = np.full(self.N, T)
+        IZ = g.interp_sparse(ones, T - g.s, side_t=-1)
+        IR = g.interp_sparse(ones, T - g.t, side_t=-1)
+        return IZ, IR, np.exp(-self.rho * (T - g.t))
+
+    @cached_property
+    def terminal_quadrature(self):
+        """(I, w): I (nq x N, CSR) reads a kernel at (T, T - s) on Gauss points s of every time panel of [0, T] and
+        w (nq,) their weights, so that sum_q w_q f(T, T - s_q) is int_0^T f(T, T - s) ds: the variance of a
+        quantity at T over the shocks born in [0, T]."""
+        g = self.g; T = float(self.T)
+        xg, wg = legendre.leggauss(g.nt + 2)
+        s, w = [], []
+        for p in range(self.P_T):
+            t0, t1 = g.bp[p], min(g.bp[p + 1], T)
+            if t1 - t0 < 1e-14:
+                continue
+            s.append(0.5 * (t1 - t0) * xg + 0.5 * (t1 + t0)); w.append(0.5 * (t1 - t0) * wg)
+        s = np.concatenate(s); w = np.concatenate(w)
+        return g.interp_sparse(np.full(s.size, T), T - s, side_t=-1), w
+
+    @cached_property
     def mean_line0(self) -> np.ndarray:
         """(Nt, N) reading a kernel at (t, age 0) on every time node, from the node's side of its panel: the value
         at the birth of a shock at time t, where the mean first-order condition of a strip lives (its
@@ -110,6 +136,12 @@ class SpectralMeans:
                 or (c.cont is not None and any(c.cont.means.get(n, 0.0) for n in c.prim)))
 
     def _on_line(self, line: Optional[bool]) -> bool:
+        #  Both systems are kept on purpose.  Where the line s = 0 reaches T they agree to rounding without delays
+        #  (1e-15 on Chapter 1), but with delays the diagonal system is converged to 1e-7 from 6 nodes while the
+        #  time-line one approaches it at second order (ch1_delayed with targets: 1.2e-3 at 6 nodes, 2.6e-4 at 12,
+        #  1.4e-4 at 16, on means of size 8), so the diagonal one is used wherever it exists.  The time-line
+        #  system's slower convergence with delays (a transition with T > L) is open: its reads at age 0 are
+        #  interpolated, the diagonal's are grid nodes.
         return self.c.Nd < self.c.Nt if line is None else line
 
     def _mean_system_diag(self, maps: Dict[str, np.ndarray]):
@@ -167,13 +199,13 @@ class SpectralMeans:
         c = self.c; N, Nt, nP = c.N, c.Nt, len(c.prim); a = agent
         E = c.mean_embed
         blk = lambda i: slice(i * Nt, (i + 1) * Nt)
-        atoms, Q, q = c.loss[a.name]
         Mu = np.zeros((len(a.controls) * Nt, nP * Nt)); bu = np.zeros(len(a.controls) * Nt)
         if not self._on_line(line):
             diag = c.diag; ones = np.ones(N)
             R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)[:, c.ncol:]
             R = self._impulse_responses(a, maps, R)
             foc = finite_free.FocOps(self, a, R)
+            atoms, Q, q = foc.atoms, foc.Q, foc.q                          # the flow loss's atoms, then a terminal loss's
             pre = np.zeros((len(atoms), N))                                 # lagged atoms read before zero: the old means
             bq = np.zeros((len(atoms), N))                                  # the targets' kernels (constant)
             for i, (nm, lag) in enumerate(atoms):
@@ -196,6 +228,7 @@ class SpectralMeans:
         R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls, own_frozen=False)[:, c.ncol:]
         R = self._impulse_responses(a, maps, R)
         foc = finite_free.FocOps(self, a, R)
+        atoms, Q, q = foc.atoms, foc.Q, foc.q
         for ui in range(len(a.controls)):
             row = blk(ui)
             for j in range(len(atoms)):
@@ -243,6 +276,21 @@ class SpectralMeans:
             return None
         tpanel = np.repeat(np.arange(g.P), g.nt)
         return np.where(g.bp[tpanel + 1] <= lag + 1e-12, c.past.mean(name), 0.0)
+
+    def _terminal_mean_cost(self, agent: Agent, zbar: np.ndarray) -> float:
+        """e^{-rho T} (1/2 xbar_T' Q_T xbar_T + q_T' xbar_T) over the terminal loss's atoms (states at T)."""
+        c = self.c; Nt = c.Nt
+        terminal = (c.terminal or {}).get(agent.name)
+        if not terminal:
+            return 0.0
+        atoms, QT, qT = terminal
+        read = c.g.interp_sparse(np.array([float(c.T)]), np.zeros(1), side_t=-1) @ c.mean_embed     # a path's value at T
+        xT = np.array([float((read @ zbar[c.index[nm] * Nt:(c.index[nm] + 1) * Nt])[0]) for (nm, lag) in atoms])
+        return float(np.exp(-c.rho * c.T) * (0.5 * xT @ QT @ xT + qT @ xT))
+
+    def _terminal_constant(self, agent: Agent) -> float:
+        c = self.c
+        return float(np.exp(-c.rho * c.T) * (c.terminal_constant or {}).get(agent.name, 0.0))
 
     def _mean_atoms(self, zbar: np.ndarray, atoms) -> np.ndarray:
         """The loss atoms' mean paths (m, Nt) from the primaries' paths: the kernels' atom operators on the embedded

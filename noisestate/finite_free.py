@@ -377,8 +377,15 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
     imass = c.time_mass(c.rho)[:c.Nd] if ncol > nW else None
     AO = system.foc.AO
 
+    mf = system.foc.m_flow
+    terminal = (c.terminal or {}).get(agent.name)
+    if terminal:
+        IT, wT = c.terminal_quadrature
+        tform = np.exp(-c.rho * c.T) * (IT.T @ (wT[:, None] * IT.toarray()))     # N x N: e^{-rho T} int_0^T f(T, T - s) g(T, T - s) ds
+        tAO = system.foc.AO[mf:]
+
     def GT(Zd):                                     # the loss form on the world (nP, N, ncol, B), column by column
-        b = np.tensordot(Q, system.foc.atoms_of(Zd), axes=1)      # (m, N, ncol, B)
+        b = np.tensordot(Q, system.foc.atoms_of(Zd)[:mf], axes=1)      # (m, N, ncol, B)
         B = b.shape[3]
         Mb = np.zeros_like(b)
         for j in range(len(atoms)):
@@ -386,8 +393,14 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
         if imass is not None:
             Mb[:, c.diag, nW:] = imass[None, :, None, None] * b[:, c.diag, nW:]
         out = np.zeros((nP, N, ncol, B))
-        for j, (p, A) in enumerate(AO):
+        for j, (p, A) in enumerate(AO[:mf]):
             out[p] += (A.T @ Mb[j].reshape(N, -1)).reshape(N, ncol, B)
+        if terminal:                                # the terminal loss's form on the shocks' columns
+            zt = system.foc.atoms_of(Zd)[mf:]
+            bt = np.tensordot(terminal[1], zt, axes=1)
+            for j, (p, A) in enumerate(tAO):
+                Mt = (tform @ bt[j, :, :nW].reshape(N, -1)).reshape(N, nW, B)
+                out[p, :, :nW] += (A.T @ Mt.reshape(N, -1)).reshape(N, nW, B)
         return out
 
     def matvec(V):                                  # the form on a block of kept strategies (n, B)
@@ -427,14 +440,21 @@ def _dense_form(solver, agent: Agent, system: FocSystem, idx: np.ndarray) -> np.
     Gk = system.rowops.dense()                                                                  # (ncol, N, nR Nm)
     Resp = [system.resp.dense(ui) for ui in range(nU)]                                          # (nP N, N)
 
-    def loss_form(mass):                                                                        # AO' kron(Q, mass) AO, dense (nP N, nP N)
+    def loss_form(mass, Q=Q, AO=AO[:system.foc.m_flow]):                                       # AO' kron(Q, mass) AO, dense (nP N, nP N)
         G = np.zeros((nP * N, nP * N))
         for i, (p, Ai) in enumerate(AO):
             for j, (p2, Aj) in enumerate(AO):
                 if Q[i, j] != 0.0:
                     G[p * N:(p + 1) * N, p2 * N:(p2 + 1) * N] += Q[i, j] * (Ai.T @ (mass @ Aj)).toarray()
         return G
-    forms = [(loss_form(c.cost_mass_sparse()), slice(0, nW))]
+    G0 = loss_form(c.cost_mass_sparse())
+    terminal = (c.terminal or {}).get(agent.name)
+    if terminal:                                    # the terminal loss's form on the shocks' columns, e^{-rho T} at T
+        from scipy.sparse import csr_matrix
+        IT, wT = c.terminal_quadrature
+        tmass = csr_matrix(np.exp(-c.rho * c.T) * (IT.T @ (wT[:, None] * IT.toarray())))
+        G0 = G0 + loss_form(tmass, terminal[1], AO[system.foc.m_flow:])
+    forms = [(G0, slice(0, nW))]
     if ncol > nW:
         w = np.zeros(N); w[c.diag] = c.time_mass(c.rho)[:c.Nd]
         forms.append((loss_form(diags(w, format="csr")), slice(nW, ncol)))

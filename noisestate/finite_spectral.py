@@ -54,6 +54,9 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             if continuation is None:
                 continuation = hz.continuation or "stationary"
         past = Past.of(past) if past is not None else None
+        if past is not None and any(a.terminal or a.terminal_constant for a in model.agents):
+            raise NotImplementedError("a terminal loss is supported on a finite horizon without a past; with a past "
+                                      "(a transition ending at T) its term on the old and initial shocks is not built yet")
         continuation = self._continuation_of(model, past, continuation,
                                              model.numerics.continuation_nodes if hz.kind == "transition" else None)
         opts = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
@@ -525,7 +528,21 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 G = G + np.einsum("itk,t,jtk->ij", zd, w, zd)
             return float(0.5 * np.sum(Q * G))
         G = self._gram(agent, zeta, mass)
-        return float(0.5 * np.sum(Q * G))
+        return float(0.5 * np.sum(Q * G)) + self._terminal_variance(agent, Z)
+
+    def _terminal_variance(self, agent: Agent, Z: np.ndarray) -> float:
+        """The variance part of a terminal loss, e^{-rho T} 1/2 sum Q_T,ij int_0^T zeta_i(T, s) zeta_j(T, s) ds over the
+        shocks' columns (zero without one)."""
+        c = self.c
+        terminal = (c.terminal or {}).get(agent.name)
+        if not terminal:
+            return 0.0
+        atoms, QT, _ = terminal
+        IT, w = c.terminal_quadrature
+        Zc = Z[:, :c.nW]
+        zt = np.stack([IT @ (c.atom_sparse(at) @ Zc[c.block(at[0])]) for at in atoms])     # (m, nq, nW)
+        G = np.einsum("iqk,q,jqk->ij", zt, w, zt)
+        return float(np.exp(-c.rho * c.T) * 0.5 * np.sum(QT * G))
 
     def continuation_cost(self, agent: Agent, Z: np.ndarray) -> float:
         """The variance part of the agent's discounted cost over the buffer [T, T + L] under the frozen stationary

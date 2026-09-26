@@ -361,7 +361,9 @@ class FocOps:
     a world (nP, N, ...) -> the loss atoms' kernels (the sparse atom reads), (Q zeta) per atom, and per
     control u the sum over the atoms of the instantaneous derivative, the discounted continuation through
     the atom's impulse response R_off (its own reactions off: the envelope) and the delayed read of the
-    control itself."""
+    control itself.  A terminal loss (1/2 z'Q_T z + q_T'z on the states at T) appends its atoms after the flow
+    loss's (m_flow of them), Q block-diagonal, each with the adjoint's terminal condition as its operator: at a
+    node (t, s), e^{-rho (T - t)} times the atom's response at T to an impulse at t, times (Q_T zeta)(T, s)."""
 
     def __init__(self, solver, agent: Agent, R: np.ndarray):
         c = solver.c; g = c.g; self.c = c; self.agent = agent
@@ -388,6 +390,24 @@ class FocOps:
                     if nm == u and lag > 0:
                         lags.append((j, float(np.exp(-c.rho * lag)), c.read_sparse(-lag, -lag)))
             self.per_control.append((j0, cont, lags))
+        self.q = c.loss[agent.name][2]
+        self.m_flow = len(self.atoms)
+        self.per_terminal = [[] for _ in agent.controls]          # per control: [(atom index, N x N operator)]
+        terminal = (c.terminal or {}).get(agent.name)
+        if terminal and terminal[0]:
+            tatoms, QT, qT = terminal
+            m = self.m_flow; mt = len(tatoms)
+            Q = np.zeros((m + mt, m + mt)); Q[:m, :m] = self.Q; Q[m:, m:] = QT
+            self.atoms = list(self.atoms) + list(tatoms); self.Q = Q; self.q = np.concatenate([self.q, qT])
+            self.AO = self.AO + [(c.index[nm], c.atom_sparse((nm, lag))) for (nm, lag) in tatoms]
+            if not agent.myopic:                                  # myopic: no continuation effect, the terminal one included
+                from scipy.sparse import diags
+                IZ, IR, disc = c.terminal_reads
+                for ui in range(len(agent.controls)):
+                    for jt, (nm, lag) in enumerate(tatoms):
+                        w = disc * (IR @ (self.AO[m + jt][1] @ R[c.block(nm), ui]))
+                        if np.any(w):
+                            self.per_terminal[ui].append((m + jt, (diags(w) @ IZ).tocsr()))
 
     def atoms_of(self, Z: np.ndarray) -> np.ndarray:
         """The loss atoms' kernels (n_atoms, N, ...) in the world Z (nP, N, ...)."""
@@ -411,6 +431,8 @@ class FocOps:
                 out += op.apply(op.unknown(b[j].reshape(self.N, -1)), i).reshape(out.shape)
         for (j, w, S) in lags:
             out += w * (S @ b[j].reshape(self.N, -1)).reshape(out.shape)
+        for (j, W) in self.per_terminal[ui]:
+            out += (W @ b[j].reshape(self.N, -1)).reshape(out.shape)
         return out
 
     def apply(self, ui: int, Z: np.ndarray) -> np.ndarray:
@@ -432,6 +454,8 @@ class FocOps:
                 M[j] += op.rows(i, lo, N)
         for (j, w, S) in lags:
             M[j] += w * S.toarray()[lo:]
+        for (j, W) in self.per_terminal[ui]:
+            M[j] += W.toarray()[lo:]
         MQ = np.tensordot(self.Q.T, M, axes=1)                              # MQ[i] = sum_j Q[j, i] M_j
         out = np.zeros((N, self.nP * N))
         for i, (p, A) in enumerate(self.AO):
