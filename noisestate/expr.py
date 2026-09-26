@@ -279,38 +279,6 @@ class Shock:
     __array_ufunc__ = None
 
 
-class _Shocks:
-    """The namespace shocks() returns: attribute access to its shocks, in order."""
-
-    def __init__(self, names: Sequence[str]):
-        if len(set(names)) != len(names):
-            raise ValueError(f"shocks(): duplicate channel names in {list(names)}")
-        for n in names:
-            if not isinstance(n, str) or not n.isidentifier():
-                raise ValueError(f"shocks(): a channel name must be an identifier, not {n!r}")
-        self.order = next(_counter)
-        self.names = list(names)
-        self._by_name = {n: Shock(n, self, i) for i, n in enumerate(names)}
-
-    def __getattr__(self, name: str) -> Shock:
-        try:
-            return self.__dict__["_by_name"][name]
-        except KeyError:
-            raise AttributeError(f"no shock {name!r}; the shocks are {self.names}") from None
-
-    def __getitem__(self, name: str) -> Shock:
-        return getattr(self, name)
-
-    def __iter__(self):
-        return iter(self._by_name[n] for n in self.names)
-
-    def __len__(self) -> int:
-        return len(self.names)
-
-    def __repr__(self) -> str:
-        return f"shocks({', '.join(map(repr, self.names))})"
-
-
 def shocks(*names) -> _Shocks:
     """The Brownian shocks: `dW0, dW1, dW2 = shocks(3)` (named W0, W1, W2), `shocks("W0 V")` (names in one
     string), or `w = shocks("w0", "w1"); w.w0` (a namespace, which also unpacks).  The model's shocks are the ones
@@ -342,8 +310,9 @@ def Game(states, agents, *, T=None, window=None, discount=0.0, horizon=None, def
         horizon = Finite(T=T, discount=discount) if T is not None else Stationary(window=window, discount=discount)
     if nodes is not None:
         numerics = dict(numerics or {}, nodes=nodes)
-    states = [states] if isinstance(states, State) else list(states)
+    states = [states] if isinstance(states, State) else _flat(states)
     agents = [agents] if isinstance(agents, Agent) else list(agents)
+    definitions = None if definitions is None else _flat(definitions)
     if not is_expression_form(states, agents, horizon, definitions):
         raise TypeError("Game() takes the Python form's objects (ns.State, ns.Agent, ...); a model from its file "
                         "structure is Model.from_dict(d) or ns.load(path)")
@@ -565,7 +534,13 @@ class State(Quantity):
     constant among them under const, and the shock terms the noise); `initial` moves the mean on a finite horizon."""
     role = "state"
 
-    def __init__(self, name: str, initial: Optional[Number] = None):
+    def __new__(cls, name: str, n: Optional[int] = None, *, initial=None):
+        if n is not None:                       # State("X", 3): a vector of states X0, X1, X2
+            init = list(initial) if initial is not None and not _is_number(initial) else [initial] * n
+            return Vec(State(f"{name}{i}", initial=init[i]) for i in range(n))
+        return super().__new__(cls)
+
+    def __init__(self, name: str, n: Optional[int] = None, *, initial: Optional[Number] = None):
         super().__init__(name)
         self.initial = initial
         self._drift = None                  # the differential's drift and noise as one linear expression
@@ -593,8 +568,17 @@ class State(Quantity):
 
 
 class Control(Quantity):
-    """A control: `D = Control("D")`; it belongs to the Agent whose controls list it."""
+    """A control: `D = Control("D")` (or `Control("D", 2)`, a vector D0, D1); it belongs to the Agent whose controls
+    list it."""
     role = "control"
+
+    def __new__(cls, name: str, n: Optional[int] = None):
+        if n is not None:
+            return Vec(Control(f"{name}{i}") for i in range(n))
+        return super().__new__(cls)
+
+    def __init__(self, name: str, n: Optional[int] = None):
+        super().__init__(name)
 
 
 class Definition(Quantity):
@@ -613,9 +597,172 @@ class Definition(Quantity):
         return self.expr.to_expr(f"definition {self.name}")
 
 
-def define(name: str, expr) -> Definition:
-    """A definition: a named linear expression (`Pidx = define("Pidx", (P0.lag(tau) + P1.lag(tau)) / 2)`)."""
+def define(name: str, expr):
+    """A definition: a named linear expression (`Pidx = define("Pidx", (P0.lag(tau) + P1.lag(tau)) / 2)`); of a
+    vector, a vector of definitions name0, name1, ... (`Y = define("Y", H @ X)`)."""
+    if isinstance(expr, Vec):
+        return Vec(Definition(f"{name}{i}", e) for i, e in enumerate(expr))
     return Definition(name, expr)
+
+
+# ---------------------------------------------------------------------------------------------- vectors
+
+def _entries(M):
+    """A matrix (a numpy array, nested lists, of numbers or Params/Coefs) as rows of entries."""
+    import numpy as np
+    A = np.asarray(M, dtype=object)
+    if A.ndim != 2:
+        raise ValueError(f"a matrix must be two-dimensional, not of shape {A.shape}")
+    return [list(row) for row in A]
+
+
+def _dot(coefs, items):
+    """sum_i c_i x_i, skipping the exact zeros (a sparse matrix writes only its entries)."""
+    out = None
+    for c, x in zip(coefs, items):
+        if _is_number(c) and c == 0:
+            continue
+        term = x if (_is_number(c) and c == 1) else c * x
+        out = term if out is None else out + term
+    return 0 if out is None else out
+
+
+class Vec:
+    """A vector of expressions: `X = State("X", 3)` (components X0, X1, X2), `D = Control("D", 2)`, `dW = shocks(3)`,
+    and the vectors arithmetic on them makes.  A matrix (a numpy array or nested lists of numbers or Params) acts by
+    `A @ X`; `X @ Q @ X` is a quadratic form and `x @ y` a dot product; a scalar (a number, a Param, dt) multiplies
+    every component, and + and - work componentwise.  `X.d = (A @ X + B @ D) * dt + Sigma @ dW` sets every
+    component's differential, `X.lag(tau)` lags every component, and X[i] is a component.  The model is built from
+    the components, so a vector model is the same model written with scalars."""
+    __array_ufunc__ = None                      # numpy leaves `A @ X` to __rmatmul__
+
+    def __init__(self, items):
+        self.items = list(items)
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __iter__(self):
+        return iter(self.items)
+
+    def __getitem__(self, i):
+        return Vec(self.items[i]) if isinstance(i, slice) else self.items[i]
+
+    def __repr__(self) -> str:
+        return f"Vec({self.items!r})"
+
+    def _zip(self, o, f):
+        if isinstance(o, Vec):
+            if len(o) != len(self):
+                raise ValueError(f"vectors of lengths {len(self)} and {len(o)} do not combine")
+            return Vec(f(a, b) for a, b in zip(self, o))
+        return Vec(f(a, o) for a in self)
+
+    def __add__(self, o):
+        return self._zip(o, lambda a, b: a + b)
+
+    def __radd__(self, o):
+        return self._zip(o, lambda a, b: b + a)
+
+    def __sub__(self, o):
+        return self._zip(o, lambda a, b: a - b)
+
+    def __rsub__(self, o):
+        return self._zip(o, lambda a, b: b - a)
+
+    def __neg__(self):
+        return Vec(-a for a in self)
+
+    def __mul__(self, o):
+        if isinstance(o, Vec):
+            raise TypeError("a vector times a vector is ambiguous: write x @ y for the dot product")
+        return Vec(a * o for a in self)
+
+    def __rmul__(self, o):
+        return Vec(o * a for a in self)
+
+    def __truediv__(self, o):
+        return Vec(a / o for a in self)
+
+    def __matmul__(self, o):
+        if isinstance(o, Vec):                  # the dot product
+            if len(o) != len(self):
+                raise ValueError(f"x @ y needs vectors of one length, not {len(self)} and {len(o)}")
+            return _dot(list(self), list(o)) if all(_scalar(a) for a in self) else \
+                _dot_terms(self, o)
+        rows = _entries(o)                      # x @ M: the row vector x' M
+        if len(rows) != len(self):
+            raise ValueError(f"x @ M needs M with {len(self)} rows, not {len(rows)}")
+        return Vec(_dot([r[j] for r in rows], list(self)) for j in range(len(rows[0])))
+
+    def __rmatmul__(self, M):
+        rows = _entries(M)                      # M @ x
+        if rows and len(rows[0]) != len(self):
+            raise ValueError(f"M @ x needs M with {len(self)} columns, not {len(rows[0])}")
+        return Vec(_dot(r, list(self)) for r in rows)
+
+    def lag(self, tau):
+        return Vec(a.lag(tau) for a in self)
+
+    def lead(self, tau):
+        return Vec(a.lead(tau) for a in self)
+
+    @property
+    def d(self):
+        return Vec(a.d for a in self)
+
+    @d.setter
+    def d(self, expr) -> None:
+        if not isinstance(expr, Vec) or len(expr) != len(self):
+            raise ValueError(f"X.d for a vector of {len(self)} takes a vector of {len(self)} differentials")
+        for a, e in zip(self, expr):
+            a.d = e
+
+
+class _Shocks(Vec):
+    """The namespace shocks() returns: attribute access to its shocks, in order; it is also a vector (Sigma @ dW)."""
+
+    def __init__(self, names: Sequence[str]):
+        if len(set(names)) != len(names):
+            raise ValueError(f"shocks(): duplicate channel names in {list(names)}")
+        for n in names:
+            if not isinstance(n, str) or not n.isidentifier():
+                raise ValueError(f"shocks(): a channel name must be an identifier, not {n!r}")
+        self.order = next(_counter)
+        self.names = list(names)
+        self._by_name = {n: Shock(n, self, i) for i, n in enumerate(names)}
+        self.items = [self._by_name[n] for n in self.names]
+
+    def __getattr__(self, name: str) -> Shock:
+        try:
+            return self.__dict__["_by_name"][name]
+        except KeyError:
+            raise AttributeError(f"no shock {name!r}; the shocks are {self.names}") from None
+
+    def __getitem__(self, name):
+        return getattr(self, name) if isinstance(name, str) else Vec.__getitem__(self, name)
+
+    def __repr__(self) -> str:
+        return f"shocks({', '.join(map(repr, self.names))})"
+
+
+def _dot_terms(x: "Vec", y: "Vec"):
+    """sum_i x_i y_i for vectors of expressions (a quadratic form's last product)."""
+    out = None
+    for a, b in zip(x, y):
+        if (_is_number(a) and a == 0) or (_is_number(b) and b == 0):
+            continue
+        term = a * b
+        out = term if out is None else out + term
+    return 0 if out is None else out
+
+
+def _flat(xs) -> list:
+    """A list with its vectors spread into their components."""
+    out = []
+    for x in ([xs] if isinstance(xs, Vec) else xs):
+        out.extend(x.items if isinstance(x, Vec) else [x])
+    return out
 
 
 # ------------------------------------------------------------------------------------ quadratic expressions
@@ -871,13 +1018,17 @@ class Agent:
             raise ValueError(f"an agent name must be an identifier, not {name!r}")
         if observes is None:
             raise ValueError(f"agent {name}: observes= is required (what the agent sees)")
+        def rows(name, o):                      # one row, or a vector of rows name0, name1, ...
+            if isinstance(o, Vec):
+                return [Signal(f"{name}{i}", e) for i, e in enumerate(o)]
+            return [o if isinstance(o, Signal) else Signal(name, o)]
         if isinstance(observes, dict):
-            signals = [o if isinstance(o, Signal) else Signal(k, o) for k, o in observes.items()]
+            signals = [s for k, o in observes.items() for s in rows(k, o)]
         elif isinstance(observes, (list, tuple)):
-            signals = [o if isinstance(o, Signal) else Signal(f"y{i + 1}", o) for i, o in enumerate(observes)]
+            signals = [s for i, o in enumerate(observes) for s in rows(f"y{i + 1}", o)]
         else:
-            signals = [observes if isinstance(observes, Signal) else Signal("y", observes)]
-        controls = list(controls) if not isinstance(controls, Control) else [controls]
+            signals = rows("y", observes)
+        controls = _flat(controls) if not isinstance(controls, Control) else [controls]
         for u in controls:
             if not isinstance(u, Control):
                 raise ValueError(f"agent {name}: controls must be Control objects, not {u!r}")

@@ -422,6 +422,24 @@ A drift term carries `dt` and a shock does not; a term without its `dt` is an er
 `X.lag(tau)` is `X` a time `tau` earlier (`X@tau` in a file), `ns.define(name, expr)` names a combination, and
 a loss keeps its constant (`(X - b1)**2` has `b1**2`), which is part of the cost though it moves no strategy.
 
+Vectors work the same way.  `ns.State("X", 3)` is a state vector with components `X0, X1, X2`,
+`ns.Control("D", 2)` a control vector, `ns.shocks(3)` a vector of shocks.  A matrix (a numpy array, or
+nested lists of numbers or parameters) acts with `@`, and `x @ Q @ x` is a quadratic form:
+
+```python
+import numpy as np
+A = np.array([[-0.5, 0.2], [0.0, -0.3]]); H = np.array([[1.0, 0.0], [0.5, 1.0]])
+dW, dV = ns.shocks(2), ns.shocks("V0 V1")
+X, D = ns.State("X", 2), ns.Control("D", 2)
+X.d = (A @ X + D) * dt + dW
+me = ns.Agent("me", controls=D, observes=H @ X * dt + dV, loss=X @ X + 0.3 * (D @ D))   # rows y0, y1
+res = ns.Game(X, me, window=10.0).solve()
+res.response(X, to="W0").over([0.5, 1.0])          # every component: shape (2, 2)
+```
+
+The model is built from the components, so it solves, saves and reads like any other; a saved vector model
+writes one equation per component.
+
 Coefficients support `+ - * / **` and `sqrt exp log sin cos tanh abs min max`; a saved model keeps its
 parameter dependence, so `sqrt(p1)` is written as `sqrt(p1)`.  `game.describe()` prints the model,
 `game.save("game.yaml")` writes it as the equations file above, and `game.sweep(p1=[1, 3, 10])` re-solves it

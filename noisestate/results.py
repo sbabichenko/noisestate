@@ -158,6 +158,25 @@ class Response:
         return f"Response({who}{self.quantity} to a unit {self.shock} at t = {self.at:g})"
 
 
+class Responses:
+    """res.response(X, ...) for a vector X: one Response per component; .over(t) stacks them on a last axis."""
+
+    def __init__(self, parts: List[Response]):
+        self.parts = parts
+
+    def __getitem__(self, i) -> Response:
+        return self.parts[i]
+
+    def __len__(self) -> int:
+        return len(self.parts)
+
+    def over(self, t) -> np.ndarray:
+        return np.stack([p.over(t) for p in self.parts], axis=-1)
+
+    def __repr__(self) -> str:
+        return f"Responses({', '.join(p.quantity for p in self.parts)})"
+
+
 @dataclass
 class Result:
     """One result type; the engines' subclasses (StationaryResult, TriangleResult, TransitionResult)
@@ -397,7 +416,10 @@ class Result:
         it) to a unit shock `to` that struck at time `at`.  `.over(t)` gives the values at the times t (zero before
         the shock).  On a stationary game only the shock's age matters: `.over(ages)`.
             res.response(X, to=dW0).over(t)                       # the state
-            res.response(X, to=dW0, seen_by=player1).over(t)       # player 1's estimate of it"""
+            res.response(X, to=dW0, seen_by=player1).over(t)       # player 1's estimate of it
+        A vector quantity (State("X", 3)) gives every component: .over(t) has a last axis of its length."""
+        if not isinstance(quantity, str) and hasattr(quantity, "items") and isinstance(quantity.items, list):
+            return Responses([Response(self, _nm(q), _nm(to), float(at), _nm(seen_by)) for q in quantity.items])
         return Response(self, _nm(quantity), _nm(to), float(at), _nm(seen_by))
 
     def grid_summary(self) -> dict:
@@ -1092,7 +1114,8 @@ class TriangleResult(Result):
         if not hasattr(solver, "maps_from_world"):
             raise NotImplementedError(f"estimates need the spectral finite engine, not {type(solver).__name__}")
         from .finite_free import reconstruction
-        return reconstruction(solver, a, self.world, solver.maps_from_world(a, self.world, np.asarray(K)[None]))[0]
+        K = np.repeat(np.asarray(K)[None], len(a.controls), axis=0)       # one copy per control: the projection's shape
+        return reconstruction(solver, a, self.world, solver.maps_from_world(a, self.world, K))[0]
 
     def evaluate(self, name: str, shock: str, t, s) -> np.ndarray:
         """Kernel value at (t, s) points: response at time t to a unit `shock` at time s."""

@@ -53,6 +53,13 @@ A model reads like its equations, in a file and in Python.
 - **`sweep()` and `compare()` take `solve()`'s options as keywords** (`sweep(m, "p1", values, nodes=12,
   max_evaluations=40)`); `solver_kw=` and `solve_kw=` are gone.  A sweep now applies the `tol` and `damping` of
   its numerics, which it ignored.
+- **Vectors in the Python form.**  `ns.State("X", 3)`, `ns.Control("D", 2)` and `ns.shocks(3)` are vectors;
+  matrices act with `@` (`X.d = (A @ X + B @ D) * dt + Sigma @ dW`), `x @ Q @ x` is a quadratic form, a vector
+  observation gives one row per component, and `res.response(X, ...)` returns every component.  The model is its
+  components (a saved one writes one equation per component); checked against the matrix LQG closed form
+  (9e-7 at window 10).
+- Fixed: `res.estimate()` and `response(..., seen_by=)` on the spectral engine failed for an agent with more than
+  one control.
 - **Terminal losses are solved.**  `terminal: "q (X - b)^2"` on an agent (Python: `Agent(..., terminal=...)`) is a loss
   paid at T on the states, entering the first-order conditions as the adjoint's terminal condition
   `H^X_T = G^XX(T) X_T + G^X_T`, the mean system, the cost (its variance, mean and constant parts, discounted from T)

@@ -42,7 +42,8 @@ That solve converged — `res.converged` is `True` and `res.require_converged()`
 | `ns.params(**kw)` (`ns.Param(name, value)`, `ns.Param.many(**kw)`) | named parameters you will sweep or override. Arithmetic on them stays symbolic, so the saved file keeps `sqrt(p1)` rather than `1.732…` |
 | `dW0, dW1 = ns.shocks(2)` (or `ns.shocks("w0", "w1")`, a namespace) | the Brownian shocks, named W0, W1, ...; their order is the model's |
 | `ns.dt` | the time increment: `(D1 + D2) * dt` is a drift, which with the shocks makes an `ns.Differential` |
-| `ns.State("X")`, then `X.d = (D1 + D2) * dt + sigma * dW0` | a state and its law of motion (`X.drift = ...` takes the drift and noise as one expression) |
+| `ns.State("X")`, then `X.d = (D1 + D2) * dt + sigma * dW0` | a state and its law of motion |
+| `ns.State("X", 3)`, `ns.Control("D", 2)`, `ns.shocks(3)` | vectors (components `X0, X1, X2`): matrices act with `@` (`A @ X * dt + Sigma @ dW`), `x @ Q @ x` is a quadratic form, `observes=H @ X * dt + dV` gives rows `y0, y1, ...`, `define("Y", H @ X)` a vector of definitions, and `res.response(X, ...)` every component |
 | `ns.Control("D")` | a control; it belongs to whichever `Agent` lists it |
 | `ns.Signal(name, expr, delay=0.0)` | one named, possibly delayed, observed row. The same object `with_signal()` takes |
 | `ns.Agent(name, controls, observes=..., loss=..., myopic=False, terminal=None)` | an agent's controls, what it observes (an expression, a list, a dict of named signals, or Signals) and its quadratic loss, whose constant is kept as part of the cost |
