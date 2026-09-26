@@ -294,7 +294,7 @@ class FocSystem:
         return self.expand(x).reshape(self.nU, self.nR, self.Nm), self.iterations
 
 
-def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
+def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):
     """SpectralFiniteSolver.best_response (with or without a past): the passive world and the impulse responses
     from the closed loop, the operators on the passive rows, the FOC system solved (factored or by GMRES), the
     world of the response and the projection of the action kernels on the seen rows."""
@@ -343,7 +343,7 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
             for ui, u in enumerate(agent.controls):
                 for part in ("foc", "physical"):
                     out["decomp"][u][part] = out["decomp"][u][part] + phi_past[ui]
-    return solver._project(agent, Zfull, cact), out
+    return (solver._project(agent, Zfull, cact) if project else None), out
 
 
 def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None:

@@ -5,7 +5,8 @@ forward substitution (SpectralCompiled.closed_loop calls it).  The operators of 
 spectral_operators.py's."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, Tuple
+import itertools
+from typing import TYPE_CHECKING, Dict, FrozenSet, Tuple
 
 import numpy as np
 
@@ -18,10 +19,11 @@ class ClosedLoopSources:
     the Volterra propagation on a time panel, the forcing columns of the state rows and the rows of a control's
     convolution with its map kernel."""
 
+    STATE_ROWS_CACHE_BYTES = 64 * 2**20       # the state rows of the panels kept per excluded set; beyond, recomputed
+
     def _vol_rows(self, i: int, j: int, p: int) -> np.ndarray:
         """The rows of Vol[i, j] on time panel p against the nodes before the panel's end, (N_p, hi), from the
-        path (map-independent, but not cached: at N = 14700 the rows of every panel are 0.9 GB and their
-        recomputation is within the noise of a 2 s closed loop)."""
+        path."""
         lo, hi = self._panel_ranges[p]
         if self._vol_E is None:
             return np.zeros((hi - lo, hi))
@@ -81,6 +83,31 @@ class ClosedLoopSources:
         self._state_cols[key] = B0
         return B0
 
+    def state_panel_rows(self, excl: FrozenSet[str], inp, p: int) -> Dict[Tuple[int, int], np.ndarray]:
+        """The state rows' blocks of M on time panel p, {(state i, primary): (N_p, hi)}: the Volterra rows times
+        the state inputs' operators with the controls in `excl` dropped.  Map-independent, so cached per
+        (excl, p) while the cache is under STATE_ROWS_CACHE_BYTES (5% of a transition's solve when recomputed;
+        at N = 14700 every panel's rows are 0.9 GB, and those are recomputed)."""
+        cache = self.__dict__.setdefault("_state_rows", {})
+        key = (excl, p)
+        if key in cache:
+            return cache[key]
+        lo, hi = self._panel_ranges[p]
+        out: Dict[Tuple[int, int], np.ndarray] = {}
+        for j in range(self.nX):
+            if not inp[j]:
+                continue
+            for i in range(self.nX):
+                Vr = self._vol_rows(i, j, p)
+                for pi, S in inp[j].items():
+                    X = Vr @ S[:hi, :hi]
+                    out[(i, pi)] = out[(i, pi)] + X if (i, pi) in out else X
+        size = sum(X.nbytes for X in out.values())
+        used = self.__dict__.get("_state_rows_bytes", 0)
+        if used + size <= self.STATE_ROWS_CACHE_BYTES:
+            cache[key] = out; self._state_rows_bytes = used + size
+        return out
+
     def conv_left_rows(self, gker: np.ndarray, delay: float, lo: int, hi: int) -> np.ndarray:
         """Rows [lo, hi) of conv_left(gker, delay)."""
         g = self.g
@@ -97,7 +124,7 @@ class ClosedLoopRows:
     with a past the n_init initial shocks, then one impulse column per control in impulse_controls.  A row on
     time panel p reads the nodes of panels q <= p only (causality), so Z is solved panel by panel: rows(p)
     gives the nonzero blocks {(primary i, primary j): (N_p, hi)} of M on the panel's nodes [lo, hi) against
-    every node before hi; the columns before lo multiply the solved Z, the diagonal part is one dense solve,
+    every node before hi; the columns before lo multiply the solved Z, the diagonal part is solved by block elimination (_panel_solve),
     and the blocks are discarded, so the (n_prim N)^2 system never exists (the memory is n_prim^2 N N_p for the
     largest panel).  The blocks are the line paths restricted to the panel's output nodes applied to the sparse
     reads of the primaries:
@@ -127,6 +154,7 @@ class ClosedLoopRows:
         past = c.past is not None; self.band = band = g.L is not None; lower = ~g.upper
         self.B = B = np.zeros((nP, N, nc))
         self.inp = None                                 # state -> {primary index: CSR input operator}
+        self.excl = frozenset(excl)
         if c.nX:
             B[:] = c._state_columns(excluded, excl, imp).reshape(nP, N, nc)
             self.inp = c.state_inputs_sparse(excl)
@@ -179,13 +207,7 @@ class ClosedLoopRows:
         def add(key, X):
             blk[key] = blk[key] + X if key in blk else X
         if self.inp is not None:
-            for j in range(c.nX):
-                if not self.inp[j]:
-                    continue
-                for i in range(c.nX):
-                    Vr = c._vol_rows(i, j, p)
-                    for pi, S in self.inp[j].items():
-                        add((i, pi), Vr @ S[:hi, :hi])
+            blk.update(c.state_panel_rows(self.excl, self.inp, p))      # the cached arrays are never written: add makes new ones
         forcing: Dict[int, np.ndarray] = {}
         for (bi, an, r, delay, gker, blocks) in self.rows:
             Cr = c.conv_left_rows(gker, delay, lo, hi)
@@ -201,15 +223,77 @@ class ClosedLoopRows:
         c = self.c; nP = len(c.prim); nc = self.nc
         Z = np.zeros((nP, c.N, nc))
         for p, (lo, hi) in enumerate(c._panel_ranges):
-            Np = hi - lo; n = nP * Np
+            Np = hi - lo
             blk, forcing = self.panel(p)
-            rhs = self.B[:, lo:hi].reshape(n, nc).copy()
+            rhs = self.B[:, lo:hi].copy()
             for bi, f in forcing.items():
-                rhs[bi * Np:(bi + 1) * Np, :c.nW] += f
-            diag = np.eye(n)
+                rhs[bi, :, :c.nW] += f
+            within = {}
             for (i, j), X in blk.items():
                 if lo:
-                    rhs[i * Np:(i + 1) * Np] += X[:, :lo] @ Z[j, :lo]
-                diag[i * Np:(i + 1) * Np, j * Np:(j + 1) * Np] -= X[:, lo:hi]
-            Z[:, lo:hi] = np.linalg.solve(diag, rhs).reshape(nP, Np, nc)
+                    rhs[i] += X[:, :lo] @ Z[j, :lo]
+                if X[:, lo:hi].any():
+                    within[(i, j)] = X[:, lo:hi]
+            try:
+                Z[:, lo:hi] = _panel_solve(within, rhs, nP, Np)
+            except np.linalg.LinAlgError:
+                raise ValueError(f"the closed loop is singular on time panel {p} (t in [{c.g.t[lo]:g}, {c.g.t[hi - 1]:g}]): "
+                                 "the feedback of the strategies makes the world indeterminate there") from None
         return Z.reshape(nP * c.N, nc)
+
+
+def _uncoupled(nP: int, keys: FrozenSet[Tuple[int, int]], _memo: dict = {}) -> Tuple[int, ...]:
+    """A largest set C of primaries with no within-panel block among them (i, j in C, i == j included: M_CC = 0),
+    by brute force from the largest size down (nP is the number of primaries, a handful), greedily beyond 16."""
+    k = (nP, keys)
+    if k in _memo:
+        return _memo[k]
+    free = [i for i in range(nP) if (i, i) not in keys]
+    best: Tuple[int, ...] = ()
+    if len(free) <= 16:
+        for size in range(len(free), 0, -1):
+            for C in itertools.combinations(free, size):
+                if not any((i, j) in keys for i in C for j in C):
+                    best = C; break
+            if best:
+                break
+    else:
+        for i in free:
+            if not any((i, j) in keys or (j, i) in keys for j in best):
+                best = best + (i,)
+    _memo[k] = best
+    return best
+
+
+def _panel_solve(within: Dict[Tuple[int, int], np.ndarray], rhs: np.ndarray, nP: int, Np: int) -> np.ndarray:
+    """The panel's diagonal system (I - M) z = rhs, rhs (nP, Np, nc), by block elimination: C the primaries with no
+    block among them (_uncoupled), so z_C = rhs_C + M_CS z_S, and the rest S solves the Schur complement
+    (I - M_SS - M_SC M_CS) z_S = rhs_S + M_SC rhs_C.  Every primary in C is no solve at all; C empty is the
+    one dense solve.  The same solution, to rounding."""
+    nc = rhs.shape[-1]
+    C = _uncoupled(nP, frozenset(within))
+    S = [i for i in range(nP) if i not in C]
+    pos = {i: k for k, i in enumerate(S)}; cpos = {i: k for k, i in enumerate(C)}
+    nS, nC = len(S) * Np, len(C) * Np
+    MSS = np.zeros((nS, nS)); MSC = np.zeros((nS, nC)); MCS = np.zeros((nC, nS))
+    for (i, j), X in within.items():
+        if i in pos and j in pos:
+            MSS[pos[i] * Np:(pos[i] + 1) * Np, pos[j] * Np:(pos[j] + 1) * Np] = X
+        elif i in pos:
+            MSC[pos[i] * Np:(pos[i] + 1) * Np, cpos[j] * Np:(cpos[j] + 1) * Np] = X
+        else:
+            MCS[cpos[i] * Np:(cpos[i] + 1) * Np, pos[j] * Np:(pos[j] + 1) * Np] = X
+    rS = rhs[S].reshape(nS, nc); rC = rhs[list(C)].reshape(nC, nc)
+    z = np.empty_like(rhs)
+    if nS:
+        A = np.eye(nS) - MSS
+        b = rS.copy()
+        if nC:
+            A -= MSC @ MCS; b += MSC @ rC
+        zS = np.linalg.solve(A, b)
+        z[S] = zS.reshape(len(S), Np, nc)
+        if nC:
+            z[list(C)] = (rC + MCS @ zS).reshape(len(C), Np, nc)
+    else:
+        z[:] = rhs
+    return z

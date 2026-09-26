@@ -114,7 +114,6 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
     since t0 (default: now); at least one evaluation is made, and past either bound the best iterate so
     far is returned, with the message naming the bound.  progress(info) is called after every evaluation
     with {"evaluation", "residual", "phase", "seconds"}; an exception it raises propagates."""
-    from scipy.optimize import newton_krylov, NoConvergence
     t0 = time.time() if t0 is None else t0
     phase = ["anderson"]
     state = {"evals": 0, "best_x": None, "best_rn": np.inf}
@@ -151,6 +150,7 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
         # a stall within two decades of the tolerance is a floor; a Newton polish cannot beat noise
         return z, rn, ev, rn <= tol, "; ".join(msg)
     phase[0] = "newton"
+    from scipy.optimize import newton_krylov, NoConvergence     # here, not at the top: 45 ms a process, and Anderson usually converges
     try:
         try:
             # scipy's KrylovJacobian replaces LGMRES's outer loop by the Newton steps (maxiter 1), so its

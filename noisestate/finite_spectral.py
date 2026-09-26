@@ -623,11 +623,11 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             return None
         return [foc.foc(ui, zp) for ui in range(len(agent.controls))]
 
-    def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
+    def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):
         """The agent's best response to `maps` (EngineBase.best_response's contract): finite_free.best_response,
         the operators applied and the FOC system factored within settings.foc_dense_max, solved by GMRES beyond
         (self.foc_free); the dict also carries "krylov", the GMRES iterations (0 when factored)."""
-        return finite_free.best_response(self, agent, maps, want_decomp)
+        return finite_free.best_response(self, agent, maps, want_decomp, project)
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
         recon_all = finite_free.reconstruction(self, agent, Zfull, g)
         c = self.c; gr = c.g; worst = 0.0

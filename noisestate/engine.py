@@ -653,6 +653,7 @@ class EngineBase(MeanLayer):
             for i, (ri, k) in enumerate(pairs):
                 Hs[ri, :, :, kpos[k]] = Hp[:, i, :]
                 Gs[:, kpos[k], ri, :] = Gp[i]
+            del Y, Hp, Gp                                                       # two (N pairs N) arrays: not held through the assembly
         Hs = Hs.reshape(nRn * N, N * nKn); Gs = Gs.reshape(N, nKn * nRn * N)
         chunks = self._causal_chunks() if nKn else []
         Hc = [np.ascontiguousarray(Hs.reshape(nRn, N, N * nKn)[:, lo:hi, lo * nKn:]).reshape(nRn * (hi - lo), (N - lo) * nKn)
@@ -692,7 +693,7 @@ class EngineBase(MeanLayer):
                             A6[ui, r, :, vi, r2] += lmul(Sh, wh, rmul(FR, Sg2, wg2))                       # H_inst FR G_inst
         return Amat, bvec
 
-    def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False):
+    def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):
         """The agent's best response to `maps`: (raw map, {"gamma", "action", "Zfull", ...}).  The
         agent's information is the passive signal history, so its first-order condition is affine
         in its map on the passive rows: one linear solve.
@@ -702,8 +703,9 @@ class EngineBase(MeanLayer):
         (nU, N, nW), what response_actions iterates on) and "Zfull" (the world with the response
         in).  With want_decomp=True the dict also carries "second_order" (the check, or None) and
         "decomp" (control -> {"foc", "physical", "wedge"} kernels (N, nW)), which _diagnostics
-        reads; an engine without them must not call the base _diagnostics.  A singular system
-        raises the ValueError of singular_system_message."""
+        reads; an engine without them must not call the base _diagnostics.  With project=False the
+        raw map is None and its projection is skipped (response_actions needs the action kernels
+        only).  A singular system raises the ValueError of singular_system_message."""
         c = self.c; N, nW = c.N, c.nW
         nR, nU = len(agent.signals), len(agent.controls)
         Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
@@ -725,7 +727,7 @@ class EngineBase(MeanLayer):
         out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
         if want_decomp:
             self._decompose(agent, out, Fu, Resp, Gk, maps)
-        return self._project(agent, Zfull, cact), out
+        return (self._project(agent, Zfull, cact) if project else None), out
 
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
         """Relative residual of the best-response action kernels after projection on the agent's raw
@@ -941,4 +943,4 @@ class EngineBase(MeanLayer):
     def response_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Every agent's best-response action kernels against `actions`."""
         maps = self.maps_from_actions(actions)
-        return self._over_representatives(lambda a: self.best_response(a, maps)[1]["action"])
+        return self._over_representatives(lambda a: self.best_response(a, maps, project=False)[1]["action"])

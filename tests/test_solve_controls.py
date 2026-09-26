@@ -79,9 +79,9 @@ def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
     # halves the time of this warm-started solve); with diagnostics=False none is made
     calls = []; best_response = type(S).best_response
 
-    def counted(self, agent, maps, want_decomp=False):
+    def counted(self, agent, maps, want_decomp=False, project=True):
         calls.append(want_decomp)
-        return best_response(self, agent, maps, want_decomp)
+        return best_response(self, agent, maps, want_decomp, project)
     monkeypatch.setattr(type(S), "best_response", counted)
     r = S.solve(start_from=w, diagnostics=False); assert len(calls) == 2 * r.evaluations and not any(calls)
     calls.clear(); r = S.solve(start_from=w); assert len(calls) == 2 * r.evaluations + 2 and calls[-2:] == [True, True]

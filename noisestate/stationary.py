@@ -75,7 +75,6 @@ class Compiled(CompiledBase):
                     warnings.warn(f"lead {n}@-{tau:g} under the discount rate {self.rho:g}: the flows before t that read the quantity "
                                   f"after t enter the first-order condition weighted by up to exp(rho tau) = {np.exp(self.rho * tau):.1e} "
                                   "relative to the current flow, which dominates the best-response system (README, Limits)", stacklevel=2)
-        self._atom_cache: Dict[tuple, np.ndarray] = {}
         self._elim: Dict[frozenset, tuple] = {}
         self._elim_wzero: Dict[frozenset, bool] = {}
         self.sym = find_cyclic_symmetry(model)
@@ -117,14 +116,13 @@ class Compiled(CompiledBase):
         return self.index[atom[0]], self.shift(atom[1])
 
     def atom_op(self, atom: Atom) -> np.ndarray:
-        """N x (n_prim N) matrix giving the kernel of `name@lag` from the primary vector (cached)."""
-        key = (atom[0], round(float(atom[1]), 12))
-        if key not in self._atom_cache:
-            name, lag = atom
-            M = np.zeros((self.N, len(self.prim) * self.N))
-            M[:, self.block(name)] = self.shift(lag)
-            self._atom_cache[key] = M
-        return self._atom_cache[key]
+        """N x (n_prim N) matrix giving the kernel of `name@lag` from the primary vector.  Not cached, and the
+        engine's own code uses atom_block or shift and block instead: the matrix is one N x N block in zeros
+        (48 MB per compiled model for Chapter 5's market, held as long as any result)."""
+        name, lag = atom
+        M = np.zeros((self.N, len(self.prim) * self.N))
+        M[:, self.block(name)] = self.shift(lag)
+        return M
 
     def expr_op(self, expr: Dict[Atom, float]) -> np.ndarray:
         M = np.zeros((self.N, len(self.prim) * self.N))
@@ -220,7 +218,7 @@ class Compiled(CompiledBase):
             for i, (nm, lag), c in self.state_inputs:
                 if nm in excl:
                     continue
-                U[i::nX, :] += c * self.atom_op((nm, lag))
+                U[i::nX, self.block(nm)] += c * self.shift(lag)
             perm = np.arange(nX * N).reshape(N, nX).T.reshape(-1)     # prim index -> (node, comp) index
             PX, P0X = self.Pin[perm], self.P0[perm]
             PU = PX @ U
@@ -459,7 +457,7 @@ class Compiled(CompiledBase):
             for i, (nm, lag), c in self.state_inputs:
                 if nm in excl:
                     continue
-                U[i::self.nX, :] += c * self.atom_op((nm, lag))
+                U[i::self.nX, self.block(nm)] += c * self.shift(lag)
             xs = slice(0, self.nX * self.N)
             # propagator rows are (node, comp); primary vector is (comp, node): permute
             perm = np.arange(self.nX * self.N).reshape(self.N, self.nX).T.reshape(-1)   # prim index -> (node,comp) index
@@ -554,13 +552,12 @@ class StationarySolver(EngineBase):
         sw = np.sqrt(W)
         B4 = Bk.reshape(nW, N, nR, N)
         Gram = np.zeros((nR * N, nR * N)); G4 = Gram.reshape(nR, N, nR, N)
-        for lo, hi in self._causal_chunks():
-            if np.any(B4[:, lo:hi, :, hi:]):                                 # a lead among the instantaneous reads: no causal chunks
-                lo, hi = 0, N
+        chunks = self._causal_chunks()
+        if any(np.any(B4[:, lo:hi, :, hi:]) for lo, hi in chunks):           # a lead among the instantaneous reads: no causal chunks
+            chunks = [(0, N)]
+        for lo, hi in chunks:
             X = (B4[:, lo:hi, :, :hi] * sw[None, lo:hi, None, None]).reshape(nW * (hi - lo), nR * hi)
             G4[:, :hi, :, :hi] += dsyrk(1.0, X, trans=1).reshape(nR, hi, nR, hi)     # upper triangle (local order = global order)
-            if hi == N and lo == 0:
-                break
         Gram = np.triu(Gram); Gram = Gram + Gram.T - np.diag(np.diagonal(Gram))
         rhs = Bk.reshape(nW * N, nR * N).T @ (actions * W[None, :, None]).transpose(2, 1, 0).reshape(nW * N, nU)   # column ui: sum_k Bk' W actions[ui, :, k]
         if not keep.all():
@@ -698,7 +695,7 @@ class StationarySolver(EngineBase):
         variance part, from the shocks; the mean part is mean_cost."""
         c = self.c
         atoms, Q, q = c.loss[agent.name]
-        zeta = np.stack([c.atom_op(at) @ Z for at in atoms])          # (m, N, nW)
+        zeta = np.stack([c.shift(lag) @ Z[c.block(nm)] for nm, lag in atoms])   # (m, N, nW)
         MZ = np.tensordot(zeta, c.cost_mass(), axes=([1], [0]))        # (m, nW, N): the mass applied to every atom kernel
         G = np.tensordot(MZ, zeta, axes=([1, 2], [2, 1]))              # <zeta_i, zeta_j> over ages and channels
         return float(0.5 * np.sum(Q * G))
@@ -755,7 +752,7 @@ class StationarySolver(EngineBase):
                             m[j] += np.exp(-rho * lag)
                         continue                              # own reactions: envelope
                     if lag >= 0:
-                        m[j] += dc @ (c.atom_op((nm, lag)) @ R[:, ui])
+                        m[j] += dc @ (c.shift(lag) @ R[c.block(nm), ui])
                     else:
                         m[j] += np.exp(-rho * lag) * (dc @ R[c.block(nm), ui])
             Mu[ui] = m @ Q @ P; bu[ui] = -(m @ q)

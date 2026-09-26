@@ -31,6 +31,17 @@ A model reads like its equations, in a file and in Python.
 - Removed: `ModelBuilder` (the Python equations replace it; examples/make_ch5_cycle_market.py is rewritten and
   compiles to the same model), and `res.strategy_kernel()`, which returned the control's kernel, not its
   strategy (use `res.kernel(control)`, or `res.strategy(control)` for the strategy).
+- Removed: `ns.using_settings` (process-wide and not thread-safe; `solve(..., settings={...})` does the same for
+  one solve), the stationary result's `expected_loss` alias (`expected_cost`), and the shims of 0.x names.
+- Faster: a closed-loop time panel is solved by eliminating the primaries with no coupling inside the panel and
+  solving the rest (a Schur complement), the state rows of each panel are cached, the best responses inside the
+  fixed point skip the projection they discard, and scipy's Newton solver is imported only when the polish runs.
+  Times fall by 30-45% on the transition and spectral examples (ch3_precision_change 5.9 s to 4.1 s,
+  kyle_back_prior 0.91 s to 0.50 s) and small stationary solves halve; results change by rounding only
+  (6e-14 relative on the world at most, costs to 2e-16, the same evaluation counts).  A singular panel is now
+  a ValueError that names the panel.
+- Leaner: the stationary engine no longer caches each loss atom as a dense N x (n_prim N) matrix, which held
+  one N x N block (Chapter 5's market: peak 342 MB to 268 MB, bit-identical).
 
 ## 1.0.1 (2026-09-23)
 
