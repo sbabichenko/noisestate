@@ -530,7 +530,8 @@ class StationarySolver(EngineBase):
         super().__init__(model, verbose, settings=settings)
         self.c = Compiled(model, settings=self.settings)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
-        self._monitored = None                          # (maps key, {agent: monitored R}, {origin: seed world}) of the last maps
+        self._monitored = None                          # (maps key, {agent: monitored R}, {origin: seed world}, residual) of the last maps
+        self._atom_blocks: Dict[str, tuple] = {}        # agent -> the loss atoms' blocks and which are the identity
         self._kernel_residual = 0.0                     # the inner solve's residual at the last maps
 
     # -------------------------------------------- overridable model pieces
@@ -588,8 +589,10 @@ class StationarySolver(EngineBase):
         atms, Q, q = c.loss[agent.name]
         # an atom operator is one N x N block, the shift into the atom's own primary: the position is the
         # atom's, so ask for the block rather than build the full-width operator and scan its zeros for it
-        AO_blocks = [[c.atom_block(at)] for at in atms]
-        AO_eye = [[_is_eye(blk) for p, blk in blocks] for blocks in AO_blocks]      # an undelayed atom reads through the identity
+        if agent.name not in self._atom_blocks:            # map-independent: built once per agent
+            blocks = [[c.atom_block(at)] for at in atms]
+            self._atom_blocks[agent.name] = (blocks, [[_is_eye(blk) for p, blk in bl] for bl in blocks])
+        AO_blocks, AO_eye = self._atom_blocks[agent.name]       # AO_eye: an undelayed atom reads through the identity
         Fu, Ms = [], []
         for ui, u in enumerate(agent.controls):
             # op = sum_j M_j (Q zeta)_j with M_j the operator on atom j: identity for the instantaneous
@@ -962,6 +965,7 @@ class StationarySolver(EngineBase):
         evaluation and broke the market of Chapter 6; Anderson on this iteration found other roots.  Neither is used.)"""
         key = self._maps_key(maps)
         if self._monitored is not None and self._monitored[0] == key:
+            self._kernel_residual = self._monitored[3]
             return self._monitored[1], self._monitored[2]
         c = self.c; N = c.N
         owner = {a.name: a for a in self.model.agents}
@@ -971,36 +975,53 @@ class StationarySolver(EngineBase):
         Rmon = {n: self._spikes(c, maps, owner[n])[1] for n in responders}      # the naive responses
         shapes = {i: (len(owner[i].controls), len(setup[i][0]), N) for i in origins}
         Fu = {n: self._foc_operators(owner[n], Rmon[n]) for n in responders if n not in origins}   # fixed within the call
-        D, W = {}, {}
+        eqs = {i: [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))] for i in origins}   # one FOC per privy control
+        # the rows of the non-origin responders are fixed within the call: their blocks of A and B once
+        fixed = {}
+        for i in origins:
+            ctrls, Z0, C = setup[i]
+            for r, (n, ui) in enumerate(eqs[i]):
+                if n not in origins:
+                    fixed[(i, r)] = ([Fu[n][ui] @ C[v] for v in ctrls], Fu[n][ui] @ Z0[:, :shapes[i][0]])
+        D = {}
         change = np.inf
-        best = (np.inf, None, None, None)               # (change, D, W, Rmon) of the best round
+        best = (np.inf, None, None)                     # (change, D, Rmon) of the best round
         best_round = 0
         for it in range(200):
             Fu.update({n: self._foc_operators(owner[n], Rmon[n]) for n in responders if n in origins})
             change = 0.0
             for i in origins:
                 ctrls, Z0, C = setup[i]
-                eqs = [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))]    # one FOC per privy control
-                A = np.block([[Fu[n][ui] @ C[v] for v in ctrls] for (n, ui) in eqs])
-                B = -np.stack([np.concatenate([Fu[n][ui] @ Z0[:, o] for (n, ui) in eqs]) for o in range(shapes[i][0])], axis=1)
+                nO, nC = shapes[i][0], len(ctrls)
+                A = np.empty((len(eqs[i]) * N, nC * N)); B = np.empty((len(eqs[i]) * N, nO))
+                for r, (n, ui) in enumerate(eqs[i]):
+                    rows = slice(r * N, (r + 1) * N)
+                    blocks, rhs = fixed[(i, r)] if (i, r) in fixed else ([Fu[n][ui] @ C[v] for v in ctrls], Fu[n][ui] @ Z0[:, :nO])
+                    for k, blk in enumerate(blocks):
+                        A[rows, k * N:(k + 1) * N] = blk
+                    B[rows] = -rhs
                 X = np.linalg.solve(A, B)                                           # one factorisation, every origin control
                 Di = X.T.reshape(shapes[i])
-                W[i] = Z0[:, :shapes[i][0]] + sum(C[v] @ X[k * N:(k + 1) * N] for k, v in enumerate(ctrls))
                 change = max(change, float(np.abs(Di - D[i]).max() / max(1e-300, np.abs(Di).max())) if i in D else np.inf)
                 D[i] = Di
             for j in origins:
                 Rmon[j] = self._frozen_responses(j, setup[j], D[j], shapes[j][0])
             if change < best[0]:
-                best = (change, dict(D), dict(W), dict(Rmon)); best_round = it
+                best = (change, dict(D), dict(Rmon)); best_round = it
             # the iteration reaches rounding (about 1e-11) and then only wanders: stop at 1e-10, or once 10 rounds
             # have not improved on the best, and keep the best round
             if change < 1e-10 or it - best_round > 10:
                 break
-        change, D, W, Rmon = best
+        change, D, Rmon = best
+        W = {}                                          # the seed worlds of the best round's kernels
+        for i in origins:
+            ctrls, Z0, C = setup[i]
+            X = D[i].reshape(shapes[i][0], -1).T
+            W[i] = Z0[:, :shapes[i][0]] + sum(C[v] @ X[k * N:(k + 1) * N] for k, v in enumerate(ctrls))
         # at a trial point of the outer iteration far from the equilibrium the kernels may not settle; the best
         # round is used there and its change kept, and _finish requires them settled at the equilibrium itself
         self._kernel_residual = float(change)
-        self._monitored = (key, Rmon, W)
+        self._monitored = (key, Rmon, W, self._kernel_residual)
         return Rmon, W
 
     def _frozen_responses(self, j: str, setup, Dj: np.ndarray, own: int) -> np.ndarray:
@@ -1031,8 +1052,7 @@ class StationarySolver(EngineBase):
         points of the fixed point they may not be, _monitoring): a result whose kernels did not settle is not
         converged."""
         if any(len(self.model.privy(a.name)) > 1 for a in self.model.agents):
-            self._monitored = None
-            self._monitoring(res.maps)
+            self._monitoring(res.maps)                  # the last evaluation's, when it was at these maps
             if self._kernel_residual > 1e-10:
                 res.converged = False
                 res.message += f"; the monitored response kernels did not settle at the equilibrium (residual {self._kernel_residual:.1e})"

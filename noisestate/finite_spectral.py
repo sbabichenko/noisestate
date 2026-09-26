@@ -128,6 +128,11 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
     def _finish(self, res) -> None:
         res.past = self.c.past
         res.continuation = self.c.cont
+        if any(len(self.model.privy(a.name)) > 1 for a in self.model.agents):
+            self._monitoring(res.maps)                  # the monitored kernels must be settled at the equilibrium
+            if self._kernel_residual > 1e-10:
+                res.converged = False
+                res.message += f"; the monitored response kernels did not settle at the equilibrium (residual {self._kernel_residual:.1e})"
         super()._finish(res)
         if self.c.cont is not None:
             for a in self.model.agents:
@@ -551,16 +556,6 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         from types import SimpleNamespace
         return finite_free.RespOps(self, SimpleNamespace(controls=[v]), col[:, None]).dense(0)
 
-    def _compose(self, K: np.ndarray) -> np.ndarray:
-        """(N, N): g -> (K * g)(t, s) = int_s^t K(t, r) g(r, s) dr, K and g two-time kernels on the nodes (the
-        response path of RespOps with K the known kernel)."""
-        from .spectral_operators import PathOp
-        c = self.c; g = c.g
-        lp = c._path(("response",), r_lo=g.s, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
-                     known_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r))
-        op = PathOp(lp, K[:, None])
-        return np.zeros((c.N, c.N)) if op.empty else op.rows(0, 0, c.N)
-
     def _maps_key(self, maps) -> bytes:
         import hashlib
         h = hashlib.sha1()
@@ -584,60 +579,98 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         return ctrls, Z0, {v: self._resp_dense(v, spike[v]) for v in ctrls}
 
     def _monitoring(self, maps):
-        """({agent: R^mon}, {origin: W}) as on the stationary engine, on the triangle's nodes."""
+        """({agent: R^mon}, {origin: W}) as on the stationary engine, on the triangle's nodes: the kernels from the
+        naive responses by the plain iteration, which stops at 1e-10 or once 10 rounds have not improved on the best
+        round, keeping it (it reaches rounding and then only wanders); _finish requires them settled at the
+        equilibrium.  The non-origin responders' rows are fixed within a call and built once."""
         key = self._maps_key(maps)
         if getattr(self, "_monitored", None) is not None and self._monitored[0] == key:
+            self._kernel_residual = self._monitored[3]
             return self._monitored[1], self._monitored[2]
         c = self.c; N = c.N
         owner = {a.name: a for a in self.model.agents}
         origins = [a.name for a in self.model.agents if len(self.model.privy(a.name)) > 1]
         setup = {i: self._seed_setup(maps, i) for i in origins}
-        Rmon = {a.name: self._spikes(c, maps, a)[1] for a in self.model.agents}
-        D, W = {}, {}
+        responders = {m for i in origins for m in self.model.privy(i)}
+        Rmon = {n: self._spikes(c, maps, owner[n])[1] for n in responders}
+        shapes = {i: (len(owner[i].controls), len(setup[i][0]), N) for i in origins}
+
+        def foc(n):
+            return [finite_free.FocOps(self, owner[n], Rmon[n]).dense(ui) for ui in range(len(owner[n].controls))]
+        Fu = {n: foc(n) for n in responders if n not in origins}                    # fixed within the call
+        eqs = {i: [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))] for i in origins}
+        fixed = {}
+        for i in origins:
+            ctrls, Z0, C = setup[i]
+            for r, (n, ui) in enumerate(eqs[i]):
+                if n not in origins:
+                    fixed[(i, r)] = ([Fu[n][ui] @ C[v] for v in ctrls], Fu[n][ui] @ Z0[:, :shapes[i][0]])
+        D = {}
+        best = (np.inf, None, None); best_round = 0
         for it in range(200):
-            Fu = {n: [finite_free.FocOps(self, owner[n], Rmon[n]).dense(ui) for ui in range(len(owner[n].controls))]
-                  for n in {m for i in origins for m in self.model.privy(i)}}
+            Fu.update({n: foc(n) for n in responders if n in origins})
             change = 0.0
             for i in origins:
                 ctrls, Z0, C = setup[i]
-                responders = [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))]
-                A = np.block([[Fu[n][ui] @ C[v] for v in ctrls] for (n, ui) in responders])
-                nO = len(owner[i].controls)
-                Di = np.zeros((nO, len(ctrls), N)); Wi = np.zeros((len(c.prim) * N, nO))
-                for o in range(nO):
-                    b = -np.concatenate([Fu[n][ui] @ Z0[:, o] for (n, ui) in responders])
-                    x = np.linalg.solve(A, b).reshape(len(ctrls), N)
-                    Di[o] = x
-                    Wi[:, o] = Z0[:, o] + sum(C[v] @ x[kk] for kk, v in enumerate(ctrls))
+                nO, nC = shapes[i][0], len(ctrls)
+                A = np.empty((len(eqs[i]) * N, nC * N)); B = np.empty((len(eqs[i]) * N, nO))
+                for r, (n, ui) in enumerate(eqs[i]):
+                    rows = slice(r * N, (r + 1) * N)
+                    blocks, rhs = fixed[(i, r)] if (i, r) in fixed else ([Fu[n][ui] @ C[v] for v in ctrls], Fu[n][ui] @ Z0[:, :nO])
+                    for k, blk in enumerate(blocks):
+                        A[rows, k * N:(k + 1) * N] = blk
+                    B[rows] = -rhs
+                X = np.linalg.solve(A, B)                                           # one factorisation, every origin control
+                Di = X.T.reshape(shapes[i])
                 change = max(change, float(np.abs(Di - D[i]).max() / max(1e-300, np.abs(Di).max())) if i in D else np.inf)
-                D[i] = Di; W[i] = Wi
+                D[i] = Di
             for j in origins:
-                Rmon[j] = self._frozen_responses(setup[j], D[j], len(owner[j].controls))
-            if change < 1e-10:
+                Rmon[j] = self._frozen_responses(setup[j], D[j], shapes[j][0])
+            if change < best[0]:
+                best = (change, dict(D), dict(Rmon)); best_round = it
+            if change < 1e-10 or it - best_round > 10:
                 break
-        else:
-            raise RuntimeError(f"the monitored response kernels did not settle in 200 rounds (last change {change:.1e})")
-        self._monitored = (key, Rmon, W)
+        change, D, Rmon = best
+        W = {}
+        for i in origins:
+            ctrls, Z0, C = setup[i]
+            X = D[i].reshape(shapes[i][0], -1).T
+            W[i] = Z0[:, :shapes[i][0]] + sum(C[v] @ X[k * N:(k + 1) * N] for k, v in enumerate(ctrls))
+        self._kernel_residual = float(change)
+        self._monitored = (key, Rmon, W, self._kernel_residual)
         return Rmon, W
 
     def _frozen_responses(self, setup, Dj: np.ndarray, own: int) -> np.ndarray:
         """R^mon_j: the responses to a frozen spike of each of j's controls, the privy players reading it as the blip
         seeds sigma, sigma + D^{j<-j} * sigma = delta (a Volterra equation in the seed's time, the kernels composed
-        along the response path), and responding to them."""
-        c = self.c; N = c.N
+        along the response path), and responding to them.  The kernels are composed through one path operator; only
+        the own-control block the Volterra solve needs is formed as dense rows, the rest are applied."""
+        from .spectral_operators import PathOp
+        c = self.c; N = c.N; g = c.g
         ctrls, Z0, C = setup
-        comp = [[self._compose(Dj[o2, u]) for o2 in range(own)] for u in range(own)]
-        M = np.eye(own * N) + np.block([[comp[u][o2] for o2 in range(own)] for u in range(own)])
+        nC = len(ctrls)
+        lp = c._path(("response",), r_lo=g.s, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
+                     known_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r))
+        op = PathOp(lp, np.stack([Dj[o2, kk] for o2 in range(own) for kk in range(nC)], axis=1))   # column o2 nC + kk
+        col = lambda o2, kk: o2 * nC + kk
+        if op.empty:
+            M = np.eye(own * N)
+        else:
+            M = np.eye(own * N) + np.block([[op.rows(col(o2, u), 0, N) for o2 in range(own)] for u in range(own)])
         out = np.zeros((len(c.prim) * N, own))
         for o in range(own):
             s = np.linalg.solve(M, -np.concatenate([Dj[o, u] for u in range(own)])).reshape(own, N)
-            col = Z0[:, o].copy()
+            Is = [op.unknown(s[o2]) for o2 in range(own)] if not op.empty else None
+            colv = Z0[:, o].copy()
             for kk, v in enumerate(ctrls):
                 if kk < own:
                     continue
-                x = Dj[o, kk] + sum(self._compose(Dj[o2, kk]) @ s[o2] for o2 in range(own))
-                col += C[v] @ x
-            out[:, o] = col
+                x = Dj[o, kk].copy()
+                if Is is not None:
+                    for o2 in range(own):
+                        x += op.apply(Is[o2], col(o2, kk))[:N]
+                colv += C[v] @ x
+            out[:, o] = colv
         return out
 
     def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
