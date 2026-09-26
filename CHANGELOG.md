@@ -21,6 +21,11 @@ A model reads like its equations, in a file and in Python.
 - **`describe()`** writes coefficients in the parameters (`sqrt(p1) * X dt`, `sigma * dW[W0]`), not their values.
 - **`solve(model, nodes=24)`**: a Numerics field given directly is laid over the numerics, in solve() and
   transition() (refused since 0.6).
+- **Monitored deviations and instant reactions on a finite horizon** (the spectral engine, without a past or a
+  continuation, which it refuses): the same algebra as the stationary engine's, the response kernels two-time kernels
+  on the triangle.  All-privy tracking on [0, 2] matches the finite feedback Nash Riccati to 3e-6 at 12 nodes; the
+  strategic market maker with no inventory cost is the competitive one to 1e-11.  `res.deviation_response(origin,
+  quantities).over(t, s)` reads the responses.
 - **Instant reactions.**  An agent can see the current level of another agent's control and react within the same
   instant: `observes: {quote: {level: P}}` (Python: `observes={"quote": ns.level(P)}`), a trader trading on the posted
   quote.  A signal is reacted to predictably, after it is observed; a level is reacted to at once, with the loading
@@ -35,7 +40,7 @@ A model reads like its equations, in a file and in Python.
   filters it; every agent's first-order condition sees its deviations answered that way, while the path is built as
   always.  `res.deviation_response(origin, quantities).over(ages)` reads the responses.  The all-privy tracking game
   reproduces the feedback Nash gain 1/sqrt(3) (4e-9), and a privy market maker leaves the Kyle-Back trader a positive
-  profit (0.5).  Without `monitors` a model is the all-naive corner, as before; the spectral engine refuses monitoring.
+  profit (0.5).  Without `monitors` a model is the all-naive corner, as before.
 - **Removed: `naive_observers`.** It used Chapter 6's naive and privy the other way round, computed neither of the
   chapter's corners, and its solves failed their own first-order conditions (it zeroed the observers' reactions in
   the impulse responses that also build the on-path world).  Monitored deviations will come back as a model's

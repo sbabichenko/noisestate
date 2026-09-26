@@ -314,6 +314,9 @@ class RespOps:
         lp = c._path(("response",), r_lo=g.s, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
                      known_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r))
         self.ops: List[Tuple[int, List[int], Optional[PathOp]]] = []
+        # the instant reactions the action draws move with it at the same node (c.composite: a trader on the quote)
+        self.inst = [[(c.prim.index(v), coef) for v, coef in ((c.composite or {}).get(u) or {}).items() if v != u]
+                     for u in agent.controls]
         for ui, u in enumerate(agent.controls):
             own = c.prim.index(u)
             K = R[:, ui].reshape(self.nP, self.N).T.copy()
@@ -332,6 +335,8 @@ class RespOps:
             for j, p in enumerate(ps):
                 Z[p] += op.apply(IC, j).reshape(C.shape)
         Z[own] += C
+        for p, coef in self.inst[ui]:
+            Z[p] += coef * C
         return Z
 
     def dense(self, ui: int, lo: int = 0) -> np.ndarray:
@@ -344,12 +349,16 @@ class RespOps:
             for j, p in enumerate(ps):
                 Z[p, lo:] += op.rows(j, lo, self.N)
         Z[own] += np.eye(self.N)
+        for p, coef in self.inst[ui]:
+            Z[p] += coef * np.eye(self.N)
         return Z.reshape(self.nP * self.N, self.N)
 
     def adjoint(self, ui: int, Z: np.ndarray) -> np.ndarray:
         """Resp_u^T Z: (N, ...) for Z (nP, N, ...)."""
         own, ps, op = self.ops[ui]
         out = Z[own].copy()
+        for p, coef in self.inst[ui]:
+            out += coef * Z[p]
         if op is not None:
             for j, p in enumerate(ps):
                 out += op.adjoint(Z[p].reshape(self.N, -1), j).reshape(out.shape)
@@ -374,8 +383,11 @@ class FocOps:
                      known_fn=lambda k, r: (r, r - g.t[k]))
         disc = np.exp(-c.rho * (lp.r - g.t[lp.rows])) if lp.rows is not None else None
         self.per_control = []                       # per control: (its instantaneous atom, continuation (atoms, op), own lag reads)
+        self.inst = []                              # per control: [(atom, coef)], its instantaneous term with the reactions it draws
         for ui, u in enumerate(agent.controls):
             j0 = self.atoms.index((u, 0.0)) if (u, 0.0) in self.atoms else None
+            self.inst.append([(self.atoms.index((v, 0.0)), coef) for v, coef in ((c.composite or {}).get(u) or {}).items()
+                              if v != u and (v, 0.0) in self.atoms])
             cont, lags = None, []
             if not agent.myopic:
                 js = [j for j, (nm, lag) in enumerate(self.atoms) if nm not in agent.controls]
@@ -425,6 +437,8 @@ class FocOps:
         out = np.zeros(b.shape[1:])
         if j0 is not None:
             out += b[j0]
+        for j, coef in self.inst[ui]:
+            out += coef * b[j]
         if cont is not None:
             js, op = cont
             for i, j in enumerate(js):
@@ -448,6 +462,8 @@ class FocOps:
         M = np.zeros((len(self.atoms), N - lo, N))
         if j0 is not None:
             M[j0] += np.eye(N)[lo:]
+        for j, coef in self.inst[ui]:
+            M[j] += coef * np.eye(N)[lo:]
         if cont is not None:
             js, op = cont
             for i, j in enumerate(js):

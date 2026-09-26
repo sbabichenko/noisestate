@@ -150,7 +150,12 @@ class ClosedLoopRows:
     def __init__(self, c: SpectralCompiled, maps, excluded=None, impulse_controls=(), own_frozen: bool = True, actions=None):
         self.c = c; N = c.N; nW = c.nW; ncol = c.ncol; g = c.g; nP = len(c.prim)
         imp = list(impulse_controls); self.nc = nc = ncol + len(imp)
-        excl = set(next(a for a in c.model.agents if a.name == excluded).controls) if excluded else set()
+        offs = set(excluded) if isinstance(excluded, (tuple, list)) else ({excluded} if excluded else set())
+        excl = {u for a in c.model.agents if a.name in offs for u in a.controls}
+        if isinstance(excluded, (tuple, list)):
+            excluded = tuple(excluded)                  # hashable for the state columns' cache
+        self.instant = ({} if actions is not None else          # given actions already hold every control's kernel
+                        {v: loads for v, loads in (c.instant_loads or {}).items() if v not in excl})
         past = c.past is not None; self.band = band = g.L is not None; lower = ~g.upper
         self.B = B = np.zeros((nP, N, nc))
         self.inp = None                                 # state -> {primary index: CSR input operator}
@@ -164,7 +169,7 @@ class ClosedLoopRows:
                 for ui, u in enumerate(a.controls):
                     B[c.index[u]] = actions[a.name][ui]
                 continue
-            off = a.name == excluded
+            off = a.name in offs
             if off and (not past or c.cont is None or not own_frozen):
                 continue
             gm = maps[a.name]
@@ -208,6 +213,12 @@ class ClosedLoopRows:
             blk[key] = blk[key] + X if key in blk else X
         if self.inp is not None:
             blk.update(c.state_panel_rows(self.excl, self.inp, p))      # the cached arrays are never written: add makes new ones
+        # instant observations: an observer's control moves with the level it sees at the same node (its map covers
+        # the rest of its action)
+        for v, loads in self.instant.items():
+            for u, h in loads.items():
+                X = np.zeros((hi - lo, hi)); X[:, lo:hi] = h * np.eye(hi - lo)
+                add((c.index[v], c.index[u]), X)
         forcing: Dict[int, np.ndarray] = {}
         for (bi, an, r, delay, gker, blocks) in self.rows:
             Cr = c.conv_left_rows(gker, delay, lo, hi)

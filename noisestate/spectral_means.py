@@ -217,7 +217,7 @@ class SpectralMeans:
         Mu = np.zeros((len(a.controls) * Nt, nP * Nt)); bu = np.zeros(len(a.controls) * Nt)
         if not self._on_line(line):
             diag = c.diag; ones = np.ones(N)
-            R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)[:, c.ncol:]
+            R = self._spikes(c, maps, a)[1]
             R = self._impulse_responses(a, maps, R)
             foc = finite_free.FocOps(self, a, R)
             atoms, Q, q = foc.atoms, foc.Q, foc.q                          # the flow loss's atoms, then a terminal loss's
@@ -240,7 +240,7 @@ class SpectralMeans:
             if lag not in reads:
                 reads[lag] = c.mean_read(lag)
             return reads[lag]
-        R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls, own_frozen=False)[:, c.ncol:]
+        R = self._spikes(c, maps, a, own_frozen=False)[1]
         R = self._impulse_responses(a, maps, R)
         foc = finite_free.FocOps(self, a, R)
         atoms, Q, q = foc.atoms, foc.Q, foc.q

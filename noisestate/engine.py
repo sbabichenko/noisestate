@@ -461,6 +461,12 @@ class EngineBase(MeanLayer):
         max_newton = self.MAX_NEWTON if max_newton is None else max_newton
         t0 = time.time(); evals = [0]
         coarse_evals = 0
+        if self.model.ties and any(a.instant for a in self.model.agents):
+            # ties iterate on the raw maps, and with instant observations the maps hold an equilibrium but do not
+            # reach it: Chapter 6's market (unstable under best responses, radius 1.48) stalls at 0.85 from zero and
+            # from a coarse solve alike, where the action kernels (untied) reach it from zero
+            raise NotImplementedError("instant observations with ties are not solved yet: ties iterate on the raw maps, "
+                                      "which do not reach the equilibrium when a level is observed at once")
         if start_from is None and start_policy == "coarse":
             # the coarse solve's checks are never read; it gets the same bounds (on its own count, on this clock)
             start_from = self.coarse_start(tol=tol, damping=damping, max_newton=max_newton, variable=variable, diagnostics=False,
@@ -471,14 +477,6 @@ class EngineBase(MeanLayer):
             start_from = self.stationary_start()
         elif start_policy not in ("zero", "coarse", "stationary"):
             raise ValueError(f"start_policy must be 'zero', 'coarse' or 'stationary', not {start_policy!r}")
-        if any(a.instant for a in self.model.agents):
-            # instant observations iterate on the action kernels: on the raw maps Chapter 6's market stalls at 0.85
-            # and lands on a trader with a positive cost, a defect of the maps path not yet found (the action kernels
-            # give the validated answer), so the maps path, and ties, which need it, are refused there
-            if self.model.ties:
-                raise NotImplementedError("instant observations with ties are not solved yet (ties iterate on the raw "
-                                          "maps, which do not converge to the right equilibrium with instant observations)")
-            variable = "actions"
         if variable == "actions" and (self.model.ties or not self.ACTIONS):
             variable = "maps"
         kind = self.init_kind(start_from) if start_from is not None else None

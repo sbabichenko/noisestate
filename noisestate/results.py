@@ -172,6 +172,21 @@ class SeedResponse:
         return f"SeedResponse({', '.join(self.names)})"
 
 
+class SeedResponse2:
+    """A finite result's deviation_response: kernels in (time, seed time); .over(t, s) evaluates them at the
+    points (t_k, s_k), (number of points, number of quantities)."""
+
+    def __init__(self, grid, K: np.ndarray, names: List[str]):
+        self.grid, self.K, self.names = grid, K, names
+
+    def over(self, t, s) -> np.ndarray:
+        t = np.atleast_1d(np.asarray(t, dtype=float)); s = np.broadcast_to(np.asarray(s, dtype=float), t.shape)
+        return np.asarray(self.grid.interp(t, t - s) @ self.K, dtype=float)
+
+    def __repr__(self) -> str:
+        return f"SeedResponse2({', '.join(self.names)})"
+
+
 class Responses:
     """res.response(X, ...) for a vector X: one Response per component; .over(t) stacks them on a last axis."""
 
@@ -1155,6 +1170,26 @@ class TriangleResult(Result):
         from .finite_free import reconstruction
         K = np.repeat(np.asarray(K)[None], len(a.controls), axis=0)       # one copy per control: the projection's shape
         return reconstruction(solver, a, self.world, solver.maps_from_world(a, self.world, K))[0]
+
+    def deviation_response(self, origin, quantities, control=None) -> "SeedResponse2":
+        """How quantities respond to a unit deviation seed of `origin` (a spike of its control, the first unless
+        `control` names one) at time s, seen at time t >= s: `.over(t, s)`, one column per quantity.  As on the
+        stationary engine: the players privy to the origin respond through their response kernels, the origin
+        resuming play after the blip; naive players filter the seed."""
+        origin = _nm(origin)
+        a = next((x for x in self.model.agents if x.name == origin), None)
+        if a is None:
+            raise KeyError(f"no agent {origin!r}; the agents are {[x.name for x in self.model.agents]}")
+        o = 0 if control is None else a.controls.index(_nm(control))
+        S = self._make_solver(self.model); c = self.compiled
+        if len(self.model.privy(origin)) > 1:
+            W = S._monitoring(self.maps)[1][origin][:, o]
+        else:
+            W = S._spikes(c, self.maps, a)[1][:, o]
+        names = [quantities] if isinstance(quantities, str) or not hasattr(quantities, "__iter__") else list(quantities)
+        names = [_nm(q) for q in names]
+        K = np.stack([W[c.block(n)] if n in c.index else c.expr_op(c.model.expand({n: 1.0})) @ W for n in names], axis=1)
+        return SeedResponse2(self.grid, K, names)
 
     def evaluate(self, name: str, shock: str, t, s) -> np.ndarray:
         """Kernel value at (t, s) points: response at time t to a unit `shock` at time s."""

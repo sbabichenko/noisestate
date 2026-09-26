@@ -31,6 +31,7 @@ __all__ = ["SpectralCompiled", "ClosedLoopRows", "SpectralFiniteSolver"]
 
 
 class SpectralFiniteSolver(SpectralMeans, EngineBase):
+    MONITORING = True                   # monitored deviations and instant observations, without a past (see __init__)
     RESULT = TriangleResult
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
     MAP_RIDGE = tunable("map_ridge")      # ridge of the per-time-row map projection, relative to the row's own Gram (settings)
@@ -54,6 +55,9 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             if continuation is None:
                 continuation = hz.continuation or "stationary"
         past = Past.of(past) if past is not None else None
+        if (past is not None or continuation not in (None, "end")) and any(a.monitors or a.instant for a in model.agents):
+            raise NotImplementedError("monitored deviations and instant observations are solved on a finite horizon "
+                                      "without a past or a continuation; a transition with them is not built yet")
         continuation = self._continuation_of(model, past, continuation,
                                              model.numerics.continuation_nodes if hz.kind == "transition" else None)
         opts = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
@@ -506,7 +510,142 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         """Every agent's raw maps (nU, nR, N) reproducing its action kernels (nU, N, nW) in the world those
         actions generate (the states from the Volterra propagation, then one projection per agent)."""
         Z = self.world_from_actions(actions)
-        return {a.name: self.maps_from_world(a, Z, actions[a.name]) for a in self.model.agents}
+        return {a.name: self.maps_from_world(a, Z, self._map_part(a, Z, actions[a.name])) for a in self.model.agents}
+
+    def _map_part(self, agent: Agent, Z: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        """The part of the agent's action kernels its map carries: the action less its instant loadings on the
+        levels it sees (h times their kernels in Z), which the closed loop adds at the same node."""
+        loads = self.c.instant_loads or {}
+        if not any(u in loads for u in agent.controls):
+            return actions
+        out = np.array(actions, dtype=float, copy=True)
+        for ui, v in enumerate(agent.controls):
+            for u, h in loads.get(v, {}).items():
+                out[ui] -= h * Z[self.c.block(u)]
+        return out
+
+    # ------------------------------------------------------- instant observations and monitored deviations
+    #  As on the stationary engine (stationary.py, the same algebra and conventions): a spike of a control draws the
+    #  instant reactions of the agents seeing its level (c.composite); for an origin i with privy players, the seed
+    #  world W_i = Z0_i + sum_v C_v D^{v<-i}, the privy players' maps off in Z0_i, C_v the response operator of v's
+    #  spike (here a two-time kernel: the response at t to a spike at the node's shock time, RespOps' path), the
+    #  kernels D^{v<-i}(t, s) fixed by the privy players' first-order conditions on W_i at every node; the deviating
+    #  player's own first-order condition sees its frozen spike answered by the privy players as the blip seeds it
+    #  decomposes into (Lemma 6.6), and the path is built with the ordinary spike responses.
+
+    def _spikes(self, c, maps, agent: Agent, excluded=None, own_frozen: bool = True):
+        """(Zpass (n_prim N, ncol), R (n_prim N, nU)): the closed loop with `excluded` (default the agent) off, and
+        the responses to a spike of each of the agent's controls with the instant reactions it draws."""
+        comp = c.composite or {}
+        extra = [v for u in agent.controls for v in comp.get(u, {u: 1.0}) if v not in agent.controls]
+        ctrls = list(agent.controls) + list(dict.fromkeys(extra))
+        Zp = c.closed_loop(maps, excluded=agent.name if excluded is None else excluded, impulse_controls=ctrls,
+                           own_frozen=own_frozen)
+        cols = Zp[:, c.ncol:]; k = {v: i for i, v in enumerate(ctrls)}
+        R = np.stack([sum(coef * cols[:, k[v]] for v, coef in comp.get(u, {u: 1.0}).items()) for u in agent.controls], axis=1)
+        return Zp[:, :c.ncol], R
+
+    def _resp_dense(self, v: str, col: np.ndarray) -> np.ndarray:
+        """(n_prim N, N): the world of an action kernel of control v through its spike's response column, v's own
+        block the action, the instant reactions it draws moving with it (finite_free.RespOps)."""
+        from types import SimpleNamespace
+        return finite_free.RespOps(self, SimpleNamespace(controls=[v]), col[:, None]).dense(0)
+
+    def _compose(self, K: np.ndarray) -> np.ndarray:
+        """(N, N): g -> (K * g)(t, s) = int_s^t K(t, r) g(r, s) dr, K and g two-time kernels on the nodes (the
+        response path of RespOps with K the known kernel)."""
+        from .spectral_operators import PathOp
+        c = self.c; g = c.g
+        lp = c._path(("response",), r_lo=g.s, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
+                     known_fn=lambda k, r: (np.full_like(r, g.t[k]), g.t[k] - r))
+        op = PathOp(lp, K[:, None])
+        return np.zeros((c.N, c.N)) if op.empty else op.rows(0, 0, c.N)
+
+    def _maps_key(self, maps) -> bytes:
+        import hashlib
+        h = hashlib.sha1()
+        for a in self.model.agents:
+            h.update(np.ascontiguousarray(maps[a.name]).tobytes())
+        return h.digest()
+
+    def _seed_setup(self, maps, origin: str):
+        """(ctrls, Z0, C) as on the stationary engine: the privy controls (origin's first), their spike columns with
+        the privy players' maps off, and per privy control its response operator (n_prim N x N)."""
+        c = self.c
+        comp = c.composite or {}
+        owner = {a.name: a for a in self.model.agents}
+        P = self.model.privy(origin)
+        ctrls = [u for n in P for u in owner[n].controls]
+        need = list(dict.fromkeys(ctrls + [w for v in ctrls for w in comp.get(v, {v: 1.0})]))
+        cols = c.closed_loop(maps, excluded=tuple(P), impulse_controls=need)[:, c.ncol:]
+        k = {v: i for i, v in enumerate(need)}
+        spike = {v: sum(coef * cols[:, k[w]] for w, coef in comp.get(v, {v: 1.0}).items()) for v in ctrls}
+        Z0 = np.stack([spike[v] for v in ctrls], axis=1)
+        return ctrls, Z0, {v: self._resp_dense(v, spike[v]) for v in ctrls}
+
+    def _monitoring(self, maps):
+        """({agent: R^mon}, {origin: W}) as on the stationary engine, on the triangle's nodes."""
+        key = self._maps_key(maps)
+        if getattr(self, "_monitored", None) is not None and self._monitored[0] == key:
+            return self._monitored[1], self._monitored[2]
+        c = self.c; N = c.N
+        owner = {a.name: a for a in self.model.agents}
+        origins = [a.name for a in self.model.agents if len(self.model.privy(a.name)) > 1]
+        setup = {i: self._seed_setup(maps, i) for i in origins}
+        Rmon = {a.name: self._spikes(c, maps, a)[1] for a in self.model.agents}
+        D, W = {}, {}
+        for it in range(200):
+            Fu = {n: [finite_free.FocOps(self, owner[n], Rmon[n]).dense(ui) for ui in range(len(owner[n].controls))]
+                  for n in {m for i in origins for m in self.model.privy(i)}}
+            change = 0.0
+            for i in origins:
+                ctrls, Z0, C = setup[i]
+                responders = [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))]
+                A = np.block([[Fu[n][ui] @ C[v] for v in ctrls] for (n, ui) in responders])
+                nO = len(owner[i].controls)
+                Di = np.zeros((nO, len(ctrls), N)); Wi = np.zeros((len(c.prim) * N, nO))
+                for o in range(nO):
+                    b = -np.concatenate([Fu[n][ui] @ Z0[:, o] for (n, ui) in responders])
+                    x = np.linalg.solve(A, b).reshape(len(ctrls), N)
+                    Di[o] = x
+                    Wi[:, o] = Z0[:, o] + sum(C[v] @ x[kk] for kk, v in enumerate(ctrls))
+                change = max(change, float(np.abs(Di - D[i]).max() / max(1e-300, np.abs(Di).max())) if i in D else np.inf)
+                D[i] = Di; W[i] = Wi
+            for j in origins:
+                Rmon[j] = self._frozen_responses(setup[j], D[j], len(owner[j].controls))
+            if change < 1e-10:
+                break
+        else:
+            raise RuntimeError(f"the monitored response kernels did not settle in 200 rounds (last change {change:.1e})")
+        self._monitored = (key, Rmon, W)
+        return Rmon, W
+
+    def _frozen_responses(self, setup, Dj: np.ndarray, own: int) -> np.ndarray:
+        """R^mon_j: the responses to a frozen spike of each of j's controls, the privy players reading it as the blip
+        seeds sigma, sigma + D^{j<-j} * sigma = delta (a Volterra equation in the seed's time, the kernels composed
+        along the response path), and responding to them."""
+        c = self.c; N = c.N
+        ctrls, Z0, C = setup
+        comp = [[self._compose(Dj[o2, u]) for o2 in range(own)] for u in range(own)]
+        M = np.eye(own * N) + np.block([[comp[u][o2] for o2 in range(own)] for u in range(own)])
+        out = np.zeros((len(c.prim) * N, own))
+        for o in range(own):
+            s = np.linalg.solve(M, -np.concatenate([Dj[o, u] for u in range(own)])).reshape(own, N)
+            col = Z0[:, o].copy()
+            for kk, v in enumerate(ctrls):
+                if kk < own:
+                    continue
+                x = Dj[o, kk] + sum(self._compose(Dj[o2, kk]) @ s[o2] for o2 in range(own))
+                col += C[v] @ x
+            out[:, o] = col
+        return out
+
+    def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
+        """With a monitoring relation, the agent's spike responses with the players privy to its deviations
+        responding through their response kernels; without one, R."""
+        if len(self.model.privy(agent.name)) == 1:
+            return R
+        return self._monitoring(maps)[0][agent.name]
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
         """The variance part of the agent's discounted cost over [0, T] in the world Z (n_prim N, nW):
@@ -656,6 +795,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         regions = [("interior", ~tip & ~last & ~c.buffer), ("band tip", tip), ("last window", last)]
         if c.cont is not None:
             parts["buffer"] = 0.0; regions.append(("buffer", c.buffer))
+        actions = self._map_part(agent, Zfull, actions)
         for ui in range(len(agent.controls)):
             recon = recon_all[ui]
             err = np.abs(recon - actions[ui])

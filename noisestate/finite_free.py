@@ -300,18 +300,19 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
     world of the response and the projection of the action kernels on the seen rows."""
     c = solver.c; N, ncol = c.N, c.ncol
     nU = len(agent.controls); nP = len(c.prim)
-    Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
-    Zpass, R = Zp[:, :ncol], Zp[:, ncol:]
-    R = solver._impulse_responses(agent, maps, R)
+    # the on-path world is built with the ordinary spike responses R0 (the others' filters); the first-order
+    # condition and the second-order form see the agent's deviations answered by the players privy to them (R)
+    Zpass, R0 = solver._spikes(c, maps, agent)
+    R = solver._impulse_responses(agent, maps, R0)
     Roff = R
     if c.cont is not None:                       # the envelope responses: the agent's own reaction off on the buffer too
         Roff = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls, own_frozen=False)[:, ncol:]
         Roff = solver._impulse_responses(agent, maps, Roff)
-    Zpass = solver._passive_world(agent, maps, Zpass, R)
+    Zpass = solver._passive_world(agent, maps, Zpass, R0)
     ytil, yinst = solver._passive_rows(agent, Zpass)
     rowops = RowOps(solver, agent, ytil, yinst)
     projops = ProjOps(solver, agent, ytil, yinst)
-    resp = RespOps(solver, agent, R)
+    resp = RespOps(solver, agent, R0)
     fixed = getattr(solver, "_fixed_actions", {}).get(agent.name)
     if fixed is not None:
         # freeze_before: the agent's own actions on the fixed panels are known; their response joins the passive
@@ -338,12 +339,14 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
         cact = np.stack([Zfull[c.block(u)] for u in agent.controls])
     out = {"gamma": gamma, "action": cact, "Zfull": Zfull, "krylov": iters}
     if want_decomp:
+        if R is not R0:
+            system.resp = RespOps(solver, agent, R)          # the second-order form is about deviations
         _decompose(solver, agent, out, system, maps)
         if phi_past is not None:
             for ui, u in enumerate(agent.controls):
                 for part in ("foc", "physical"):
                     out["decomp"][u][part] = out["decomp"][u][part] + phi_past[ui]
-    return (solver._project(agent, Zfull, cact) if project else None), out
+    return (solver._project(agent, Zfull, solver._map_part(agent, Zfull, cact)) if project else None), out
 
 
 def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None:

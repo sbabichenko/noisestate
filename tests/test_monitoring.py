@@ -138,3 +138,69 @@ def test_with_no_inventory_cost_the_strategic_market_maker_is_competitive(transp
     assert res.costs["trader"] == pytest.approx(kb.costs["trader1"], abs=1e-6)
     a = np.array([0.0, 1.0, 3.0])
     assert np.abs(res.kernel("P", "wZ").at(a) - kb.kernel("P", "wZ").at(a)).max() < 1e-6
+
+
+def test_the_maps_hold_the_market_but_do_not_reach_it():
+    """The market's equilibrium is unstable under best responses (radius 1.48).  The action kernels (the default) reach
+    it from zero; the raw maps hold it (a few evaluations from it, the same costs) but from zero stall at 0.85 and say
+    so -- not a second equilibrium: converged is False.  Ties, which need the maps, are refused with instant
+    observations for that reason."""
+    m = market(0.1, nodes=24)
+    res = ns.solve(m).require_converged()
+    held = ns.engines.solver(m).solve(start_from=res.maps, variable="maps")
+    assert held.converged and held.evaluations <= 5
+    assert held.costs["trader"] == pytest.approx(res.costs["trader"], abs=1e-8)
+    assert not ns.engines.solver(m).solve(variable="maps").converged
+
+
+#  ------------------------------------------------------------------ the finite horizon (the spectral engine)
+
+def test_all_privy_tracking_on_a_finite_horizon_is_the_finite_feedback_nash_game():
+    """On [0, 2] the privy responses follow the finite feedback Nash Riccati P' = -1 + 3 P^2 / r, P(T) = 0: a unit
+    impulse from player 1 at s decays as exp(-2 int_s^t P / r), player 2 answering -P(t) / r times it.  At 12 nodes to
+    2e-5 (measured 3.2e-6 for X, 2.1e-7 for D2; 3e-4 at 8 nodes, 9e-7 / 7e-6 at 10)."""
+    from scipy.integrate import solve_ivp
+    T, r = 2.0, 1.0
+    Pb = solve_ivp(lambda t, y: [-1.0 + 3.0 * y[0] ** 2 / r], (T, 0.0), [0.0], dense_output=True, rtol=1e-12, atol=1e-14)
+    P = lambda t: float(Pb.sol(t)[0])
+
+    def exact(s, t):
+        x = solve_ivp(lambda u, y: [-2 * P(u) / r * y[0]], (s, t), [1.0], rtol=1e-12, atol=1e-14).y[0, -1]
+        return x, -P(t) / r * x
+    m = ch3({"player1": ["player2"], "player2": ["player1"]})
+    res = ns.solve(m.with_finite(T).with_numerics(nodes=12)).require_converged()
+    pts = [(0.0, 0.5), (0.0, 1.5), (0.5, 1.0), (1.0, 1.9)]
+    got = res.deviation_response("player1", ["X", "D2"]).over(np.array([t for s, t in pts]), np.array([s for s, t in pts]))
+    assert np.abs(got - np.array([exact(s, t) for s, t in pts])).max() < 2e-5
+
+
+def finite_market(gamma, transparent, nodes=10):
+    tr = {"controls": "D", "observes": {"y": "(V - P) dt + dwY", "flow": "dwZ", "quote": {"level": "P"}},
+          "loss": "-V D + P D + eps D^2"}
+    if transparent:
+        tr["monitors"] = "mm"
+    return ns.Model.from_dict({"name": "market", "params": {"eps": 0.5, "gamma": gamma}, "shocks": ["wV", "wZ", "wY"],
+        "states": {"V": "dwV", "Q": "-D dt - dwZ"},
+        "agents": {"mm": {"controls": "P", "observes": {"flow": "D dt + dwZ"}, "loss": "V D - P D + gamma Q^2"}, "trader": tr},
+        "horizon": {"T": 1.0}, "numerics": {"nodes": nodes}})
+
+
+@pytest.mark.parametrize("transparent", [True, False])
+def test_on_a_finite_horizon_the_strategic_market_maker_without_inventory_cost_is_competitive(transparent):
+    """gamma = 0 on [0, 1]: the same market with the competitive (myopic, P = E[V | flow]) market maker; the trader's
+    cost to 1e-9 (measured 1.3e-11) and the price's kernel on the noise trades to 1e-7 (measured 3.1e-8)."""
+    comp = ns.Model.from_dict({"name": "competitive", "params": {"eps": 0.5}, "shocks": ["wV", "wZ", "wY"],
+        "states": {"V": "dwV", "Q": "-D dt - dwZ"},
+        "agents": {"mm": {"controls": "P", "observes": {"flow": "D dt + dwZ"}, "loss": "P^2 - 2 P V", "myopic": True},
+                   "trader": {"controls": "D", "observes": {"y": "(V - P) dt + dwY", "flow": "dwZ"}, "loss": "-V D + P D + eps D^2"}},
+        "horizon": {"T": 1.0}, "numerics": {"nodes": 10}})
+    rc, r = ns.solve(comp), ns.solve(finite_market(0.0, transparent))
+    assert r.converged and abs(r.costs["trader"] - rc.costs["trader"]) < 1e-9
+    t = np.array([0.3, 0.6, 0.9]); s = np.array([0.1, 0.2, 0.5])
+    assert np.abs(r.evaluate("P", "wZ", t, s) - rc.evaluate("P", "wZ", t, s)).max() < 1e-7
+
+
+def test_monitoring_with_a_past_is_refused_on_the_finite_engine():
+    d = ch3({"player1": ["player2"]}).to_dict()
+    with pytest.raises(NotImplementedError, match="without a past"):
+        ns.solve(ns.Model.from_dict(d).with_finite(2.0), past=ns.solve(ch3({})), continuation="stationary")
