@@ -531,6 +531,7 @@ class StationarySolver(EngineBase):
         self.c = Compiled(model, settings=self.settings)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
         self._monitored = None                          # (maps key, {agent: monitored R}, {origin: seed world}) of the last maps
+        self._kernel_residual = 0.0                     # the inner solve's residual at the last maps
 
     # -------------------------------------------- overridable model pieces
     # ------------------------------------------- the best response (the kernel algebra of the age grid)
@@ -956,7 +957,9 @@ class StationarySolver(EngineBase):
 
     def _monitoring(self, maps):
         """({agent: R^mon (n_prim N, nU)}, {origin: W (n_prim N, n origin controls)}) for the agents with privy
-        others, the response kernels found by the iteration described above (to 1e-10 relative)."""
+        others, the response kernels found by the iteration described above, from the naive responses, to 1e-12
+        relative.  (Starting from the previous call's kernels carried a trial point's kernels into the next
+        evaluation and broke the market of Chapter 6; Anderson on this iteration found other roots.  Neither is used.)"""
         key = self._maps_key(maps)
         if self._monitored is not None and self._monitored[0] == key:
             return self._monitored[1], self._monitored[2]
@@ -964,36 +967,39 @@ class StationarySolver(EngineBase):
         owner = {a.name: a for a in self.model.agents}
         origins = [a.name for a in self.model.agents if len(self.model.privy(a.name)) > 1]
         setup = {i: self._seed_setup(maps, i) for i in origins}
-        Rmon = {}
-        for a in self.model.agents:                     # to start: the naive responses
-            Rmon[a.name] = self._spikes(c, maps, a)[1]
-        D = {}                                          # origin -> (n origin controls, n privy controls, N)
-        W = {}
+        responders = {m for i in origins for m in self.model.privy(i)}
+        Rmon = {n: self._spikes(c, maps, owner[n])[1] for n in responders}      # the naive responses
+        shapes = {i: (len(owner[i].controls), len(setup[i][0]), N) for i in origins}
+        Fu = {n: self._foc_operators(owner[n], Rmon[n]) for n in responders if n not in origins}   # fixed within the call
+        D, W = {}, {}
+        change = np.inf
+        best = (np.inf, None, None, None)               # (change, D, W, Rmon) of the best round
+        best_round = 0
         for it in range(200):
-            Fu = {n: self._foc_operators(owner[n], Rmon[n]) for n in {m for i in origins for m in self.model.privy(i)}}
+            Fu.update({n: self._foc_operators(owner[n], Rmon[n]) for n in responders if n in origins})
             change = 0.0
             for i in origins:
                 ctrls, Z0, C = setup[i]
-                responders = [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))]
-                A = np.block([[Fu[n][ui] @ C[v] for v in ctrls] for (n, ui) in responders])
-                nO = len(owner[i].controls)
-                Di = np.zeros((nO, len(ctrls), N)); Wi = np.zeros((len(c.prim) * N, nO))
-                for o in range(nO):
-                    b = -np.concatenate([Fu[n][ui] @ Z0[:, o] for (n, ui) in responders])
-                    x = np.linalg.solve(A, b).reshape(len(ctrls), N)
-                    Di[o] = x
-                    Wi[:, o] = Z0[:, o] + sum(C[v] @ x[k] for k, v in enumerate(ctrls))
-                if i in D:
-                    change = max(change, float(np.abs(Di - D[i]).max() / max(1e-300, np.abs(Di).max())))
-                else:
-                    change = np.inf
-                D[i] = Di; W[i] = Wi
+                eqs = [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))]    # one FOC per privy control
+                A = np.block([[Fu[n][ui] @ C[v] for v in ctrls] for (n, ui) in eqs])
+                B = -np.stack([np.concatenate([Fu[n][ui] @ Z0[:, o] for (n, ui) in eqs]) for o in range(shapes[i][0])], axis=1)
+                X = np.linalg.solve(A, B)                                           # one factorisation, every origin control
+                Di = X.T.reshape(shapes[i])
+                W[i] = Z0[:, :shapes[i][0]] + sum(C[v] @ X[k * N:(k + 1) * N] for k, v in enumerate(ctrls))
+                change = max(change, float(np.abs(Di - D[i]).max() / max(1e-300, np.abs(Di).max())) if i in D else np.inf)
+                D[i] = Di
             for j in origins:
-                Rmon[j] = self._frozen_responses(j, setup[j], D[j], len(owner[j].controls))
-            if change < 1e-10:                          # the kernels feed a fixed point solved to 1e-10
+                Rmon[j] = self._frozen_responses(j, setup[j], D[j], shapes[j][0])
+            if change < best[0]:
+                best = (change, dict(D), dict(W), dict(Rmon)); best_round = it
+            # the iteration reaches rounding (about 1e-11) and then only wanders: stop at 1e-10, or once 10 rounds
+            # have not improved on the best, and keep the best round
+            if change < 1e-10 or it - best_round > 10:
                 break
-        else:
-            raise RuntimeError(f"the monitored response kernels did not settle in 200 rounds (last change {change:.1e})")
+        change, D, W, Rmon = best
+        # at a trial point of the outer iteration far from the equilibrium the kernels may not settle; the best
+        # round is used there and its change kept, and _finish requires them settled at the equilibrium itself
+        self._kernel_residual = float(change)
         self._monitored = (key, Rmon, W)
         return Rmon, W
 
@@ -1019,6 +1025,18 @@ class StationarySolver(EngineBase):
                 col += C[v] @ x
             out[:, o] = col
         return out
+
+    def _finish(self, res) -> None:
+        """The base's, after requiring the monitored response kernels settled at the equilibrium's maps (at trial
+        points of the fixed point they may not be, _monitoring): a result whose kernels did not settle is not
+        converged."""
+        if any(len(self.model.privy(a.name)) > 1 for a in self.model.agents):
+            self._monitored = None
+            self._monitoring(res.maps)
+            if self._kernel_residual > 1e-10:
+                res.converged = False
+                res.message += f"; the monitored response kernels did not settle at the equilibrium (residual {self._kernel_residual:.1e})"
+        super()._finish(res)
 
     def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
         """With a monitoring relation, the agent's impulse responses with the players privy to its deviations

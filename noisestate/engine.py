@@ -471,6 +471,14 @@ class EngineBase(MeanLayer):
             start_from = self.stationary_start()
         elif start_policy not in ("zero", "coarse", "stationary"):
             raise ValueError(f"start_policy must be 'zero', 'coarse' or 'stationary', not {start_policy!r}")
+        if any(a.instant for a in self.model.agents):
+            # instant observations iterate on the action kernels: on the raw maps Chapter 6's market stalls at 0.85
+            # and lands on a trader with a positive cost, a defect of the maps path not yet found (the action kernels
+            # give the validated answer), so the maps path, and ties, which need it, are refused there
+            if self.model.ties:
+                raise NotImplementedError("instant observations with ties are not solved yet (ties iterate on the raw "
+                                          "maps, which do not converge to the right equilibrium with instant observations)")
+            variable = "actions"
         if variable == "actions" and (self.model.ties or not self.ACTIONS):
             variable = "maps"
         kind = self.init_kind(start_from) if start_from is not None else None
