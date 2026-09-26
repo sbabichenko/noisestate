@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.1.0 (unreleased)
+
+A model reads like its equations, in a file and in Python.
+
+- **Equations in the model file.** `states: {X: "(D1 + D2) dt + sigma dW0"}`, `observes: "sqrt(p1) X dt + dW1"`,
+  `loss: "(X - b1)^2 + r1 D1^2"`, `shocks: [W0, W1]`, `horizon: {T: T}` (noisestate.equations; docs/model_file.md).
+  `load()` reads this form and the grammar alike, `model.save()` now writes the equations (`form="grammar"` for
+  the old layout), `model.to_equations()` returns them, and `noisestate validate` checks them.
+- **Equations in Python.** `ns.dt` and `X.d = (D1 + D2) * dt + sigma * dW0`; `ns.Agent(..., observes=...)`;
+  `dW0, dW1 = ns.shocks(2)`; `ns.params(...)`; `ns.Game(states, agents, T=...)` and `game.solve(nodes=24)`.
+  A drift term without its `dt` is an error.
+- **Reading results.** `res.response(X, to=dW0, at=0, seen_by=player1).over(t)` follows one shock through time;
+  `res.estimate(agent, name)` is an agent's estimate of a quantity as a kernel; `res.strategy(control)` is the
+  action as a rule on the agent's noise-state (Remark 1.13 of the dissertation).  Every reader takes names or the
+  objects of the Python form.
+- **Costs include a loss's constant.** `(X - b)^2` has the constant `b^2`, which was dropped; it is now kept on
+  the agent (`constant` in the file) and reported as `res.cost_parts[agent]["constant"]`, so `res.costs` is the
+  expected loss.  Costs of models with targets rise by `b^2 T` (finite) or `b^2` per unit time (stationary).
+- **`describe()`** writes coefficients in the parameters (`sqrt(p1) * X dt`, `sigma * dW[W0]`), not their values.
+- **`solve(model, nodes=24)`**: a Numerics field given directly is laid over the numerics, in solve() and
+  transition() (refused since 0.6).
+- **Withdrawn: `naive_observers`.** It used Chapter 6's naive and privy the other way round, computed neither of the
+  chapter's corners, and its solves failed their own first-order conditions (it zeroed the observers' reactions in
+  the impulse responses that also build the on-path world).  Every route that took it now says so; monitored
+  deviations will come back as a model's monitoring relation.
+- Fixed: estimates, strategies and `response(..., seen_by=)` on the stationary engine (they existed on the finite
+  engine only); `sweep()` of a file now loads it through `load()`, so a transition's relative past resolves from the
+  file's directory; a transition's `res.extra` and payload key for the T solved on is `T` (was `window`).
+- Removed: `ModelBuilder` (the Python equations replace it; examples/make_ch5_cycle_market.py is rewritten and
+  compiles to the same model), and `res.strategy_kernel()`, which returned the control's kernel, not its
+  strategy (use `res.kernel(control)`, or `res.strategy(control)` for the strategy).
+
 ## 1.0.1 (2026-09-23)
 
 - Lower peak memory on the stationary engine: the second-order check computes eigenvalues only

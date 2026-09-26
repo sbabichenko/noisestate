@@ -392,7 +392,7 @@ class EngineBase(MeanLayer):
 
     # ----------------------------------------------------- best response
     def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
-        """Hook (stationary: naive observers): the responses R (n_prim N, nU) of the primary kernels
+        """Hook (no engine overrides it since naive_observers was withdrawn in 1.1): the responses R (n_prim N, nU) of the primary kernels
         to a unit impulse of each of the agent's controls, with the agent's own reaction switched
         off and every other agent reacting through `maps`.  Receives the columns closed_loop
         returned for `impulse_controls=agent.controls`; must return an array of the same shape.

@@ -57,7 +57,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `excess_costs` | map of number (optional) | per agent: the discounted integral over [0, T] of E[loss(t)] minus the new stationary flow |
 | `old_flows` | map of number (optional) | per agent: the old regime's stationary flow loss |
 | `new_flows` | map of number (optional) | per agent: the new regime's stationary flow loss |
-| `window` | number (transition) | the terminal time T solved on: the file's, or the one the settle march found.  The KEY is named `window` for the payload's history; the quantity is T, and `horizon.window` elsewhere is the lag-truncation length L |
+| `T` | number (transition) | the terminal time T solved on: the file's, or the one the settle march found (the key was `window` before 1.1) |
 | `march` | array (optional) | the settle march's rows `{T, gap, gap_last, evaluations, seconds, monitor}` (T = 0 first: the pass from the stationary rules) |
 | `march_stop` | string or null (optional) | `settled`, `settled at T = 0` or `max_window` (the settled flag then stays) |
 | `march_settle` | number or null (optional) | the march's tolerance |

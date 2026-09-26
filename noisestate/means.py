@@ -160,3 +160,8 @@ class MeanLayer:
             mean = self.mean_cost(a, zbar)
             res.cost_parts[a.name] = {"variance": res.costs[a.name], "mean": mean}
             res.costs[a.name] += mean
+            if a.constant:
+                # the loss's constant: moves no strategy, but is part of the cost (its flow, or its discounted integral)
+                const = float(a.constant) * float(np.sum(self._mean_weights()[:Nt]))
+                res.cost_parts[a.name]["constant"] = const
+                res.costs[a.name] += const

@@ -105,7 +105,7 @@ def test_target_script_pieces(tmp_path):
     exec(compile(TARGET.split("eq = game.solve()")[0], "head", "exec"), env)
     game = env["game"]
     assert game.to_dict()["agents"]["player2"]["loss"] == [[1, "X", "X"], [-2, "X"], ["r2", "D2", "D2"]]
-    assert any("constant 1" in n for n in game.notes)
+    assert game.to_dict()["agents"]["player2"]["constant"] == 1          # the loss's constant is kept: it is part of the cost
     eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
     verdict = eq.diagnostics.assess()
     assert verdict.accepted is True and verdict.policy == "publication" and verdict.blocking == ()
@@ -214,22 +214,6 @@ def test_definitions_lags_leads_and_constants():
     # the field form still constructs and compares as before
     plain = ns.Model.from_dict(d)
     assert plain == m and isinstance(plain, ns.Model) and ns.Model("empty").channels == []
-
-
-def test_naive_observers_and_myopic_pass_through():
-    m = EXAMPLES["ch4_kyle_back"]()
-    assert m.agents[0].myopic and m.naive_observers is None
-    eps, rho, gamma1, sigma_V, sigma_Z = Param.many(eps=0.2, rho=0.5, gamma1=1.0, sigma_V=1.0, sigma_Z=1.0)
-    w = shocks("wV", "wZ", "w1")
-    V = State("V"); P, D1 = Control("P"), Control("D1"); V.drift = sigma_V * w.wV
-    mm = Agent("market_maker", [P], [Signal("flow", D1 + sigma_Z * w.wZ)], P**2 - 2 * P * V, myopic=True)
-    tr = Agent("trader1", [D1], [Signal("y1", gamma1 * V - gamma1 * P + w.w1), Signal("flow", sigma_Z * w.wZ)],
-               -D1 * V + D1 * P + eps * D1**2, naive_observers=["market_maker"])
-    game = ns.Model("kb", states=[V], agents=[mm, tr], horizon=ns.Stationary(window=8.0, discount=rho), numerics={"nodes": 12})
-    assert game.naive_observers == {"trader1": ["market_maker"]}
-    res = game.solve(max_evaluations=2, diagnostics=False)
-    assert res.solver_kw.get("naive_observers") == {"trader1": ["market_maker"]}
-    assert game.sweep(eps=[0.2], solve_kw={"max_evaluations": 1, "diagnostics": False})[0].result.solver_kw.get("naive_observers") == {"trader1": ["market_maker"]}
 
 
 def test_kernel_on_every_engine():

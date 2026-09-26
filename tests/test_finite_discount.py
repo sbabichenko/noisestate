@@ -142,16 +142,11 @@ def test_the_stationary_cost_is_the_flow_and_the_finite_cost_is_the_integral():
 
 def _own_lag(rho, T=None, window=None, nodes=16):
     """A loss that reads the agent's OWN control at a lag: loss ... + c D(t) D(t - 0.5)."""
-    b = ns.ModelBuilder("ownlag", r=0.5, c=0.3)
-    b.channel("w0", "v1")
-    b.state("X", drift={"X": -0.3, "D": 1.0}, noise={"w0": 1.0})
-    b.agent("me", controls=["D"], loss=[[1.0, "X", "X"], ["r", "D", "D"], ["c", "D", "D@0.5"]])
-    b.signal("me", "y", drift={"X": 1.5}, noise={"v1": 1.0})
-    if window is not None:
-        b.stationary(discount=rho, window=window, nodes=nodes)
-        return b.build()
-    b.finite(T, nodes)
-    return b.build().with_horizon(ns.Finite(T=T, discount=rho))
+    return ns.Model.from_dict({
+        "name": "ownlag", "params": {"r": 0.5, "c": 0.3}, "shocks": ["w0", "v1"], "states": {"X": "(-0.3 X + D) dt + dw0"},
+        "agents": {"me": {"controls": "D", "observes": {"y": "1.5 X dt + dv1"}, "loss": "X^2 + r D^2 + c D D@0.5"}},
+        "horizon": {"window": window, "discount": rho} if window is not None else {"T": T, "discount": rho},
+        "numerics": {"nodes": nodes}})
 
 
 @slow("slow (two engines x two discounts on an own-lag model); set NOISESTATE_SLOW=1")

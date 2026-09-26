@@ -10,7 +10,7 @@ from helpers import example, example_dict, slow
 
 def test_detection():
     for Nf in (2, 3, 4):
-        m = build(N=Nf, nodes=4).build(); s = find_cyclic_symmetry(m)
+        m = build(N=Nf, nodes=4); s = find_cyclic_symmetry(m)
         assert s is not None and s.order == Nf and len(s.orbits) == 4 and s.fixed_primaries(m.state_names + m.control_names) == ["q"]
     assert find_cyclic_symmetry(example("ch3_two_player")) is None                 # no ties
     d = example_dict("ch3_two_player"); d["params"]["p2"] = d["params"]["p1"]; d["params"]["r2"] = d["params"]["r1"]; d["ties"] = [["player1", "player2"]]
@@ -19,7 +19,7 @@ def test_detection():
 
 def test_symmetric_closed_loop_matches_dense_and_eliminated():
     for Nf in (2, 3):
-        m = build(N=Nf, nodes=5).build(); S = engines.stationary(m); c = S.c
+        m = build(N=Nf, nodes=5); S = engines.stationary(m); c = S.c
         g, _ = S.best_response(m.agents[0], S.zero_maps()); maps = {a.name: g.copy() for a in m.agents}
         for a in [None] + list(m.agents):
             kw = {} if a is None else {"excluded": a.name, "impulse_controls": a.controls}
@@ -32,7 +32,7 @@ def test_symmetric_closed_loop_matches_dense_and_eliminated():
 
 @slow("slow (5 s; the symmetric closed loop is pinned to 1e-12 above at 5 nodes); set NOISESTATE_SLOW=1")
 def test_solve_uses_the_symmetric_path_and_reproduces_the_equilibrium():
-    m = build(N=3, nodes=6).build(); S = engines.stationary(m); calls = [0]
+    m = build(N=3, nodes=6); S = engines.stationary(m); calls = [0]
     orig = S.c.closed_loop_symmetric
     def counted(*a, **k):
         calls[0] += 1; return orig(*a, **k)

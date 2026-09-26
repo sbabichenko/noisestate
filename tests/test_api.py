@@ -42,10 +42,10 @@ def test_solve_takes_a_numerics_and_names_the_field_of_a_stray_keyword():
     r2 = ns.solve(m, {"nodes": 12}, tol=1e-6)                     # a dict; the keyword tol over the numerics'
     assert r2.numerics.tol == 1e-6 and r2.solve_kw["tol"] == 1e-6
     assert ns.solve(m, Numerics(nodes=12, settings={"anderson_m": 5})).settings.anderson_m == 5
-    with pytest.raises(TypeError, match=r"Numerics\(nodes=\.\.\.\)"):        # no bare aliases since 0.6
-        ns.solve(m, nodes=12)
-    with pytest.raises(TypeError, match=r"Numerics\(unit_range=\.\.\.\)"):
-        ns.solve(m, unit_range=2.0)
+    # a Numerics field given directly is laid over the numerics (solve(m, nodes=12) is solve(m, {"nodes": 12}))
+    r3 = ns.solve(m, nodes=12)
+    assert r3.numerics.nodes == 12 and r3.costs == ns.solve(m, {"nodes": 12}).costs
+    assert ns.solve(m, {"nodes": 12}, unit_range=2.0).numerics.unit_range == 2.0
     with pytest.raises(TypeError, match="unknown option"):
         ns.solve(m, bogus=1)
     with pytest.raises(TypeError, match="not the stationary one"):
@@ -70,30 +70,6 @@ def test_signal_transforms_are_immutable_validated_and_serialisable():
         m.with_signal("extra", drift={"X": 1}, noise={"we": 1}, audience="nobody")
     with pytest.raises(ValueError, match="already has a signal"):
         m.with_signal("y1", drift={"X": 1}, noise={"we": 1}, audience="player1")
-
-
-def test_model_transforms_keep_the_naive_observers_the_file_does_not_carry():
-    """naive_observers is not a model-file key, so a with_*() that rebuilt through from_dict() alone
-    dropped it -- and Model.solve() reads it off the model, so the transformed copy silently solved a
-    fully strategic game instead."""
-    from noisestate import Param, shocks, State, Control, Agent, Signal
-    eps, rho, g1, sV, sZ = Param.many(eps=0.2, rho=0.5, gamma1=1.0, sigma_V=1.0, sigma_Z=1.0)
-    w = shocks("wV", "wZ", "w1")
-    V = State("V"); P, D1 = Control("P"), Control("D1"); V.drift = sV * w.wV
-    mm = Agent("market_maker", [P], [Signal("flow", D1 + sZ * w.wZ)], P**2 - 2 * P * V, myopic=True)
-    tr = Agent("trader1", [D1], [Signal("y1", g1 * V - g1 * P + w.w1), Signal("flow", sZ * w.wZ)],
-               -D1 * V + D1 * P + eps * D1**2, naive_observers=["market_maker"])
-    game = ns.Model("kb", states=[V], agents=[mm, tr], horizon=ns.Stationary(window=8.0, discount=rho),
-                    numerics={"nodes": 12})
-    want = {"trader1": ["market_maker"]}
-    assert game.naive_observers == want
-    for made in (game.with_stationary(6.0), game.with_numerics(nodes=10), game.with_params(eps=0.3),
-                 game.with_signal("extra", drift={"V": 1}, noise={"we": 1}), game.with_finite(4.0),
-                 game.with_stationary(6.0).with_numerics(nodes=10)):
-        assert made.naive_observers == want
-    # the field is only the mechanism; what matters is that the solver is still told
-    res = game.with_stationary(6.0).solve(max_evaluations=1, diagnostics=False)
-    assert res.solver_kw.get("naive_observers") == want
 
 
 def test_category_verdict_excludes_by_root_not_by_full_name():
@@ -315,7 +291,7 @@ def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
     assert kernel_axes and all(ax.patches for ax in kernel_axes)          # the pre-transition band is shaded
     assert all(line.get_marker() == "." for ax in kernel_axes for line in ax.lines
                if line.get_label().startswith("t="))                     # saved-node interpolation is visually explicit
-    assert all(float(line.get_label().split("=")[1]) <= p["window"] + 1e-12
+    assert all(float(line.get_label().split("=")[1]) <= p["T"] + 1e-12
                for line in kernel_axes[0].lines if line.get_label().startswith("t="))
 
 

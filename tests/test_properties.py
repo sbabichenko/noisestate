@@ -54,7 +54,7 @@ def test_spectral_finite_best_response_is_optimal():
 def test_map_and_action_iterations_agree():
     m = ns.load(os.path.join(EX, "ch4_kyle_back.yaml"))
     ra = StationarySolver(m).solve(variable="actions").require_converged(); rm = StationarySolver(m).solve(variable="maps").require_converged()
-    assert np.abs(ra.strategy_kernel("D1") - rm.strategy_kernel("D1")).max() < 1e-8
+    assert np.abs(ra.kernel("D1") - rm.kernel("D1")).max() < 1e-8
 
 
 def test_channel_relabelling_and_agent_order_invariance():
@@ -86,18 +86,6 @@ def test_typos_in_model_files_are_rejected():
     d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml")); d["channels"].append("w_unused")
     with pytest.raises(ValueError, match="never loaded"):
         ns.Model.from_dict(d)
-
-
-def test_naive_observers_remove_the_wedge():
-    """If every other agent is naive to trader1's deviations, the information-wedge part of its
-    first-order condition vanishes and its equilibrium equals the no-reaction one."""
-    m = ns.load(os.path.join(EX, "ch4_kyle_back.yaml"))
-    res = StationarySolver(m, naive_observers={"trader1": ["market_maker"]}).solve().require_converged()
-    dec = res.foc["trader1"]["D1"]
-    assert np.abs(dec["wedge"]).max() < 1e-9 * max(1.0, np.abs(dec["foc"]).max())
-    base = StationarySolver(m).solve().require_converged()
-    assert np.abs(base.foc["trader1"]["D1"]["wedge"]).max() > 1e-3          # the wedge is real in the full game
-    assert np.abs(base.strategy_kernel("D1") - res.strategy_kernel("D1")).max() > 1e-3
 
 
 def test_model_round_trips_through_to_dict():

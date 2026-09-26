@@ -234,7 +234,9 @@ def test_initial_state_spec_payload_and_cli(tmp_path):
     m = one_state(-1.0, 0.5, 1.0, 0.0, 0.7)
     assert m.states[0].initial == 0.7 and m.to_dict(numeric=True)["states"]["X"]["initial"] == 0.7 and m.drives_means
     assert ns.Model.from_dict(m.to_dict()).states[0].initial == 0.7 and any("initial value 0.7 moves only the means" in n for n in m.notes)
-    assert ns.ModelBuilder("b").channel("w0", "w1").state("X", {"X": -1.0, "D": 1.0}, {"w0": 1.0}, initial=0.7).to_dict()["states"]["X"]["initial"] == 0.7
+    eq = {"shocks": ["w0", "w1"], "states": {"X": {"d": "(-X + D) dt + dw0", "initial": 0.7}},
+          "agents": {"a": {"controls": "D", "observes": "X dt + dw1", "loss": "X^2 + D^2"}}, "horizon": {"T": 1}}
+    assert ns.Model.from_dict(eq).to_dict()["states"]["X"]["initial"] == 0.7
     d = m.to_dict(); d["states"]["X"]["initial"] = "x0"; d["params"] = {"x0": 0.7}
     assert ns.Model.from_dict(d).states[0].initial == 0.7
     for bad, msg in ((True, "must be a number"), ("nan", "unknown parameter"), ({"X": 1.0}, "coefficient")):

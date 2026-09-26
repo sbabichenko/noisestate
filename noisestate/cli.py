@@ -235,7 +235,7 @@ def _run(p, args) -> int:
             except KeyError as exc:                             # a payload older than the fields it needs
                 print(f"the saved result does not carry {exc}; re-solving to plot it", file=sys.stderr)
         opts = payload["options"]
-        solver_kw = {k: v for k, v in opts["solver"].items() if k in ("verbose", "naive_observers")}
+        solver_kw = {k: v for k, v in opts["solver"].items() if k in ("verbose",)}
         res = _solve(Model.from_dict(payload["model"]), opts["numerics"], **solver_kw,
                      **{k: v for k, v in opts["solve"].items() if k in ("start_policy", "max_evaluations", "deadline", "diagnostics")})
         res.plot(plot_path)
@@ -275,7 +275,7 @@ def _run(p, args) -> int:
         if args.T is None:
             res = transition(old, args.new, settle=args.settle, step=args.step, max_window=args.max_window,
                              numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)
-            print(f"settle march: T = {res.extra['window']:g} ({res.march_stop}); " +
+            print(f"settle march: T = {res.extra['T']:g} ({res.march_stop}); " +
                   ", ".join(f"T = {r.T:g}: {max(r.gap.values()):.1e} in {r.evaluations} evaluations" for r in res.march))
         else:
             res = transition(old, args.new, T=args.T, numerics=Numerics(nodes=args.nodes), verbose=args.verbose, **bounds)

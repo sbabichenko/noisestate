@@ -17,8 +17,8 @@ lagged: `X.lag(0.5)` is the atom "X@0.5"), a shock, or the constant 1; assigned 
 to a Signal, its quantity terms are the drift dict, its shock terms the noise dict and its constant `const`.
 A *quadratic expression* (`Quad`) is a product of two linear expressions, or `expr**2`, plus linear terms; an
 Agent's loss compiles it to the term list [coef, a, b] / [coef, a]: the loss is the literal sum of the
-terms, so the cross term c * a * b is the one term [c, a, b] (and (X - theta)**2 is [1, X, X], [-2*theta, X]:
-the constant is dropped and recorded in the model's notes, since a constant in a loss moves nothing).
+terms, so the cross term c * a * b is the one term [c, a, b] (and (X - theta)**2 is [1, X, X], [-2*theta, X]
+and the constant theta**2, which moves no strategy but is part of the cost: the agent's `constant`).
 Everything the grammar refuses (a lead in a drift, an unused channel, a control outside its owner's loss)
 is still refused by spec.Model.from_dict, which every expression model is built through.
 """
@@ -72,7 +72,7 @@ class Coef:
             return (f"{self.args[0]}({', '.join(_render(a)[0] for a in self.args[1:])})", 5)
         if op == "neg":
             s, p = _render(self.args[0])
-            return ("-" + (f"({s})" if p < 3 else s), 3)
+            return ("-" + (f"({s})" if p < 2 else s), 3)          # -b*r needs no brackets, -(a + b) does
         a, b = self.args
         if op == "pow":
             if _is_number(b) and b == 0.5:
@@ -130,7 +130,20 @@ class Coef:
             return NotImplemented
         if not (_is_number(other) or isinstance(other, Coef)):
             return NotImplemented
-        return Coef(op, other, self) if rev else Coef(op, self, other)
+        a, b = (other, self) if rev else (self, other)
+        if op == "mul":
+            # keep products readable: (-a)(-b) is ab, (-a)b is -(ab), and a*a is a**2 ((X - b)**2's constant is b**2)
+            na = isinstance(a, Coef) and a.op == "neg"; nb = isinstance(b, Coef) and b.op == "neg"
+            if na or nb:
+                prod = (a.args[0] if na else a) * (b.args[0] if nb else b)
+                return prod if na and nb else -prod
+            if isinstance(a, Coef) and isinstance(b, Coef) and str(a) == str(b):
+                return Coef("pow", a, 2)
+            # a number inside a product comes to the front: q*(-2*b) is -2*q*b
+            for x, y in ((a, b), (b, a)):
+                if isinstance(y, Coef) and y.op == "mul" and _is_number(y.args[0]) and not _is_number(x):
+                    return _times(y.args[0], x * y.args[1])
+        return Coef(op, a, b)
 
     def __add__(self, o): return self._bin("add", o)
     def __radd__(self, o): return self._bin("add", o, True)
@@ -297,10 +310,39 @@ class _Shocks:
         return f"shocks({', '.join(map(repr, self.names))})"
 
 
-def shocks(*names: str) -> _Shocks:
-    """The Brownian channels, as a namespace: `w = shocks("w0", "w1"); w.w0`.  The model's channels are the
-    shocks it uses, in this order."""
+def shocks(*names) -> _Shocks:
+    """The Brownian shocks: `dW0, dW1, dW2 = shocks(3)` (named W0, W1, W2), `shocks("W0 V")` (names in one
+    string), or `w = shocks("w0", "w1"); w.w0` (a namespace, which also unpacks).  The model's shocks are the ones
+    it uses, in this order."""
+    if len(names) == 1 and isinstance(names[0], int) and not isinstance(names[0], bool):
+        names = tuple(f"W{i}" for i in range(names[0]))
+    elif len(names) == 1 and isinstance(names[0], str) and (" " in names[0].strip() or "," in names[0]):
+        names = tuple(names[0].replace(",", " ").split())
     return _Shocks(names)
+
+
+def params(**values) -> Tuple["Param", ...]:
+    """Parameters with their values, in order: `p, r = params(p=3, r=0.1)` (Param.many)."""
+    return Param.many(**values)
+
+
+def Game(states, agents, *, T=None, window=None, discount=0.0, horizon=None, definitions=None, ties=None,
+         name: str = "game", nodes=None, numerics=None):
+    """A model from its equations: states (a State or a list), agents, and the horizon, either T (a finite game on
+    [0, T]), or window (a stationary game, its kernels cut at that lag), or an explicit horizon (Finite, Stationary,
+    Transition); discount the rate on future losses.  `nodes` (or numerics) sets the grid.  Returns a Model:
+    game.solve() solves it."""
+    from .spec import Model
+    given = [x for x in (T, window, horizon) if x is not None]
+    if len(given) != 1:
+        raise ValueError("Game(): give exactly one of T (finite), window (stationary) or horizon")
+    if horizon is None:
+        horizon = Finite(T=T, discount=discount) if T is not None else Stationary(window=window, discount=discount)
+    if nodes is not None:
+        numerics = dict(numerics or {}, nodes=nodes)
+    states = [states] if isinstance(states, State) else list(states)
+    agents = [agents] if isinstance(agents, Agent) else list(agents)
+    return Model(name, states=states, agents=agents, horizon=horizon, definitions=definitions, ties=ties, numerics=numerics)
 
 
 # --------------------------------------------------------------------------------------- linear expressions
@@ -326,7 +368,8 @@ def _times(a, b):
             return _times(-a, b.args[0])
         if b.op == "mul" and _is_number(b.args[0]):
             return _times(a * b.args[0], b.args[1])
-    return Coef("mul", a, b)
+        return Coef("mul", a, b)
+    return a * b                             # two expressions: Coef's product folds signs and squares (-b)(-b) = b**2
 
 
 def _plus(a, b):
@@ -529,7 +572,19 @@ class State(Quantity):
     def drift(self, expr) -> None:
         if isinstance(expr, Quad):
             raise ValueError(f"state {self.name}: the drift must be linear, not {expr}")
-        self._drift = Linear.of(expr)
+        self._drift = expr.combined() if isinstance(expr, Differential) else Linear.of(expr)
+
+    @property
+    def d(self) -> "Differential":
+        """The state's differential: `X.d = (D1 + D2) * dt + sigma * dW0` (drift terms with dt, shocks without)."""
+        L = self._drift or Linear({})
+        drift = Linear({a: c for a, c in L.terms.items() if a.kind != "w"}, L.quantities)
+        noise = Linear({a: c for a, c in L.terms.items() if a.kind == "w"}, {}, L.shocks)
+        return Differential(drift, noise)
+
+    @d.setter
+    def d(self, expr) -> None:
+        self._drift = Differential.of(expr).combined()
 
     def compile(self) -> dict:
         drift, noise, const = (self._drift or Linear({})).split(f"state {self.name}")
@@ -683,6 +738,100 @@ class Quad:
     __str__ = __repr__
 
 
+# ---------------------------------------------------------------------------------------- differentials
+
+class Differential:
+    """An SDE right-hand side, `(D1 + D2) * dt + sigma * dW0`: a drift (the terms multiplied by dt) and a noise
+    loading (the shocks).  Assigned to a state (`X.d = ...`) or observed by an agent (`observes=...`), it is the
+    state's drift and noise, or the signal's.  Every quantity term needs its dt; a shock never has one."""
+    __slots__ = ("drift", "noise")
+
+    def __init__(self, drift=None, noise=None):
+        self.drift = drift if drift is not None else Linear({})
+        self.noise = noise if noise is not None else Linear({})
+
+    @staticmethod
+    def of(x) -> "Differential":
+        if isinstance(x, Differential):
+            return x
+        if _is_number(x) and x == 0:
+            return Differential()
+        L = Linear.of(x)
+        stray = [a.key() if a.kind == "q" else "a constant" for a, c in L.terms.items() if a.kind != "w" and not (_is_number(c) and c == 0)]
+        if stray:
+            raise ValueError(f"{', '.join(stray)} has no dt: a drift term is written with dt (X * dt), "
+                             f"a shock without (sigma * dW0)")
+        return Differential(noise=L)
+
+    def __add__(self, o):
+        try:
+            o = Differential.of(o)
+        except TypeError:
+            return NotImplemented
+        return Differential(self.drift + o.drift, self.noise + o.noise)
+
+    __radd__ = __add__
+
+    def __sub__(self, o):
+        try:
+            o = Differential.of(o)
+        except TypeError:
+            return NotImplemented
+        return Differential(self.drift - o.drift, self.noise - o.noise)
+
+    def __rsub__(self, o):
+        return Differential.of(o) - self
+
+    def __neg__(self):
+        return Differential(-self.drift, -self.noise)
+
+    def __mul__(self, k):
+        if not _scalar(k):
+            return NotImplemented
+        return Differential(self.drift * k, self.noise * k)
+
+    __rmul__ = __mul__
+
+    def combined(self) -> Linear:
+        """The drift and the noise as one linear expression, the form State.drift and Signal take."""
+        return self.drift + self.noise
+
+    def __repr__(self) -> str:
+        parts = []
+        if self.drift.terms:
+            parts.append(f"({self.drift}) dt")
+        if self.noise.terms:
+            parts.append(str(self.noise))
+        return " + ".join(parts) or "0"
+
+    __array_ufunc__ = None
+
+
+class _Dt:
+    """dt, the time increment: multiplying a linear expression by it makes the drift of a Differential."""
+    __slots__ = ()
+
+    def __mul__(self, o):
+        if isinstance(o, Shock) or (isinstance(o, Linear) and o.shocks):
+            raise ValueError("a shock times dt has no meaning here: write the shock alone (sigma * dW0)")
+        if isinstance(o, (Differential, Quad)):
+            raise ValueError(f"dt multiplies a linear expression, not {o!r}")
+        try:
+            return Differential(drift=Linear.of(o))
+        except TypeError:
+            return NotImplemented
+
+    __rmul__ = __mul__
+
+    def __repr__(self) -> str:
+        return "dt"
+
+    __array_ufunc__ = None
+
+
+dt = _Dt()
+
+
 # -------------------------------------------------------------------------------------- signals and agents
 
 class Signal:
@@ -695,7 +844,7 @@ class Signal:
         if isinstance(expr, Quad):
             raise ValueError(f"signal {name}: a signal is linear, not {expr}")
         self.name = name
-        self.expr = Linear.of(expr)
+        self.expr = expr.combined() if isinstance(expr, Differential) else Linear.of(expr)
         if not self.expr.shocks:
             raise ValueError(f"signal {name!r} has no shock term: every row needs a noise loading, e.g. Signal({name!r}, {self.expr} + w.v)")
         if not (_is_number(delay) or isinstance(delay, Coef)) or (_is_number(delay) and delay < 0):
@@ -717,13 +866,23 @@ class Signal:
 
 class Agent:
     """An agent: its controls, its signal rows, its quadratic loss; `myopic` ignores the continuation effects
-    of its own actions (a competitive agent); `naive_observers` is the stationary engine's option, passed to
-    every solve of the model."""
+    of its own actions (a competitive agent).  (`naive_observers` was withdrawn in 1.1: it did not compute Chapter 6.)"""
 
     def __init__(self, name: str, controls: Sequence[Control], signals: Sequence[Signal] = (), loss=None,
-                 myopic: bool = False, naive_observers=None):
+                 myopic: bool = False, naive_observers=None, observes=None, terminal=None):
         if not isinstance(name, str) or not name.isidentifier():
             raise ValueError(f"an agent name must be an identifier, not {name!r}")
+        if observes is not None:
+            # observes= what the agent sees: one expression (the signal "y"), a list (y1, y2, ...; an item may be a
+            # Signal, for a delay), or a dict {name: expression}
+            if signals:
+                raise ValueError(f"agent {name}: give signals= or observes=, not both")
+            if isinstance(observes, dict):
+                signals = [o if isinstance(o, Signal) else Signal(k, o) for k, o in observes.items()]
+            elif isinstance(observes, (list, tuple)):
+                signals = [o if isinstance(o, Signal) else Signal(f"y{i + 1}", o) for i, o in enumerate(observes)]
+            else:
+                signals = [observes if isinstance(observes, Signal) else Signal("y", observes)]
         controls = list(controls) if not isinstance(controls, Control) else [controls]
         for u in controls:
             if not isinstance(u, Control):
@@ -741,7 +900,15 @@ class Agent:
         if not self.loss.terms:
             raise ValueError(f"agent {name}: the loss {loss!r} has no term in a quantity")
         self.name = name; self.controls = controls; self.signals = signals
-        self.myopic = bool(myopic); self.naive_observers = naive_observers
+        if naive_observers is not None:
+            from .stationary import WITHDRAWN_NAIVE
+            raise ValueError(WITHDRAWN_NAIVE)
+        self.myopic = bool(myopic)
+        # the loss paid at T, on the states: terminal=q * (X - b)**2
+        try:
+            self.terminal = None if terminal is None else Quad.of(terminal)
+        except TypeError:
+            raise ValueError(f"agent {name}: the terminal loss must be a quadratic expression, not {terminal!r}") from None
 
     def compile(self) -> Tuple[dict, object]:
         """(the agent block, the loss's dropped constant)."""
@@ -750,6 +917,14 @@ class Agent:
             raise ValueError(f"agent {self.name}: two signals share a name ({names})")
         terms, const = self.loss.compile(f"agent {self.name}")
         block = {"controls": [u.name for u in self.controls], "signals": {s.name: s.compile() for s in self.signals}, "loss": terms}
+        if not (_is_number(const) and const == 0):
+            block["constant"] = _coef_str(const)
+        if self.terminal is not None:
+            tterms, tconst = self.terminal.compile(f"agent {self.name}, terminal loss")
+            if tterms:
+                block["terminal"] = tterms
+            if not (_is_number(tconst) and tconst == 0):
+                block["terminal_constant"] = _coef_str(tconst)
         if self.myopic:
             block["myopic"] = True
         return block, const
@@ -820,8 +995,6 @@ class Transition(_Horizon):
     def compile(self) -> dict:
         past = self.past
         if isinstance(past, _spec.Model):
-            past = past.to_dict()
-        elif isinstance(past, _spec.ModelBuilder):
             past = past.to_dict()
         if isinstance(past, (list, tuple)):
             block = {"initial": [{k: ({a: _coef_str(c) for a, c in v.items()} if isinstance(v, dict) else v) for k, v in sh.items()}
@@ -914,6 +1087,8 @@ class _Walk:
             for sg in a.signals:
                 self.linear(sg.expr); self.coef(sg.delay)
             self.quad(a.loss)
+            if a.terminal is not None:
+                self.quad(a.terminal)
         self.coef(horizon.extent); self.coef(horizon.discount)
         if isinstance(horizon, Transition):
             self.coef(horizon.stationary_window)
@@ -1009,10 +1184,8 @@ def compile_model(name: str, states, agents, definitions=None, ties=None, horizo
         d["definitions"] = {n: q.compile() for n, q in walk.defs.items()}
     d["agents"] = {}
     for a in agents:
-        block, const = a.compile()
+        block, _ = a.compile()
         d["agents"][a.name] = block
-        if not (_is_number(const) and const == 0):
-            notes.append(f"agent {a.name}: the constant {_render(const)[0]} of its loss was dropped (a constant in a loss moves nothing)")
     if ties:
         d["ties"] = [[x.name if isinstance(x, Agent) else str(x) for x in group] for group in ties]
     d["horizon"] = horizon.compile()

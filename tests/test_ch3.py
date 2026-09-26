@@ -12,7 +12,7 @@ def test_ch3_matches_spectral_solver():
     lag = np.array(ref["lag"]); assert np.allclose(lag, res.ages, atol=1e-12)
     col = lambda d: np.stack([np.array(d[f"ch{k}"]) for k in range(3)], axis=1)
     x_ref = col(ref["x"]); d1_ref = col(ref["calD1"]); d2_ref = col(ref["calD2"])
-    x = res.kernel("X"); d1 = res.strategy_kernel("D1"); d2 = res.strategy_kernel("D2")
+    x = res.kernel("X"); d1 = res.kernel("D1"); d2 = res.kernel("D2")
     print("x    max|diff|", np.abs(x - x_ref).max(), " scale", np.abs(x_ref).max())
     print("calD1 max|diff|", np.abs(d1 - d1_ref).max(), " scale", np.abs(d1_ref).max())
     print("calD2 max|diff|", np.abs(d2 - d2_ref).max(), " scale", np.abs(d2_ref).max())
@@ -33,4 +33,4 @@ def test_ch3_wide_window_agrees_to_machine_precision():
     col = lambda dd: np.stack([np.array(dd[f"ch{k}"]) for k in range(3)], axis=1)
     assert res.converged
     assert np.abs(res.kernel("X") - col(ref["x"])).max() < 1e-9
-    assert np.abs(res.strategy_kernel("D1") - col(ref["calD1"])).max() < 1e-9
+    assert np.abs(res.kernel("D1") - col(ref["calD1"])).max() < 1e-9

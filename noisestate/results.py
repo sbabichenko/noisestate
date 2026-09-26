@@ -132,6 +132,34 @@ class Diagnostics:
         return f"<Diagnostics {self.assess()}>"
 
 
+def _nm(x):
+    """A name from a name or an object of the equations form (a State, Control, Agent, Shock or Param)."""
+    return x if x is None or isinstance(x, str) else getattr(x, "name", x)
+
+
+class Response:
+    """res.response(...): one shock followed through time.  .over(t) evaluates it."""
+
+    def __init__(self, res, quantity: str, shock: str, at: float, agent: Optional[str]):
+        self.res, self.quantity, self.shock, self.at, self.agent = res, quantity, shock, at, agent
+
+    def over(self, t) -> np.ndarray:
+        t = np.asarray(t, dtype=float)
+        K = (self.res.estimate(self.agent, self.quantity, self.shock) if self.agent is not None
+             else self.res.kernel(self.quantity, self.shock))
+        if self.res.kind == "stationary":
+            return np.asarray(K.at(t), dtype=float).reshape(t.shape)
+        flat = t.ravel(); live = flat >= self.at
+        out = np.zeros_like(flat)
+        if live.any():
+            out[live] = np.asarray(K.at(flat[live], np.full(int(live.sum()), self.at)), dtype=float).ravel()
+        return out.reshape(t.shape)
+
+    def __repr__(self) -> str:
+        who = f"{self.agent}'s estimate of " if self.agent else ""
+        return f"Response({who}{self.quantity} to a unit {self.shock} at t = {self.at:g})"
+
+
 @dataclass
 class Result:
     """One result type; the engines' subclasses (StationaryResult, TriangleResult, TransitionResult, CellResult)
@@ -311,19 +339,72 @@ class Result:
     def channels(self) -> List[str]:
         return list(self.compiled.channels)
 
-    def kernel(self, name: str, channel: Optional[str] = None) -> "Kernel":
+    def kernel(self, name, channel=None) -> "Kernel":
         """The closed-loop kernel of a state, control or definition (every channel, or one), as a Kernel: an
         ndarray in the engine's layout (the subclass's _kernel documents it) carrying .axes (res.axes' node
-        coordinates), .at(*coords) (the engine's own interpolant) and .plot(path=None)."""
+        coordinates), .at(*coords) (the engine's own interpolant) and .plot(path=None).  name and channel are
+        names or the objects of the equations form (X, dW0)."""
+        name, channel = _nm(name), _nm(channel)
         return Kernel.of(self._kernel(name, channel), self, name, channel)
 
     def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         raise NotImplementedError
 
-    def strategy_kernel(self, control: str, channel: Optional[str] = None) -> np.ndarray:
-        if control not in self.model.control_names:
+    @property
+    def shocks(self) -> List[str]:
+        """The columns of the kernels: the model's shocks (a transition adds the initial shocks of its past)."""
+        return list(self.channels)
+
+    def _project(self, agent, K: np.ndarray) -> np.ndarray:
+        """Hook: the kernel of E[L_t | agent's information at t] for the process L with kernel K at this result's
+        nodes (the projection on the agent's seen rows); the stationary and spectral finite engines supply it."""
+        raise NotImplementedError(f"estimates and strategies are not available on the {self.kind} engine; "
+                                  "solve with the spectral finite engine or the stationary engine")
+
+    def estimate(self, agent: str, name: str, channel: Optional[str] = None) -> Kernel:
+        """`agent`'s estimate of the quantity `name` (a state, control or definition) as a kernel on the primitive
+        shocks: at the nodes of res.kernel(name), the response of E[name_t | agent's information at t] at time t to a
+        unit shock at time s.  Evaluate it with .at(t, s), like res.kernel(name).  Its difference from
+        res.kernel(name) is the agent's estimation error, whose variance res.belief_error integrates; an agent's
+        estimate of its own control is the control.  channel picks one shock, as in res.kernel(name, channel)."""
+        agent, name, channel = _nm(agent), _nm(name), _nm(channel)
+        K = self._project(agent, self._kernel(name))
+        return Kernel.of(K if channel is None else K[:, self.shocks.index(channel)], self, f"E[{name} | {agent}]", channel)
+
+    def strategy(self, control: str, channel: Optional[str] = None) -> Kernel:
+        """The strategy kernel of `control` on its agent's noise-state (Chapter 1, Definition 1.4): the weight the
+        action at time t puts on the agent's estimate of the shock at time u.  From the first-order condition
+        (Remark 1.13) the action is the agent's estimate of -(G^DD)^-1 (G^DX X + B' H), so this kernel is
+        D_W - phi / G^DD, with D_W the control's kernel, phi the kernel of its first-order condition (res.foc) and
+        G^DD the curvature of the agent's loss in the control; the agent's estimate of it is the control's kernel
+        again.  Defined for an agent with one control and no delayed or lead terms, solved with diagnostics.
+        channel picks one shock, as in res.kernel(name, channel)."""
+        control, channel = _nm(control), _nm(channel)
+        agent = next((a for a in self.model.agents if control in a.controls), None)
+        if agent is None:
             raise KeyError(f"{control!r} is not a control")
-        return self.kernel(control, channel)
+        if len(agent.controls) != 1:
+            raise NotImplementedError("strategy() is defined for an agent with one control")
+        atoms, Q, _ = self.compiled.loss[agent.name]
+        if any(lag for (nm, lag) in atoms if nm == control) or self.model.all_lags():
+            raise NotImplementedError("strategy() is defined for a game without delayed or lead terms in the control")
+        if (control, 0.0) not in atoms:
+            raise NotImplementedError(f"the loss of {agent.name} has no quadratic term in {control}")
+        g = float(Q[atoms.index((control, 0.0)), atoms.index((control, 0.0))])
+        foc = (self.foc.get(agent.name) or {}).get(control)
+        if foc is None or g <= 0:
+            raise NotImplementedError("strategy() needs the first-order-condition kernels (solve with diagnostics) "
+                                      "and a positive curvature in the control")
+        K = self._kernel(control) - np.asarray(foc["foc"], dtype=float) / g
+        return Kernel.of(K if channel is None else K[:, self.shocks.index(channel)], self, f"strategy of {control}", channel)
+
+    def response(self, quantity, to, at: float = 0.0, seen_by=None) -> "Response":
+        """One shock followed through time: the response of `quantity` (or, with seen_by, that agent's estimate of
+        it) to a unit shock `to` that struck at time `at`.  `.over(t)` gives the values at the times t (zero before
+        the shock).  On a stationary game only the shock's age matters: `.over(ages)`.
+            res.response(X, to=dW0).over(t)                       # the state
+            res.response(X, to=dW0, seen_by=player1).over(t)       # player 1's estimate of it"""
+        return Response(self, _nm(quantity), _nm(to), float(at), _nm(seen_by))
 
     def grid_summary(self) -> dict:
         raise NotImplementedError
@@ -796,6 +877,9 @@ class StationaryResult(Result):
                       "agents[agent].signals[row].map_age[n] = ages[n] + delay, and the map is zero where map_age is "
                       "beyond the window")
 
+    def _project(self, agent, K: np.ndarray) -> np.ndarray:
+        return _stationary_projection(self, agent, K)
+
     @property
     def ages(self) -> np.ndarray:
         return self.compiled.grid.nodes
@@ -903,6 +987,21 @@ class StationaryResult(Result):
         return "  means: " + ", ".join(f"{n}={self._mz(self.means[n]):+.6f}" for n in self.compiled.prim)
 
 
+def _stationary_projection(res, agent, K: np.ndarray) -> np.ndarray:
+    """E[L | agent's information] on the stationary engine: the least-squares map on the agent's seen rows that
+    reproduces the kernel K (the engine's own _project, as for an action), read back through the row operator."""
+    agent = _nm(agent)
+    a = next((x for x in res.model.agents if x.name == agent), None)
+    if a is None:
+        raise KeyError(f"no agent {agent!r}; the agents are {[x.name for x in res.model.agents]}")
+    S = res._make_solver(res.model); Z = res.world; nW = S.c.nW
+    K = np.asarray(K, dtype=float)
+    g = S._project(a, Z, np.repeat(K[None], len(a.controls), axis=0))
+    rows, inst = S._seen_rows(a, Z, set())
+    Bk = S._row_operator(a, rows, inst)
+    return np.stack([Bk[k] @ g[0].reshape(-1) for k in range(nW)], axis=1)
+
+
 @dataclass(repr=False)
 class TriangleResult(Result):
     kind: str = "finite"
@@ -986,8 +1085,22 @@ class TriangleResult(Result):
                 worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
         return worst
 
+    def _project(self, agent, K: np.ndarray) -> np.ndarray:
+        """The kernel (N, ncol) of E[L_t | agent's information at t] for the linear process L with kernel K at the
+        triangle nodes: the projection on the agent's seen rows that belief_error and the representation error use."""
+        agent = _nm(agent)
+        a = next((x for x in self.model.agents if x.name == agent), None)
+        if a is None:
+            raise KeyError(f"no agent {agent!r}; the agents are {[x.name for x in self.model.agents]}")
+        solver = self._make_solver(self.model)
+        if not hasattr(solver, "maps_from_world"):
+            raise NotImplementedError(f"estimates need the spectral finite engine, not {type(solver).__name__}")
+        from .finite_free import reconstruction
+        return reconstruction(solver, a, self.world, solver.maps_from_world(a, self.world, np.asarray(K)[None]))[0]
+
     def evaluate(self, name: str, channel: str, t, s) -> np.ndarray:
         """Kernel value at (t, s) points: response at time t to a unit shock of `channel` at time s."""
+        name, channel = _nm(name), _nm(channel)
         t = np.asarray(t, dtype=float); s = np.asarray(s, dtype=float)
         return self.grid.interp(t, t - s) @ self.kernel(name, channel)
 
@@ -1110,7 +1223,7 @@ class TransitionResult(TriangleResult):
         out.update(old_flows=self.old_flows, new_flows=self.new_flows, excess_costs=dict(self.excess_costs))
         if self.excess_tail is not None:
             out.update(excess_costs_tail=dict(self.excess_costs_tail), excess_costs_total=dict(self.excess_costs_total), excess_tail=self.excess_tail)
-        out["window"] = float(self.compiled.T) if self.march_window is None else float(self.march_window)
+        out["T"] = float(self.compiled.T) if self.march_window is None else float(self.march_window)   # the T the game ran to (a march: the T it found)
         if self.march is not None:
             out.update(march=list(self.march), march_stop=self.march_stop, settle_floor=self.march_floor)
         return out
@@ -1152,7 +1265,7 @@ class TransitionResult(TriangleResult):
             out["excess_costs_total"] = {k: float(v) for k, v in self.excess_costs_total.items()}
             out["excess_tail"] = {"source": self.excess_tail["source"], "factor": {k: float(v) for k, v in self.excess_tail["factor"].items()},
                                   "windows": [list(w) for w in self.excess_tail["windows"]]}
-        out["window"] = float(self.compiled.T) if self.march_window is None else float(self.march_window)
+        out["T"] = float(self.compiled.T) if self.march_window is None else float(self.march_window)   # the T the game ran to (a march: the T it found)
         if self.march is not None:
             out["march"] = [r.to_dict() for r in self.march]      # MarchPoint serialises itself
             out["march_stop"] = self.march_stop; out["march_settle"] = self.march_settle

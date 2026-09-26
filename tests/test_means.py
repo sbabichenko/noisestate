@@ -121,7 +121,7 @@ def test_tied_agents_and_the_cycle_market_get_identical_means():
     assert abs(free.means["D1"] - free.means["D2"]) < 1e-10 and abs(free.means["D1"] - res.means["D1"]) < 1e-8
     sys.path.insert(0, EX)
     from make_ch5_cycle_market import build
-    m = build(N=2, L=6.0, nodes=6, unit_range=3.0).build(); r5 = ns.solve(m, tol=1e-8).require_converged()
+    m = build(N=2, L=6.0, nodes=6, unit_range=3.0); r5 = ns.solve(m, tol=1e-8).require_converged()
     for u in ("P", "o"):
         assert abs(r5.means[f"{u}0"] - r5.means[f"{u}1"]) < 1e-12 and abs(r5.means[f"{u}0"]) > 0.2
     assert r5.means["q"] == 0.0 and r5.cost_parts["firm0"]["mean"] < 0

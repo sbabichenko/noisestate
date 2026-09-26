@@ -4,9 +4,9 @@ old stationary regime to the new, on an explicit horizon T or on the horizon a m
     from noisestate import transition
     res = transition("examples/ch3_two_player.yaml", new_model, T=6.0, numerics={"nodes": 12})
     res = transition("examples/ch3_two_player.yaml", new_model, settle=1e-4, numerics={"nodes": 12})
-    res.past, res.stationary, res.settled, res.extra["window"], res.march, res.summary()
+    res.past, res.stationary, res.settled, res.extra["T"], res.march, res.summary()
 
-The old regime is a converged StationaryResult or a stationary model (a Model, ModelBuilder, dict or
+The old regime is a converged StationaryResult or a stationary model (a Model, dict or
 path, solved on the fly); the new regime is a model of any kind, whose horizon is rewritten to a
 transition on [0, T] continued by its own stationary equilibrium (solved on the past's window at
 numerics.continuation_nodes, default the transition's nodes).  The solve starts from the new stationary maps
@@ -24,7 +24,7 @@ from typing import Callable, Dict, Mapping, Optional
 import numpy as np
 
 from . import engines
-from .spec import Model, ModelBuilder
+from .spec import Model
 from .numerics import Numerics
 from .past import Past
 
@@ -35,11 +35,9 @@ def _model_of(obj) -> Model:
         return load(obj)
     if isinstance(obj, dict):
         return Model.from_dict(obj)
-    if isinstance(obj, ModelBuilder):
-        return obj.build()
     if isinstance(obj, Model):
         return obj
-    raise TypeError(f"the new model must be a Model, a ModelBuilder, a dict or a path, not {type(obj).__name__}")
+    raise TypeError(f"the new model must be a Model, a dict or a path, not {type(obj).__name__}")
 
 
 def _past_block(old, past: Past) -> dict:
@@ -49,7 +47,7 @@ def _past_block(old, past: Past) -> dict:
         return {"model": old}
     if isinstance(old, (list, tuple)):
         return {"initial": [sh if isinstance(sh, dict) else sh.to_dict() for sh in old]}
-    if isinstance(old, (Model, ModelBuilder)):
+    if isinstance(old, Model):
         return {"model": old.to_dict()}
     if isinstance(old, dict):
         return {"model": dict(old)}
@@ -198,7 +196,7 @@ def settle_floor(model: Model, cont, numerics=None) -> Dict[str, float]:
 def _stationary_result(S, gap: Dict[str, float], kw: dict, diagnostics: bool):
     """The transition result when nothing needs solving (the T = 0 pass under settle, or the tolerance below the
     floor): the continuation's stationary maps on the strip built (stationary_start), the world their closed
-    loop, no evaluation; the result type is the engine's (a TransitionResult), march_window 0 (res.extra["window"])."""
+    loop, no evaluation; the result type is the engine's (a TransitionResult), march_window 0 (res.extra["T"])."""
     maps = S.stationary_start()
     Z = S.c.closed_loop(maps)
     res = S.RESULT(model=S.model, compiled=S.c, maps=maps, world=Z, converged=True, residual=float(max(gap.values())),
@@ -240,7 +238,7 @@ def march(make_model: Callable[[float], Model], past: Past, continuation, settle
     (the local step alone leaves the previous handover frozen into the early part: 2e-8 on Chapter 3 at 12 nodes);
     its count is the last row's "polish".  res.march is the list of rows {"T", "gap", "evaluations", "seconds",
     "monitor", "unknowns"} (T = 0 first, evaluations 0; unknowns the map unknowns solved for, summed over agents;
-    seconds includes the polish), res.extra["window"] the T found.
+    seconds includes the polish), res.extra["T"] the T found.
     solve_kw goes to every solve (tol, max_evaluations, deadline, progress, diagnostics)."""
     if not settle > 0:
         raise ValueError("settle must be a positive tolerance (the relative distance of the best-response rules from the stationary ones)")
@@ -354,8 +352,8 @@ def march_model(model: Model, numerics=None, past=None, continuation=None, **sol
 def transition(old, new, T: Optional[float] = None, numerics=None, continuation="stationary",
                settle: Optional[float] = None, step: Optional[float] = None, max_window: Optional[int] = None, **solve_kw):
     """The transition from the stationary regime `old` (a converged StationaryResult, a Past, or a stationary
-    Model / ModelBuilder / dict / path solved on the fly; a list of initial shocks is accepted, with the game
-    then ending at T) to the regime `new` (a Model / ModelBuilder / dict / path; its horizon becomes
+    Model / dict / path solved on the fly; a list of initial shocks is accepted, with the game
+    then ending at T) to the regime `new` (a Model / dict / path; its horizon becomes
     `transition` with window T, the discount kept), under `numerics` (a Numerics or a dict of its fields laid
     over the new model's: nodes per side, default 12; continuation_nodes for the stationary continuation,
     default the same; the unit kept, the breakpoints and unit_range of the old kind dropped), continued by the
@@ -369,7 +367,7 @@ def transition(old, new, T: Optional[float] = None, numerics=None, continuation=
     and one window per step, or `step` when given, each solve
     warm-started from the previous, stop when the best-response rules on the last window [T - L, T] are within
     `settle` of the stationary rules or at `max_window` windows, default 8); the result carries
-    res.extra["window"] (the T found), res.march (the rows (T, gap, evaluations, seconds, monitor)),
+    res.extra["T"] (the T found), res.march (the rows (T, gap, evaluations, seconds, monitor)),
     res.march_stop ("settled", "settled at T = 0" or "max_window": the settled flag then stays) and
     res.settled as before."""
     if (T is None) == (settle is None):

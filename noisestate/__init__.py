@@ -5,13 +5,13 @@
     res = ns.solve(model, ns.Numerics(nodes=32, tol=1e-12))          # a change of resolution, not of model
     res.summary(); res.kernel("P", "w"); res.costs; res.to_dict()
 
-The model (Model, ModelBuilder, a dict or a path) is the problem; a Numerics (or a dict of its fields) is how it
+The model (a Model, a dict or a path) is the problem; a Numerics (or a dict of its fields) is how it
 is solved: the engine, the grid, the tolerances, the settings.  solve() lays the given numerics over the
 model's own, builds the engine (noisestate.engines) and returns one Result.
 """
 import dataclasses
 
-from .spec import Model, ModelBuilder
+from .spec import Model
 from .numerics import Numerics
 from .accel import ConvergenceError, DiagnosticsError, ResultValidationError
 from ._settings import Settings
@@ -24,13 +24,14 @@ from .grid_cache import clear as clear_grid_cache
 from .transition import transition, transition_gap
 from .schema import schema
 from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition, using_settings
+from .expr import dt, Differential, params, Game
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
 
-__all__ = ["Model", "ModelBuilder", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_yaml", "read_json",
+__all__ = ["Model", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_yaml", "read_json",
            "compare", "ComparisonResult", "ScenarioResult", "Assessment", "Policy", "Status", "clear_grid_cache", "schema",
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
-           "using_settings", "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh"]
+           "using_settings", "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh", "dt", "Differential", "params", "Game"]
 
 _REMOVED_RESULTS = ("StationaryResult", "TriangleResult", "TransitionResult", "CellResult")   # exported until 0.6
 
@@ -130,20 +131,21 @@ def example(name: str) -> str:
 def load(path: str) -> Model:
     """The model of a YAML file; a relative path in horizon.past.model is taken from the file's directory."""
     import os
-    return Model.from_dict(read_yaml(path), base_dir=os.path.dirname(os.path.abspath(path)))
+    d = read_yaml(path)
+    if isinstance(d, dict) and "name" not in d:
+        d = {"name": os.path.splitext(os.path.basename(path))[0], **d}     # a file without a name is named after itself
+    return Model.from_dict(d, base_dir=os.path.dirname(os.path.abspath(path)))
 
 
 def as_model(model) -> Model:
-    """A Model from what solve() accepts: a Model, a ModelBuilder, a dict or a path to a YAML file."""
+    """A Model from what solve() accepts: a Model, a dict (the grammar or the equations form) or a path to a YAML file."""
     if isinstance(model, str):
         return load(model)
     if isinstance(model, dict):
         return Model.from_dict(model)
-    if isinstance(model, ModelBuilder):
-        return model.build()
     if isinstance(model, Model):
         return model
-    raise TypeError(f"expected a Model, a ModelBuilder, a dict or a path, not {type(model).__name__}")
+    raise TypeError(f"expected a Model, a dict or a path, not {type(model).__name__}")
 
 
 def _radius_when_the_window_fails(res, asked: bool) -> None:
@@ -186,8 +188,8 @@ def _after_solve(res, refine: bool, stability: bool, diagnostics: bool):
 
 def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None, max_evaluations=None, deadline=None,
           progress=None, diagnostics: bool = True, refine: bool = False, stability: bool = False, verbose: bool = False,
-          naive_observers=None, past=None, continuation=None, **unknown) -> Result:
-    """Solve a model (a Model, a ModelBuilder, a dict, or a path to a YAML file) under `numerics` (a Numerics or
+          past=None, continuation=None, **unknown) -> Result:
+    """Solve a model (a Model, a dict, or a path to a YAML file) under `numerics` (a Numerics or
     a dict of its fields, laid over the model's own: engine, nodes, unit, unit_range, breakpoints,
     continuation_nodes, tol, damping, max_newton, variable, settings).  The other options are the solve's:
     start_from (an OBJECT: action kernels or raw maps per agent to begin at), start_policy (a NAME:
@@ -200,7 +202,7 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
     "phase", "seconds"} after every evaluation), diagnostics (False skips the checks at the end), refine (re-solve
     on a finer grid and report the change, res.refinement), stability (add res.stability(); it is also
     computed unasked when the window guard fails, where an unstable radius marks a spurious branch), verbose;
-    naive_observers ({agent: [observers]}, the stationary engine); past and continuation (a transition's, on the
+    past and continuation (a transition's, on the
     spectral engine; on a model of kind "transition" each overrides the file's block).  Unknown options are a
     TypeError naming the Numerics or Settings field they belong to.  res.numerics is the resolved Numerics."""
     if start_from is not None and start_policy is not None:
@@ -209,6 +211,14 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
                         "starting point (kernels or maps); start_policy is a name (\"zero\", \"coarse\", "
                         "\"stationary\") for one the solver generates. Drop whichever you did not mean.")
     model = as_model(model)
+    if "naive_observers" in unknown:
+        from .stationary import WITHDRAWN_NAIVE
+        raise TypeError(WITHDRAWN_NAIVE)
+    grid = {k: unknown.pop(k) for k in list(unknown) if k in Numerics.field_names()}
+    if grid:
+        # solve(model, nodes=24): a Numerics field given directly is laid over numerics, like numerics={"nodes": 24}
+        base = numerics.to_dict() if isinstance(numerics, Numerics) else dict(numerics or {})
+        numerics = {**base, **grid}
     if unknown:
         bad = sorted(unknown)
         fields = [k for k in bad if k in Numerics.field_names()]
@@ -224,7 +234,7 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
         res = march_model(model, numerics, past=past, continuation=continuation, verbose=verbose, tol=tol, max_evaluations=max_evaluations,
                           deadline=deadline, progress=progress, diagnostics=diagnostics)
         return _after_solve(res, refine, stability, diagnostics)
-    S, num = engines._build(model, numerics, verbose=verbose, naive_observers=naive_observers, past=past, continuation=continuation)
+    S, num = engines._build(model, numerics, verbose=verbose, past=past, continuation=continuation)
     kw = num.solve_kw()
     if tol is not None:
         kw["tol"] = tol

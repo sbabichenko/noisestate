@@ -18,7 +18,7 @@ from typing import Iterable, List, Optional, Union
 import numpy as np
 import yaml
 
-from .spec import Model, ModelBuilder
+from .spec import Model
 from .past import Past
 from .results import TriangleResult
 from . import engines
@@ -32,14 +32,13 @@ HORIZON_LENGTHS = ("horizon.window", "horizon.T")
 
 def _load_dict(model: Union[str, dict, Model]) -> dict:
     if isinstance(model, str):
-        with open(model) as fh:
-            return yaml.safe_load(fh)
-    if isinstance(model, ModelBuilder):
-        return model.to_dict()
+        # through load(): a file's name default and its relative horizon.past.model, resolved from its own directory
+        from . import load
+        return load(model).to_dict()
     if isinstance(model, Model):
         return model.to_dict()
     if not isinstance(model, dict):
-        raise TypeError(f"expected a Model, a ModelBuilder, a dict or a path, not {type(model).__name__}")
+        raise TypeError(f"expected a Model, a dict or a path, not {type(model).__name__}")
     return copy.deepcopy(model)
 
 
@@ -80,7 +79,7 @@ class SweepPoint:
                 "change": self.change, "jump": self.jump, "result": self.result.to_dict()}
 
 
-def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iterable[float], numerics=None,
+def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], numerics=None,
           solver_kw: Optional[dict] = None, solve_kw: Optional[dict] = None, verbose: bool = False) -> "List[SweepPoint]":
     """Solve the model at each value of `param` (a key of `params`, or "horizon.window" / "horizon.T": the
     stationary model, the horizon T of a finite one or of a transition, which then warm-starts each point from
@@ -88,7 +87,7 @@ def sweep(model: Union[str, dict, Model, ModelBuilder], param: str, values: Iter
     the linear extrapolation of the last two equilibria in the parameter (a secant predictor;
     markedly more robust at hard points such as a small trading cost).  numerics (a Numerics or a dict of
     its fields) is laid over the model's own at every point; solver_kw goes to each point's engine (verbose,
-    naive_observers, past, continuation), solve_kw to each point's solve() (tol, max_evaluations, deadline,
+    past, continuation), solve_kw to each point's solve() (tol, max_evaluations, deadline,
     progress, diagnostics, start); a point stopped at a bound is a row with converged False, and the sweep goes on.
     Returns [{"param", "value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the
     given order; "change" is the relative change of the strategy from the previous point on the same grid

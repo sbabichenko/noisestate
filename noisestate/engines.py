@@ -36,11 +36,10 @@ def default_start(S, start_policy=None) -> str:
     return "stationary" if getattr(getattr(S, "c", None), "cont", None) is not None else "zero"
 
 
-def _build(model: Model, numerics=None, *, verbose: bool = False, naive_observers: Optional[dict] = None,
-          past=None, continuation=None) -> Tuple[object, Numerics]:
+def _build(model: Model, numerics=None, *, verbose: bool = False, past=None, continuation=None) -> Tuple[object, Numerics]:
     """The engine for `model` under `numerics` (a Numerics, a dict of its fields or None), constructed; and
-    the resolved Numerics it runs with.  naive_observers belongs to the stationary engine, past and
-    continuation to the spectral one; giving either to another engine is a TypeError."""
+    the resolved Numerics it runs with.  past and continuation belong to the spectral engine; giving them to
+    another engine is a TypeError."""
     given = Numerics.of(numerics)
     num = model.numerics.merged(given).resolved(model.horizon.kind)
     if num != model.numerics.resolved(model.horizon.kind):
@@ -53,11 +52,7 @@ def _build(model: Model, numerics=None, *, verbose: bool = False, naive_observer
     if num.engine == "stationary":
         if past is not None or continuation is not None:
             raise TypeError("past= and continuation= belong to a finite horizon or a transition (the spectral engine), not the stationary one")
-        if naive_observers is not None:
-            kw["naive_observers"] = naive_observers
     else:
-        if naive_observers is not None:
-            raise TypeError("naive_observers= belongs to the stationary engine")
         if num.engine == "spectral":
             if past is not None:
                 kw["past"] = past

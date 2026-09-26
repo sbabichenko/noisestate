@@ -169,6 +169,9 @@ class Agent:
     signals: List[SignalRow]
     loss: List[list]                  # [[coef, a, b], [coef, a], ...] with atoms as strings
     myopic: bool = False              # competitive: ignore continuation effects of own action
+    constant: float = 0.0             # the loss's constant: moves no strategy, but is part of the cost
+    terminal: List[list] = field(default_factory=list)   # the loss at T (finite horizon): [[coef, a, b], [coef, a]], states only
+    terminal_constant: float = 0.0    # the terminal loss's constant
 
 
 @dataclass
@@ -272,7 +275,6 @@ class Model:
             self.__dict__.update(built.__dict__)
             self.source = built.to_dict()                 # the normalised file (as load(save()) reads it back)
             self.remarks = list(notes)
-            self.naive_observers = {a.name: a.naive_observers for a in agents if a.naive_observers} or None
             return
         if numerics is not None:
             raise TypeError("Model(): numerics= belongs to the expression form; the field form carries them in its Horizon")
@@ -325,10 +327,8 @@ class Model:
         return describe(self)
 
     def solve(self, numerics=None, **solve_kw):
-        """noisestate.solve(self, numerics, **solve_kw); an expression model's naive_observers are passed along."""
+        """noisestate.solve(self, numerics, **solve_kw): `game.solve(nodes=24)`."""
         from . import solve
-        if self.naive_observers and solve_kw.get("naive_observers") is None:
-            solve_kw["naive_observers"] = dict(self.naive_observers)
         return solve(self, numerics, **solve_kw)
 
     def sweep(self, numerics=None, solver_kw=None, solve_kw=None, verbose: bool = False, **values):
@@ -338,8 +338,6 @@ class Model:
         if len(values) != 1:
             raise ValueError(f"sweep() takes exactly one parameter by keyword, e.g. sweep(p1=[...]); got {sorted(values)}")
         (param, vals), = values.items()
-        if self.naive_observers:
-            solver_kw = {"naive_observers": dict(self.naive_observers), **(solver_kw or {})}
         return sweep(self, param, list(vals), numerics=numerics, solver_kw=solver_kw, solve_kw=solve_kw, verbose=verbose)
 
     def with_finite(self, T: float, **fields) -> "Model":
@@ -360,14 +358,22 @@ class Model:
         extra = {} if window is None else {"window": window}
         return self._patch_horizon(kind="transition", T=T, past=past, window=extra.get("window"), **fields)
 
-    def save(self, path: str) -> None:
-        """Write the model file (to_dict() as YAML, the parameter expressions intact).
+    def to_equations(self) -> dict:
+        """The model written as equations (noisestate.equations): the form a person reads, and save() writes."""
+        from . import equations
+        return equations.from_grammar(self.to_dict())
+
+    def save(self, path: str, form: str = "equations") -> None:
+        """Write the model file as YAML, the parameter expressions intact: written as equations (to_equations(),
+        the default, the form a person reads) or in the grammar (form="grammar", to_dict()).  load() reads both.
 
         A transition's past that lies under this file's own directory is written relative to it, so the
         pair travels together; a past elsewhere keeps its absolute path, which is what it means (that
         file, not whatever happens to sit beside the copy)."""
         import yaml
-        d = self.to_dict()
+        if form not in ("equations", "grammar"):
+            raise ValueError(f"save(): form is 'equations' or 'grammar', not {form!r}")
+        d = self.to_equations() if form == "equations" else self.to_dict()
         past = (d.get("horizon") or {}).get("past")
         if isinstance(past, dict) and isinstance(past.get("model"), str):
             base = os.path.dirname(os.path.abspath(path)) or os.curdir
@@ -386,8 +392,6 @@ class Model:
         from . import load
         return load(path)
 
-    naive_observers = None           # {agent: [observers]} the expression form's Agents asked for (not part of the file)
-
     # ------------------------------------------------------------ numerics
     @property
     def numerics(self):
@@ -402,18 +406,10 @@ class Model:
                         variable=hz.variable, settings=hz.settings)
 
     def _rebuilt(self, d: dict) -> "Model":
-        """from_dict(d), carrying the two fields the file structure does not.
-
-        naive_observers is the expression form's own option rather than a model-file key, and
-        Model.solve() reads it off the model to pass to the solver -- so a with_*() that dropped it
-        would silently solve a different game.  remarks are the compiler's notes about this model,
-        and they still describe a transformed copy.  source is not carried: from_dict() rebuilds it
-        from d, which is how with_params() keeps the parameter expressions intact.
-        """
+        """from_dict(d), carrying the compiler's remarks, which still describe a transformed copy.  source is not
+        carried: from_dict() rebuilds it from d, which is how with_params() keeps the parameter expressions intact."""
         out = Model.from_dict(d)
         out.remarks = list(self.remarks)
-        if self.naive_observers:
-            out.naive_observers = copy.deepcopy(self.naive_observers)
         return out
 
     def with_numerics(self, numerics=None, **fields) -> "Model":
@@ -687,9 +683,32 @@ class Model:
                 raise ValueError(f"row {a.name}.{r.name}: a constant in a signal row carries no information (the agent "
                                  "knows it); leave it out")
 
+    def _check_terminal(self, a: "Agent") -> None:
+        """A terminal loss is paid at T: a finite horizon ending there (no continuation after T), and terms in the
+        states or in definitions of them, at T itself (no lag, no control: a control at one instant costs nothing)."""
+        if not a.terminal and not a.terminal_constant:
+            return
+        hz = self.horizon
+        if hz.kind != "finite" and not (hz.kind == "transition" and (hz.continuation or "stationary") == "end"):
+            raise ValueError(f"agent {a.name}: a terminal loss needs a game that ends at T (horizon kind finite, or a "
+                             f"transition with continuation 'end'), not {hz.kind!r}")
+        for term in a.terminal:
+            if len(term) not in (2, 3):
+                raise ValueError(f"agent {a.name}: terminal term {term} must be [coef, a] or [coef, a, b]")
+            for atom in term[1:]:
+                for (n, l) in self.expand({str(atom): 1.0}):
+                    if n == CONST:
+                        raise ValueError(f"agent {a.name}: terminal term {term} reads the constant; write it as terminal_constant")
+                    if l != 0:
+                        raise ValueError(f"agent {a.name}: terminal term {term} reads {n} at a lag; a terminal loss is on the states at T")
+                    if n in self.control_names:
+                        raise ValueError(f"agent {a.name}: terminal term {term} reads the control {n}; a terminal loss is on the "
+                                         "states at T (a control at one instant costs nothing)")
+
     def _check_losses(self, a: "Agent") -> None:
         """Each loss term of the agent is [coef, a] or [coef, a, b], reads no constant, and a lead appears only
         in a cross term with the agent's own current control."""
+        self._check_terminal(a)
         for term in a.loss:
             if len(term) not in (2, 3):
                 raise ValueError(f"agent {a.name}: loss term {term} must be [coef, a] or [coef, a, b]")
@@ -874,7 +893,7 @@ class Model:
         "numerics": {"engine", "nodes", "unit", "unit_range", "breakpoints", "continuation_nodes", "tol", "damping", "max_newton",
                      "variable", "settings"},
         "state": {"drift", "noise", "initial"},
-        "agent": {"controls", "signals", "loss", "myopic"},
+        "agent": {"controls", "signals", "loss", "myopic", "constant", "terminal", "terminal_constant"},
         "signal": {"drift", "noise", "delay"},
     }
 
@@ -964,6 +983,12 @@ class Model:
             d["agents"][a.name] = {"controls": list(a.controls), "myopic": a.myopic,
                                    "signals": {r.name: {"drift": ex(r.drift), "noise": ex(r.noise), "delay": r.delay} for r in a.signals},
                                    "loss": [[float(t[0])] + [atom(x) for x in t[1:]] for t in a.loss]}
+            if a.constant:
+                d["agents"][a.name]["constant"] = float(a.constant)
+            if a.terminal:
+                d["agents"][a.name]["terminal"] = [[float(t[0])] + [atom(x) for x in t[1:]] for t in a.terminal]
+            if a.terminal_constant:
+                d["agents"][a.name]["terminal_constant"] = float(a.terminal_constant)
         return d
 
     def with_params(self, **values) -> "Model":
@@ -1191,7 +1216,11 @@ class Model:
     @classmethod
     def from_dict(cls, d: dict, base_dir: Optional[str] = None) -> "Model":
         """A Model from the file structure.  base_dir: the directory a relative path in horizon.past.model is
-        resolved against (the model file's own directory when loaded from a file); None leaves it as given."""
+        resolved against (the model file's own directory when loaded from a file); None leaves it as given.
+        A file written as equations (noisestate.equations: shocks, "(D1 + D2) dt + sigma dW0", ...) is read too."""
+        from . import equations
+        if equations.is_equation_form(d):
+            d = equations.to_grammar(d)
         cls._check_keys("model", d, cls._KEYS["model"])
         cls._check_keys("horizon", d.get("horizon") or {}, cls._KEYS["horizon"])
         for k, v in (d.get("states") or {}).items():
@@ -1278,7 +1307,9 @@ class Model:
             for term in (v.get("loss") or []):
                 loss.append([eval_coef(term[0], params)] + [str(x) for x in term[1:]])
             agents.append(Agent(name=k, controls=list(v.get("controls") or []), signals=rows, loss=loss,
-                                myopic=v.get("myopic", False)))
+                                myopic=v.get("myopic", False), constant=eval_coef(v.get("constant", 0.0), params),
+                                terminal=[[eval_coef(t[0], params)] + [str(x) for x in t[1:]] for t in (v.get("terminal") or [])],
+                                terminal_constant=eval_coef(v.get("terminal_constant", 0.0), params)))
         from types import MappingProxyType
         m = cls(name=d.get("name", "model"), channels=list(d.get("channels") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
@@ -1367,75 +1398,3 @@ def _eval_past_block(block, params):
                     if isinstance(sh.get(key), dict):
                         sh[key] = {k: eval_coef(v, params) for k, v in sh[key].items()}
     return block
-
-
-# --------------------------------------------------------------- builder
-class ModelBuilder:
-    """Fluent Python interface producing the same structure as the YAML file."""
-
-    def __init__(self, name: str = "model", **params):
-        self.d = {"name": name, "params": dict(params), "channels": [], "states": {}, "definitions": {},
-                  "agents": {}, "ties": [], "horizon": {}}
-
-    def param(self, **kw):
-        self.d["params"].update(kw); return self
-
-    def channel(self, *names):
-        self.d["channels"].extend(names); return self
-
-    def state(self, name, drift=None, noise=None, initial=None):
-        self.d["states"][name] = {"drift": drift or {}, "noise": noise or {}, **({"initial": initial} if initial is not None else {})}; return self
-
-    def define(self, name, expr):
-        self.d["definitions"][name] = expr; return self
-
-    def agent(self, name, controls, loss, myopic=False):
-        self.d["agents"][name] = {"controls": list(controls), "signals": {}, "loss": list(loss), "myopic": myopic}
-        return self
-
-    def signal(self, agent, name, drift=None, noise=None, delay=0.0):
-        self.d["agents"][agent]["signals"][name] = {"drift": drift or {}, "noise": noise or {}, "delay": delay}
-        return self
-
-    def tie(self, *agents):
-        self.d["ties"].append(list(agents)); return self
-
-    def stationary(self, discount=0.0, window=8.0, nodes=16, breakpoints=None, unit=None, unit_range=None):
-        self.d["horizon"] = {"kind": "stationary", "discount": discount, "window": window}
-        self.numerics(nodes=nodes, breakpoints=breakpoints, unit=unit, unit_range=unit_range)
-        return self
-
-    def finite(self, T=1.0, nodes=16, discount=0.0):
-        self.d["horizon"] = {"kind": "finite", "T": T, "discount": discount}; return self.numerics(nodes=nodes)
-
-    def numerics(self, **fields):
-        """The numerics block (the fields of noisestate.Numerics); a field given None is dropped."""
-        nm = self.d.setdefault("numerics", {})
-        for k, v in fields.items():
-            if v is None:
-                nm.pop(k, None)
-            else:
-                nm[k] = v
-        return self
-
-    def transition(self, T=1.0, nodes=12, past=None, continuation="stationary", discount=0.0, stationary=None, unit=None):
-        """A transition on [0, T] from `past` (a path to the old stationary model file, its dict, a Model or
-        ModelBuilder (their dict is inlined), or a list of initial shocks) continued by 'stationary' (the new
-        model's stationary equilibrium, sized by `stationary` = {"window", "nodes"}) or ending at T ('end')."""
-        if isinstance(past, ModelBuilder):
-            past = past.to_dict()
-        elif isinstance(past, Model):
-            past = past.to_dict()
-        block = {"initial": list(past)} if isinstance(past, (list, tuple)) else {"model": past}
-        st = dict(stationary or {})
-        #  T is the terminal time; the `stationary` block's window is the continuation's L
-        self.d["horizon"] = {"kind": "transition", "T": T, "discount": discount, "past": block, "continuation": continuation,
-                             **({"stationary": {"window": st["window"]}} if st.get("window") is not None else {})}
-        return self.numerics(nodes=nodes, unit=unit, continuation_nodes=st.get("nodes"))
-
-    def build(self) -> Model:
-        return Model.from_dict(self.d)
-
-    def to_dict(self) -> dict:
-        import copy
-        return copy.deepcopy(self.d)          # a copy: mutating it must not alter the builder

@@ -58,29 +58,25 @@ independent.  Player i observes only its own signal history `Yi` up to the curre
 not directly observe `X`, the shocks, or the other player's signal.  The common shock moves the
 shared state; "common" does not mean that the players see it directly.
 
-This is the same model as a file (an omitted state `initial` defaults to zero here):
+This is the same model as a file, written as its equations (an omitted state `initial` defaults to zero):
 
 ```yaml
 name: ch1_two_player_finite
 params: {p1: 3.0, p2: 3.0, r1: 0.1, r2: 0.1, sigma: 1.0}
-channels: [w0, w1, w2]                                   # the Brownian shocks
+shocks: [w0, w1, w2]                                     # the Brownian shocks; dw0 is the increment of w0
 states:
-  X: {drift: {D1: 1.0, D2: 1.0}, noise: {w0: sigma}}     # dX = (D1 + D2) dt + sigma dW0
+  X: "(D1 + D2) dt + sigma dw0"                          # dX = (D1 + D2) dt + sigma dW0
 agents:
-  player1:
-    controls: [D1]
-    signals: {y1: {drift: {X: "sqrt(p1)"}, noise: {w1: 1.0}}}
-    loss: [[1.0, X, X], [r1, D1, D1]]                    # X^2 + r1 D1^2
-  player2:
-    controls: [D2]
-    signals: {y2: {drift: {X: "sqrt(p2)"}, noise: {w2: 1.0}}}
-    loss: [[1.0, X, X], [r2, D2, D2]]
-horizon: {kind: finite, T: 1.0}                          # the game runs on [0, 1]
+  player1: {controls: D1, observes: {y1: "sqrt(p1) X dt + dw1"}, loss: "X^2 + r1 D1^2"}
+  player2: {controls: D2, observes: {y2: "sqrt(p2) X dt + dw2"}, loss: "X^2 + r2 D2^2"}
+horizon: {T: 1.0}                                        # the game runs on [0, 1]
 numerics: {nodes: 12}                                    # how finely it is discretised
 ```
 
-A loss term is `[coefficient, a, b]` for a quadratic and `[coefficient, a]` for a linear one, so
-`[1.0, X, X]` is `X^2` and `[r1, D1, D1]` is `r1 D1^2`.  `params` are named so you can vary them.
+Multiplication can be a space (`r1 D1^2`), `^` is a power, `dt` marks a drift term and `dw0` is a shock.
+`params` are named so you can vary them.  The file in `examples/` writes the same model in the longer
+grammar (`drift:`/`noise:` dictionaries, loss terms as `[coefficient, a, b]` lists), which is what
+`model.to_dict()` returns; `load()` reads both, and `model.save()` writes the equations.
 
 ### Solve it
 
@@ -146,6 +142,14 @@ k.at(0.75, 0.5)     # +0.8773   the same shock, a quarter later
 k.at(1.00, 0.5)     # +0.7539   the same shock at the end of the game
 ```
 
+`res.response` says the same thing in words, and takes the objects of a model written in Python as well as names:
+
+```python
+t = [0.5, 0.75, 1.0]
+res.response("X", to="w0", at=0.5).over(t)                        # 1.0, 0.8773, 0.7539
+res.response("X", to="w0", at=0.5, seen_by="player1").over(t)     # player 1's estimate of X, E[X_t | its signals]
+```
+
 A positive value means the state is still displaced in the direction of the shock.  The decay in
 either reading reflects the players' control actions: without them, `X` would retain the full
 effect of the shock, since the state has no other restoring force.
@@ -164,7 +168,10 @@ The subsequent negative response counteracts the positive shock.
 
 `kernel()` returns the *closed-loop* response to primitive shocks.  The implementable strategy is
 `res.maps["player1"]`: the weights the player puts on its **own signal history**.  Kernels describe
-the effects of shocks; maps describe how the player uses its observations.
+the effects of shocks; maps describe how the player uses its observations.  In between,
+`res.estimate("player1", "X")` is a player's estimate of a quantity as a kernel, and `res.strategy("D1")` is
+the action as a rule on the player's estimates of the shocks (its *noise-state*): the weight it puts on its
+estimate of each shock, where `res.kernel("D1")` is its response to the shock itself.
 
 ### Change one thing
 
@@ -275,9 +282,12 @@ The remaining sections provide the reference for these objects.
 
 ```python
 res.costs["player1"]         # the cost of each agent (res.cost_kind says what it is)
-res.cost_parts["player1"]    # its {"variance", "mean"} parts
+res.cost_parts["player1"]    # its {"variance", "mean"} parts, and "constant": a loss's constant ((X - b)^2 has b^2)
 res.kernel("X")              # closed-loop kernel of a state, one column per channel; .axes, .at(), .plot()
-res.strategy_kernel("D1")    # closed-loop kernel of a control
+res.kernel("D1")             # a control's response to the shocks (D_W)
+res.strategy("D1")           # the same action as a rule on the noise-state (D)
+res.estimate("player1", "X") # player 1's estimate of X, as a kernel
+res.response("X", to="w0")   # one shock followed through time: .over(t)
 res.maps["player1"]          # raw strategy g[u][r](b) on the agent's own signal rows
 res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"}: the first-order condition decomposed
 res.means["X"]               # the mean of a state or control: a constant here, a path on a finite horizon
@@ -374,65 +384,42 @@ model.with_horizon(ns.Finite(T=6.0))             # replace the horizon, whatever
 
 ## Other ways to build a model
 
-Models can also be written as Python expressions or assembled with a builder.  Both produce a
-`Model` whose `to_dict()` method returns the same structure used by the YAML format.
+A model can also be written in Python, as the same equations: states, controls, shocks and parameters are
+objects, and their arithmetic is the model.  It produces a `Model` like any file does.
 
-### As equations
-
-Use `Param`, `State`, `Control`, `Signal`, `Agent`, and `shocks` to write the model as expressions.
-In an assignment to a state's `drift`, quantity terms define the drift, shock terms define the
-noise loading, and a constant becomes `const`.  A signal is a linear expression containing at
-least one shock; a loss is quadratic in the quantities.
-
-Constant loss terms are omitted: `(X - 1)**2` becomes `X^2 - 2X`, with the omission recorded in
-`model.notes`.  Write `x.lag(tau)` for the YAML atom `x@tau`.
+### As equations, in Python
 
 ```python
 import noisestate as ns
-from noisestate import Param, State, Control, Signal, Agent, shocks
-r1, r2, p1, p2, sigma = Param.many(r1=0.1, r2=0.1, p1=3.0, p2=3.0, sigma=1.0)
-w = shocks("w0", "w1", "w2")
-X = State("X"); D1, D2 = Control("D1"), Control("D2")
-X.drift = D1 + D2 + sigma * w.w0
-player1 = Agent("player1", controls=[D1], signals=[Signal("y1", p1**0.5 * X + w.w1)], loss=X**2 + r1 * D1**2)
-player2 = Agent("player2", controls=[D2], signals=[Signal("y2", p2**0.5 * X + w.w2, delay=0.5)], loss=(X - 1)**2 + r2 * D2**2)
-game = ns.Model("ch1", states=[X], agents=[player1, player2], horizon=ns.Stationary(window=3.0))
-print(game.describe())
-eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
-eq.require_ok(); eq.costs["player1"]; eq.cost_parts["player1"]; eq.means["X"]
-k = eq.kernel("X", "w0"); k.values; k.axes; k.at(0.7)
-for point in game.sweep(p1=[0.3, 1, 3, 10]): point.value, point.result, point.jump
-game.save("ch1.yaml"); ns.Model.load("ch1.yaml")
-with ns.using_settings(second_order_tol=1e-3): game.solve()
+from noisestate import dt, sqrt
+
+p1, p2, r1, r2, b1, b2, sigma, T = ns.params(p1=3, p2=10, r1=0.1, r2=0.1, b1=1, b2=-1, sigma=1, T=1)
+dW0, dW1, dW2 = ns.shocks(3)                       # named W0, W1, W2
+X = ns.State("X")
+D1, D2 = ns.Control("D1"), ns.Control("D2")
+
+X.d = (D1 + D2) * dt + sigma * dW0                 # dX = (D1 + D2) dt + sigma dW0
+player1 = ns.Agent("player1", controls=D1, observes=sqrt(p1) * X * dt + dW1, loss=(X - b1)**2 + r1 * D1**2)
+player2 = ns.Agent("player2", controls=D2, observes=sqrt(p2) * X * dt + dW2, loss=(X - b2)**2 + r2 * D2**2)
+game = ns.Game(states=X, agents=[player1, player2], T=T)
+
+res = game.solve(nodes=24)
+res.response(X, to=dW0, at=0).over([0, 0.5, 1])                   # the state after a shock at 0
+res.response(X, to=dW0, at=0, seen_by=player1).over([0, 0.5, 1])  # player 1's estimate of it
 ```
 
-The model collects the shocks and parameters used in its expressions.  Channels retain their
-`shocks()` order, and `Param.many` returns parameters in argument order.  Coefficients support
-`+ - * / **` and `sqrt exp log sin cos tanh abs min max`; saved expressions preserve their parameter
-dependence, so `p1**0.5` is written as `"sqrt(p1)"`.
+A drift term carries `dt` and a shock does not; a term without its `dt` is an error rather than a guess.
+`observes=` takes one expression (the signal `y`), a list (`y1`, `y2`, ...) or a dict of named signals, and a
+`Signal("y", expr, delay=0.5)` where a signal is delayed.  `ns.Game(..., T=T)` is a finite game on `[0, T]`;
+`window=` makes it stationary, `discount=` discounts it, and `horizon=ns.Transition(...)` is a regime change.
+`X.lag(tau)` is `X` a time `tau` earlier (`X@tau` in a file), `ns.define(name, expr)` names a combination, and
+a loss keeps its constant (`(X - b1)**2` has `b1**2`), which is part of the cost though it moves no strategy.
 
-Use `define(name, expr)` for a named definition, `ns.Finite(T)` or
-`ns.Transition(T, past=..., continuation=...)` for other horizons, and `numerics=` for solver
-options.  `examples/expr_examples.py` expresses all shipped examples this way;
-`tests/test_expr.py` checks them against their YAML equivalents.  Models are saved as YAML.
-
-### With ModelBuilder
-
-```python
-import noisestate as ns
-
-b = ns.ModelBuilder("one_agent", a=1.0, r=0.5)
-b.channel("w", "v")
-b.state("X", drift={"X": "-a", "D": 1.0}, noise={"w": 1.0})
-b.agent("me", controls=["D"], loss=[[1.0, "X", "X"], ["r", "D", "D"]])
-b.signal("me", "y", drift={"X": 1.0}, noise={"v": 1.0})
-b.stationary(discount=0.1, window=8.0, nodes=16)
-res = ns.solve(b)
-```
-
-`examples/make_ch5_cycle_market.py` builds an N-firm cycle in a loop; `b.finite(T, nodes)` and
-`b.transition(T, nodes, past=..., continuation=...)` set the other horizons and `b.numerics(**fields)`
-the rest of the block.
+Coefficients support `+ - * / **` and `sqrt exp log sin cos tanh abs min max`; a saved model keeps its
+parameter dependence, so `sqrt(p1)` is written as `sqrt(p1)`.  `game.describe()` prints the model,
+`game.save("game.yaml")` writes it as the equations file above, and `game.sweep(p1=[1, 3, 10])` re-solves it
+along a parameter.  `examples/make_ch5_cycle_market.py` builds an N-firm market in a loop this way, and
+`examples/expr_examples.py` writes every shipped example in Python.
 
 ## Changing what agents see
 

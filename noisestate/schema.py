@@ -91,7 +91,10 @@ def model_schema() -> dict:
              "properties": {"controls": {"type": "array", "items": {"type": "string"}},
                             "signals": {"type": "object", "additionalProperties": signal},
                             "loss": {"type": "array", "items": _LOSS_TERM},
-                            "myopic": {"type": "boolean"}}}
+                            "myopic": {"type": "boolean"},
+                            "constant": {**_NUMBER_OR_EXPR, "description": "the loss's constant: part of the cost, moves no strategy"},
+                            "terminal": {"type": "array", "items": _LOSS_TERM, "description": "the loss at T, on the states (finite horizon)"},
+                            "terminal_constant": {**_NUMBER_OR_EXPR, "description": "the terminal loss's constant"}}}
     return {"$schema": DRAFT, "$id": "https://noisestate/schema/model", "title": "noisestate model file",
             "type": "object", "additionalProperties": False,
             "properties": {
@@ -217,7 +220,7 @@ def payload_schema() -> dict:
                 "past": {"type": "object"}, "settled": {"type": ["number", "null"]}, "continuation": {"type": "object"},
                 "loss_path": by_name(numbers), "belief_error": by_name(by_name(numbers)),
                 "excess_costs": by_name({"type": "number"}),
-                "window": {"type": "number"}, "march": {"type": "array"}, "march_stop": {"type": ["string", "null"]},
+                "T": {"type": "number"}, "march": {"type": "array"}, "march_stop": {"type": ["string", "null"]},
                 "excess_windows": by_name(numbers), "excess_costs_tail": by_name({"type": "number"}),
                 "excess_costs_total": by_name({"type": "number"}), "excess_tail": {"type": "object"},
                 "march_settle": {"type": ["number", "null"]}, "settle_floor": {"type": ["object", "null"]},
@@ -299,7 +302,15 @@ def _validate(v, sch: dict, root: dict, path: str, errors: List[str]) -> None:
 
 def validate(instance, which: str = "model") -> List[str]:
     """The schema errors of `instance` against schema(which), each "path: message"; [] when it validates.
-    Uses the jsonschema package when importable, else the validator of this module."""
+    Uses the jsonschema package when importable, else the validator of this module.  A model written as
+    equations (noisestate.equations) is read into the grammar first; an equation it cannot read is the error."""
+    if which == "model":
+        from . import equations
+        if equations.is_equation_form(instance):
+            try:
+                instance = equations.to_grammar(instance)
+            except (ValueError, TypeError) as e:
+                return [f"(equations): {e}"]
     sch = schema(which)
     try:
         import jsonschema

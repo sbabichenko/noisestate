@@ -84,15 +84,11 @@ def test_lag_off_the_panel_unit_is_rejected_with_the_unit_to_set():
 def _delayed_transition(T, **num):
     """A stationary two-player model with a delayed row, run as a transition from itself: the buffer
     pieces and the triangles cut by its diagonal are what exercise the shift geometry."""
-    b = ns.ModelBuilder("sd", r=0.5)
-    b.channel("w", "v1", "v2")
-    b.state("X", drift={"D1": 1.0, "D2": 1.0}, noise={"w": 1.0})
-    b.agent("p1", controls=["D1"], loss=[[1.0, "X", "X"], ["r", "D1", "D1"]])
-    b.signal("p1", "y1", drift={"X": 1.0}, noise={"v1": 1.0})
-    b.agent("p2", controls=["D2"], loss=[[1.0, "X", "X"], ["r", "D2", "D2"]])
-    b.signal("p2", "y2", drift={"X": 1.0}, noise={"v2": 1.0}, delay=0.5)
-    b.stationary(discount=0.0, window=3.0, nodes=5)
-    old = b.build()
+    old = ns.Model.from_dict({
+        "name": "sd", "params": {"r": 0.5}, "shocks": ["w", "v1", "v2"], "states": {"X": "(D1 + D2) dt + dw"},
+        "agents": {"p1": {"controls": "D1", "observes": {"y1": "X dt + dv1"}, "loss": "X^2 + r D1^2"},
+                   "p2": {"controls": "D2", "observes": {"y2": {"d": "X dt + dv2", "delay": 0.5}}, "loss": "X^2 + r D2^2"}},
+        "horizon": {"window": 3.0}, "numerics": {"nodes": 5}})
     return old.with_transition(T, past={"model": old.to_dict()}), num
 
 

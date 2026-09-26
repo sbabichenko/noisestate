@@ -1,5 +1,5 @@
 """The transition's API surface (stage 3): the model-file form (horizon.kind transition with its past,
-continuation and stationary blocks), noisestate.transition(old, new, T), ModelBuilder.transition, the
+continuation and stationary blocks), noisestate.transition(old, new, T), the equations form, the
 validation of the blocks and the CLI round trip."""
 import json
 import os
@@ -73,16 +73,17 @@ def test_transition_helper_starts_from_the_new_stationary_maps(regime):
     assert z.solve_kw["start_policy"] == "zero"                        # asked for; the default with a continuation is "stationary"
 
 
-def test_builder_and_initial_shocks_in_the_file_form():
-    """ModelBuilder.transition with a list of initial shocks (continuation "end") is the keyword form with
-    past=[shocks] bit for bit; the helper with a list ends the game at T as well."""
+def test_equations_form_and_initial_shocks_in_the_file_form():
+    """A transition written in the equations form with a list of initial shocks (continuation "end") is the keyword
+    form with past=[shocks] bit for bit; the helper with a list ends the game at T as well."""
     shock = {"name": "xi", "loads": {"X": 0.9}, "rows": {"a.y": 1.0}}
     d = one_agent()
     ref = ns.solve(d, past=[shock])
-    b = (ns.ModelBuilder("prior").channel("w0", "w1").state("X", {"X": -0.3, "D": 1.0}, {"w0": 1.0})
-         .agent("a", ["D"], [[1.0, "X", "X"], [0.5, "D", "D"]]).signal("a", "y", {"X": 1.5}, {"w1": 1.0})
-         .transition(3.0, 12, past=[shock], continuation="end", discount=0.5))
-    m = b.build()
+    b = {"name": "prior", "shocks": ["w0", "w1"], "states": {"X": "(-0.3 X + D) dt + dw0"},
+         "agents": {"a": {"controls": "D", "observes": {"y": "1.5 X dt + dw1"}, "loss": "X^2 + 0.5 D^2"}},
+         "horizon": {"kind": "transition", "discount": 0.5, "T": 3.0, "past": {"initial": [shock]}, "continuation": "end"},
+         "numerics": {"nodes": 12}}
+    m = ns.Model.from_dict(b)
     assert m.horizon.kind == "transition" and m.horizon.past == {"initial": [shock]} and m.horizon.continuation == "end"
     res = ns.solve(b)
     assert np.array_equal(res.world, ref.world) and res.costs == ref.costs and res.shocks == ["w0", "w1", "xi"]
@@ -208,7 +209,7 @@ def test_settle_march_finds_the_window_and_equals_the_explicit_solve(regime, mar
     1e-11: the next test); the march's 31 evaluations against 20 for the one explicit solve.  Slow (40 s): the
     6-node march in test_settle_march_same_model_and_max_window is the fast copy."""
     res = marched; m = regime["m"]; old = regime["old"]
-    assert res.kind == "transition" and res.march_stop == "settled" and res.extra["window"] == 9.0 and res.march_settle == 1e-4
+    assert res.kind == "transition" and res.march_stop == "settled" and res.extra["T"] == 9.0 and res.march_settle == 1e-4
     rows = res.march
     assert [r.T for r in rows] == [0.0, 3.0, 6.0, 9.0] and rows[0].evaluations == 0
     assert all(r.monitor == "[T - L, T]" for r in rows[1:])
@@ -241,7 +242,7 @@ def test_settle_march_equals_the_explicit_solve_at_a_tight_tol(regime):
     rate); the polish on the whole strip, five evaluations at this tol (one at the default), removes it."""
     old = regime["old"]; new = regime["m"].with_params(p1=10.0); tol = 1e-11
     res = ns.transition(old, new, settle=1e-4, numerics={"nodes": 12}, tol=tol)
-    ex = ns.transition(old, new, T=res.extra["window"], numerics={"nodes": 12}, continuation=res.continuation, tol=tol)
+    ex = ns.transition(old, new, T=res.extra["T"], numerics={"nodes": 12}, continuation=res.continuation, tol=tol)
     assert max(np.abs(ex.maps[k] - res.maps[k]).max() / np.abs(res.maps[k]).max() for k in res.maps) < 1e-10
     assert 2 <= res.march[-1].polish <= 8 and res.march[-2].polish is None   # only the last row is polished
 
@@ -262,14 +263,14 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     helper's."""
     m = regime["m"]; old = regime["old"]; new = m.with_params(p1=10.0)
     same = ns.transition(old, m, settle=1e-4, numerics={"nodes": 12})
-    assert same.march_stop == "settled at T = 0" and same.extra["window"] == 0.0 and len(same.march) == 1 and same.evaluations == 0
+    assert same.march_stop == "settled at T = 0" and same.extra["T"] == 0.0 and len(same.march) == 1 and same.evaluations == 0
     assert max(same.march[0].gap.values()) < 1e-4 and same.settled == 0.0 and same.march_floor is None and same.converged
-    assert all(abs(same.excess_costs[a]) < 1e-6 for a in same.costs) and same.to_dict()["window"] == 0.0
+    assert all(abs(same.excess_costs[a]) < 1e-6 for a in same.costs) and same.to_dict()["T"] == 0.0
     assert all(np.array_equal(same.maps[a][:, :, :same.compiled.N], same.compiled.frozen[a]) for a in same.maps)
     same_u = ns.transition(old, m, settle=1e-4, step=1.0, numerics={"nodes": 8, "unit": 1.0})
-    assert same_u.march_stop == "settled at T = 0" and same_u.extra["window"] == 0.0 and same_u.evaluations == 0 and same_u.compiled.T == 1.0
+    assert same_u.march_stop == "settled at T = 0" and same_u.extra["T"] == 0.0 and same_u.evaluations == 0 and same_u.compiled.T == 1.0
     small = ns.transition(old, new, settle=5e-2, numerics={"nodes": 6})
-    assert [r.T for r in small.march] == [0.0, 3.0, 6.0] and small.march_stop == "settled" and small.extra["window"] == 6.0
+    assert [r.T for r in small.march] == [0.0, 3.0, 6.0] and small.march_stop == "settled" and small.extra["T"] == 6.0
     assert 0.5 < max(small.march[1].gap.values()) < 0.7 and 2e-3 < max(small.march[2].gap.values()) < 5e-3
     assert small.march[1].evaluations > small.march[2].evaluations and all(r.monitor == "[T - L, T]" for r in small.march[1:])
     assert 2e-2 < max(small.march_floor.values()) < 5e-2 and small.extra["settle_floor"] == small.march_floor
@@ -277,12 +278,12 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     ex6 = ns.transition(old, new, T=6.0, numerics={"nodes": 6}, continuation=small.continuation)
     assert max(np.abs(ex6.maps[k] - small.maps[k]).max() / np.abs(small.maps[k]).max() for k in small.maps) < 1e-6
     fl = ns.transition(old, new, settle=1e-4, numerics={"nodes": 8})
-    assert fl.march_stop == "floor" and fl.extra["window"] == 0.0 and len(fl.march) == 1 and fl.evaluations == 0
+    assert fl.march_stop == "floor" and fl.extra["T"] == 0.0 and len(fl.march) == 1 and fl.evaluations == 0
     assert 2e-3 < max(fl.march_floor.values()) < 4e-3
     row = next(r for r in fl.diagnostics.rows if r["name"] == "settle floor")
     assert not row["ok"] and "nothing was marched" in row["flag"] and row["advice"] == "raise numerics.nodes"
     cap = ns.transition(old, new, settle=3e-3, max_window=1, numerics={"nodes": 8})
-    assert cap.march_stop == "max_window" and cap.extra["window"] == 3.0 and cap.settled > 1e-4 and [r.T for r in cap.march] == [0.0, 3.0]
+    assert cap.march_stop == "max_window" and cap.extra["T"] == 3.0 and cap.settled > 1e-4 and [r.T for r in cap.march] == [0.0, 3.0]
     row = next(r for r in cap.diagnostics.rows if r["name"] == "settled")
     assert not row["ok"] and "stopped at max_window" in row["flag"] and row["advice"] == "raise max_window"
     assert "TRANSITION NOT SETTLED" in cap.summary() or not cap.diagnostics.assess().accepted
@@ -303,7 +304,7 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     assert "settle" not in fm._patch_horizon(T=6.0, settle=None).to_dict()["horizon"]
     fr = ns.solve(fm, max_evaluations=40)
     hr = ns.transition(EX + "ch3_two_player.yaml", new, settle=5e-2, numerics={"nodes": 6}, max_evaluations=40)
-    assert fr.extra["window"] == hr.extra["window"] and np.array_equal(fr.world, hr.world) and [r.evaluations for r in fr.march] == [r.evaluations for r in hr.march]
+    assert fr.extra["T"] == hr.extra["T"] and np.array_equal(fr.world, hr.world) and [r.evaluations for r in fr.march] == [r.evaluations for r in hr.march]
     #  settle and T are the two ways to give a transition its terminal time; window is the
     #  continuation's L and coexists with either
     with pytest.raises(ValueError, match="exactly one of T"):
@@ -326,7 +327,7 @@ def test_settle_march_same_model_and_max_window(regime, tmp_path, capsys):
     assert "settle march: T = 3 (max_window)" in out and "T = 0:" in out and "wrote" in out
     with open(tmp_path / "out.json") as fh:
         payload = json.load(fh)
-    assert payload["window"] == 3.0 and payload["march_stop"] == "max_window" and len(payload["march"]) == 2
+    assert payload["T"] == 3.0 and payload["march_stop"] == "max_window" and len(payload["march"]) == 2
     assert payload["march"][1]["unknowns"] == 144 and 2e-2 < max(payload["settle_floor"].values()) < 5e-2
     with pytest.raises(SystemExit):
         main(["transition", str(tmp_path / "old.yaml"), str(tmp_path / "new.yaml")])
@@ -382,7 +383,7 @@ def test_excess_cost_tail_and_the_floor_stop(regime):
         assert abs(small.excess_costs_tail[a] - small.excess_windows[a][0] * r / (1 - r)) < 1e-15
         assert abs(small.excess_costs_total[a] - small.excess_costs[a] - small.excess_costs_tail[a]) < 1e-15
     fl = ns.transition(old, new, settle=1e-6, numerics={"nodes": 8})
-    assert fl.march_stop == "floor" and fl.extra["window"] == 0.0 and [r.T for r in fl.march] == [0.0] and fl.settled == 0.0
+    assert fl.march_stop == "floor" and fl.extra["T"] == 0.0 and [r.T for r in fl.march] == [0.0] and fl.settled == 0.0
     assert 2e-3 < max(fl.march_floor.values()) < 4e-3 and fl.evaluations == 0
     row = next(r for r in fl.diagnostics.rows if r["name"] == "settle floor")
     assert row["ok"] is False and "SETTLE BELOW THE GRID'S FLOOR" in row["flag"] and row["advice"] == "raise numerics.nodes" and "8 nodes" in row["flag"]

@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .spec import Model, ModelBuilder
+from .spec import Model
 
 
 @dataclass
@@ -63,7 +63,7 @@ class Past:
     # ------------------------------------------------------------ constructors
     @classmethod
     def of(cls, obj, initial=None) -> "Past":
-        """A Past from a Past, a StationaryResult, a stationary Model / ModelBuilder / dict / path (solved on
+        """A Past from a Past, a StationaryResult, a stationary Model / dict / path (solved on
         the fly, which must converge) or a list of initial-shock dicts [{"name", "loads", "rows"}]."""
         from .results import StationaryResult, Result
         if isinstance(obj, Past):
@@ -75,7 +75,7 @@ class Past:
                             "before zero is a stationary regime")
         if isinstance(obj, (list, tuple)):
             return cls.from_shocks(obj)
-        if isinstance(obj, (Model, ModelBuilder, dict, str)):
+        if isinstance(obj, (Model, dict, str)):
             return cls.from_model(obj, initial)
         raise TypeError(f"past must be a Past, a StationaryResult, a Model, a dict, a path or a list of initial shocks, "
                         f"not {type(obj).__name__}")
@@ -90,14 +90,12 @@ class Past:
 
     @classmethod
     def from_model(cls, model, initial=None, **solve_kw) -> "Past":
-        """Solve the stationary model (a Model, ModelBuilder, dict or path) and take its result."""
+        """Solve the stationary model (a Model, dict or path) and take its result."""
         from . import solve, load
         if isinstance(model, str):
             model = load(model)
         elif isinstance(model, dict):
             model = Model.from_dict(model)
-        elif isinstance(model, ModelBuilder):
-            model = model.build()
         if model.horizon.kind != "stationary":
             raise TypeError(f"past model {model.name!r} has horizon.kind {model.horizon.kind!r}; the time before zero is a "
                             "stationary regime")

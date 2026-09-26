@@ -57,9 +57,9 @@ def test_cell_engine_dense_branch_with_delays():
 # ---------------------------------------------------------------- guards compare like with like
 def test_refine_and_stability_rebuild_the_same_solver():
     kb = os.path.join(EX, "ch4_kyle_back.yaml")
-    r = ns.solve(kb, naive_observers={"trader1": ["market_maker"]}, refine=True)
-    assert r.refinement.cost_change < 1e-4                                 # not the naive-vs-full gap (1.1)
-    assert r.solver_class is StationarySolver and r.solver_kw["naive_observers"]
+    r = ns.solve(kb, settings={"anderson_m": 5}, refine=True)
+    assert r.refinement.cost_change < 1e-4
+    assert r.solver_class is StationarySolver and r.refinement.fine.settings.anderson_m == 5   # the same solver, finer
 
 
 def test_model_is_single_sourced():
@@ -157,13 +157,12 @@ def test_structural_errors_come_before_the_unused_parameter_check():
     assert "never used" not in str(e.value)
 
 
-def test_linear_terms_are_noted_and_builder_is_accepted():
+def test_linear_terms_are_noted_and_the_equations_form_is_accepted():
     m = ns.load(os.path.join(EX, "ch5_cycle_market.yaml"))
     assert any("linear loss term" in n for n in m.notes)
-    from noisestate import ModelBuilder
-    b = (ModelBuilder("b", p=2.0).channel("w0", "w1").state("X", drift={"D": 1.0}, noise={"w0": 1.0})
-         .agent("a", ["D"], [[1.0, "X", "X"], ["p", "D", "D"]]).stationary(window=4.0, nodes=8))
-    b.signal("a", "y", drift={"X": 1.0}, noise={"w1": 1.0})
+    b = {"name": "b", "params": {"p": 2.0}, "shocks": ["w0", "w1"], "states": {"X": "D dt + dw0"},
+         "agents": {"a": {"controls": "D", "observes": {"y": "X dt + dw1"}, "loss": "X^2 + p D^2"}},
+         "horizon": {"window": 4.0}, "numerics": {"nodes": 8}}
     assert ns.solve(b).converged and ns.sweep(b, "p", [2.0, 3.0])[1].converged
 
 
@@ -281,12 +280,16 @@ def test_lag_beyond_horizon_rejected_on_every_engine():
             ns.Model.from_dict(d)
 
 
-def test_naive_observers_are_validated():
+def test_naive_observers_is_withdrawn():
+    """1.1 withdrew naive_observers: it used Chapter 6's naive and privy the other way round and its solves failed
+    their own first-order conditions.  Every route that took it now says so."""
     kb = ns.load(os.path.join(EX, "ch4_kyle_back.yaml"))
-    for bad, exc in (({"trader1": ["playr2"]}, ValueError), ({"playr1": ["market_maker"]}, ValueError),
-                     ({"trader1": "market_maker"}, TypeError), ({"trader1": ["trader1"]}, ValueError)):
-        with pytest.raises(exc):
-            engines.stationary(kb, naive_observers=bad)
+    for call in (lambda: ns.solve(kb, naive_observers={"trader1": ["market_maker"]}),
+                 lambda: engines.stationary(kb, naive_observers={"trader1": ["market_maker"]})):
+        with pytest.raises(TypeError, match="withdrawn in 1.1"):
+            call()
+    with pytest.raises(ValueError, match="withdrawn in 1.1"):
+        ns.Agent("a", controls=[ns.Control("D")], loss=ns.Control("D")**2, naive_observers=["b"])
 
 
 def test_wrong_grid_warm_start_is_an_error_on_every_engine():

@@ -34,6 +34,11 @@ from ._settings import Settings, tunable
 from .spec import Agent, Atom, Model
 
 
+
+WITHDRAWN_NAIVE = ("naive_observers was withdrawn in 1.1: it did not compute Chapter 6's naive or privy equilibria "
+                   "(its 'naive' was the chapter's privy, and its solves failed their own first-order conditions). "
+                   "Monitored deviations will come back as a model's monitoring relation.")
+
 class Compiled(CompiledBase):
     """Grid, index maps and constant operators for a stationary model."""
     LEAD_WEIGHT_WARN = tunable("lead_weight_warn")     # warn when a lead's past flows outweigh the current one by more than this (settings)
@@ -509,41 +514,20 @@ class StationarySolver(EngineBase):
     #  with smallest eigenvalue 2 eps.  cost_mass() is that average-cost Gram at every rho.
     SECOND_ORDER_QUADRATIC = True
 
-    def __init__(self, model: Model, verbose: bool = False, naive_observers: Optional[Dict[str, List[str]]] = None, settings=None):
-        """naive_observers: {agent: [observers]} lists agents whose strategies do NOT react to that agent's
-        deviations (Chapter 6's naive observers); every other observer is privy and reacts through its map.
-        settings: the tuning constants (noisestate.Settings, or a dict of its fields; the defaults when None)."""
+    def __init__(self, model: Model, verbose: bool = False, settings=None, **withdrawn):
+        """settings: the tuning constants (noisestate.Settings, or a dict of its fields; the defaults when None)."""
+        if "naive_observers" in withdrawn:
+            raise TypeError(WITHDRAWN_NAIVE)
+        if withdrawn:
+            raise TypeError(f"unknown option(s) {sorted(withdrawn)} for the stationary engine")
         if model.horizon.kind == "transition":
             raise ValueError(f"horizon.kind 'transition' ({model.name!r}) runs on the spectral finite engine only "
                              "(noisestate.solve routes it there; this engine has no past)")
-        super().__init__(model, verbose, settings=settings, naive_observers=naive_observers)
+        super().__init__(model, verbose, settings=settings)
         self.c = Compiled(model, settings=self.settings)
-        self.naive_observers = naive_observers or {}
-        names = [a.name for a in model.agents]
-        if not isinstance(self.naive_observers, dict):
-            raise TypeError("naive_observers must be a dict {agent: [observers that do not react to it]}")
-        for k, v in self.naive_observers.items():
-            if k not in names:
-                raise ValueError(f"naive_observers: {k!r} is not an agent (agents: {names})")
-            if isinstance(v, str) or not all(isinstance(x, str) for x in v):
-                raise TypeError(f"naive_observers[{k!r}] must be a list of agent names")
-            bad = [x for x in v if x not in names]
-            if bad:
-                raise ValueError(f"naive_observers[{k!r}]: {bad} are not agents (agents: {names})")
-            if k in v:
-                raise ValueError(f"naive_observers[{k!r}] lists the agent itself")
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
 
     # -------------------------------------------- overridable model pieces
-    def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
-        """Responses of the primary kernels to a unit impulse of each of the agent's controls, with the
-        agent's own reaction switched off.  Naive observers do not react to this agent."""
-        naive = self.naive_observers.get(agent.name, [])
-        if not naive:
-            return R
-        mz = {k: (np.zeros_like(v) if k in naive else v) for k, v in maps.items()}
-        return self.c.closed_loop(mz, excluded=agent.name, impulse_controls=agent.controls)[:, self.c.nW:]
-
     def _lead_term(self, agent: Agent, Ru: np.ndarray, name: str, lag: float) -> np.ndarray:
         """(N, N) operator on the led atom's (Q zeta) kernel: the past-date term of a lead (see EngineBase)."""
         # flows at dates t - |lag| <= tau < t also read the quantity after t, so the derivative of the

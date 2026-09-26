@@ -133,17 +133,15 @@ def test_lagged_undelayed_finite_model_is_resolved_at_six_nodes():
 def _cross_delayed(rho, window=3.0, nodes=16, only_delayed=False):
     """p2 watches p1's state through a row observed with a delay of 0.5."""
     import noisestate as ns
-    b = ns.ModelBuilder("cross", r=0.5)
-    b.channel("w0", "v1", "v3") if only_delayed else b.channel("w0", "v1", "v2", "v3")
-    b.state("X", drift={"D1": 1.0, "D2": 1.0}, noise={"w0": 1.0})
-    b.agent("p1", controls=["D1"], loss=[[1.0, "X", "X"], ["r", "D1", "D1"]])
-    b.signal("p1", "y1", drift={"X": 1.0}, noise={"v1": 1.0})
-    b.agent("p2", controls=["D2"], loss=[[1.0, "X", "X"], ["r", "D2", "D2"]])
-    if not only_delayed:
-        b.signal("p2", "y2", drift={"X": 1.0}, noise={"v2": 1.0})
-    b.signal("p2", "flow", drift={"X": 1.0}, noise={"v3": 0.5}, delay=0.5)
-    b.stationary(discount=rho, window=window, nodes=nodes)
-    return b.build()
+    p2_sees = {} if only_delayed else {"y2": "X dt + dv2"}
+    p2_sees["flow"] = {"d": "X dt + 0.5 dv3", "delay": 0.5}
+    return ns.Model.from_dict({
+        "name": "cross", "params": {"r": 0.5},
+        "shocks": ["w0", "v1", "v3"] if only_delayed else ["w0", "v1", "v2", "v3"],
+        "states": {"X": "(D1 + D2) dt + dw0"},
+        "agents": {"p1": {"controls": "D1", "observes": {"y1": "X dt + dv1"}, "loss": "X^2 + r D1^2"},
+                   "p2": {"controls": "D2", "observes": p2_sees, "loss": "X^2 + r D2^2"}},
+        "horizon": {"window": window, "discount": rho}, "numerics": {"nodes": nodes}})
 
 
 def test_a_delayed_observer_cannot_react_before_the_delay():

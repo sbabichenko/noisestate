@@ -165,12 +165,11 @@ def _terminal_time(payload: dict) -> float:
 
     Not horizon.window.  0.8 split the lag-truncation length L from the terminal time T, and a
     finite horizon carries only T -- so `payload["horizon"]["window"]` raised KeyError here and
-    `noisestate plot` could not draw a finite or cell payload at all.  A transition keeps its T in
-    the top-level `window` key, which is named for the payload's history rather than its content
-    (docs/payload.md says so).
+    `noisestate plot` could not draw a finite or cell payload at all.  A transition keeps its T (for a
+    march, the T it found) in the top-level `T` key (`window` before 1.1).
     """
     if payload["kind"] == "transition":
-        return float(payload["window"])
+        return float(payload["T"] if "T" in payload else payload["window"])
     horizon = payload.get("horizon") or {}
     for key in ("T", "window"):                  # "window" only for a payload written before 0.8
         if horizon.get(key) is not None:

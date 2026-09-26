@@ -12,7 +12,7 @@ def test_two_firm_cycle_market_ties_definitions_and_two_controls():
     from make_ch5_cycle_market import build
     from noisestate.stationary import StationarySolver
     b = build(N=2, L=6.0, nodes=6, unit_range=3.0)
-    tied = ns.solve(b.build(), tol=1e-8).require_converged()
+    tied = ns.solve(b, tol=1e-8).require_converged()
     d = b.to_dict(); d["ties"] = []
     untied_solver = StationarySolver(ns.Model.from_dict(d))
     new = untied_solver.response_map(tied.maps)

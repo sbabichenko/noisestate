@@ -7,6 +7,32 @@ ever disagree).  A file is validated against it first (`noisestate validate`,
 own checks ([guards.md](guards.md), "What the model rejects").  Unknown keys are errors everywhere.  Every
 coefficient may be a number or an expression in the parameters (`"sqrt(p1)"`, `"-gamma1"`).
 
+## Written as equations
+
+A file may instead write each block as its equation; `load()` reads either form into the same model,
+`model.save()` writes this one, and `model.to_dict()` returns the grammar below:
+
+```yaml
+name: ch1_tracking
+params: {p1: 3, p2: 10, r1: 0.1, r2: 0.1, b1: 1, b2: -1, sigma: 1, T: 1}
+shocks: [W0, W1, W2]                        # the Brownian shocks; dW0 is the increment of W0
+states:
+  X: "(D1 + D2) dt + sigma dW0"             # or {d: "...", initial: 0.5}
+agents:
+  player1: {controls: D1, observes: "sqrt(p1) X dt + dW1", loss: "(X - b1)^2 + r1 D1^2"}
+  player2: {controls: D2, observes: "sqrt(p2) X dt + dW2", loss: "(X - b2)^2 + r2 D2^2"}
+horizon: {T: T}                             # a finite game on [0, T]; {window: 8} is stationary
+numerics: {nodes: 24}
+```
+
+In an equation, multiplication may be written as a space, `^` is a power, `dt` marks a drift term and
+`dW<name>` is a shock; `X@0.5` is `X` half a time unit earlier (a lag) and `X@-0.5` later (a lead, in a
+loss only).  `observes` is one equation (the signal `y`), a list (`y1`, `y2`, ...) or a mapping of named
+signals, and a signal may be `{d: "...", delay: 0.5}`.  `definitions: {name: "..."}` names a linear
+combination.  A loss keeps its constant (`(X - b1)^2` has `b1^2`), reported in the cost as its
+`constant` part.  A horizon with `kind:` (a transition) is the grammar's block, unchanged.  `noisestate
+validate` reads the equations into the grammar and checks that.
+
 To read a file back as equations rather than as keys, `print(ns.load(path).describe())` lays the loaded
 model out as differentials, delays, losses and the conventions that apply, at the current parameter
 values and without a solve; a notebook cell shows the same content as HTML.
@@ -18,6 +44,7 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `name` | string |  | `model` |
 | `params` | map of number or expression | parameters, evaluated in order (a later one may use an earlier one) | none |
 | `channels` | list of string | the Brownian channels | none (every one listed must load something) |
+| `agents.<name>.constant` | number or expression | the loss's constant: part of the cost, moves no strategy | 0 |
 | `states` | map of object |  |  |
 | `states.<name>.drift` | linear expression | a linear expression: {atom: coef} (an atom is name or name@lag; const for a constant), or [[coef, atom], ...] | empty |
 | `states.<name>.noise` | linear expression | a linear expression: {atom: coef} (an atom is name or name@lag; const for a constant), or [[coef, atom], ...] | empty |

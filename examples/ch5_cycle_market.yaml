@@ -74,98 +74,98 @@ states:
     noise:
       w_eta2: sigma_eta
 definitions:
+  yH0:
+    q: 1
+    Pidx: theta - 1
+    pi0: -theta
+    eta0: 1
   Pidx:
     P0@tau: 0.3333333333333333
     P1@tau: 0.3333333333333333
     P2@tau: 0.3333333333333333
-  Pnext:
-    P0: 0.3333333333333333
-    P1: 0.3333333333333333
-    P2: 0.3333333333333333
   pi0:
-    P0@tau: 1.0
-  i0:
-    o0@tau: 1.0
-  d0:
-    o1@tau: 1.0
-  yH0:
-    q: 1.0
-    Pidx: theta - 1
-    pi0: -theta
-    eta0: 1.0
-  pi1:
-    P1@tau: 1.0
-  i1:
-    o1@tau: 1.0
-  d1:
-    o2@tau: 1.0
-  yH1:
-    q: 1.0
-    Pidx: theta - 1
-    pi1: -theta
-    eta1: 1.0
-  pi2:
-    P2@tau: 1.0
-  i2:
-    o2@tau: 1.0
-  d2:
-    o0@tau: 1.0
-  yH2:
-    q: 1.0
-    Pidx: theta - 1
-    pi2: -theta
-    eta2: 1.0
+    P0@tau: 1
   dev0:
-    pi0: 1.0
+    pi0: 1
     Pidx: -(1 - xi - zeta)
     q: -xi
     pi2: -zeta
     a0@tau: zeta
+  pi2:
+    P2@tau: 1
+  d0:
+    o1@tau: 1
   mis0:
-    a0@tau: 1.0
-    i0: 1.0
-    d0: -1.0
-    yH0: -1.0
-  bill0:
-    P2: 1.0
-    Pnext: -1.0
+    a0@tau: 1
+    i0: 1
+    d0: -1
+    yH0: -1
+  i0:
+    o0@tau: 1
   quote_gap0:
-    P0: 1.0
-    Pnext: -1.0
+    P0: 1
+    Pnext: -1
+  Pnext:
+    P0: 0.3333333333333333
+    P1: 0.3333333333333333
+    P2: 0.3333333333333333
+  bill0:
+    P2: 1
+    Pnext: -1
+  yH1:
+    q: 1
+    Pidx: theta - 1
+    pi1: -theta
+    eta1: 1
+  pi1:
+    P1@tau: 1
   dev1:
-    pi1: 1.0
+    pi1: 1
     Pidx: -(1 - xi - zeta)
     q: -xi
     pi0: -zeta
     a1@tau: zeta
+  d1:
+    o2@tau: 1
   mis1:
-    a1@tau: 1.0
-    i1: 1.0
-    d1: -1.0
-    yH1: -1.0
-  bill1:
-    P0: 1.0
-    Pnext: -1.0
+    a1@tau: 1
+    i1: 1
+    d1: -1
+    yH1: -1
+  i1:
+    o1@tau: 1
   quote_gap1:
-    P1: 1.0
-    Pnext: -1.0
+    P1: 1
+    Pnext: -1
+  bill1:
+    P0: 1
+    Pnext: -1
+  yH2:
+    q: 1
+    Pidx: theta - 1
+    pi2: -theta
+    eta2: 1
   dev2:
-    pi2: 1.0
+    pi2: 1
     Pidx: -(1 - xi - zeta)
     q: -xi
     pi1: -zeta
     a2@tau: zeta
+  d2:
+    o0@tau: 1
   mis2:
-    a2@tau: 1.0
-    i2: 1.0
-    d2: -1.0
-    yH2: -1.0
-  bill2:
-    P1: 1.0
-    Pnext: -1.0
+    a2@tau: 1
+    i2: 1
+    d2: -1
+    yH2: -1
+  i2:
+    o2@tau: 1
   quote_gap2:
-    P2: 1.0
-    Pnext: -1.0
+    P2: 1
+    Pnext: -1
+  bill2:
+    P1: 1
+    Pnext: -1
 agents:
   firm0:
     controls:
@@ -174,35 +174,30 @@ agents:
     signals:
       sales:
         drift:
-          yH0: 1.0
+          yH0: 1
         noise:
           w_0_0: s1
-        delay: 0.0
       trans_price:
         drift:
-          P2: 1.0
+          P2: 1
         noise:
           w_0_1: s2
-        delay: 0.0
       order_book:
         drift:
-          o1: 1.0
+          o1: 1
         noise:
           w_0_2: s3
-        delay: 0.0
       upstream_order:
         drift:
-          o2: 1.0
+          o2: 1
         noise:
           w_0_3: s4
-        delay: 0.0
       own_prod:
         drift: {}
         noise:
-          w_a0: 1.0
-        delay: 0.0
+          w_a0: 1
     loss:
-    - - 1.0
+    - - 1
       - dev0
       - dev0
     - - -2*kappa
@@ -221,7 +216,6 @@ agents:
     - - 2*c
       - o0
       - bill0
-    myopic: false
   firm1:
     controls:
     - P1
@@ -229,35 +223,30 @@ agents:
     signals:
       sales:
         drift:
-          yH1: 1.0
+          yH1: 1
         noise:
           w_1_0: s1
-        delay: 0.0
       trans_price:
         drift:
-          P0: 1.0
+          P0: 1
         noise:
           w_1_1: s2
-        delay: 0.0
       order_book:
         drift:
-          o2: 1.0
+          o2: 1
         noise:
           w_1_2: s3
-        delay: 0.0
       upstream_order:
         drift:
-          o0: 1.0
+          o0: 1
         noise:
           w_1_3: s4
-        delay: 0.0
       own_prod:
         drift: {}
         noise:
-          w_a1: 1.0
-        delay: 0.0
+          w_a1: 1
     loss:
-    - - 1.0
+    - - 1
       - dev1
       - dev1
     - - -2*kappa
@@ -276,7 +265,6 @@ agents:
     - - 2*c
       - o1
       - bill1
-    myopic: false
   firm2:
     controls:
     - P2
@@ -284,35 +272,30 @@ agents:
     signals:
       sales:
         drift:
-          yH2: 1.0
+          yH2: 1
         noise:
           w_2_0: s1
-        delay: 0.0
       trans_price:
         drift:
-          P1: 1.0
+          P1: 1
         noise:
           w_2_1: s2
-        delay: 0.0
       order_book:
         drift:
-          o0: 1.0
+          o0: 1
         noise:
           w_2_2: s3
-        delay: 0.0
       upstream_order:
         drift:
-          o1: 1.0
+          o1: 1
         noise:
           w_2_3: s4
-        delay: 0.0
       own_prod:
         drift: {}
         noise:
-          w_a2: 1.0
-        delay: 0.0
+          w_a2: 1
     loss:
-    - - 1.0
+    - - 1
       - dev2
       - dev2
     - - -2*kappa
@@ -331,7 +314,6 @@ agents:
     - - 2*c
       - o2
       - bill2
-    myopic: false
 ties:
 - - firm0
   - firm1
@@ -344,6 +326,3 @@ numerics:
   nodes: 8
   unit: 0.5
   unit_range: 8.0
-# The summary flags UNDER-RESOLVED (representation error 1.3e-05 against a 1e-06 threshold).  The
-# example ships at 8 nodes so it solves in seconds; the flag stands at 10 and 12 nodes too (9.9 s,
-# 25 s), so clearing it costs more than an example should.  The costs are good to about 1e-05.

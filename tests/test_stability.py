@@ -8,7 +8,7 @@ def test_resolution_flag_and_stability_on_the_two_firm_market():
     map and action-kernel paths then disagree.  At 14 nodes they agree and the stability report is
     computed at a genuine fixed point."""
     from make_ch5_cycle_market import build
-    coarse = ns.solve(build(N=2, L=6.0, nodes=6, unit_range=3.0).build(), tol=1e-8).require_converged()
+    coarse = ns.solve(build(N=2, L=6.0, nodes=6, unit_range=3.0), tol=1e-8).require_converged()
     assert coarse.diagnostics.statuses["resolution"] is Status.FAILED and "UNDER-RESOLVED" in coarse.summary()
     d = build(N=2, L=6.0, nodes=14, unit_range=3.0).to_dict(); d["ties"] = []
     ra = ns.solve(ns.Model.from_dict(d), tol=1e-8).require_converged(); rm = ns.solve(ns.Model.from_dict(d), {"variable": "maps"}, tol=1e-8).require_converged()

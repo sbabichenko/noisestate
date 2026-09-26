@@ -9,16 +9,30 @@ from html import escape
 from textwrap import wrap
 
 WIDTH = 88
-NOTATION = ('coefficients are evaluated at the parameters above; name@tau is that quantity tau time '
+NOTATION = ('coefficients are written in the parameters above; name@tau is that quantity tau time '
             'units earlier (negative tau is a lead); dW[c] is a primitive Brownian increment')
 
 
 # ---------------------------------------------------------------- the model's pieces, rendered once
 
 def _sum(terms):
+    """terms: (value, atom) or (value, atom, text), text the coefficient as written in the parameters (sqrt(p1))."""
     out = ''
-    for coefficient, atom in terms:
+    for t in terms:
+        coefficient, atom = t[0], t[1]
+        text = t[2] if len(t) > 2 else None
         if coefficient == 0:
+            continue
+        if text:
+            text = text.replace('**', '^')                  # the powers as the loss writes them (D1^2)
+            negative = text.startswith('-') and not text.startswith('-(')
+            body = text[1:] if negative else text
+            if not negative and text.startswith('-('):
+                negative, body = True, text[2:-1]
+            if ' + ' in body or ' - ' in body:
+                body = f'({body})'
+            term = body + (f' * {atom}' if atom else '')
+            out += (' - ' if negative else ' + ') + term if out else ('-' if negative else '') + term
             continue
         magnitude = abs(coefficient)
         term = atom if magnitude == 1 and atom else f'{magnitude:g}' + (f' * {atom}' if atom else '')
@@ -26,8 +40,21 @@ def _sum(terms):
     return out or '0'
 
 
-def _linear(expr):
-    return _sum((coef, '' if atom == 'const' else atom) for atom, coef in expr.items())
+def _written(value, source, params):
+    """The coefficient as the model file writes it, when that is an expression in the parameters that still
+    evaluates to the resolved value (a stale source falls back to the number)."""
+    if not isinstance(source, str):
+        return None
+    try:
+        from .spec import safe_eval
+        return source if abs(safe_eval(source, dict(params)) - float(value)) <= 1e-12 * max(1.0, abs(float(value))) else None
+    except Exception:
+        return None
+
+
+def _linear(expr, src=None, params=None):
+    src = src or {}
+    return _sum((coef, '' if atom == 'const' else atom, _written(coef, src.get(atom), params or {})) for atom, coef in expr.items())
 
 
 def _group(text):
@@ -35,16 +62,25 @@ def _group(text):
     return f'({text})' if ' + ' in text or ' - ' in text else text
 
 
-def _equation(row):
+def _equation(row, src=None, params=None):
     """Write the row as its differential, dropping a part that is identically zero."""
-    drift, diffusion = _linear(row.drift), _sum((coef, f'dW[{channel}]') for channel, coef in row.noise.items())
+    src = src or {}; params = params or {}
+    drift = _linear(row.drift, src.get('drift'), params)
+    diffusion = _sum((coef, f'dW[{channel}]', _written(coef, (src.get('noise') or {}).get(channel), params))
+                     for channel, coef in row.noise.items())
     parts = ([f'{_group(drift)} dt'] if drift != '0' else []) + ([diffusion] if diffusion != '0' else [])
     return f'd{row.name} = ' + (' + '.join(parts) or '0')
 
 
-def _loss(agent):
-    return _sum((term[0], f'{term[1]}^2' if len(term) == 3 and term[1] == term[2] else ' * '.join(term[1:]))
-                for term in agent.loss)
+def _loss(agent, src=None, params=None):
+    src = src or {}; params = params or {}
+    written = src.get('loss') or []
+    terms = [(term[0], f'{term[1]}^2' if len(term) == 3 and term[1] == term[2] else ' * '.join(term[1:]),
+              _written(term[0], written[i][0] if i < len(written) and list(map(str, written[i][1:])) == list(map(str, term[1:])) else None, params))
+             for i, term in enumerate(agent.loss)]
+    if getattr(agent, 'constant', 0):
+        terms.append((agent.constant, '', _written(agent.constant, src.get('constant'), params)))
+    return _sum(terms)
 
 
 def _align(equations):
@@ -76,32 +112,27 @@ def _past(past):
     return str(past)
 
 
-def _naive(naive_observers):
-    if isinstance(naive_observers, dict):
-        return [f'{k}: {v}' for k, v in naive_observers.items()]
-    return [str(naive_observers)] if isinstance(naive_observers, str) else [str(x) for x in naive_observers]
-
-
 def _pieces(model):
     """Read the resolved fields once, rather than a potentially stale source dictionary."""
     hz = model.horizon
     span = f'{"lag window" if hz.kind == "stationary" else "T"} {hz.extent:g}'
+    src = getattr(model, 'source', None) or {}; P = dict(model.params)
     agents = []
     for agent in model.agents:
+        a_src = (src.get('agents') or {}).get(agent.name) or {}
         agents.append(dict(
-            name=agent.name, controls=list(agent.controls), loss=_loss(agent),
+            name=agent.name, controls=list(agent.controls), loss=_loss(agent, a_src, P),
             signals=[(equation, row.delay) for equation, row
-                     in zip(_align([_equation(row) for row in agent.signals]), agent.signals)]))
+                     in zip(_align([_equation(row, (a_src.get('signals') or {}).get(row.name), P) for row in agent.signals]), agent.signals)]))
     return dict(
         name=model.name,
         horizon=f'{hz.kind}, {span}, discount {hz.discount:g}',
         params=[f'{k} = {v:g}' for k, v in model.params.items()],
-        states=list(zip(_align([_equation(s) for s in model.states]),
+        states=list(zip(_align([_equation(s, (src.get('states') or {}).get(s.name), P) for s in model.states]),
                         [s.initial for s in model.states])),
-        definitions=[f'{d.name} = {_linear(d.expr)}' for d in model.definitions],
+        definitions=[f'{d.name} = {_linear(d.expr, (src.get("definitions") or {}).get(d.name), P)}' for d in model.definitions],
         agents=agents,
         ties=[list(group) for group in model.ties],
-        naive=_naive(model.naive_observers) if model.naive_observers else [],
         transition=(dict(past=_past(hz.past), continuation=str(hz.continuation or 'stationary'))
                     if hz.kind == 'transition' else None),
         notes=list(model.notes))
@@ -169,8 +200,6 @@ def _text(p):
 
     for group in p['ties']:
         lines += ['', 'Shared strategy'] + _items(group)
-    if p['naive']:
-        lines += ['', 'Naive observers'] + _bullets(p['naive'])
     if p['transition']:
         lines += ['', 'Transition']
         lines += _field('past', p['transition']['past'], label_width=14)
@@ -241,9 +270,6 @@ def _html(p):
 
     for group in p['ties']:
         out.append(_section('Shared strategy', ' &nbsp; '.join(_mono(name) for name in group)))
-    if p['naive']:
-        out.append(_section('Naive observers', '<ul style="margin:.2em 0;padding-left:1.2em">'
-                            + ''.join(f'<li>{escape(item)}</li>' for item in p['naive']) + '</ul>'))
     if p['transition']:
         out.append(_section('Transition', _rows([('past', _mono(p['transition']['past'])),
                                                  ('continuation', _mono(p['transition']['continuation']))])))

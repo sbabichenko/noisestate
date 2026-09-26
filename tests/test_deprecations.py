@@ -22,20 +22,21 @@ def test_the_old_result_attributes_are_gone(stat):
         assert stat.evaluations >= 1 and stat.world is not None
 
 
-def test_solve_no_longer_takes_the_numerics_fields_directly():
+def test_solve_takes_the_numerics_fields_directly_again():
+    # solve(m, nodes=6) is solve(m, {"nodes": 6}) since 1.1 (refused 0.6 to 1.0, when two routes were one too many;
+    # with ModelBuilder gone, the keyword is the plain way to say it)
     m = example("ch3_two_player")
-    with pytest.raises(TypeError, match=r"Numerics\(nodes=\.\.\.\)"):
-        ns.solve(m, nodes=6)
+    assert ns.solve(m, nodes=6).costs == ns.solve(m, Numerics(nodes=6)).costs
+    assert ns.solve(m, Numerics(nodes=6), settings=Settings(anderson_m=3)).settings.anderson_m == 3   # settings is a Numerics field
     with pytest.raises(TypeError, match="unknown option"):
-        ns.solve(m, Numerics(nodes=6), settings=Settings(anderson_m=3))
+        ns.solve(m, Numerics(nodes=6), bogus=3)
     assert ns.solve(m, Numerics(nodes=6)).numerics.nodes == 6
 
 
-def test_transition_no_longer_takes_the_numerics_fields_directly():
+def test_transition_takes_the_numerics_fields_directly_too():
     old = ns.solve(example("ch3_two_player").with_numerics(nodes=6)).require_converged()
     new = example("ch3_two_player").with_params(p1=10.0)
-    with pytest.raises(TypeError, match=r"Numerics\(nodes=\.\.\.\)"):
-        ns.transition(old, new, 3.0, nodes=6)
+    assert ns.transition(old, new, 3.0, nodes=6).numerics.nodes == 6
     with pytest.raises(TypeError, match="unknown option"):
         ns.transition(old, new, 3.0, stationary={"nodes": 6})
 
@@ -81,8 +82,7 @@ def test_the_schema_no_longer_carries_the_old_keys():
 def test_a_settings_field_passed_to_solve_names_the_settings_route():
     with pytest.raises(TypeError, match=r"Numerics\(settings=\{'anderson_m': \.\.\.\}\)"):
         ns.solve(example_path("ch3_two_player"), anderson_m=3)
-    with pytest.raises(TypeError, match=r"Numerics\(damping=\.\.\.\)"):
-        ns.solve(example_path("ch3_two_player"), damping=0.5)
+    assert ns.solve(example_path("ch3_two_player"), nodes=6, damping=0.5).numerics.damping == 0.5   # a Numerics field is taken
 
 
 @pytest.fixture(scope="module")
@@ -96,7 +96,7 @@ def test_cell_engine_kernel_without_a_channel_is_the_stack_over_channels(cells):
     assert K.shape == (N, N, len(cells.channels))
     for k, ch in enumerate(cells.channels):
         assert np.array_equal(K[..., k], cells.kernel("X", ch))
-    assert cells.strategy_kernel("D1").shape == (N, N, len(cells.channels))
+    assert cells.kernel("D1").shape == (N, N, len(cells.channels))
 
 
 def test_cell_engine_mean_solve_refuses_a_singular_mean_system():
@@ -175,7 +175,7 @@ def test_the_new_names_all_work_and_warn_about_nothing(stat):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         stat.require_converged(); stat.diagnostics.rows; stat.diagnostics.rows
-        stat.diagnostics.assess(); stat.grid_summary(); stat.strategy_kernel("D1")
+        stat.diagnostics.assess(); stat.grid_summary(); stat.kernel("D1")
         stat.has_means; stat.mean_times
         m = example("ch3_two_player")
         m.with_finite(2.0); m.with_stationary(4.0); m.owner_of("D1"); m.drives_means

@@ -1,6 +1,6 @@
 # API reference
 
-Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 45
+Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 48
 names; this page covers all of them, plus the methods on the objects they return.
 
 The shortest useful path is three calls:
@@ -31,19 +31,21 @@ That solve converged — `res.converged` is `True` and `res.require_converged()`
 | `ns.example(name)` | the path of a shipped model file — `ns.load(ns.example("ch4_kyle_back"))`. `ns.examples()` lists the seven names. They install with the package, so this works from a plain `pip install` |
 | `ns.load(path)` | you have a YAML model file. A relative `horizon.past.model` resolves from that file's directory |
 | `ns.Model.from_dict(d)` | you have the file structure as a dict — generated models, tests, anything programmatic |
-| `ns.Model(name=..., states=..., agents=..., horizon=...)` | you built the pieces with the expression API below |
-| `ns.ModelBuilder(name, **params)` | the fluent form. Its `.finite()`/`.stationary()` **mutate the builder**, unlike the `Model` methods of similar name, which return a copy |
+| `ns.Model.from_dict(d)` with equations | the same dict written as equations: `shocks: [W0]`, `states: {X: "(D1 + D2) dt + sigma dW0"}`, `observes:`, `loss: "(X - b)^2 + r D^2"` (docs/model_file.md). `load()` reads it from a file |
+| `ns.Game(states, agents, T=..., window=..., discount=..., nodes=...)` | you wrote the equations in Python (below): a finite game with `T`, a stationary one with `window`. Returns a `Model`; `game.solve()` solves it |
+| `ns.Model(name=..., states=..., agents=..., horizon=...)` | the same, with an explicit horizon object |
 
 ### The expression API
 
 | call | use it when |
 |---|---|
-| `ns.Param(name, value)` / `ns.Param.many(**kw)` | a named parameter you will sweep or override. Arithmetic on it stays symbolic, so the saved file keeps `sqrt(p1)` rather than `1.732…` |
-| `ns.shocks("w0", "w1")` | the Brownian channels as a namespace. The order given here is the model's channel order |
-| `ns.State("X")`, then `X.drift = D + sigma * w.w0` | a state and its law of motion |
+| `ns.params(**kw)` (`ns.Param(name, value)`, `ns.Param.many(**kw)`) | named parameters you will sweep or override. Arithmetic on them stays symbolic, so the saved file keeps `sqrt(p1)` rather than `1.732…` |
+| `dW0, dW1 = ns.shocks(2)` (or `ns.shocks("w0", "w1")`, a namespace) | the Brownian shocks, named W0, W1, ...; their order is the model's |
+| `ns.dt` | the time increment: `(D1 + D2) * dt` is a drift, which with the shocks makes an `ns.Differential` |
+| `ns.State("X")`, then `X.d = (D1 + D2) * dt + sigma * dW0` | a state and its law of motion (`X.drift = ...` takes the drift and noise as one expression) |
 | `ns.Control("D")` | a control; it belongs to whichever `Agent` lists it |
-| `ns.Signal(name, expr, delay=0.0)` | one observed row. The same object `with_signal()` takes |
-| `ns.Agent(name, controls, signals, loss, myopic=False, naive_observers=None)` | an agent's controls, information and quadratic loss |
+| `ns.Signal(name, expr, delay=0.0)` | one named, possibly delayed, observed row. The same object `with_signal()` takes |
+| `ns.Agent(name, controls, observes=..., loss=..., myopic=False, naive_observers=None)` | an agent's controls, what it observes (an expression, a list, a dict of named signals, or Signals) and its quadratic loss, whose constant is kept as part of the cost |
 | `ns.define(name, expr)` | a named linear expression reported as its own kernel |
 | `ns.sqrt exp log sin cos tanh` | these functions of a `Param` expression, kept symbolic |
 
@@ -125,7 +127,9 @@ signatures and return types do not.
 |---|---|
 | `res.costs` | the equilibrium cost per agent. `res.cost_parts` splits it; `res.cost_kind` names the convention |
 | `res.kernel(name, channel=None)` | the **closed-loop** response to a shock, as a `Kernel` |
-| `res.strategy_kernel(control, channel=None)` | the **strategy** itself |
+| `res.strategy(control, channel=None)` | the **strategy** on the noise-state, D: the weight the action puts on the agent's estimate of each shock (finite games without delays) |
+| `res.estimate(agent, name, channel=None)` | the agent's estimate of a quantity, as a kernel |
+| `res.response(q, to=shock, at=s, seen_by=agent).over(t)` | follow one shock through time: the response of q (or an agent's estimate of it) |
 | `res.means` / `.mean_times` | the means and the time nodes they sit on. `res.has_means` is a bool |
 | `res.paths` / `.times` | paths over time on a finite horizon, and their nodes |
 | `res.foc[agent][control]` | the FOC split into `physical` (if nobody reacted) and `wedge` (because they do) |
