@@ -1054,7 +1054,9 @@ class StationarySolver(EngineBase):
         converged."""
         if any(len(self.model.privy(a.name)) > 1 for a in self.model.agents):
             self._monitoring(res.maps)                  # the last evaluation's, when it was at these maps
-            if self._kernel_residual > 1e-10:
+            # settled to the solve's own tolerance (at least 1e-10): at a fine grid the kernels' rounding floor can
+            # sit just above 1e-10, and a solve converged to tol is not failed for it
+            if self._kernel_residual > max(1e-10, float(res.solve_kw.get("tol") or 0.0)):
                 res.converged = False
                 res.message += f"; the monitored response kernels did not settle at the equilibrium (residual {self._kernel_residual:.1e})"
         super()._finish(res)

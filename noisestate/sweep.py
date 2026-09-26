@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Union
 
 import numpy as np
-import yaml
 
 from .spec import Model
 from .numerics import Numerics

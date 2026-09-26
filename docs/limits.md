@@ -2,8 +2,10 @@
 
 What the grammar and the engines do not do, and what is done only approximately.
 
-Scalar states and controls (write vector models as several scalars); no exact
-(noise-free) observation of a state that is not itself a shock.  Means (targets, constant
+Vectors exist in the Python form only (`ns.State("X", 3)`, matrix coefficients), where they expand into scalar
+components; the file form has no vector syntax.  No exact (noise-free) observation of a state that is not itself a
+shock; an instant observation of another agent's control level (`{level: P}`) is a reaction, not information that
+enters the agent's filter, so a market whose trader learns from the quote (Chapter 6's opaque market) is not solved.  Means (targets, constant
 drifts, initial states) are solved as constants on the stationary engine, where a random walk
 with no inputs has no stationary mean and is pinned at 0 and an initial state is rejected, and
 as paths on the finite engines (see [method.md](method.md), "Means").  Lead atoms (`X@-0.5`) are accepted only in a
@@ -70,9 +72,14 @@ flags the Kyle-Back trader, with or without a prior: -0.0018 at eps 0.2 and 12 n
 relative to the flow map's own largest curvature), not vanishing with nodes, gone at eps 1, a
 correct report on the discrete objective and the quadrature's artefact on the D P cross term,
 not a saddle of the market ([transitions.md](transitions.md)); a product rule for that term on the diagonal is a
-candidate fix.  There is no terminal cost x(T)'Qx(T), so LQ games with a terminal penalty are
-outside the grammar; a state with an empty `drift` and `noise` validates and is carried
-as its initial value.  The Chapter 4 example is the stationary variant, where V is a
+candidate fix.  Terminal losses (`terminal:`) are solved on a finite horizon and on a transition ending at T; a
+state with an empty `drift` and `noise` validates and is carried as its initial value.
+
+Chapter 6: monitored deviations (`monitors:`) and instant observations are solved on the stationary engine and on the
+finite engine without a past or a continuation (a transition refuses them); instant observations may not form a cycle
+and are refused with ties.  The general rectangular system is solved through response kernels rather than
+Proposition 6.10's gains, which agree in the linear-quadratic case; `res.foc_residual` checks the kernels.
+`risk_aversion` (the entropic objective) is declared and saved but refused by every engine.  The Chapter 4 example is the stationary variant, where V is a
 random walk on the window and the agents keep receiving V shocks.
 
 On the finite spectral engine the time and age panels are the multiples of the

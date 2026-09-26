@@ -109,7 +109,7 @@ def test_the_payload_version_is_pinned_by_the_schema():
     refinement a dict -- five of those six validated silently under version 1's open schema."""
     res = ns.solve(os.path.join(EX, "ch1_two_player_finite.yaml"), {"nodes": 8})
     d = res.to_dict()
-    assert d["payload_version"] == PAYLOAD_VERSION and PAYLOAD_VERSION == 2
+    assert d["payload_version"] == PAYLOAD_VERSION and PAYLOAD_VERSION == 3
     assert "mean_times" in d and "means_t" not in d          # the attribute's name, not the old key
     assert "assessment" in d and "status" not in d and "resolution_ok" not in d
     assert "start_policy" in d["options"]["solve"] and "start" not in d["options"]["solve"]

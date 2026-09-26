@@ -113,11 +113,18 @@ def model_schema() -> dict:
                 "numerics": numerics_schema()}}
 
 
-PAYLOAD_VERSION = 2          # see payload_schema()'s docstring for what changed
+PAYLOAD_VERSION = 3          # see payload_schema()'s docstring for what changed
 
 
 def payload_schema() -> dict:
-    """The result payload (Result.to_dict()), payload_version 2.
+    """The result payload (Result.to_dict()), payload_version 3.
+
+    VERSION 3 (2.0) renamed and added keys; a consumer of version 2 must follow them:
+
+        channels                -> shocks (the kernels' columns)
+        extra["window"]         -> extra["T"] on a transition (the T it was solved on)
+        kind "finite_cells"     -> gone (the cell engine left the package for extras/)
+        cost_parts[agent]       -> gains "constant", the loss's constant (costs now include it)
 
     VERSION 2 (0.8) changed six things, and a consumer written against version 1 will not read it:
 

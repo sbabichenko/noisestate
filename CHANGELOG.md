@@ -1,8 +1,25 @@
 # Changelog
 
-## 1.1.0 (unreleased)
+## 2.0.0 (2026-09-26)
 
 A model reads like its equations, in a file and in Python.
+
+### Breaking changes from 1.0.1
+
+Code and files written for 1.0.1 need these changes; nothing old is kept as an alias.
+
+| 1.0.1 | 2.0.0 |
+|---|---|
+| file key `channels:`; `res.channels`; `kernel(..., channel=)` | `shocks:`; `res.shocks`; `kernel(name, shock)` |
+| `ModelBuilder`; `Model(...)`; `Model.load`; `read_yaml` | the equations form (`ns.Game`, `ns.State`, `ns.Agent`, ...); `ns.load` / `ns.as_model` |
+| `using_settings`; `solve(..., solver_kw=, solve_kw=)` | `Numerics(settings=...)`; `solve()`'s own keywords |
+| `naive_observers` | `monitors:` (Chapter 6's monitoring relation, the other way round) |
+| `res.strategy_kernel()`; `expected_loss` | `res.kernel(control)` or `res.strategy(control)`; `res.costs` |
+| `with_signal(drift=, noise=)` | `with_signal(name, "equation")` |
+| engine `cells`; CLI `--window` / `--continuation-window` on transitions | `extras/cells.py`; a transition's window is its past's |
+| `save()` writes the grammar | `save()` writes the equations (`form="grammar"` for the old layout) |
+| costs without a loss's constant | costs include it (`cost_parts[agent]["constant"]`) |
+| result payload version 2 | version 3 (`channels` -> `shocks`, a transition's `extra["window"]` -> `extra["T"]`) |
 
 - **Equations in the model file.** `states: {X: "(D1 + D2) dt + sigma dW0"}`, `observes: "sqrt(p1) X dt + dW1"`,
   `loss: "(X - b1)^2 + r1 D1^2"`, `shocks: [W0, W1]`, `horizon: {T: T}` (noisestate.equations; docs/model_file.md).
@@ -36,6 +53,8 @@ A model reads like its equations, in a file and in Python.
   (..., quantities, shocks); `sweep()` returns `ns.Sweep`, still a list, with `.values`, `.costs[agent]`,
   `.converged`, `.results` and `.table()`; `res.kernel("X + 2 D1")`, `res.response(X - D1, ...)` and
   `res.estimate(agent, expression)` read weighted sums of unlagged quantities.
+- **Chapter 6 kernel check.** A solve with monitored deviations is failed for unsettled response kernels only above
+  its own tolerance (at least 1e-10), not above a fixed 1e-10 that a fine grid's rounding floor can exceed.
 - **Fixes for transitions.** A parameter used only by a transition's `horizon.T` (`T: T`) no longer makes its
   stationary continuation fail the unused-parameter check (1.0.1 has the same bug).  The "settled" check now says
   to raise `horizon.T` (it said `horizon.window`, a pre-0.8 name) and, when the transition's grid and its
@@ -56,8 +75,9 @@ A model reads like its equations, in a file and in Python.
   quote.  A signal is reacted to predictably, after it is observed; a level is reacted to at once, with the loading
   its loss gives (`-G^DD^-1 G^DP`).  On the path the two coincide; they differ for deviations, where a spike of the
   quote draws an order spike at once, which moves the inventory and gives a quote with no square in its owner's loss
-  its curvature (Chapter 6's G^{MM,0}).  The instant reactions may not form a cycle.  Stationary engine; with
-  `gamma = 0` the strategic market maker of Chapter 6 reproduces Chapter 4's competitive market exactly.
+  its curvature (Chapter 6's G^{MM,0}).  The instant reactions may not form a cycle.  Both engines (the finite one without a past or a
+  continuation); with `gamma = 0` the strategic market maker of Chapter 6 reproduces Chapter 4's competitive market
+  exactly.
 - **Monitored deviations (Chapter 6) on the stationary engine.**  `monitors: [market_maker]` on an agent makes it
   privy to that agent's deviations (`Agent(..., monitors=...)` in Python), checked for transitivity; `model.privy(i)`
   lists the privy set.  The players privy to a deviation respond to it through response kernels fixed by their own
@@ -68,8 +88,8 @@ A model reads like its equations, in a file and in Python.
   profit (0.5).  Without `monitors` a model is the all-naive corner, as before.
 - **Removed: `naive_observers`.** It used Chapter 6's naive and privy the other way round, computed neither of the
   chapter's corners, and its solves failed their own first-order conditions (it zeroed the observers' reactions in
-  the impulse responses that also build the on-path world).  Monitored deviations will come back as a model's
-  monitoring relation.
+  the impulse responses that also build the on-path world).  Monitored deviations return in this release as a model's
+  monitoring relation (`monitors:`, above).
 - Fixed: estimates, strategies and `response(..., seen_by=)` on the stationary engine (they existed on the finite
   engine only); `sweep()` of a file now loads it through `load()`, so a transition's relative past resolves from the
   file's directory; a transition's `res.extra` and payload key for the T solved on is `T` (was `window`).

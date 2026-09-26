@@ -18,7 +18,9 @@ other agents' actions.  Each minimises a discounted or average quadratic loss.
 Use noisestate for games with linear state dynamics and observations, Brownian noise, and quadratic
 running objectives.  It solves for causal linear strategies: each agent's action depends on its own
 observations up to the current time.  Models can have a finite horizon, a stationary regime, or a
-transition between regimes, with supported observation and action delays.
+transition between regimes, with supported observation and action delays.  Agents can be privy to others'
+deviations (`monitors:`, the dissertation's Chapter 6) and can react at once to another agent's posted control
+(`observes: {quote: {level: P}}`).
 
 Hard control constraints such as `D >= 0` and nonlinear dynamics are outside the model grammar.  A
 game that ends at T may add a terminal loss on the states, such as `terminal: "q (X - b)^2"`.  The solution is sought within the causal linear strategy
@@ -32,7 +34,7 @@ From the repository's root directory:
 pip install ".[plot]"             # from a checkout of this repository; [plot] adds matplotlib
 ```
 
-Python >= 3.10.  Dependencies: numpy >= 1.24, scipy >= 1.12, pyyaml; matplotlib for the figures, which
+Python >= 3.10.  Dependencies: numpy >= 1.24, scipy >= 1.13, pyyaml; matplotlib for the figures, which
 the walkthrough below draws.  MIT licence.  The shipped model files install with the package, so
 `ns.example(...)` works from a plain install; the reference data (`tests/refs/`) lives in the
 repository only.

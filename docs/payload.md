@@ -1,7 +1,7 @@
 # The result payload
 
 What `res.to_dict()`, `noisestate solve -o` and every row of `noisestate sweep -o` carry, generated from
-`noisestate.schema("payload")` (`payload_version` 2; `noisestate schema payload` prints the schema,
+`noisestate.schema("payload")` (`payload_version` 3; `noisestate schema payload` prints the schema,
 `noisestate.schema.validate(doc, "payload")` checks a document).  Every key is present unless marked optional;
 the optional ones appear when the engine or the options produced them.  `numerics` in the table is the
 `numerics` block of the model schema ([model_file.md](model_file.md)); shapes follow `axes`.
@@ -10,7 +10,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 
 | key | type | meaning |
 |---|---|---|
-| `payload_version` | const 2 | the payload format, 2 (the [pre-release history](design/pre-release-history.md#serialisation) records the changes from version 1) |
+| `payload_version` | const 3 | the payload format, 3 (2.0 renamed `channels` to `shocks` and a transition's `extra["window"]` to `extra["T"]`, and added `cost_parts[agent]["constant"]`; the [pre-release history](design/pre-release-history.md#serialisation) records the changes from version 1) |
 | `version` | string | the package version that wrote it |
 | `name` | string | the model's name |
 | `engine` | `stationary` \| `spectral` | the engine that solved it (`numerics.engine` resolved) |
@@ -36,7 +36,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `maps` | map of map of map of list of any | per agent, per control, per signal row: the raw strategy g[u][r] on the row's map axis |
 | `foc` | map of map of map of map of list of number | per agent, per control: `foc`, `physical`, `wedge`, each per shock: the first-order-condition decomposition |
 | `costs` | map of number | per agent: the cost (`cost_kind` says what it is) |
-| `cost_parts` | map of map of number | per agent: `variance` and `mean` (a transition adds `continuation`, the buffer's cost) |
+| `cost_parts` | map of map of number | per agent: `variance`, `mean` and `constant` (the loss's constant; a transition adds `continuation`, the buffer's cost) |
 | `means` | map of number or list of number | per state, control, definition and signal row (`agent.row`): a constant (stationary) or the path on `mean_times` |
 | `mean_times` | list of number or null | the time nodes of the mean paths; null on the stationary engine |
 | `representation_error` | map of number | per agent: the representation error of the action kernels on the seen rows |

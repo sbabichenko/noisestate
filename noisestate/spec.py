@@ -34,10 +34,7 @@ import re
 import warnings
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union, overload
-
-if TYPE_CHECKING:                       # the overloads below name it; the runtime imports it lazily
-    from .expr import Signal
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 Number = Union[int, float, str]
 Atom = Tuple[str, float]          # (primary name, lag); lag > 0 past, < 0 future
@@ -963,7 +960,9 @@ class Model:
         bad = sorted(set(d) - allowed)
         if bad:
             from .names import nearest
-            hints = [f"{k!r} (did you mean {nearest(k, allowed, 1)[0]!r}?)" if nearest(k, allowed, 1) else repr(k) for k in bad]
+            renamed = {"channels": "shocks"}                    # 1.x names (see the 2.0 changelog)
+            hints = [f"{k!r} (renamed {renamed[k]!r} in 2.0)" if k in renamed
+                     else f"{k!r} (did you mean {nearest(k, allowed, 1)[0]!r}?)" if nearest(k, allowed, 1) else repr(k) for k in bad]
             raise ValueError(f"unknown key(s) {', '.join(hints)} in {what}{where}; allowed: {sorted(allowed)}")
 
     def to_dict(self, numeric: bool = False) -> dict:

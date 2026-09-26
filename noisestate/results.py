@@ -763,7 +763,6 @@ class Result:
         cost and of the kernels, the honest test of resolution (window, corner and product errors alike).
         Stored in self.refinement and shown by summary().  Returns a Refinement, which carries the
         finer Result itself rather than only numbers taken from it."""
-        import math
         n0 = int(self.model.numerics.nodes)
         n1 = self._refined_nodes(n0, factor)
         # this solve's bounds and a skipped diagnostics pass are not the refinement's

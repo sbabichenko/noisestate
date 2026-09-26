@@ -15,7 +15,7 @@ fields unless overridden), lays them on the model so the engine reads them, and 
 constructing an engine by hand wants; it is internal machinery and named accordingly."""
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 from .numerics import Numerics
 from .spec import Model

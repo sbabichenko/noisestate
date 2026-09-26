@@ -75,7 +75,7 @@ raises `AttributeError` rather than answering `None`.
 | `model.describe()` | the whole model as equations, delays, losses and the conventions that apply, with no solve. HTML in a notebook, text elsewhere |
 | `model.notes` | just the conventions that are easy to misread here |
 | `model.validate()` | every structural rule, in a fixed order. Raises. `from_dict` already runs it |
-| `model.to_dict(numeric=False)` | the file structure back out. Carries everything a solve depends on, including definitions and ties; omits only provenance (`source`, `remarks`, `deprecations`). `numeric=True` resolves parameter expressions to numbers |
+| `model.to_dict(numeric=False)` | the file structure back out. Carries everything a solve depends on, including definitions and ties; omits only provenance (`source`, `remarks`). `numeric=True` resolves parameter expressions to numbers |
 | `model.state_names` / `.control_names` / `.def_names` / `.shocks` | the names |
 | `model.owner_of(control)` | which agent owns a control |
 | `model.all_lags()` | every distinct positive lag or observation delay |
@@ -243,7 +243,7 @@ models and the path between them.
 
 | call | use it when |
 |---|---|
-| `res.to_dict()` | the result as JSON-ready data, `payload_version` 2 |
+| `res.to_dict()` | the result as JSON-ready data, `payload_version` 3 |
 | `model.to_dict()` / `model.save(path)` | the model as data, or back to a file |
 | `ns.schema("model")` / `ns.schema("payload")` | the JSON Schema of either |
 | `ns.read_json(path)` | read a result's JSON payload without building anything |

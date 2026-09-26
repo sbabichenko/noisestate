@@ -18,7 +18,6 @@ for _p in (os.path.join(HERE, "..", "examples"), os.path.join(HERE, "..", "tests
         sys.path.insert(0, _p)
 
 import noisestate as ns                                             # noqa: E402
-from noisestate import engines                                      # noqa: E402
 from noisestate._settings import Settings                           # noqa: E402
 from noisestate.diagnostics import Policy, Status                   # noqa: E402
 from cells import FiniteSolver                                      # noqa: E402
