@@ -294,7 +294,7 @@ def _run(p, args) -> int:
               f"discount {m.horizon.discount}, {_horizon_span(m.horizon)}; lags {m.all_lags()}")
         for a in m.agents:
             print(f"  {a.name}: controls {a.controls}; rows {[r.name for r in a.signals]}; {len(a.loss)} loss terms"
-                  + ("; myopic" if a.myopic else ""))
+                  + ("; myopic" if a.myopic else "") + (f"; risk aversion {a.risk_aversion:g}" if a.risk_aversion else ""))
         if m.horizon.kind == "transition":
             for line in transition_lines(m):
                 print("  " + line)

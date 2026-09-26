@@ -64,6 +64,7 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `agents.<name>.signals.<name>.delay` | number or expression | observation delay | 0 |
 | `agents.<name>.loss` | list of list of number or expression |  | none (a control must enter its owner's loss) |
 | `agents.<name>.myopic` | boolean |  | false |
+| `agents.<name>.risk_aversion` | number or expression | the CARA coefficient theta >= 0: the agent minimises theta^-1 log E exp(theta C) of its realised cost C (the loss integrated as the risk-neutral objective integrates it, no 1/2 added, plus the terminal loss); with a profit-type loss (minus wealth) theta is the CARA coefficient on wealth.  Declared and validated; no engine solves theta > 0 yet | 0 (risk neutral) |
 | `ties` | list of list of string | groups of agents sharing one strategy | none |
 | `horizon` | object | the economics of time: the kind, the discount, the two lengths, a transition's past and continuation |  |
 | `horizon.kind` | `stationary` \| `finite` \| `transition` | | `stationary` |

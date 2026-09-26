@@ -243,9 +243,10 @@ def to_grammar(d: dict) -> dict:
     agents = []
     for a, spec in (d.get("agents") or {}).items():
         spec = dict(spec or {}); where = f"agent {a}"
-        extra = sorted(set(spec) - {"controls", "observes", "loss", "myopic", "terminal", "monitors"})
+        extra = sorted(set(spec) - {"controls", "observes", "loss", "myopic", "terminal", "monitors", "risk_aversion"})
         if extra:
-            raise ValueError(f"{where}: unknown key(s) {extra}; allowed: controls, observes, loss, terminal, myopic, monitors")
+            raise ValueError(f"{where}: unknown key(s) {extra}; allowed: controls, observes, loss, terminal, myopic, monitors, "
+                             "risk_aversion")
 
         def signal(sname, v):
             return _signal(sname, v, env, where)
@@ -265,6 +266,7 @@ def to_grammar(d: dict) -> dict:
         agents.append(E.Agent(a, controls=[controls[u] for u in _as_list(spec.get("controls"))], observes=signals,
                               loss=_eval(loss, env, f"{where}, loss"), myopic=bool(spec.get("myopic", False)),
                               monitors=_as_list(spec.get("monitors")),
+                              risk_aversion=_eval(spec.get("risk_aversion", 0), env, f"{where}, risk_aversion"),
                               terminal=_eval(spec["terminal"], env, f"{where}, terminal") if spec.get("terminal") is not None else None))
 
     hz = d.get("horizon") or {}
@@ -381,6 +383,8 @@ def from_grammar(g: dict) -> dict:
                                        + ([(v["terminal_constant"], "")] if v.get("terminal_constant") not in (None, 0, 0.0) else []))
         if v.get("myopic"):
             block["myopic"] = True
+        if v.get("risk_aversion") not in (None, 0, 0.0):
+            block["risk_aversion"] = v["risk_aversion"]
         mons = _as_list(v.get("monitors"))
         if mons:
             block["monitors"] = mons[0] if len(mons) == 1 else mons

@@ -47,7 +47,7 @@ That solve converged — `res.converged` is `True` and `res.require_converged()`
 | `ns.level(P)` | in an agent's `observes`: the current level of another agent's control, seen exactly and reacted to within the instant (a trader seeing the quote); a signal is reacted to after it is observed |
 | `ns.Control("D")` | a control; it belongs to whichever `Agent` lists it |
 | `ns.Signal(name, expr, delay=0.0)` | one named, possibly delayed, observed row. The same object `with_signal()` takes |
-| `ns.Agent(name, controls, observes=..., loss=..., myopic=False, terminal=None, monitors=())` | an agent's controls, what it observes (an expression, a list, a dict of named signals, or Signals) and its quadratic loss, whose constant is kept as part of the cost |
+| `ns.Agent(name, controls, observes=..., loss=..., myopic=False, terminal=None, monitors=(), risk_aversion=0)` | an agent's controls, what it observes (an expression, a list, a dict of named signals, or Signals) and its quadratic loss, whose constant is kept as part of the cost; `risk_aversion` theta (a number or a parameter) makes it minimise theta^-1 log E exp(theta C) of its realised cost C (CARA; every engine refuses theta > 0 for now) |
 | `ns.define(name, expr)` | a named linear expression reported as its own kernel |
 | `ns.sqrt exp log sin cos tanh` | these functions of a `Param` expression, kept symbolic |
 

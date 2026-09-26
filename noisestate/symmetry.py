@@ -116,7 +116,7 @@ def find_cyclic_symmetry(model: Model, why: Optional[list] = None) -> Optional[C
             return None
     for a in model.agents:
         b = agents_by.get(ren.get(a.name, a.name))
-        ok = b is not None and a.myopic == b.myopic and [ren.get(u, u) for u in a.controls] == list(b.controls) and len(a.signals) == len(b.signals)
+        ok = b is not None and a.myopic == b.myopic and abs(a.risk_aversion - b.risk_aversion) < 1e-12 and [ren.get(u, u) for u in a.controls] == list(b.controls) and len(a.signals) == len(b.signals)
         if ok:
             for ra, rb in zip(a.signals, b.signals):
                 ok = ok and abs(ra.delay - rb.delay) < 1e-9 and _canon(model, model.expand(ra.drift), ren) == _canon(model, model.expand(rb.drift), {}) \

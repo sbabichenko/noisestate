@@ -174,6 +174,7 @@ class Agent:
     terminal_constant: float = 0.0    # the terminal loss's constant
     monitors: List[str] = field(default_factory=list)   # the agents whose deviations this one is privy to (Chapter 6's j |> i)
     instant: List[str] = field(default_factory=list)    # other agents' controls whose current level this one sees and reacts to at once
+    risk_aversion: float = 0.0        # theta >= 0: minimise theta^-1 log E exp(theta C), C the realised cost (CARA); 0 is E C
 
 
 @dataclass
@@ -519,7 +520,7 @@ class Model:
         for term in a.loss:
             ex = [canon(self.expand({s: 1.0})) for s in term[1:]]
             loss.append((round(float(term[0]), 9), tuple(sorted(ex))))
-        return (len(a.controls), a.myopic, rows, tuple(sorted(loss)))
+        return (len(a.controls), a.myopic, round(float(a.risk_aversion), 9), rows, tuple(sorted(loss)))
 
     @property
     def notes(self) -> List[str]:
@@ -534,6 +535,11 @@ class Model:
                                "through that shock, e.g. a row with the shock as its noise")
             if a.myopic:
                 out.append(f"agent {a.name} is myopic: it ignores the effect of its action on future flows (a competitive pricing agent)")
+            if a.risk_aversion:
+                out.append(f"agent {a.name} is risk averse (theta = {a.risk_aversion:g}): it minimises theta^-1 log E exp(theta C) of its "
+                           "realised cost C, the loss integrated (discounted) as the risk-neutral objective integrates it, no 1/2 added, "
+                           "plus the terminal loss; with a profit-type "
+                           "loss (minus wealth) theta is the CARA coefficient")
             lin = [t for t in a.loss if len(t) == 2]
             if lin:
                 out.append(f"agent {a.name}: the linear loss term(s) {lin} move only the means (the kernels do not depend on them)"
@@ -684,6 +690,10 @@ class Model:
                 raise ValueError(f"agent {a.name} has no controls")
             if not isinstance(a.myopic, bool):
                 raise ValueError(f"agent {a.name}: myopic must be true or false, got {a.myopic!r}")
+            if not (isinstance(a.risk_aversion, (int, float)) and not isinstance(a.risk_aversion, bool)
+                    and 0.0 <= a.risk_aversion < float("inf")):
+                raise ValueError(f"agent {a.name}: risk_aversion is the CARA coefficient theta, a finite number >= 0 "
+                                 f"(0 is risk neutral), got {a.risk_aversion!r}")
             self._check_signals(a)
             self._check_losses(a)
 
@@ -939,7 +949,8 @@ class Model:
         "numerics": {"engine", "nodes", "unit", "unit_range", "breakpoints", "continuation_nodes", "tol", "damping", "max_newton",
                      "variable", "settings"},
         "state": {"drift", "noise", "initial"},
-        "agent": {"controls", "signals", "loss", "myopic", "constant", "terminal", "terminal_constant", "monitors", "instant"},
+        "agent": {"controls", "signals", "loss", "myopic", "constant", "terminal", "terminal_constant", "monitors", "instant",
+                  "risk_aversion"},
         "signal": {"drift", "noise", "delay"},
     }
 
@@ -1043,6 +1054,8 @@ class Model:
                 d["agents"][a.name]["monitors"] = list(a.monitors)
             if a.instant:
                 d["agents"][a.name]["instant"] = list(a.instant)
+            if a.risk_aversion:
+                d["agents"][a.name]["risk_aversion"] = float(a.risk_aversion)
         return d
 
     def with_params(self, **values) -> "Model":
@@ -1332,7 +1345,8 @@ class Model:
                                 terminal=[[eval_coef(t[0], params)] + [str(x) for x in t[1:]] for t in (v.get("terminal") or [])],
                                 terminal_constant=eval_coef(v.get("terminal_constant", 0.0), params),
                                 monitors=[str(x) for x in ([v["monitors"]] if isinstance(v.get("monitors"), str) else (v.get("monitors") or []))],
-                                instant=[str(x) for x in ([v["instant"]] if isinstance(v.get("instant"), str) else (v.get("instant") or []))]))
+                                instant=[str(x) for x in ([v["instant"]] if isinstance(v.get("instant"), str) else (v.get("instant") or []))],
+                                risk_aversion=eval_coef(v.get("risk_aversion", 0.0), params)))
         from types import MappingProxyType
         m = cls._of_fields(name=d.get("name", "model"), shocks=list(d.get("shocks") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],

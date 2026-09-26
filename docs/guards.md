@@ -146,7 +146,7 @@ computed.
   and is pinned at 0.  `noisestate validate` prints the notes.  A parameter that nothing references is an
   error, the usual sign of a misspelled name elsewhere in the file; so are a drift that depends on
   a future value, a zero noise loading, `breakpoints` that do not end at the window, a
-  `myopic` that is not a boolean, a lag, delay or lead that is not below the window, a
+  `myopic` that is not a boolean, a `risk_aversion` that is negative or not finite, a lag, delay or lead that is not below the window, a
   `unit_range` above the window, and a misspelled agent in `naive_observers`.
 * `refine()` and `stability()` rebuild the engine that produced the result, with the same options
   (naive observers, tolerances, iteration variable).  A built model is single-sourced: its

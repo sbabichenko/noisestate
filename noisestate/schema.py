@@ -88,6 +88,8 @@ def model_schema() -> dict:
                             "signals": {"type": "object", "additionalProperties": signal},
                             "loss": {"type": "array", "items": _LOSS_TERM},
                             "myopic": {"type": "boolean"},
+                            "risk_aversion": {**_NUMBER_OR_EXPR, "description": "the CARA coefficient theta >= 0: the agent "
+                                              "minimises theta^-1 log E exp(theta C) of its realised cost C; 0 (the default) is risk neutral"},
                             "instant": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}],
                                         "description": "other agents' controls whose current level this agent sees and reacts to at once"},
                             "monitors": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}],

@@ -1025,11 +1025,12 @@ def level(quantity) -> Level:
 
 class Agent:
     """An agent: its controls, what it observes, its quadratic loss; `myopic` ignores the continuation effects
-    of its own actions (a competitive agent).  `observes` is one differential (the signal "y"), a list (y1, y2,
+    of its own actions (a competitive agent); `risk_aversion` theta >= 0 makes it minimise theta^-1 log E exp(theta C) of its
+    realised cost C (CARA; no engine solves theta > 0 yet).  `observes` is one differential (the signal "y"), a list (y1, y2,
     ...), a dict {name: differential}, or Signals (for a name and a delay) in any of these."""
 
     def __init__(self, name: str, controls: Sequence[Control], observes=None, loss=None, myopic: bool = False,
-                 terminal=None, monitors=()):
+                 terminal=None, monitors=(), risk_aversion=0):
         if not isinstance(name, str) or not name.isidentifier():
             raise ValueError(f"an agent name must be an identifier, not {name!r}")
         if observes is None:
@@ -1067,6 +1068,9 @@ class Agent:
             raise ValueError(f"agent {name}: the loss {loss!r} has no term in a quantity")
         self.name = name; self.controls = controls; self.signals = signals
         self.myopic = bool(myopic)
+        if not (_is_number(risk_aversion) or isinstance(risk_aversion, Coef)):
+            raise ValueError(f"agent {name}: risk_aversion must be a number or a parameter expression, not {risk_aversion!r}")
+        self.risk_aversion = risk_aversion
         # the agents whose deviations this one is privy to (Chapter 6), as Agents or names
         self.monitors = [m if isinstance(m, str) else m.name for m in ([monitors] if isinstance(monitors, (str, Agent)) else monitors)]
         # the loss paid at T, on the states: terminal=q * (X - b)**2
@@ -1092,6 +1096,8 @@ class Agent:
                 block["terminal_constant"] = _coef_str(tconst)
         if self.myopic:
             block["myopic"] = True
+        if not (_is_number(self.risk_aversion) and self.risk_aversion == 0):
+            block["risk_aversion"] = _coef_str(self.risk_aversion)
         if self.monitors:
             block["monitors"] = list(self.monitors)
         if self.instant:
@@ -1252,6 +1258,7 @@ class _Walk:
             self.quad(a.loss)
             if a.terminal is not None:
                 self.quad(a.terminal)
+            self.coef(a.risk_aversion)
         self.coef(horizon.extent); self.coef(horizon.discount)
         if isinstance(horizon, Transition):
             if isinstance(horizon.past, (list, tuple)):

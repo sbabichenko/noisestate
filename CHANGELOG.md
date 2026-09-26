@@ -21,6 +21,12 @@ A model reads like its equations, in a file and in Python.
 - **`describe()`** writes coefficients in the parameters (`sqrt(p1) * X dt`, `sigma * dW[W0]`), not their values.
 - **`solve(model, nodes=24)`**: a Numerics field given directly is laid over the numerics, in solve() and
   transition() (refused since 0.6).
+- **Risk aversion, declared (not yet solved).** `risk_aversion: theta` on an agent (`ns.Agent(..., risk_aversion=gamma)`,
+  a number or a parameter) is the entropic objective theta^-1 log E exp(theta C) of the realised cost C, CARA with
+  coefficient theta when the loss is minus wealth (the Ch1 appendix, thm:risk_sensitive_appendix).  It is validated
+  (finite, >= 0), saved and loaded in both file forms, part of the tie signature, and listed in `model.notes`; every
+  engine refuses theta > 0 with a NotImplementedError.  theta = 0, the default, is the risk-neutral model and writes
+  no key.
 - **Monitored deviations and instant reactions on a finite horizon** (the spectral engine, without a past or a
   continuation, which it refuses): the same algebra as the stationary engine's, the response kernels two-time kernels
   on the triangle.  All-privy tracking on [0, 2] matches the finite feedback Nash Riccati to 3e-6 at 12 nodes; the
