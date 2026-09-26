@@ -17,7 +17,7 @@ from .accel import ConvergenceError, DiagnosticsError, ResultValidationError
 from ._settings import Settings
 from .results import Result
 from . import engines
-from .sweep import sweep, SweepPoint
+from .sweep import sweep, Sweep, SweepPoint
 from .comparison import compare, ComparisonResult, ScenarioResult
 from .diagnostics import Assessment, Policy, Status
 from .grid_cache import clear as clear_grid_cache
@@ -30,7 +30,7 @@ from .kernel import Kernel
 
 __all__ = ["Model", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "load_result", "solve", "sweep", "transition", "transition_gap", "read_json", "as_model",
            "compare", "ComparisonResult", "ScenarioResult", "Assessment", "Policy", "Status", "clear_grid_cache", "schema",
-           "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
+           "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "Sweep", "SweepPoint",
            "Kernel", "level", "sqrt", "exp", "log", "sin", "cos", "tanh", "dt", "Differential", "params", "Game"]
 
 def _read_version() -> str:
@@ -88,7 +88,11 @@ def example(name: str) -> str:
     import os
     path = os.path.join(_examples_dir(), name[:-5] if name.endswith(".yaml") else name) + ".yaml"
     if not os.path.exists(path):
-        raise FileNotFoundError(f"no shipped example named {name!r}; ns.examples() lists them: {examples()}")
+        from .names import nearest
+        near = nearest(name, examples())
+        raise FileNotFoundError(f"no shipped example named {name!r}"
+                                + (f"; did you mean {' or '.join(repr(n) for n in near)}?" if near else "")
+                                + f" ns.examples() lists them: {examples()}")
     return path
 
 

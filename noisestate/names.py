@@ -6,11 +6,26 @@ import difflib
 from typing import Iterable
 
 
+def _one_edit(a: str, b: str) -> bool:
+    """Whether a and b differ by one substitution, insertion, deletion or swap of neighbours (r3 for r1, sigam)."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(diff) == 1 or (len(diff) == 2 and diff[1] == diff[0] + 1 and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]])
+    s, t = (a, b) if len(a) < len(b) else (b, a)
+    return any(t[:i] + t[i + 1:] == s for i in range(len(t)))
+
+
 def nearest(name: str, choices: Iterable[str], n: int = 3) -> list:
-    """The choices closest to `name`: an exact match up to case first, then difflib's."""
-    choices = [str(c) for c in choices]
-    folded = [c for c in choices if c.lower() == str(name).lower()]
-    return (folded + [c for c in difflib.get_close_matches(str(name), choices, n=n, cutoff=0.6) if c not in folded])[:n]
+    """The choices closest to `name`: an exact match up to case first, then one edit away (what difflib misses on
+    short names: r3 for r1), then the choices it begins (ch1_two_player), then difflib's."""
+    choices = [str(c) for c in choices]; name = str(name)
+    out = [c for c in choices if c.lower() == name.lower()]
+    out += [c for c in choices if c not in out and _one_edit(name.lower(), c.lower())]
+    out += [c for c in choices if c not in out and len(name) >= 3 and c.lower().startswith(name.lower())]
+    out += [c for c in difflib.get_close_matches(name, choices, n=n, cutoff=0.6) if c not in out]
+    return out[:n]
 
 
 def unknown(kind: str, name, choices: Iterable[str], plural: str = None) -> str:

@@ -74,9 +74,64 @@ class SweepPoint:
                 "evaluations": self.evaluations, "converged": self.converged,
                 "change": self.change, "jump": self.jump, "result": self.result.to_dict()}
 
+    def __repr__(self) -> str:
+        costs = ", ".join(f"{a}={c:.5g}" for a, c in list(self.result.costs.items())[:3])
+        return (f"SweepPoint({self.param}={self.value:g}: {self.result.status}, {self.evaluations} evaluations, "
+                f"{self.seconds:.1f}s; costs {costs}" + ("; possible branch jump" if self.jump else "") + ")")
+
+
+class Sweep(list):
+    """What sweep() returns: the list of SweepPoints it always was, with the columns a figure script wants.
+        sw.values                    the parameter values, an array
+        sw.costs["player1"]          that agent's cost at each value, an array
+        sw.converged / sw.results    per point
+        print(sw.table())            one row per point"""
+
+    @property
+    def param(self) -> Optional[str]:
+        return self[0].param if self else None
+
+    @property
+    def values(self) -> np.ndarray:
+        return np.array([p.value for p in self], dtype=float)
+
+    @property
+    def results(self) -> list:
+        return [p.result for p in self]
+
+    @property
+    def converged(self) -> np.ndarray:
+        return np.array([p.converged for p in self], dtype=bool)
+
+    @property
+    def costs(self) -> dict:
+        agents = list(self[0].result.costs) if self else []
+        return {a: np.array([p.result.costs.get(a, np.nan) for p in self], dtype=float) for a in agents}
+
+    def to_dict(self) -> list:
+        return [p.to_dict() for p in self]
+
+    def table(self) -> str:
+        """One row per point: the value, the status, the evaluations and seconds, each agent's cost, a jump flag."""
+        agents = list(self.costs)
+        head = [self.param or "value", "status", "evals", "seconds"] + agents
+        rows = [[f"{p.value:g}", p.result.status, str(p.evaluations), f"{p.seconds:.2f}"]
+                + [f"{p.result.costs.get(a, float('nan')):.6g}" for a in agents] + (["jump?"] if p.jump else []) for p in self]
+        width = [max(len(r[i]) for r in [head] + rows) for i in range(len(head))]
+        fmt = lambda r: "  ".join(c.rjust(w) for c, w in zip(r, width)) + ("  " + r[-1] if len(r) > len(head) else "")
+        return "\n".join([fmt(head)] + [fmt(r) for r in rows])
+
+    def __repr__(self) -> str:
+        if not self:
+            return "Sweep([])"
+        bad = int((~self.converged).sum())
+        return (f"<Sweep {self.param} over {len(self)} values [{self.values[0]:g} .. {self.values[-1]:g}]: "
+                + (f"{bad} not converged" if bad else "all converged")
+                + (f", {sum(p.jump for p in self)} possible branch jump(s)" if any(p.jump for p in self) else "") + ">")
+
 
 def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], numerics=None, *, past=None,
-          continuation=None, verbose: bool = False, **options) -> "List[SweepPoint]":
+          continuation=None, verbose: bool = False, **options) -> "Sweep":
     """Solve the model at each value of `param` (a key of `params`, or "horizon.window" / "horizon.T": the
     stationary model, the horizon T of a finite one or of a transition, which then warm-starts each point from
     the previous maps read on the new grid, the stationary maps beyond it), warm-starting each point from
@@ -86,8 +141,8 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], n
     at every point; past and continuation go to each point's engine; the rest (max_evaluations, deadline,
     progress, diagnostics, start_policy) to each point's solve.  A point stopped at a bound is a row with
     converged False, and the sweep goes on.
-    Returns [{"param", "value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the
-    given order; "change" is the relative change of the strategy from the previous point on the same grid
+    Returns a Sweep: the list of SweepPoints (param, value, result, seconds, evaluations, converged, change, jump)
+    in the given order, with .values, .costs[agent], .converged, .results and .table(); "change" is the relative change of the strategy from the previous point on the same grid
     (the raw maps; the action kernels on the finite spectral engine)
     and "jump" flags a change more than five times the sweep's median (a possible branch jump).  A transition
     model's past is solved once and shared by every point (past= gives it); its continuation, the new model's
@@ -150,4 +205,4 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], n
         for r in rows:
             if r.jump:
                 print(f"  {param} = {r.value:g}: change {r.change:.2g} against a typical {med:.2g}: possible branch jump", flush=True)
-    return rows
+    return Sweep(rows)

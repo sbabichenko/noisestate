@@ -962,7 +962,9 @@ class Model:
             raise ValueError(f"{what}{where} must be a mapping, got {type(d).__name__}")
         bad = sorted(set(d) - allowed)
         if bad:
-            raise ValueError(f"unknown key(s) {bad} in {what}{where}; allowed: {sorted(allowed)}")
+            from .names import nearest
+            hints = [f"{k!r} (did you mean {nearest(k, allowed, 1)[0]!r}?)" if nearest(k, allowed, 1) else repr(k) for k in bad]
+            raise ValueError(f"unknown key(s) {', '.join(hints)} in {what}{where}; allowed: {sorted(allowed)}")
 
     def to_dict(self, numeric: bool = False) -> dict:
         """The file structure of this model.  When the model was built from a file or dict, that
@@ -1066,7 +1068,11 @@ class Model:
         d = self.to_dict()
         unknown = sorted(set(values) - set(d.get("params") or {}))
         if unknown:
-            raise ValueError(f"{unknown} are not parameters of the model (params: {sorted(d.get('params') or {})})")
+            from .names import nearest
+            known = sorted(d.get('params') or {})
+            near = [f"{k!r} (did you mean {nearest(k, known, 1)[0]!r}?)" for k in unknown if nearest(k, known, 1)]
+            raise ValueError(f"{unknown} are not parameters of the model" + (f": {', '.join(near)}" if near else "")
+                             + f" (params: {known})")
         for k, v in values.items():
             d["params"][k] = float(v)
         return self._rebuilt(d)

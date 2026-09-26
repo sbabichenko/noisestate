@@ -1,6 +1,6 @@
 # API reference
 
-Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 49
+Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 50
 names; this page covers all of them, plus the methods on the objects they return.
 
 The shortest useful path is three calls:
@@ -215,7 +215,7 @@ today and no classification appears. The evidence fields are populated and seria
 
 | call | use it when |
 |---|---|
-| `ns.sweep(model, param, values, **options)` | one parameter along a path, warm-started from a secant predictor; the options are `solve()`'s (`nodes=12`, `max_evaluations=`, `past=`). Returns `SweepPoint`s |
+| `ns.sweep(model, param, values, **options)` | one parameter along a path, warm-started from a secant predictor; the options are `solve()`'s (`nodes=12`, `max_evaluations=`, `past=`). Returns a `Sweep` |
 | `model.sweep(p1=[0.3, 1, 3], nodes=12)` | the same, as a method |
 | `ns.compare({name: model, …}, baseline=, stability=, **options)` | several **structurally different** models against one baseline |
 | `ns.transition(old, new, T)` | the path from one stationary regime to another |
@@ -230,6 +230,7 @@ The containers share conventions, not identity — all are frozen dataclasses ca
 
 | type | is | carries besides |
 |---|---|---|
+| `ns.Sweep` | what `sweep()` returns: the list of `SweepPoint`s, plus columns | `values`, `costs[agent]`, `converged`, `results`, `table()` |
 | `ns.SweepPoint` | a continuation point | `param`, `value`, `change`, `jump` |
 | `ns.ScenarioResult` | a comparison scenario | `total_cost`, `total_change`, `cost_changes`, `dynamics` |
 | `MarchPoint` | a settle-march step, on a transition result`s `.march` | `T`, `gap`, `monitor`, `unknowns`, `polish` |

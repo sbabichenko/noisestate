@@ -30,6 +30,12 @@ A model reads like its equations, in a file and in Python.
   (1 to 3 evaluations).  `verbose=True` prints every evaluation with its elapsed time and phase, the switch to the
   Newton polish, and the outcome.  The upper-case tuning constants are out of `dir(res)`.
   `res.foc_residual(agent, seed=origin)` checks Chapter 6's response kernels independently of the solver.
+  Second round: every block's keys are checked before any equation is read, so `control:` for `controls:` is named
+  where it is (it surfaced as an unknown name in a state's equation); `with_params`, unknown parameters in equations
+  and `ns.example` name the nearest (one-edit typos included: r3 for r1); `res.response([X, D1], to=[w0, w1])` gives
+  (..., quantities, shocks); `sweep()` returns `ns.Sweep`, still a list, with `.values`, `.costs[agent]`,
+  `.converged`, `.results` and `.table()`; `res.kernel("X + 2 D1")`, `res.response(X - D1, ...)` and
+  `res.estimate(agent, expression)` read weighted sums of unlagged quantities.
 - **Risk aversion, declared (not yet solved).** `risk_aversion: theta` on an agent (`ns.Agent(..., risk_aversion=gamma)`,
   a number or a parameter) is the entropic objective theta^-1 log E exp(theta C) of the realised cost C, CARA with
   coefficient theta when the loss is minus wealth (the Ch1 appendix, thm:risk_sensitive_appendix).  It is validated

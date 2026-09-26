@@ -26,6 +26,32 @@ from . import expr as E
 
 _FUNCS = {"sqrt": E.sqrt, "exp": E.exp, "log": E.log, "sin": E.sin, "cos": E.cos, "tanh": E.tanh}
 _KEYS = {"name", "params", "shocks", "states", "agents", "definitions", "horizon", "numerics", "ties"}
+_AGENT_KEYS = {"controls", "observes", "loss", "myopic", "terminal", "monitors", "risk_aversion"}
+
+
+def _unknown_keys(where: str, given, allowed) -> None:
+    """A ValueError naming the keys of `given` that are not `allowed`, each with the nearest allowed one."""
+    from .names import nearest
+    bad = sorted(set(given) - set(allowed))
+    if bad:
+        hints = [f"{k!r} (did you mean {nearest(k, allowed, 1)[0]!r}?)" if nearest(k, allowed, 1) else repr(k) for k in bad]
+        raise ValueError(f"{where}: unknown key(s) {', '.join(hints)}; allowed: {', '.join(sorted(allowed))}")
+
+
+def _check_all_keys(d: dict) -> None:
+    """Every block's keys, before any equation is read: a misspelled key (control: for controls:) is named where it
+    is, instead of surfacing as an unknown name in whichever equation is evaluated first."""
+    _unknown_keys("the model", d, _KEYS)
+    for k, v in (d.get("states") or {}).items():
+        if isinstance(v, dict):
+            _unknown_keys(f"state {k}", v, {"d", "initial"})
+    for a, spec in (d.get("agents") or {}).items():
+        _unknown_keys(f"agent {a}", spec or {}, _AGENT_KEYS)
+        obs = (spec or {}).get("observes")
+        if isinstance(obs, dict) and not ("d" in obs or "level" in obs):
+            for sname, v in obs.items():
+                if isinstance(v, dict) and "level" not in v:
+                    _unknown_keys(f"agent {a}, signal {sname}", v, {"d", "delay"})
 
 
 def is_equation_form(d: dict) -> bool:
@@ -102,8 +128,11 @@ def _eval(text, env: dict, what: str):
             return node.value
         if isinstance(node, ast.Name):
             if node.id not in env:
+                from .names import nearest
+                near = nearest(node.id, [k for k in env if not k.startswith("__") and k != "dt"])
                 raise ValueError(f"{what}: {node.id!r} is not a parameter, state, control, definition or shock "
-                                 f"of this model (a shock is written dW<name>; the shocks are {env['__shocks__']})")
+                                 f"of this model" + (f"; did you mean {' or '.join(repr(n) for n in near)}?" if near else "")
+                                 + f" (a shock is written dW<name>; the shocks are {env['__shocks__']})")
             return env[node.id]
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
             v = ev(node.operand)
@@ -221,9 +250,7 @@ def signal_block(d: dict, name: str, row) -> dict:
 
 def to_grammar(d: dict) -> dict:
     """The model file of spec.py's grammar that this equations dict means (compiled through expr.py)."""
-    bad = sorted(set(d) - _KEYS)
-    if bad:
-        raise ValueError(f"unknown key(s) {bad} in an equations model; allowed: {sorted(_KEYS)}")
+    _check_all_keys(d)
     name = d.get("name", "model")
     values = dict(d.get("params") or {})
     env, params, states, controls = _environment(d)
@@ -243,10 +270,6 @@ def to_grammar(d: dict) -> dict:
     agents = []
     for a, spec in (d.get("agents") or {}).items():
         spec = dict(spec or {}); where = f"agent {a}"
-        extra = sorted(set(spec) - {"controls", "observes", "loss", "myopic", "terminal", "monitors", "risk_aversion"})
-        if extra:
-            raise ValueError(f"{where}: unknown key(s) {extra}; allowed: controls, observes, loss, terminal, myopic, monitors, "
-                             "risk_aversion")
 
         def signal(sname, v):
             return _signal(sname, v, env, where)

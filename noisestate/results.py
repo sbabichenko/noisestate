@@ -131,6 +131,17 @@ class Diagnostics:
         return f"<Diagnostics {self.assess()}>"
 
 
+_PLAIN = __import__("re").compile(r"[A-Za-z_][\w.]*(@[\w.+-]+)?")    # a name or name@lag, not an expression
+
+
+def _label(q) -> str:
+    """How a quantity reads in a kernel's label: its name, or an expression as written."""
+    if isinstance(q, str):
+        return q
+    render = getattr(q, "atoms_str", None)
+    return render() if callable(render) else str(q)
+
+
 _NEAR_TOLERANCE = 10.0          # res.status "near tolerance": not converged, residual within this factor of the tolerance
 _SHORT = {"resolution": "under-resolved", "window": "window too short", "stability": "unstable",
           "refinement": "moves under refinement", "window_tail": "window tail", "representation": "under-resolved"}
@@ -161,7 +172,7 @@ class Response:
 
     def __repr__(self) -> str:
         who = f"{self.agent}'s estimate of " if self.agent else ""
-        return f"Response({who}{self.quantity} to a unit {self.shock} at t = {self.at:g})"
+        return f"Response({who}{_label(self.quantity)} to a unit {self.shock} at t = {self.at:g})"
 
 
 class SeedResponse:
@@ -217,22 +228,36 @@ class SeedFoc:
 
 
 class Responses:
-    """res.response(X, ...) for a vector X: one Response per component; .over(t) stacks them on a last axis."""
+    """res.response(...) for several quantities (a list, or a vector X) or several shocks: one Response per
+    component; .over(t) stacks them on a last axis (quantities, then shocks when both are lists: (..., nq, ns))."""
 
-    def __init__(self, parts: List[Response]):
-        self.parts = parts
+    def __init__(self, parts: list, axis: int = -1):
+        self.parts, self.axis = parts, axis
 
-    def __getitem__(self, i) -> Response:
+    def __getitem__(self, i):
         return self.parts[i]
 
     def __len__(self) -> int:
         return len(self.parts)
 
     def over(self, t) -> np.ndarray:
-        return np.stack([p.over(t) for p in self.parts], axis=-1)
+        return np.stack([p.over(t) for p in self.parts], axis=self.axis)
 
     def __repr__(self) -> str:
-        return f"Responses({', '.join(p.quantity for p in self.parts)})"
+        return f"Responses({', '.join(repr(p)[len('Response('):-1] if isinstance(p, Response) else repr(p) for p in self.parts)})"
+
+
+def _names_of(x) -> list:
+    """A list of names from a name, an object of the equations form, a vector of them, or a list/tuple of any of these."""
+    if isinstance(x, (list, tuple)):
+        return [n for i in x for n in _names_of(i)]
+    if not isinstance(x, str) and isinstance(getattr(x, "items", None), list):
+        return [_nm(i) for i in x.items]
+    return [_nm(x)]
+
+
+def _is_many(x) -> bool:
+    return isinstance(x, (list, tuple)) or (not isinstance(x, str) and isinstance(getattr(x, "items", None), list))
 
 
 @dataclass
@@ -417,7 +442,39 @@ class Result:
         names or the objects of the equations form (X, dW0)."""
         name, shock = _nm(name), _nm(shock)
         self._check_names(name, shock)
-        return Kernel.of(self._kernel(name, shock), self, name, shock)
+        return Kernel.of(self._kernel_of(name, shock), self, _label(name), shock)
+
+    def _combination(self, q) -> Optional[Dict[str, float]]:
+        """{name: weight} when q is an expression -- "X + 2 D1" in the model file's syntax, or X + 2 * D1 of the
+        Python form -- else None (a plain name).  Unlagged states, controls and definitions only."""
+        from .expr import Linear
+        if isinstance(q, str):
+            if _PLAIN.fullmatch(q.strip()):
+                return None
+            from . import equations as EQ
+            lin = EQ._eval(q, EQ._environment(self.model.to_equations())[0], f"the expression {q!r}")
+            if not isinstance(lin, Linear):
+                lin = Linear.of(lin)
+        elif isinstance(q, Linear):
+            lin = q
+        else:
+            return None
+        from .spec import eval_coef
+        out: Dict[str, float] = {}
+        for atom, coef in lin.terms.items():
+            if atom.kind != "q" or atom.lag:
+                raise ValueError(f"{_label(q)}: a kernel reads a weighted sum of unlagged states, controls and definitions; "
+                                 f"{atom.name}{'@' + str(atom.lag) if atom.lag else ''} is "
+                                 + ("a shock" if atom.kind != "q" else "lagged"))
+            out[atom.name] = out.get(atom.name, 0.0) + eval_coef(str(coef), dict(self.model.params))
+        return out
+
+    def _kernel_of(self, name, shock=None) -> np.ndarray:
+        """_kernel for a name or an expression (the weighted sum of its names' kernels)."""
+        combo = self._combination(name)
+        if combo is None:
+            return self._kernel(name, shock)
+        return sum(w * np.asarray(self._kernel(n, shock), dtype=float) for n, w in combo.items())
 
     def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         raise NotImplementedError
@@ -437,7 +494,9 @@ class Result:
         """Fail now, with the nearest names, on a quantity, shock or agent the model does not have: a reader that
         returns a lazy object (res.response) would otherwise fail only when it is evaluated."""
         if quantity is not None:
-            self.model.expand({quantity: 1.0})                  # its ValueError names the nearest quantities
+            combo = self._combination(quantity)                 # an expression: its names (its parse names a bad one)
+            for n in ([quantity] if combo is None else combo):
+                self.model.expand({n: 1.0})                     # its ValueError names the nearest quantities
         if shock is not None:
             self._shock_ix(shock)
         if agent is not None and agent not in [a.name for a in self.model.agents]:
@@ -457,8 +516,8 @@ class Result:
         estimate of its own control is the control.  shock picks one, as in res.kernel(name, shock)."""
         agent, name, shock = _nm(agent), _nm(name), _nm(shock)
         self._check_names(name, shock, agent)
-        K = self._project(agent, self._kernel(name))
-        return Kernel.of(K if shock is None else K[:, self._shock_ix(shock)], self, f"E[{name} | {agent}]", shock)
+        K = self._project(agent, self._kernel_of(name))
+        return Kernel.of(K if shock is None else K[:, self._shock_ix(shock)], self, f"E[{_label(name)} | {agent}]", shock)
 
     def strategy(self, control: str, shock: Optional[str] = None) -> Kernel:
         """The strategy kernel of `control` on its agent's noise-state (Chapter 1, Definition 1.4): the weight the
@@ -497,13 +556,20 @@ class Result:
         the shock).  On a stationary game only the shock's age matters: `.over(ages)`.
             res.response(X, to=dW0).over(t)                       # the state
             res.response(X, to=dW0, seen_by=player1).over(t)       # player 1's estimate of it
-        A vector quantity (State("X", 3)) gives every component: .over(t) has a last axis of its length."""
-        if not isinstance(quantity, str) and hasattr(quantity, "items") and isinstance(quantity.items, list):
-            for q in quantity.items:
-                self._check_names(_nm(q), _nm(to), _nm(seen_by))
-            return Responses([Response(self, _nm(q), _nm(to), float(at), _nm(seen_by)) for q in quantity.items])
-        self._check_names(_nm(quantity), _nm(to), _nm(seen_by))
-        return Response(self, _nm(quantity), _nm(to), float(at), _nm(seen_by))
+        Several quantities (a list, or a vector State("X", 3)) or several shocks (a list) give one column each:
+        .over(t) has a last axis of their number, (..., quantities, shocks) when both are lists.
+            res.response(["X", "D1"], to=["w0", "w1"]).over(t)     # shape (len(t), 2, 2)"""
+        qs, ss, who = _names_of(quantity), _names_of(to), _nm(seen_by)
+        for q in qs:
+            self._check_names(q, agent=who)
+        for s in ss:
+            self._check_names(shock=s)
+        one = lambda q, s: Response(self, q, s, float(at), who)
+        if not _is_many(to):
+            return Responses([one(q, ss[0]) for q in qs]) if _is_many(quantity) else one(qs[0], ss[0])
+        if not _is_many(quantity):
+            return Responses([one(qs[0], s) for s in ss])
+        return Responses([Responses([one(q, s) for s in ss]) for q in qs], axis=-2)
 
     def grid_summary(self) -> dict:
         raise NotImplementedError

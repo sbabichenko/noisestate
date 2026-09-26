@@ -102,3 +102,55 @@ def test_foc_residual_on_the_market_and_its_refusals():
         res.foc_residual("mm", seed="trader")                            # nobody monitors the trader
     empty = ns.solve(market(0.0, nodes=16)).foc_residual("trader", seed="mm")
     assert np.isnan(empty.relative) and "nothing to check" in repr(empty)
+
+
+# ------------------------------------------------------------------------------------------- second round
+def test_a_misspelled_key_is_named_where_it_is(tmp_path):
+    src = open(ns.example("ch1_two_player_finite")).read()
+    p = tmp_path / "m.yaml"
+    p.write_text(src.replace("controls: D1", "control: D1"))
+    with pytest.raises(ValueError, match=r"agent player1: unknown key\(s\) 'control' \(did you mean 'controls'\?\)"):
+        ns.load(str(p))                                              # not "state X: 'D1' is not a parameter"
+    d = ns.load(ns.example("ch3_two_player")).to_dict(); d["agents"]["player1"]["myopc"] = True
+    with pytest.raises(ValueError, match="did you mean 'myopic'"):
+        ns.Model.from_dict(d)
+
+
+def test_near_names_for_parameters_and_examples(tmp_path):
+    m = ns.load(ns.example("ch1_two_player_finite"))
+    with pytest.raises(ValueError, match="did you mean 'sigma'"):
+        m.with_params(sigam=2)
+    p = tmp_path / "m.yaml"
+    p.write_text(open(ns.example("ch1_two_player_finite")).read().replace("r1 D1^2", "r3 D1^2"))
+    with pytest.raises(ValueError, match="did you mean 'r1' or 'r2'"):                  # one edit away: difflib misses it
+        ns.load(str(p))
+    with pytest.raises(FileNotFoundError, match="ch1_two_player_finite"):
+        ns.example("ch1_two_player")
+
+
+def test_response_takes_lists_of_quantities_and_shocks(two):
+    t = np.linspace(0, 1, 5)
+    both = two.response(["X", "D1"], to=["w0", "w1", "w2"]).over(t)
+    assert both.shape == (5, 2, 3)
+    assert np.allclose(both[:, 1, 2], two.response("D1", to="w2").over(t))
+    assert two.response("X", to=["w0", "w1"]).over(t).shape == (5, 2)
+    with pytest.raises(KeyError, match="did you mean 'w1'"):
+        two.response(["X", "D1"], to=["w0", "W1"])
+
+
+def test_sweep_has_columns_and_a_table():
+    sw = ns.sweep(ns.load(ns.example("ch1_two_player_finite")), "p2", [1.0, 3.0])
+    assert isinstance(sw, list) and isinstance(sw, ns.Sweep)
+    assert list(sw.values) == [1.0, 3.0] and sw.converged.all()
+    assert sw.costs["player1"][1] == pytest.approx(sw[1].result.costs["player1"])
+    assert len(sw.table().splitlines()) == 3 and "all converged" in repr(sw) and "p2=3" in repr(sw[1])
+
+
+def test_kernels_of_expressions(two):
+    t = np.linspace(0.1, 1, 4)
+    assert np.allclose(two.kernel("X + 2 D1", "w0"), two.kernel("X", "w0") + 2 * two.kernel("D1", "w0"))
+    X, D1 = ns.State("X"), ns.Control("D1")
+    assert np.allclose(two.response(X - D1, to="w0").over(t), two.response("X", to="w0").over(t) - two.response("D1", to="w0").over(t))
+    assert two.estimate("player2", "r1 * D1").shape == two.estimate("player2", "D1").shape
+    with pytest.raises(ValueError, match="shock"):
+        two.kernel("X + dw0")
