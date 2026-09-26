@@ -54,9 +54,6 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             if continuation is None:
                 continuation = hz.continuation or "stationary"
         past = Past.of(past) if past is not None else None
-        if past is not None and any(a.terminal or a.terminal_constant for a in model.agents):
-            raise NotImplementedError("a terminal loss is supported on a finite horizon without a past; with a past "
-                                      "(a transition ending at T) its term on the old and initial shocks is not built yet")
         continuation = self._continuation_of(model, past, continuation,
                                              model.numerics.continuation_nodes if hz.kind == "transition" else None)
         opts = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
@@ -526,22 +523,26 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 w = c.time_mass(c.rho)[:c.Nd]
                 zd = zeta[:, c.diag, c.nW:]                                   # (m, Nd, n_init)
                 G = G + np.einsum("itk,t,jtk->ij", zd, w, zd)
-            return float(0.5 * np.sum(Q * G))
+            return float(0.5 * np.sum(Q * G)) + self._terminal_variance(agent, Z)
         G = self._gram(agent, zeta, mass)
         return float(0.5 * np.sum(Q * G)) + self._terminal_variance(agent, Z)
 
     def _terminal_variance(self, agent: Agent, Z: np.ndarray) -> float:
-        """The variance part of a terminal loss, e^{-rho T} 1/2 sum Q_T,ij int_0^T zeta_i(T, s) zeta_j(T, s) ds over the
-        shocks' columns (zero without one)."""
+        """The variance part of a terminal loss, e^{-rho T} 1/2 sum Q_T,ij E[zeta_i(T) zeta_j(T)]: over the channels'
+        shocks alive at T (born in [0, T], and with a band the old ones born in [T - L, 0)) and, with initial shocks,
+        their columns at T (a unit-variance draw each: the column's value at T squared).  Zero without one."""
         c = self.c
         terminal = (c.terminal or {}).get(agent.name)
         if not terminal:
             return 0.0
         atoms, QT, _ = terminal
         IT, w = c.terminal_quadrature
-        Zc = Z[:, :c.nW]
-        zt = np.stack([IT @ (c.atom_sparse(at) @ Zc[c.block(at[0])]) for at in atoms])     # (m, nq, nW)
+        za = [c.atom_sparse(at) @ Z[c.block(at[0])] for at in atoms]                         # (N, ncol) per atom
+        zt = np.stack([IT @ z[:, :c.nW] for z in za])                                        # (m, nq, nW)
         G = np.einsum("iqk,q,jqk->ij", zt, w, zt)
+        if Z.shape[1] > c.nW:                                                                # the initial shocks
+            zi = np.stack([(c.terminal_point @ z[:, c.nW:])[0] for z in za])                  # (m, n_init)
+            G = G + zi @ zi.T
         return float(np.exp(-c.rho * c.T) * 0.5 * np.sum(QT * G))
 
     def continuation_cost(self, agent: Agent, Z: np.ndarray) -> float:
@@ -634,6 +635,8 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         zp = c.zeta_past(agent.name)
         if not np.any(zp):
             return None
+        if len(foc.atoms) > zp.shape[0]:            # a terminal loss's atoms (states at T) read nothing before zero
+            zp = np.concatenate([zp, np.zeros((len(foc.atoms) - zp.shape[0],) + zp.shape[1:])])
         return [foc.foc(ui, zp) for ui in range(len(agent.controls))]
 
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):

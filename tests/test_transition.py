@@ -487,3 +487,79 @@ def test_same_model_identity_holds_below_the_window(T):
         d = np.abs(res.kernel(name) - S).max(axis=1) / np.abs(S).max()
         dr = (np.abs(rres.kernel(name) - Sr).max() / np.abs(Sr).max())
         assert d.max() < 1.5 * max(dr, 1e-4) and d[c.buffer].max() < 1.5 * max(dr, 1e-4) and d[g.upper & c.buffer].max() < 1.5 * max(dr, 1e-4), (name, d.max(), dr)
+
+
+# ------------------------------------------------ a terminal loss on a transition with a past
+#  The prior start above with a terminal loss q_T X_T^2: the Riccati terminal condition S(T) = q_T, and the cost gains
+#  e^{-rho T} q_T (Sigma(T) + P(T)).  The terminal term on the prior's column is read at the corner (T, T), the line
+#  s = 0 at T.  Measured at 12, 16, 20 nodes (rho = 0.5, unobserved prior): cost 2.4e-7, 5.1e-8, 8.5e-10; the prior's
+#  kernels 4.5e-5, 7.4e-7, 7.4e-8; the channels' 3.2e-3, 1.2e-4, 2.8e-5.
+QT_TERM = 2.0
+
+
+def exact_terminal(rho, informed):
+    Sb = solve_ivp(lambda t, y: [rho * y[0] - 2 * a * y[0] + y[0] ** 2 / r - 1], (T1, 0.0), [QT_TERM], dense_output=True, **IVP)
+    Pf = solve_ivp(lambda t, y: [2 * a * y[0] - h * h * y[0] ** 2 + 1], (0.0, T1), [0.0 if informed else P0], dense_output=True, **IVP)
+    K = lambda t: float(Sb.sol(t)[0]) / r; P = lambda t: float(Pf.sol(t)[0]); G = lambda t: P(t) * h
+    f = solve_ivp(lambda t, y: [2 * (a - K(t)) * y[0] + G(t) ** 2, np.exp(-rho * t) * ((1 + r * K(t) ** 2) * y[0] + P(t))],
+                  (0.0, T1), [P0 if informed else 0.0, 0.0], **IVP)
+    J = float(f.y[1, -1]) + np.exp(-rho * T1) * QT_TERM * (float(f.y[0, -1]) + P(T1))
+
+    def kernel(name, channel, t, s):
+        out = np.zeros(len(t))
+        for si in np.unique(s):
+            y0 = {"w0": [1.0, 0.0], "w1": [0.0, G(si)], "xi": [np.sqrt(P0), np.sqrt(P0) if informed else 0.0]}[channel]
+            sol = solve_ivp(lambda u, y: [a * y[0] - K(u) * y[1], G(u) * h * y[0] + (a - K(u) - G(u) * h) * y[1]],
+                            (si, T1), y0, dense_output=True, **IVP)
+            for i in np.flatnonzero(s == si):
+                X, xhat = sol.sol(t[i]); out[i] = X if name == "X" else -K(t[i]) * xhat
+        return out
+    return J, kernel
+
+
+@pytest.mark.parametrize("informed", [False, True])
+def test_a_terminal_loss_with_a_prior_is_the_riccati_terminal_condition(informed):
+    """16 nodes, rho = 0.5: the cost to 2e-7 (measured 5.1e-8 unobserved, 3.5e-8 observed) and the kernels on the
+    prior's column to 5e-6 (7.4e-7, 2.2e-9) and on the channels to 3e-4 (1.2e-4)."""
+    J, kernel = exact_terminal(0.5, informed)
+    d = model(0.5, 16); d["agents"]["a"]["terminal"] = [[QT_TERM, "X", "X"]]
+    shock = {"name": "xi", "loads": {"X": np.sqrt(P0)}, **({"rows": {"a.y": 1.0}} if informed else {})}
+    res = ns.solve(d, past=[shock]).require_converged()
+    assert abs(res.costs["a"] - J) < 2e-7, (res.costs["a"], J)
+    assert res.second_order["a"]["ok"]
+    for name in ("X", "D"):
+        assert np.abs(res.evaluate(name, "xi", T0, np.zeros_like(T0)) - kernel(name, "xi", T0, np.zeros_like(T0))).max() < 5e-6, name
+        for ch in ("w0", "w1"):
+            assert np.abs(res.evaluate(name, ch, TS, SS) - kernel(name, ch, TS, SS)).max() < 3e-4, (name, ch)
+
+
+def test_a_terminal_loss_after_a_stationary_past():
+    """The band: the one-agent model's stationary equilibrium (window L = 6) as the past of the same model on [0, 3]
+    with q_T X_T^2 and the game ending at T, so old shocks are alive at T.  Closed form: the filter stays at its
+    stationary P, E xhat^2 starts at the stationary G^2 / 2(K - a) under the old gain K, the Riccati runs back
+    from S(T) = q_T; the window truncates at e^{-2 (K - a) L} ~ 2.5e-7.  At 12 nodes the cost is 5.6e-7 off (the
+    transition's own floor here: 1.6e-6 with q_T = 0), and a terminal target's mean path is 3.6e-9 off, the two
+    mean systems agreeing to rounding."""
+    rho, T, L, B = 0.5, 3.0, 6.0, 1.0
+    Sinf = max(np.roots([1 / r, rho - 2 * a, -1]).real); Kinf = Sinf / r
+    Pinf = max(np.roots([-h * h, 2 * a, 1]).real); G = Pinf * h
+    Sb = solve_ivp(lambda t, y: [rho * y[0] - 2 * a * y[0] + y[0] ** 2 / r - 1], (T, 0.0), [QT_TERM], dense_output=True, **IVP)
+    S = lambda t: float(Sb.sol(t)[0]); K = lambda t: S(t) / r
+    f = solve_ivp(lambda t, y: [2 * (a - K(t)) * y[0] + G * G, np.exp(-rho * t) * ((1 + r * K(t) ** 2) * y[0] + Pinf)],
+                  (0.0, T), [G * G / (2 * (Kinf - a)), 0.0], **IVP)
+    J = float(f.y[1, -1]) + np.exp(-rho * T) * QT_TERM * (float(f.y[0, -1]) + Pinf)
+    ds = model(rho, 12); ds["horizon"] = {"kind": "stationary", "window": L, "discount": rho}
+    stat = ns.solve(ds).require_converged()
+    d = model(rho, 12); d["agents"]["a"]["terminal"] = [[QT_TERM, "X", "X"]]
+    res = ns.solve(d, past=stat, continuation="end").require_converged()
+    assert abs(res.costs["a"] - J) < 3e-6, (res.costs["a"], J)
+    assert res.second_order["a"]["ok"]
+    vb = solve_ivp(lambda t, y: [(rho - a + S(t) / r) * y[0]], (T, 0.0), [-QT_TERM * B], dense_output=True, **IVP)
+    xb = solve_ivp(lambda t, y: [a * y[0] - (S(t) * y[0] + float(vb.sol(t)[0])) / r], (0.0, T), [0.0], dense_output=True, **IVP)
+    d["agents"]["a"]["terminal"].append([-2 * QT_TERM * B, "X"])
+    res = ns.solve(d, past=stat, continuation="end").require_converged()
+    t = res.mean_times[res.mean_times <= T]
+    assert np.abs(res.means["X"][:t.size] - xb.sol(t)[0]).max() < 1e-7
+    S_ = res._make_solver(res.model)
+    Md, bd = S_._mean_system_diag(res.maps); Ml, bl = S_._mean_system_line(res.maps)
+    assert np.abs(np.linalg.solve(Md, bd) - np.linalg.solve(Ml, bl)).max() < 1e-12

@@ -21,7 +21,7 @@ observations up to the current time.  Models can have a finite horizon, a statio
 transition between regimes, with supported observation and action delays.
 
 Hard control constraints such as `D >= 0` and nonlinear dynamics are outside the model grammar.  A
-finite game may add a terminal loss on the states, such as `terminal: "q (X - b)^2"`.  The solution is sought within the causal linear strategy
+game that ends at T may add a terminal loss on the states, such as `terminal: "q (X - b)^2"`.  The solution is sought within the causal linear strategy
 class; see [limits](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/limits.md) for the assumptions and restrictions of each engine.
 
 ## Install

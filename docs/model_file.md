@@ -47,7 +47,7 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `params` | map of number or expression | parameters, evaluated in order (a later one may use an earlier one) | none |
 | `shocks` | list of string | the Brownian shocks | none (every one listed must load something) |
 | `agents.<name>.constant` | number or expression | the loss's constant: part of the cost, moves no strategy | 0 |
-| `agents.<name>.terminal` | list of loss terms | the loss paid at T, on the states at T: a finite horizon only (the equations form writes `terminal: "q (X - b)^2"`) | none |
+| `agents.<name>.terminal` | list of loss terms | the loss paid at T, on the states at T: a finite horizon or a transition ending at T (the equations form writes `terminal: "q (X - b)^2"`) | none |
 | `agents.<name>.terminal_constant` | number or expression | the terminal loss's constant | 0 |
 | `agents.<name>.monitors` | agent name or list of them | the agents whose deviations this one is privy to (Chapter 6's monitoring relation, transitive); no engine solves it yet | none (all naive) |
 | `states` | map of object |  |  |
@@ -112,7 +112,7 @@ The fields of `numerics.settings` are those of `noisestate.Settings`: [settings.
   the flow loss is their sum and the agent minimises `E int e^{-rho t} loss dt`.
   A target `theta` on `X` is `(X - theta)^2` less its constant: `[1, X, X]` and
   `[-2*theta, X]`.  Linear terms move only the means (below).  `terminal:` adds a loss paid at T on the
-  states at T (a finite horizon without a past), discounted by `e^{-rho T}`: it enters the first-order
+  states at T (a finite horizon, or a transition that ends at T), discounted by `e^{-rho T}`: it enters the first-order
   conditions as the adjoint's terminal condition `H^X_T = G^XX(T) X_T + G^X_T`.
 * **Ties.** `ties: [[firm0, firm1, firm2]]` makes the listed agents share one
   strategy (a symmetric equilibrium): only the first is solved for.

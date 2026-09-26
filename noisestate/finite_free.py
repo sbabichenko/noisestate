@@ -381,8 +381,11 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
     terminal = (c.terminal or {}).get(agent.name)
     if terminal:
         IT, wT = c.terminal_quadrature
-        tform = np.exp(-c.rho * c.T) * (IT.T @ (wT[:, None] * IT.toarray()))     # N x N: e^{-rho T} int_0^T f(T, T - s) g(T, T - s) ds
+        tform = np.exp(-c.rho * c.T) * (IT.T @ (wT[:, None] * IT.toarray()))     # N x N: e^{-rho T} int f(T, T - s) g(T, T - s) ds
         tAO = system.foc.AO[mf:]
+        if ncol > nW:
+            r = c.terminal_point.toarray()
+            tpoint = np.exp(-c.rho * c.T) * (r.T @ r)                           # N x N: e^{-rho T} f(T) g(T) on the line s = 0
 
     def GT(Zd):                                     # the loss form on the world (nP, N, ncol, B), column by column
         b = np.tensordot(Q, system.foc.atoms_of(Zd)[:mf], axes=1)      # (m, N, ncol, B)
@@ -401,6 +404,9 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
             for j, (p, A) in enumerate(tAO):
                 Mt = (tform @ bt[j, :, :nW].reshape(N, -1)).reshape(N, nW, B)
                 out[p, :, :nW] += (A.T @ Mt.reshape(N, -1)).reshape(N, nW, B)
+                if ncol > nW:                       # the initial shocks' columns at T: the point form of the corner
+                    Mi = (tpoint @ bt[j, :, nW:].reshape(N, -1)).reshape(N, ncol - nW, B)
+                    out[p, :, nW:] += (A.T @ Mi.reshape(N, -1)).reshape(N, ncol - nW, B)
         return out
 
     def matvec(V):                                  # the form on a block of kept strategies (n, B)
@@ -457,7 +463,11 @@ def _dense_form(solver, agent: Agent, system: FocSystem, idx: np.ndarray) -> np.
     forms = [(G0, slice(0, nW))]
     if ncol > nW:
         w = np.zeros(N); w[c.diag] = c.time_mass(c.rho)[:c.Nd]
-        forms.append((loss_form(diags(w, format="csr")), slice(nW, ncol)))
+        Gi = loss_form(diags(w, format="csr"))
+        if terminal:                                # an initial shock's column at T: the point form of the corner
+            r = c.terminal_point.toarray()
+            Gi = Gi + loss_form(csr_matrix(np.exp(-c.rho * c.T) * (r.T @ r)), terminal[1], AO[system.foc.m_flow:])
+        forms.append((Gi, slice(nW, ncol)))
     return dense_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx)
 
 

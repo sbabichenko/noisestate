@@ -21,10 +21,14 @@ A model reads like its equations, in a file and in Python.
 - **`describe()`** writes coefficients in the parameters (`sqrt(p1) * X dt`, `sigma * dW[W0]`), not their values.
 - **`solve(model, nodes=24)`**: a Numerics field given directly is laid over the numerics, in solve() and
   transition() (refused since 0.6).
-- **The monitoring relation of Chapter 6 in the model:** `monitors: [market_maker]` on an agent makes it privy to
-  that agent's deviations (`Agent(..., monitors=...)` in Python), checked for transitivity; `model.privy(i)` lists
-  the privy set.  No engine solves a model with monitoring yet (it is refused); without it a model is the
-  all-naive corner, as before.
+- **Monitored deviations (Chapter 6) on the stationary engine.**  `monitors: [market_maker]` on an agent makes it
+  privy to that agent's deviations (`Agent(..., monitors=...)` in Python), checked for transitivity; `model.privy(i)`
+  lists the privy set.  The players privy to a deviation respond to it through response kernels fixed by their own
+  first-order conditions (sequential rationality), the deviating player resuming play after the blip; everyone else
+  filters it; every agent's first-order condition sees its deviations answered that way, while the path is built as
+  always.  `res.deviation_response(origin, quantities).over(ages)` reads the responses.  The all-privy tracking game
+  reproduces the feedback Nash gain 1/sqrt(3) (4e-9), and a privy market maker leaves the Kyle-Back trader a positive
+  profit (0.5).  Without `monitors` a model is the all-naive corner, as before; the spectral engine refuses monitoring.
 - **Removed: `naive_observers`.** It used Chapter 6's naive and privy the other way round, computed neither of the
   chapter's corners, and its solves failed their own first-order conditions (it zeroed the observers' reactions in
   the impulse responses that also build the on-path world).  Monitored deviations will come back as a model's
@@ -74,7 +78,9 @@ A model reads like its equations, in a file and in Python.
   `H^X_T = G^XX(T) X_T + G^X_T`, the mean system, the cost (its variance, mean and constant parts, discounted from T)
   and the second-order check.  Checked against the discounted Riccati closed form with `S(T) = q_T` (cost to 3.5e-8
   and kernels to 1.2e-4 at 16 nodes, exponential in the nodes) and its terminal-target mean path (1e-12).  A
-  transition with a past refuses one for now.
+  transition that ends at T takes one too: on a prior's column (read on the line s = 0 at T) against the Kalman
+  filter from P(0) = P0 with S(T) = q_T (cost 5e-8 at 16 nodes, 9e-10 at 20), and on a stationary past's band
+  against the closed form started at the stationary filter (within the transition's own floor, 6e-7 at 12 nodes).
 - **`ns.Game(...)` is the Python form's constructor** (`params=` fixes the order the file writes them);
   `ns.Model(...)` is the type and no longer builds.
 - **Transitions in the equations form:** `horizon: {T: 6, past: ch3_two_player.yaml}` (or `past:` a list of initial

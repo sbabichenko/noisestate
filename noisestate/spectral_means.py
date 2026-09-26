@@ -54,19 +54,33 @@ class TimeLineOps:
 
     @cached_property
     def terminal_quadrature(self):
-        """(I, w): I (nq x N, CSR) reads a kernel at (T, T - s) on Gauss points s of every time panel of [0, T] and
-        w (nq,) their weights, so that sum_q w_q f(T, T - s_q) is int_0^T f(T, T - s) ds: the variance of a
-        quantity at T over the shocks born in [0, T]."""
+        """(I, w): I (nq x N, CSR) reads a kernel at (T, T - s) on Gauss points s and w (nq,) their weights, so that
+        sum_q w_q f(T, T - s_q) is the integral of f(T, T - s) over the shocks alive at T: those born in [0, T] (cut
+        at each time panel; with a window L only T - s <= L carries a kernel, the reads beyond it being zero), and
+        with a band the old shocks born in [T - L, 0) (cut where the age T - s crosses a breakpoint).  The variance
+        of a quantity at T."""
         g = self.g; T = float(self.T)
         xg, wg = legendre.leggauss(g.nt + 2)
+        cuts = [float(b) for b in g.bp[:self.P_T + 1] if b <= T + 1e-12]
+        if cuts[-1] < T - 1e-12:
+            cuts.append(T)
+        if g.L is not None and self.past is not None and T < g.L - 1e-12:       # the band's old shocks, s in [T - L, 0)
+            ages = [a for a in g.bp if T + 1e-12 < a < g.L - 1e-12] + [float(g.L)]
+            cuts = sorted({T - a for a in ages} | set(cuts))
         s, w = [], []
-        for p in range(self.P_T):
-            t0, t1 = g.bp[p], min(g.bp[p + 1], T)
+        for t0, t1 in zip(cuts[:-1], cuts[1:]):
             if t1 - t0 < 1e-14:
                 continue
             s.append(0.5 * (t1 - t0) * xg + 0.5 * (t1 + t0)); w.append(0.5 * (t1 - t0) * wg)
         s = np.concatenate(s); w = np.concatenate(w)
         return g.interp_sparse(np.full(s.size, T), T - s, side_t=-1), w
+
+    @cached_property
+    def terminal_point(self):
+        """(1 x N, CSR): a kernel at the corner (T, age T), the line s = 0 at T: an initial shock's column at T (its
+        kernel lives on the line s = 0, as expected_cost reads it on the diagonal)."""
+        T = float(self.T)
+        return self.g.interp_sparse(np.array([T]), np.array([T]), side_t=-1)
 
     @cached_property
     def mean_line0(self) -> np.ndarray:

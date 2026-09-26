@@ -240,12 +240,11 @@ def test_terminal_target_moves_the_mean_path_to_the_closed_form(rho):
     assert abs(res.costs["a"] - (J + mean + np.exp(-rho * T) * QT * B * B)) < 3e-7      # the variance part: 1.3e-7 at rho = 0
 
 
-def test_a_terminal_loss_needs_a_game_that_ends_without_a_past():
-    """The stationary engine has no T, and a transition's terminal term on its old and initial shocks is not built:
-    both are refused rather than solved without the terminal loss."""
+def test_a_terminal_loss_needs_a_game_that_ends():
+    """The stationary engine has no T: a terminal loss there is refused rather than ignored.  A transition that ends at
+    T takes one (its terms on the band and the initial shocks are tests/test_transition.py's closed forms)."""
     d = model(0.5, "finite", 8); d["agents"]["a"]["terminal"] = [[QT, "X", "X"]]
     with pytest.raises(ValueError, match="ends at T"):
         ns.Model.from_dict({**d, "horizon": {"kind": "stationary", "window": 3.0, "discount": 0.5}})
     kb = ns.load(ns.example("kyle_back_prior")).to_dict(); kb["agents"]["trader1"]["terminal"] = [[1.0, "V", "V"]]
-    with pytest.raises(NotImplementedError, match="terminal loss"):
-        ns.solve(kb)
+    assert ns.solve(kb, nodes=8).converged
