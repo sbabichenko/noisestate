@@ -90,19 +90,19 @@ def test_shared_methods_are_declared_on_the_public_class():
         assert getattr(ns.Result, name).__doc__, f"{name} has no docstring"
 
 
-def test_with_signal_accepts_its_three_documented_forms():
-    from noisestate import Signal, Control, shocks
+def test_with_signal_accepts_its_two_documented_forms():
+    from noisestate import Signal, Control, shocks, dt
     model = ns.load(ns.example("ch1_two_player_finite"))
-    w = shocks("w_flow")
-    forms = [model.with_signal("flow", drift={"D1": 1}, noise={"w_flow": 1}),     # positional name
-             model.with_signal(name="flow", drift={"D1": 1}, noise={"w_flow": 1}),   # keyword name
-             model.with_signal(Signal("flow", Control("D1") + w.w_flow))]         # a Signal object
+    (dw_flow,) = shocks("w_flow")
+    forms = [model.with_signal("flow", "D1 dt + dw_flow"),                      # the name and the equation
+             model.with_signal(Signal("flow", Control("D1") * dt + dw_flow))]    # a Signal object
     for built in forms:
         assert "flow" in [r.name for r in built.agents[0].signals] and "w_flow" in built.shocks
-    #  without_signal() is the inverse, down to the channel the row brought in
+    assert forms[0].to_dict(numeric=True) == forms[1].to_dict(numeric=True)
+    #  without_signal() is the inverse, down to the shock the row brought in
     assert forms[0].without_signal("flow").to_dict() == model.to_dict()
-    with pytest.raises(TypeError):                       # a Signal AND blocks is none of the forms
-        model.with_signal(Signal("flow", Control("D1") + w.w_flow), drift={"D1": 1})
+    with pytest.raises(TypeError):                       # a Signal AND an equation is none of the forms
+        model.with_signal(Signal("flow", Control("D1") * dt + dw_flow), "D1 dt + dw_flow")
 
 
 #  ----------------------------------------------------------------- the horizon vocabulary

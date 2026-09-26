@@ -21,10 +21,10 @@ A model reads like its equations, in a file and in Python.
 - **`describe()`** writes coefficients in the parameters (`sqrt(p1) * X dt`, `sigma * dW[W0]`), not their values.
 - **`solve(model, nodes=24)`**: a Numerics field given directly is laid over the numerics, in solve() and
   transition() (refused since 0.6).
-- **Withdrawn: `naive_observers`.** It used Chapter 6's naive and privy the other way round, computed neither of the
+- **Removed: `naive_observers`.** It used Chapter 6's naive and privy the other way round, computed neither of the
   chapter's corners, and its solves failed their own first-order conditions (it zeroed the observers' reactions in
-  the impulse responses that also build the on-path world).  Every route that took it now says so; monitored
-  deviations will come back as a model's monitoring relation.
+  the impulse responses that also build the on-path world).  Monitored deviations will come back as a model's
+  monitoring relation.
 - Fixed: estimates, strategies and `response(..., seen_by=)` on the stationary engine (they existed on the finite
   engine only); `sweep()` of a file now loads it through `load()`, so a transition's relative past resolves from the
   file's directory; a transition's `res.extra` and payload key for the T solved on is `T` (was `window`).

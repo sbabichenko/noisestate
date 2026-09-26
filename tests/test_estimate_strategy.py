@@ -123,7 +123,7 @@ def test_response_follows_one_shock():
 
 def test_describe_writes_the_parameters():
     text = ns.Model.from_dict(EQ).describe()
-    assert "sqrt(p1) * X dt" in text and "sigma * dW[W0]" in text and "b1^2" in text
+    assert "sqrt(p1) X dt" in text and "sigma dW0" in text and "b1^2" in text
 
 
 def test_sweep_resolves_a_relative_past_from_the_file(tmp_path, monkeypatch):

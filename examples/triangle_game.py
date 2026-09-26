@@ -27,7 +27,7 @@ SIG_F = 1.0                     # noise on the public flow row
 def model(kind="stationary", window=3.0, nodes=12, flow=False, p=P, r=R, sig_f=SIG_F,
           vis=(1.0, 1.0, 1.0)):
     chans = ["wx1", "wx2"] + [f"w{i + 1}{k + 1}" for i in range(3) for k in range(2)]
-    d = {"name": "triangle_flow" if flow else "triangle", "channels": chans,
+    d = {"name": "triangle_flow" if flow else "triangle", "shocks": chans,
          "states": {f"X{k + 1}": {"drift": {f"D{i + 1}{k + 1}": 1.0 for i in range(3)},
                                   "noise": {f"wx{k + 1}": SIG}} for k in range(2)},
          "agents": {}, "horizon": {"kind": kind, "discount": 0.0, "window": window},
@@ -45,8 +45,7 @@ def model(kind="stationary", window=3.0, nodes=12, flow=False, p=P, r=R, sig_f=S
     if not flow:
         return base
     return base.with_signals({
-        f"flow{k + 1}": {"drift": {f"D{j + 1}{k + 1}": float(vis[j])
-                                     for j in range(3) if vis[j] != 0.0},
-                          "noise": {f"wf{k + 1}": sig_f}}
+        f"flow{k + 1}": " + ".join(f"{float(vis[j])!r} D{j + 1}{k + 1} dt" for j in range(3) if vis[j] != 0.0)
+                        + f" + {float(sig_f)!r} dwf{k + 1}"
         for k in range(2)
     }, audience="all")

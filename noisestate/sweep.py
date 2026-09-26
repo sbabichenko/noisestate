@@ -31,15 +31,10 @@ HORIZON_LENGTHS = ("horizon.window", "horizon.T")
 
 
 def _load_dict(model: Union[str, dict, Model]) -> dict:
-    if isinstance(model, str):
-        # through load(): a file's name default and its relative horizon.past.model, resolved from its own directory
-        from . import load
-        return load(model).to_dict()
-    if isinstance(model, Model):
-        return model.to_dict()
-    if not isinstance(model, dict):
-        raise TypeError(f"expected a Model, a dict or a path, not {type(model).__name__}")
-    return copy.deepcopy(model)
+    if isinstance(model, dict):
+        return copy.deepcopy(model)
+    from .spec import as_model
+    return as_model(model).to_dict()          # a path through load(): its name default and its relative past
 
 
 

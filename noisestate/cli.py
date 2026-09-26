@@ -92,9 +92,9 @@ def transition_lines(m: Model) -> list:
     if cont == "end":
         out.append(f"continuation: the game ends at T = {hz.extent:g}")
     else:
-        st = hz.stationary or {}
+        nodes = m.numerics.continuation_nodes or m.numerics.nodes
         out.append(f"continuation: the new model's stationary equilibrium on a buffer of one window after T = {hz.extent:g}"
-                   f" (the past's window), {st.get('nodes', hz.nodes)} nodes per panel (numerics.continuation_nodes)")
+                   f" (the past's window), {nodes} nodes per panel (numerics.continuation_nodes)")
     return out
 
 

@@ -91,11 +91,9 @@ class Past:
     @classmethod
     def from_model(cls, model, initial=None, **solve_kw) -> "Past":
         """Solve the stationary model (a Model, dict or path) and take its result."""
-        from . import solve, load
-        if isinstance(model, str):
-            model = load(model)
-        elif isinstance(model, dict):
-            model = Model.from_dict(model)
+        from . import solve
+        from .spec import as_model
+        model = as_model(model)
         if model.horizon.kind != "stationary":
             raise TypeError(f"past model {model.name!r} has horizon.kind {model.horizon.kind!r}; the time before zero is a "
                             "stationary regime")
@@ -228,11 +226,11 @@ class Past:
                 for b in self.breakpoints:
                     if b <= self.window + 1e-12 and abs(b / unit - round(b / unit)) > 1e-9:
                         raise ValueError(f"the past grid's breakpoint {b:g} is not a multiple of the panel unit {unit:g}; set "
-                                         "horizon.unit to a common divisor of the new model's lags and the past's panels")
+                                         "numerics.unit to a common divisor of the new model's lags and the past's panels")
                 for key, (_, _, d) in self.rows.items():
                     if d > 0 and abs(d / unit - round(d / unit)) > 1e-9:
                         raise ValueError(f"the past row {key}'s delay {d:g} is not a multiple of the panel unit {unit:g}; set "
-                                         "horizon.unit to a common divisor of the lags and delays of both regimes")
+                                         "numerics.unit to a common divisor of the lags and delays of both regimes")
         elif not self.channels:
             self.channels = chans
         elif self.channels != chans:

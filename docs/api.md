@@ -30,6 +30,7 @@ That solve converged — `res.converged` is `True` and `res.require_converged()`
 |---|---|
 | `ns.example(name)` | the path of a shipped model file — `ns.load(ns.example("ch4_kyle_back"))`. `ns.examples()` lists the seven names. They install with the package, so this works from a plain `pip install` |
 | `ns.load(path)` | you have a YAML model file. A relative `horizon.past.model` resolves from that file's directory |
+| `ns.as_model(x)` | a Model from a Model, a dict (either form) or a path: what every function taking a model does with it |
 | `ns.Model.from_dict(d)` | you have the file structure as a dict — generated models, tests, anything programmatic |
 | `ns.Model.from_dict(d)` with equations | the same dict written as equations: `shocks: [W0]`, `states: {X: "(D1 + D2) dt + sigma dW0"}`, `observes:`, `loss: "(X - b)^2 + r D^2"` (docs/model_file.md). `load()` reads it from a file |
 | `ns.Game(states, agents, T=..., window=..., discount=..., nodes=...)` | you wrote the equations in Python (below): a finite game with `T`, a stationary one with `window`. Returns a `Model`; `game.solve()` solves it |
@@ -45,7 +46,7 @@ That solve converged — `res.converged` is `True` and `res.require_converged()`
 | `ns.State("X")`, then `X.d = (D1 + D2) * dt + sigma * dW0` | a state and its law of motion (`X.drift = ...` takes the drift and noise as one expression) |
 | `ns.Control("D")` | a control; it belongs to whichever `Agent` lists it |
 | `ns.Signal(name, expr, delay=0.0)` | one named, possibly delayed, observed row. The same object `with_signal()` takes |
-| `ns.Agent(name, controls, observes=..., loss=..., myopic=False, naive_observers=None)` | an agent's controls, what it observes (an expression, a list, a dict of named signals, or Signals) and its quadratic loss, whose constant is kept as part of the cost |
+| `ns.Agent(name, controls, observes=..., loss=..., myopic=False, terminal=None)` | an agent's controls, what it observes (an expression, a list, a dict of named signals, or Signals) and its quadratic loss, whose constant is kept as part of the cost |
 | `ns.define(name, expr)` | a named linear expression reported as its own kernel |
 | `ns.sqrt exp log sin cos tanh` | these functions of a `Param` expression, kept symbolic |
 
@@ -90,8 +91,8 @@ Every one returns a **new** model, shares no mutable structure with it, and leav
 | `model.with_horizon(horizon)` | a different horizon, **as an object**: `with_horizon(Finite(T=1.0))`. The horizon is replaced, not patched, so nothing carries over by accident |
 | `model.with_stationary(window)` / `.with_finite(T)` / `.with_transition(T, past)` | the three kinds, spelled directly |
 | `model.with_numerics(numerics_or_fields)` | a different grid, engine or tolerance |
-| `model.with_signal(signal)` or `model.with_signal(name, drift=, noise=, audience="all", delay=0)` | add one observed row. Takes a `Signal` **or** the file-form blocks. New shocks are added for you |
-| `model.with_signals(signals)` or `model.with_signals(rows)` | several at once, in either form |
+| `model.with_signal(name, equation, delay=0, audience="all")` or `model.with_signal(Signal(...))` | add one observed row, written as in a file's `observes:` (`"(D1 + D2) dt + 0.5 dw_flow"`). A shock it names that the model lacks is added. Adding a name an agent already has is an error |
+| `model.with_signals(rows)` | several at once: a mapping of names to equations, or a list of Signals |
 | `model.without_signal(name, audience="all")` | remove a row, and the shocks it alone loaded. The inverse of adding one |
 | `model.save(path)` | write it back as YAML, parameter expressions intact |
 
@@ -114,7 +115,7 @@ Adding a row an agent already has is an **error**, never a silent replacement �
 `"stationary"`). Supplying both raises — a precedence rule would silently discard one of them.
 
 Other keywords: `tol`, `max_evaluations`, `deadline`, `diagnostics=False`, `refine=True`,
-`stability=True`, `naive_observers`, `past`, `continuation`, `verbose`, `progress`.
+`stability=True`, `past`, `continuation`, `verbose`, `progress`.
 
 ## 5. Reading a result
 
@@ -242,7 +243,7 @@ models and the path between them.
 | `res.to_dict()` | the result as JSON-ready data, `payload_version` 2 |
 | `model.to_dict()` / `model.save(path)` | the model as data, or back to a file |
 | `ns.schema("model")` / `ns.schema("payload")` | the JSON Schema of either |
-| `ns.read_yaml(path)` / `ns.read_json(path)` | read either without building a model |
+| `ns.read_json(path)` | read a result's JSON payload without building anything |
 
 The payload's `options.solve` and `options.solver` accept only their documented keys.
 Changes to this contract require a payload version change.

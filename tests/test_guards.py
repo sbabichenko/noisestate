@@ -62,7 +62,7 @@ def test_guard_advice_names_keys_the_model_file_actually_accepts():
     """The under-resolved guard told every reader to "raise horizon.nodes", which the model file
     REFUSES -- `unknown key(s) ['nodes'] in horizon`.  The key is numerics.nodes.
 
-    The advice drifted because model.horizon.nodes is a real PYTHON attribute: the resolved numerics
+    The advice drifted because model.numerics.nodes is a real PYTHON attribute: the resolved numerics
     are merged onto the horizon after loading.  So the sentence was true of the object and false of
     the file it was telling someone to edit, which is the file they have.
 

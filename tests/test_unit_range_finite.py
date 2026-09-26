@@ -72,6 +72,6 @@ def test_unit_range_guards_and_kind_change():
     with pytest.raises(ValueError, match="below the largest lag"):
         engines.spectral(undelayed(T=2.0, nodes=4, unit=0.125, unit_range=0.125))
     s = m.with_stationary(3.0).with_numerics(nodes=4, unit_range=2.0)
-    assert s.with_finite(2.0).horizon.unit_range is None            # a stationary sizing is not a finite one
-    assert s.with_finite(2.0).with_numerics(unit_range=1.0).horizon.unit_range == 1.0
-    assert s.with_numerics(nodes=6).horizon.unit_range == 2.0
+    assert s.with_finite(2.0).numerics.unit_range is None            # a stationary sizing is not a finite one
+    assert s.with_finite(2.0).with_numerics(unit_range=1.0).numerics.unit_range == 1.0
+    assert s.with_numerics(nodes=6).numerics.unit_range == 2.0

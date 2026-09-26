@@ -35,7 +35,8 @@ def _reachable(obj, seen=None, arrays=None, depth=0):
     IMMUTABLE = (str, int, float, bool, type(None), bytes, complex)
     if seen is None:
         seen, arrays = {}, []
-    if depth > 14 or isinstance(obj, IMMUTABLE) or id(obj) in seen:
+    frozen = getattr(getattr(obj, "__dataclass_params__", None), "frozen", False)      # a frozen Settings may be shared
+    if depth > 14 or isinstance(obj, IMMUTABLE) or frozen or id(obj) in seen:
         return seen, arrays
     if isinstance(obj, np.ndarray):
         seen[id(obj)] = "ndarray"; arrays.append(obj); return seen, arrays
@@ -77,9 +78,8 @@ def test_T1_with_star_returns_an_independent_copy(name):
     claimed the contract from one mutated field, which establishes only that field."""
     m = example(name)
     copies = [("with_params", lambda: m.with_params(**{k: float(v) for k, v in list(m.params.items())[:1]})),
-              ("with_numerics", lambda: m.with_numerics(nodes=int(m.horizon.nodes) + 2)),
-              ("with_signal", lambda: m.with_signal("probe_row", drift={m.state_names[0]: 1.0},
-                                                    noise={"w_probe": 1.0}))]
+              ("with_numerics", lambda: m.with_numerics(nodes=int(m.numerics.nodes) + 2)),
+              ("with_signal", lambda: m.with_signal("probe_row", f"{m.state_names[0]} dt + dw_probe"))]
     before_ids, before_arrays = _reachable(m)
     #  R1 has TWO halves and an earlier version of this test checked only one: the copy shares
     #  nothing, AND the receiver is unchanged.  Appending to the receiver's own list creates no

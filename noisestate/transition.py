@@ -27,17 +27,7 @@ from . import engines
 from .spec import Model
 from .numerics import Numerics
 from .past import Past
-
-
-def _model_of(obj) -> Model:
-    from . import load
-    if isinstance(obj, str):
-        return load(obj)
-    if isinstance(obj, dict):
-        return Model.from_dict(obj)
-    if isinstance(obj, Model):
-        return obj
-    raise TypeError(f"the new model must be a Model, a dict or a path, not {type(obj).__name__}")
+from .spec import as_model
 
 
 def _past_block(old, past: Past) -> dict:
@@ -89,7 +79,7 @@ def _transition_model(old, new, T: float, num: Numerics, continuation):
     """(model, past, continuation): the new model rewritten to horizon kind transition on [0, T] with the past's
     block and the numerics laid over (the shared construction of transition() and transition_gap())."""
     past = Past.of(old)
-    m = _model_of(new)
+    m = as_model(new)
     d = m.to_dict()
     hz = d.setdefault("horizon", {}); nm = d.setdefault("numerics", {})
     for k in ("breakpoints", "unit_range", "engine"):
@@ -148,8 +138,8 @@ FLOOR_FACTOR = 2.0        # a gap within this factor of the grid's floor is the 
 def _unit_of(model: Model, L: float) -> float:
     """The march's unit: numerics.unit when given, else the smallest lag or delay, else the past's window L (a
     model without lags has no unit of its own; the strip is then cut at the multiples of T below L)."""
-    if model.horizon.unit:
-        return float(model.horizon.unit)
+    if model.numerics.unit:
+        return float(model.numerics.unit)
     lags = [float(d) for d in model.all_lags() if d and d > 0]
     return min(lags) if lags else float(L)
 

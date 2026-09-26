@@ -5,7 +5,7 @@ the delays.  Strategies are raw maps g[u][r](t, b): the control at t is the
 sum over signal rows of int_0^t g(t, b) dY_r^seen(t - b), with b the age of the
 observation increment.  This module holds what faces the grid: the breakpoint
 sequence and its closure under the lags (or the unit panels within
-horizon.unit_range), the grid, the past's wiring (the initial shocks' columns,
+numerics.unit_range), the grid, the past's wiring (the initial shocks' columns,
 the old regime's loadings), the buffer's wiring (the frozen stationary maps), the
 reads and node-to-node shifts (dense and as CSR matrices), the line paths (the
 Volterra propagation, the convolutions, the past's and the old shocks' segments),
@@ -88,7 +88,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         self.T = float(hz.extent)
         self.past = past
         if past is not None:
-            past.validate(model, (hz.unit or min(lags)) if lags else None)
+            past.validate(model, (model.numerics.unit or min(lags)) if lags else None)
         # with a past a row observed with delay d keeps its map in raw age (the weight the control at t puts on the
         # raw increment of age a, zero for a < d, whole pieces since d is a breakpoint) and is an undelayed row to
         # every operator, the band's included; without a past the map is stored at the shifted time (map_shift)
@@ -107,9 +107,9 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         return L
 
     def _breakpoints(self, hz, lags, L: Optional[float]):
-        """The breakpoint sequence of the triangle in time and age: within horizon.unit_range (self.coarse) the
+        """The breakpoint sequence of the triangle in time and age: within numerics.unit_range (self.coarse) the
         unit multiples up to it, T and, when the game ends at T, T - k unit, filled geometrically between
-        (TriangleGrid.fill_geometric); else horizon.breakpoints or every multiple of the unit up to T
+        (TriangleGrid.fill_geometric); else numerics.breakpoints or every multiple of the unit up to T
         (TriangleGrid.breakpoints), closed under the lags (close_under_delays, with a warning when it adds
         panels).  Invariant: every lag and delay of the model is a breakpoint, and unless coarse every panel
         shifted by a lag is again a panel, so a lagged read is a node-to-node shift (map_shift).  Returns
@@ -121,10 +121,10 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         # in age (the kink at the k-th delay line weakens with k), and the panels grow geometrically beyond;
         # the delay reads are then node-to-node within it and interpolated beyond (map_shift), and the panels
         # are not closed under the lags.  Default (None, or the window): today's grid, cut at every multiple.
-        R = hz.unit_range
-        self.coarse = bool(lags) and not hz.breakpoints and R is not None and R < self.T - 1e-12
+        R = self.model.numerics.unit_range
+        self.coarse = bool(lags) and not self.model.numerics.breakpoints and R is not None and R < self.T - 1e-12
         if self.coarse and max(lags) > R + 1e-12:
-            raise ValueError(f"horizon.unit_range ({R:g}) is below the largest lag/delay {max(lags):g}: the unit panels must reach "
+            raise ValueError(f"numerics.unit_range ({R:g}) is below the largest lag/delay {max(lags):g}: the unit panels must reach "
                              "every lag (a lagged read lands node to node only within unit_range)")
         if self.coarse:
             # the required cuts: the unit multiples up to unit_range and T (the strip adds L and the past's cuts within
@@ -132,26 +132,26 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             # by the action grid on every piece (an interpolated read from differently cut panels leaves map nodes
             # unidentified: a singular first-order condition), which closes the panels under the delay everywhere
             if past is None and any(d > 0 for rr in self.rows.values() for (_, _, _, d) in rr):
-                raise ValueError(f"horizon.unit_range ({R:g}) below the window: a row observed with a delay keeps its map on the "
+                raise ValueError(f"numerics.unit_range ({R:g}) below the window: a row observed with a delay keeps its map on the "
                                  "action grid shifted by the delay, so every time panel must shift onto a panel; without a "
                                  "past (where the map is in raw age) set unit_range to the window, or solve as a transition")
-            unit = hz.unit or min(lags)
+            unit = self.model.numerics.unit or min(lags)
             required = set(np.arange(0.0, R + 1e-12, unit)) | {self.T}
             if continuation is None:       # the game ends at T: a control is idle within the last lag, the kernels kink at T - k unit
                 required |= {round(self.T - b, 12) for b in np.arange(unit, R + 1e-12, unit) if self.T - b > 1e-12}
             bp = TriangleGrid.fill_geometric(required, unit)
         else:
-            bp = list(hz.breakpoints) if hz.breakpoints else TriangleGrid.breakpoints(self.T, lags, hz.unit)
+            bp = list(self.model.numerics.breakpoints) if self.model.numerics.breakpoints else TriangleGrid.breakpoints(self.T, lags, self.model.numerics.unit)
         missing = [l for l in lags if not any(abs(l - b) < 1e-12 for b in bp)]
         if missing:                      # every lag must be on the panels before the closure: closing under a lag off
             # the unit grid would shatter the panels down to the lags' common divisor, or never terminate
-            if hz.breakpoints:
-                raise ValueError(f"lag/delay {missing[0]} is not a breakpoint of horizon.breakpoints {bp}"
+            if self.model.numerics.breakpoints:
+                raise ValueError(f"lag/delay {missing[0]} is not a breakpoint of numerics.breakpoints {bp}"
                                  + (f" (nor {missing[1:]})" if len(missing) > 1 else "") + "; list every lag and delay "
-                                 "of the model among them, or drop horizon.breakpoints (the panels are then built from the lags)")
-            unit = hz.unit or min(lags)
+                                 "of the model among them, or drop numerics.breakpoints (the panels are then built from the lags)")
+            unit = self.model.numerics.unit or min(lags)
             raise ValueError(f"lag(s)/delay(s) {missing} are not multiples of the panel unit {unit} "
-                             f"({'horizon.unit' if hz.unit else 'the smallest lag'}); set horizon.unit to a common divisor "
+                             f"({'numerics.unit' if self.model.numerics.unit else 'the smallest lag'}); set numerics.unit to a common divisor "
                              f"of the lags {lags}{_common_unit_hint(lags)}")
         # pieces closed under every lag (row delays, drift and loss lags): a lagged read and a delayed row's map are
         # then node-to-node shifts (map_shift) and the lag lines run along piece edges.  A window that is not a
@@ -175,9 +175,9 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         age panels shifted to T), closed under the lags again.  Invariant: the past's panels lie on piece edges
         (the old kernels kink there) and the buffer's pieces are the strip's on [0, L] with the origin at T."""
         past, continuation = self.past, self.cont
-        R = hz.unit_range
+        R = self.model.numerics.unit_range
         if L is None:
-            self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes)   # shared
+            self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), self.model.numerics.nodes, self.model.numerics.nodes)   # shared
         else:
             # the strip: one breakpoint sequence for time and age, the past grid's panels and L among them
             # (the old kernels kink on the past's panels, which then lie on piece edges), closed under the lags
@@ -186,7 +186,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
                 bp = TriangleGrid.fill_geometric(required | set(old) | {float(L)}, unit)
             else:
                 bp = sorted(set(bp) | set(old) | {float(L)})
-            if not lags and not hz.breakpoints:                     # no lags: time panels of width L (the shocks' lifetime), then T
+            if not lags and not self.model.numerics.breakpoints:                     # no lags: time panels of width L (the shocks' lifetime), then T
                 bp = sorted(set(bp) | {float(b) for b in np.arange(0.0, self.T - 1e-12, L)})
             if continuation is not None:                            # the buffer's time panels: the age panels shifted to T
                 if self.T < L - 1e-12:
@@ -204,13 +204,13 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
                         bp = new
                     else:
                         raise ValueError(f"the cuts below the window {L:g} do not close under the shift by T = {self.T:g} and the lags "
-                                         f"{lags}: set horizon.unit to a common divisor of T, L and the lags")
+                                         f"{lags}: set numerics.unit to a common divisor of T, L and the lags")
                 bp = sorted(set(bp) | {round(self.T + b, 12) for b in bp if b <= L + 1e-12})
             bp = close_under_delays(bp, lags) if lags and not self.coarse else bp
             if continuation is not None:
-                self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes, self.Tg, float(L), self.T)
+                self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), self.model.numerics.nodes, self.model.numerics.nodes, self.Tg, float(L), self.T)
             else:
-                self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), hz.nodes, hz.nodes, self.Tg, float(L))
+                self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), self.model.numerics.nodes, self.model.numerics.nodes, self.Tg, float(L))
         self.N = self.g.N
         self.rho = float(hz.discount)
 
@@ -539,7 +539,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         k = int(np.sum((g.bp > 1e-12) & (g.bp <= delay + 1e-12)))
         if abs(g.bp[k] - delay) > 1e-9 * max(1.0, self.Tg):
             raise ValueError(f"lag {delay} is not a breakpoint of the time panels {[float(b) for b in g.bp]}; the panels "
-                             "are built from the model's lags and delays (horizon.unit, horizon.breakpoints) and closed "
+                             "are built from the model's lags and delays (numerics.unit, numerics.breakpoints) and closed "
                              "under them, so a lag read here must be one of the model's")
         return k
 
@@ -591,8 +591,8 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             if not self._shift_aligned(pc, tgt, delay):
                 if not self.coarse:
                     raise ValueError(f"the time panels {[float(b) for b in g.bp]} are not closed under the lag {delay}: the panel "
-                                     f"[{pc.t0:g}, {pc.t1:g}] shifted back by the lag is not a panel; drop horizon.breakpoints, "
-                                     f"or set horizon.unit to a common divisor of the lags and of the window {self.T}")
+                                     f"[{pc.t0:g}, {pc.t1:g}] shifted back by the lag is not a panel; drop numerics.breakpoints, "
+                                     f"or set numerics.unit to a common divisor of the lags and of the window {self.T}")
                 yield pc, None, idx                            # beyond unit_range: the read is interpolated
                 continue
             yield pc, tgt, idx
@@ -835,7 +835,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             g = self.g; k = self.panel_shift(delay) if delay > 0 else 0
             if k and self.coarse:
                 raise ValueError("a delayed row's discrete weights on the initial shocks need the time panels closed under the delay; "
-                                 "horizon.unit_range below the window is not supported with initial shocks and a delayed row")
+                                 "numerics.unit_range below the window is not supported with initial shocks and a delayed row")
             E = np.zeros((self.N, self.Nt))
             for pc in g.pieces:
                 if pc.band or pc.p - k < 0:
@@ -852,7 +852,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             g = self.g; k = self.panel_shift(delay) if delay > 0 else 0
             if k and self.coarse:
                 raise ValueError("a delayed row's discrete weights on the initial shocks need the time panels closed under the delay; "
-                                 "horizon.unit_range below the window is not supported with initial shocks and a delayed row")
+                                 "numerics.unit_range below the window is not supported with initial shocks and a delayed row")
             S = np.zeros((self.Nt, self.N))
             for j, node in enumerate(self.diag):                       # time node p * nt + it of the line s = 0
                 p, it = divmod(j, g.nt)

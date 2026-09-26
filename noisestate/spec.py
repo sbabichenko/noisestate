@@ -176,9 +176,8 @@ class Agent:
 
 @dataclass
 class Horizon:
-    """The horizon block (the economics: kind, discount, window, a transition's past and continuation) and,
-    after it, the resolved numerics the engines read (the file's `numerics:` block, or a Numerics laid over it
-    by solve(); `Model.numerics` presents them, `Model.with_numerics` changes them)."""
+    """The horizon block: the economics of time (kind, discount, window or T, a transition's past and
+    continuation).  How the model is solved is Model.numerics, apart from it."""
     kind: str = "stationary"          # "stationary" | "finite" (a finite horizon) | "transition"
     discount: float = 0.0
     #  TWO DISTINCT QUANTITIES, never aliased.  Before 0.8 one `window` field held both, and the
@@ -186,12 +185,10 @@ class Horizon:
     #  lag window had nowhere to live and was exiled to the nested `stationary` block.
     window: Optional[float] = None    # L, the lag-truncation length: stationary only (a transition's is its past's)
     T: Optional[float] = None         # the terminal time: finite and transition
-    # kind "transition" only: the past ({"model": a path or an inline stationary model dict, "initial": [shocks]}),
-    # the continuation ("stationary", the default, or "end") and the sizing of the new model's stationary solve
-    # for the continuation ({"nodes": numerics.continuation_nodes}; its window is the past's)
+    # kind "transition" only: the past ({"model": a path or an inline stationary model dict, "initial": [shocks]})
+    # and the continuation ("stationary", the default, or "end"; on the past's window)
     past: Optional[dict] = None
     continuation: Optional[str] = None
-    stationary: Optional[dict] = None
     settle: Optional[float] = None    # kind "transition" only: in place of T, the settle tolerance the horizon T is found for (a march in T)
 
     @property
@@ -220,18 +217,6 @@ class Horizon:
             return float(self.T)
         raise ValueError("this transition has no terminal time T: its extent is not determined until the settle "
                          "march sets T")
-    # ---- the resolved numerics (numerics.py): the grid
-    breakpoints: Optional[List[float]] = None
-    unit: Optional[float] = None
-    unit_range: Optional[float] = None
-    nodes: int = 16
-    engine: Optional[str] = None      # "stationary" | "spectral" | "cells"; None: the kind's default
-    # ---- the resolved numerics: the fixed point's options and the tuning constants
-    tol: Optional[float] = None
-    damping: Optional[float] = None
-    max_newton: Optional[int] = None
-    variable: Optional[str] = None
-    settings: object = None           # a Settings; None: the defaults
 
 
 
@@ -257,11 +242,10 @@ def _file_dumper():
 
 @dataclass(init=False)
 class Model:
-    """The game as data, in one of two spellings.  The field form is the file's structure (from_dict builds it:
-    channels, states, agents, horizon, definitions, ties, params); the expression form (noisestate.expr) is the
-    equations, `Model("ch1", states=[X], agents=[player1, player2], horizon=Stationary(window=3.0))` with
-    State, Control, Signal, Agent and Param objects, compiled to the same structure through from_dict, so the
-    two are one class and one model (`to_dict()` is the file in both cases)."""
+    """The game as data.  Built from its equations (`ns.Game(...)`, or `Model("ch1", states=[X], agents=[...],
+    horizon=Stationary(window=3.0))` with State, Control, Signal, Agent and Param objects), from a file
+    (`ns.load`), or from its dict (`Model.from_dict`, either form).  Every route compiles to the same fields,
+    the file's structure: shocks, states, agents, horizon, definitions, ties, params; `to_dict()` is the file."""
     name: str
     shocks: List[str]
     states: List[State]
@@ -270,27 +254,42 @@ class Model:
     definitions: List[Definition] = field(default_factory=list)
     ties: List[List[str]] = field(default_factory=list)      # groups of agents sharing one strategy
     params: Dict[str, float] = field(default_factory=dict)
+    numerics: object = None                                   # a Numerics: how the model is solved (nodes 16 unless given)
     source: Optional[dict] = field(default=None, repr=False)  # the file structure with its expressions, if built from one
 
     def __init__(self, name: str = "model", shocks=None, states=None, agents=None, horizon=None, definitions=None,
                  ties=None, params=None, source=None, *, numerics=None):
         from . import expr
-        if expr.is_expression_form(states, agents, horizon, definitions):
-            if shocks is not None:
-                raise ValueError("Model(): the shocks of an expression model are the ones it uses; do not give shocks=")
-            d = expr.compile_model(name, states, agents, definitions=definitions, ties=ties, horizon=horizon,
-                                   numerics=numerics, params=params)
-            built = Model.from_dict(d)
-            self.__dict__.update(built.__dict__)
-            self.source = built.to_dict()                 # the normalised file (as load(save()) reads it back)
+        if not any(x for x in (states, agents, definitions)) and horizon is None:
+            self._set_fields(name, shocks, states, agents, horizon, definitions, ties, params, source)   # the empty model
             return
-        if numerics is not None:
-            raise TypeError("Model(): numerics= belongs to the expression form; the field form carries them in its Horizon")
+        if not expr.is_expression_form(states, agents, horizon, definitions):
+            raise TypeError("Model() builds a model from its equations (ns.State, ns.Control, ns.Agent, ...; or ns.Game); "
+                            "a model from its file structure is Model.from_dict(d) or ns.load(path)")
+        if shocks is not None:
+            raise ValueError("Model(): the shocks of an expression model are the ones it uses; do not give shocks=")
+        d = expr.compile_model(name, states, agents, definitions=definitions, ties=ties, horizon=horizon,
+                               numerics=numerics, params=params)
+        built = Model.from_dict(d)
+        self.__dict__.update(built.__dict__)
+        self.source = built.to_dict()                 # the normalised file (as load(save()) reads it back)
+
+    def _set_fields(self, name, shocks, states, agents, horizon, definitions, ties, params, source, numerics=None):
+        from .numerics import Numerics
         self.name = name; self.shocks = list(shocks or []); self.states = list(states or []); self.agents = list(agents or [])
         self.horizon = horizon if horizon is not None else Horizon()
         self.definitions = list(definitions or []); self.ties = list(ties or [])
         self.params = params if params is not None else {}
+        self.numerics = Numerics(nodes=16).merged(Numerics.of(numerics))
         self.source = source
+
+    @classmethod
+    def _of_fields(cls, name: str = "model", shocks=None, states=None, agents=None, horizon=None, definitions=None,
+                   ties=None, params=None, source=None, numerics=None) -> "Model":
+        """A Model from the file structure's objects (spec.State, spec.Agent, Horizon, ...): from_dict's constructor."""
+        m = object.__new__(cls)
+        m._set_fields(name, shocks, states, agents, horizon, definitions, ties, params, source, numerics)
+        return m
 
     def __repr__(self) -> str:
         """One line: the name, the horizon with its own lengths, and what the model holds.
@@ -388,25 +387,7 @@ class Model:
         with open(path, "w") as fh:
             yaml.dump(d, fh, Dumper=_file_dumper(), sort_keys=False, width=110)
 
-    @classmethod
-    def load(cls, path: str) -> "Model":
-        """The model of a YAML file (noisestate.load)."""
-        from . import load
-        return load(path)
-
     # ------------------------------------------------------------ numerics
-    @property
-    def numerics(self):
-        """The numerics this model carries (its file's block, or what solve() laid over it), as a Numerics; the
-        engine is None until a solve resolves it from the horizon kind (res.numerics is resolved)."""
-        from .numerics import Numerics
-        hz = self.horizon
-        st = hz.stationary or {}
-        return Numerics(engine=hz.engine, nodes=hz.nodes, unit=hz.unit, unit_range=hz.unit_range,
-                        breakpoints=None if hz.breakpoints is None else list(hz.breakpoints),
-                        continuation_nodes=st.get("nodes"), tol=hz.tol, damping=hz.damping, max_newton=hz.max_newton,
-                        variable=hz.variable, settings=hz.settings)
-
     def _rebuilt(self, d: dict) -> "Model":
         """from_dict(d).  source is not carried: from_dict() rebuilds it from d, which is how with_params() keeps
         the parameter expressions intact."""
@@ -790,21 +771,21 @@ class Model:
         extent, unit_range within it, unit positive, breakpoints increasing from 0 to it, each length
         positive where the kind has one, discount non-negative, kind one of the three engines."""
         hz = self.horizon
-        if hz.nodes != int(hz.nodes):
-            raise ValueError(f"numerics.nodes must be an integer, got {hz.nodes!r}")
-        if hz.nodes < 2:
+        if self.numerics.nodes != int(self.numerics.nodes):
+            raise ValueError(f"numerics.nodes must be an integer, got {self.numerics.nodes!r}")
+        if self.numerics.nodes < 2:
             raise ValueError("numerics.nodes must be at least 2")
-        if hz.unit is not None and not hz.unit > 0:
+        if self.numerics.unit is not None and not self.numerics.unit > 0:
             raise ValueError("numerics.unit must be positive")
         if hz.discount < 0:
             raise ValueError("horizon.discount must be non-negative")
         if hz.kind not in ("stationary", "finite", "transition"):
             raise ValueError("horizon.kind must be 'stationary', 'finite' or 'transition' (the engine, spectral or cells, is numerics.engine)")
-        if hz.engine == "cells" and hz.kind != "finite":
+        if self.numerics.engine == "cells" and hz.kind != "finite":
             raise ValueError(f"numerics.engine 'cells' solves a finite horizon only, not horizon.kind {hz.kind!r}")
-        if hz.engine == "stationary" and hz.kind != "stationary":
+        if self.numerics.engine == "stationary" and hz.kind != "stationary":
             raise ValueError(f"numerics.engine 'stationary' solves horizon.kind 'stationary' only, not {hz.kind!r}")
-        if hz.engine == "spectral" and hz.kind == "stationary":
+        if self.numerics.engine == "spectral" and hz.kind == "stationary":
             raise ValueError("numerics.engine 'spectral' solves a finite horizon or a transition, not horizon.kind 'stationary'")
 
         #  Each LENGTH is checked where the kind has one: a stationary model has no T and a finite
@@ -841,10 +822,10 @@ class Model:
                 leads += [-l for atom in term[1:] for (n, l) in self.expand({atom: 1.0}) if l < 0]
         if any(l >= hz.extent - 1e-12 for l in leads):
             raise ValueError(f"lead(s) {sorted(set(l for l in leads if l >= hz.extent - 1e-12))} are not below the horizon's extent {hz.extent}")
-        if hz.unit_range is not None and hz.unit_range > hz.extent + 1e-12:
-            raise ValueError(f"numerics.unit_range ({hz.unit_range}) must not exceed the horizon's extent ({hz.extent})")
-        if hz.breakpoints is not None:
-            bp = list(hz.breakpoints)
+        if self.numerics.unit_range is not None and self.numerics.unit_range > hz.extent + 1e-12:
+            raise ValueError(f"numerics.unit_range ({self.numerics.unit_range}) must not exceed the horizon's extent ({hz.extent})")
+        if self.numerics.breakpoints is not None:
+            bp = list(self.numerics.breakpoints)
             if len(bp) < 2 or abs(bp[0]) > 1e-12 or abs(bp[-1] - hz.extent) > 1e-9 * max(1.0, hz.extent) or any(b2 <= b1 for b1, b2 in zip(bp, bp[1:])):
                 raise ValueError(f"numerics.breakpoints {bp} must increase from 0 to the horizon's extent ({hz.extent})")
 
@@ -878,11 +859,6 @@ class Model:
             if hz.continuation == "end":
                 raise ValueError("horizon.settle needs continuation 'stationary': the march measures the rules against the new model's "
                                  "stationary equilibrium")
-        if hz.stationary is not None:
-            self._check_keys("horizon.stationary", hz.stationary, {"nodes"})
-            n = hz.stationary.get("nodes")
-            if n is not None and (n != int(n) or n < 2):
-                raise ValueError("numerics.continuation_nodes must be an integer of at least 2")
 
     # ------------------------------------------------------- construction
     _KEYS = {
@@ -956,6 +932,16 @@ class Model:
                 nout[k] = nsrc[k] if k in nsrc and same(nsrc[k], v) else v
             d["horizon"] = hout
             d["numerics"] = nout
+            # a block whose fields were changed on the object since it was built is written as it now is
+            # (numbers), so save() and describe() never show a stale source for what solve() would use
+            live = self.to_dict(numeric=True)
+            if "_source_numeric" not in self.__dict__:
+                self.__dict__["_source_numeric"] = Model.from_dict(self.source).to_dict(numeric=True)
+            built = self.__dict__["_source_numeric"]
+            for block in ("states", "definitions", "agents"):
+                for k, v in (live.get(block) or {}).items():
+                    if (built.get(block) or {}).get(k) != v:
+                        d.setdefault(block, {})[k] = v
             return d
         # numeric form: parameter values are inlined, including the lags written as name@param
         p = self.params
@@ -997,76 +983,41 @@ class Model:
     #  Three calling forms, spelled out for a reader and for a type checker.  The single
     #  implementation signature admits combinations none of them allows (a Signal AND a drift), and
     #  the runtime rejects those; these say which calls are actually meant.
-    @overload
-    def with_signal(self, signal: "Signal", *, audience: Union[str, Iterable[str]] = "all") -> "Model": ...
-    @overload
-    def with_signal(self, signal: str, *, drift: Mapping[str, Any], noise: Mapping[str, Any],
-                    audience: Union[str, Iterable[str]] = "all", delay: float = 0.0) -> "Model": ...
-    @overload
-    def with_signal(self, *, name: str, drift: Mapping[str, Any], noise: Mapping[str, Any],
-                    audience: Union[str, Iterable[str]] = "all", delay: float = 0.0) -> "Model": ...
+    def with_signal(self, signal, equation: Optional[str] = None, *, delay: float = 0.0,
+                    audience: Union[str, Iterable[str]] = "all") -> "Model":
+        """Return a copy with one observation row added to the selected agents:
 
-    def with_signal(self, signal=None, *, name=None, drift=None, noise=None, audience="all", delay=0.0) -> "Model":
-        """Return a copy with one observation row added to the selected agents.
+            model.with_signal("flow", "D1 dt + D2 dt + sigma_Z dw_flow")      # the row's name and its equation
+            model.with_signal(Signal("flow", (D1 + D2) * dt + sigma_Z * dw_flow))   # the Python form's object
 
-        TWO SPELLINGS OF ONE ROW, and the same type as the expression form:
-
-            model.with_signal(Signal("flow", D1 + sigma * w.wZ))     # a Signal object
-            model.with_signal(name="flow", drift={"D1": 1}, noise={"wZ": 0.5})
-
-        The object form is the one to reach for when the model was built as equations -- it is the
-        same Signal the Agent takes, so a row is written once and used in either workflow.  The
-        block form stays because a model loaded from a FILE has no Signal object to hand, and
-        building one only to take it apart again would be ceremony.
-
-        ``audience`` is ``"all"`` (the default), one agent name, or an iterable of agent names.
-        Shocks named by the row are added to the model when absent.  Adding a name an
-        agent already has is an error, never a silent replacement -- use without_signal() first.
-        The operation is model construction only: it does not mutate or solve this model.
-        """
+        The equation is written as in a model file's `observes:` (terms with dt are the drift, d<shock> terms
+        the noise) and read by the same evaluator, in this model's parameters and names.  A shock it names
+        that the model lacks is added.  ``delay`` delays the row; ``audience`` is ``"all"`` (the default), one
+        agent name, or an iterable of agent names.  Adding a name an agent already has is an error, never a
+        silent replacement: use without_signal() first.  The model itself is not changed."""
         from .expr import Signal as _Signal
-        #  overloaded on the FIRST argument: a Signal, or the row's name followed by its blocks
         if isinstance(signal, _Signal):
-            if any(v is not None for v in (name, drift, noise)) or delay:
-                raise TypeError("with_signal(): give a Signal OR name/drift/noise, not both -- the "
-                                "Signal already carries its drift, noise and delay")
+            if equation is not None or delay:
+                raise TypeError("with_signal(): a Signal carries its equation and delay; give it alone")
             return self.with_signals([signal], audience=audience)
-        if isinstance(signal, str):
-            if name is not None:
-                raise TypeError("with_signal(): the row's name was given twice, positionally and as name=")
-            name = signal
-        elif signal is not None:
-            raise TypeError(f"with_signal(): the first argument is a Signal or the row's name, not "
-                            f"{type(signal).__name__}")
-        if name is None or drift is None or noise is None:
-            raise TypeError("with_signal(): needs a Signal, or a name with drift= and noise=")
-        return self.with_signals({name: {"drift": drift, "noise": noise, "delay": delay}}, audience=audience)
+        if not isinstance(signal, str) or not isinstance(equation, str):
+            raise TypeError("with_signal(): give the row's name and its equation as strings, or a Signal")
+        return self.with_signals({signal: {"d": equation, "delay": delay} if delay else equation}, audience=audience)
 
     def with_signals(self, rows, *, audience="all") -> "Model":
-        """Return a copy with several observation rows added to an audience.
-
-        `rows` is a SEQUENCE OF SIGNALS, or a mapping of row name to its model-file block
-        (``drift``, ``noise`` and an optional ``delay``).  Mixing the two in one call is an error:
-        a call says which form it is written in.
-
-        Rebuilding through :meth:`from_dict` gives transformed models the same validation and
-        serialisation guarantees as models loaded from files.
-        """
+        """Return a copy with several observation rows added to an audience: a sequence of Signals, or a
+        mapping of row name to its equation (a string, or {"d": equation, "delay": tau}), as a model file's
+        `observes:` writes it.  See with_signal()."""
+        import re
+        from . import equations
         from .expr import Signal as _Signal
         if isinstance(rows, (list, tuple)):
-            if not rows:
-                raise ValueError("with_signals(): no signals given")
-            bad = [r for r in rows if not isinstance(r, _Signal)]
-            if bad:
-                raise TypeError("with_signals(): a sequence must hold Signals, not "
-                                f"{type(bad[0]).__name__}; a mapping holds file-form blocks")
-            #  Signal.compile() already produces the block this method consumes -- the same one the
-            #  expression form writes into a model file -- so the two workflows share the type
-            #  rather than each having their own way of saying a row.
-            rows = {r.name: r.compile() for r in rows}
+            if not rows or not all(isinstance(r, _Signal) for r in rows):
+                raise TypeError("with_signals(): a sequence must be a non-empty sequence of Signals")
+            rows = {r.name: r for r in rows}
         if not isinstance(rows, dict) or not rows:
-            raise ValueError("with_signals(): rows must be a non-empty mapping of signal names to "
-                             "signal blocks, or a non-empty sequence of Signals")
+            raise ValueError("with_signals(): rows must be a non-empty mapping of signal names to equations, "
+                             "or a non-empty sequence of Signals")
         known = [a.name for a in self.agents]
         if audience == "all":
             selected = known
@@ -1085,28 +1036,36 @@ class Model:
         if unknown:
             raise ValueError(f"with_signals(): unknown agent(s) {unknown}; agents: {known}")
 
-        d = self.to_dict()
-        d.setdefault("shocks", [])
-        for row_name, block in rows.items():
+        g = self.to_dict()
+        names = set(self.params) | set(self.state_names) | set(self.control_names) | set(self.def_names) | set(self.shocks)
+        blocks = {}
+        for row_name, row in rows.items():
             if not isinstance(row_name, str) or not row_name:
                 raise ValueError(f"with_signals(): signal names must be non-empty strings, not {row_name!r}")
-            if not isinstance(block, dict):
-                raise ValueError(f"with_signals(): signal {row_name!r} must be a mapping")
-            self._check_keys("signal", block, self._KEYS["signal"], f" {row_name!r}")
-            if not isinstance(block.get("drift") or {}, dict) or not isinstance(block.get("noise") or {}, dict):
-                raise ValueError(f"with_signals(): signal {row_name!r} drift and noise must be mappings")
-            for channel in (block.get("noise") or {}):
-                if channel not in d["shocks"]:
-                    d["shocks"].append(channel)
+            if isinstance(row, _Signal):
+                blocks[row_name] = row.compile()
+                continue
+            text = row["d"] if isinstance(row, dict) else row
+            if not isinstance(text, str) or (isinstance(row, dict) and set(row) - {"d", "delay"}):
+                raise ValueError(f"with_signals(): signal {row_name!r} is an equation string or {{d: ..., delay: ...}}")
+            new = [t[1:] for t in re.findall(r"\b(d[A-Za-z_]\w*)", text) if t != "dt" and t not in names and t[1:] not in names]
+            eq = self.to_equations()
+            eq["shocks"] = list(eq.get("shocks") or []) + list(dict.fromkeys(new))   # a shock the row names is added
+            blocks[row_name] = equations.signal_block(eq, row_name, row)          # the file's evaluator, in this model's names
+        g.setdefault("shocks", [])
+        for row_name, block in blocks.items():
+            for shock in (block.get("noise") or {}):
+                if shock not in g["shocks"]:
+                    g["shocks"].append(shock)
             clean = copy.deepcopy(block)
-            if clean.get("delay") == 0:
+            if not clean.get("delay"):
                 clean.pop("delay", None)
             for agent in selected:
-                signals = d["agents"][agent].setdefault("signals", {})
+                signals = g["agents"][agent].setdefault("signals", {})
                 if row_name in signals:
                     raise ValueError(f"with_signals(): agent {agent!r} already has a signal named {row_name!r}")
                 signals[row_name] = copy.deepcopy(clean)
-        return self._rebuilt(d)
+        return self._rebuilt(g)
 
     def without_signal(self, name: str, *, audience="all") -> "Model":
         """Return a copy with an observation row removed from the selected agents.
@@ -1247,7 +1206,6 @@ class Model:
         nm, kind = _numerics_block(d)
         from ._settings import Settings
         cls._check_keys("numerics", nm, cls._KEYS["numerics"])
-        stationary = None if nm.get("continuation_nodes") is None else {"nodes": nm["continuation_nodes"]}
         try:
             settings = Settings.of(nm.get("settings"))
         except TypeError as exc:
@@ -1261,16 +1219,20 @@ class Model:
                           T=_horizon_length(hz, kind, params, "T"),
                           past=copy.deepcopy(hz["past"]) if hz.get("past") is not None else None,
                           continuation=hz.get("continuation"),
-                          stationary=stationary,
-                          settle=None if hz.get("settle") is None else float(eval_coef(hz["settle"], params)),
-                          breakpoints=[eval_coef(b, params) for b in nm["breakpoints"]] if nm.get("breakpoints") else None,
-                          unit=eval_coef(nm["unit"], params) if nm.get("unit") is not None else None,
-                          unit_range=eval_coef(nm["unit_range"], params) if nm.get("unit_range") is not None else None,
-                          nodes=nm.get("nodes", 16), engine=nm.get("engine"),
-                          tol=None if nm.get("tol") is None else float(eval_coef(nm["tol"], params)),
-                          damping=None if nm.get("damping") is None else float(eval_coef(nm["damping"], params)),
-                          max_newton=nm.get("max_newton"), variable=nm.get("variable"),
-                          settings=None if settings == Settings() else settings)
+                          settle=None if hz.get("settle") is None else float(eval_coef(hz["settle"], params)))
+        from .numerics import Numerics
+        try:
+            numerics = Numerics(
+                engine=nm.get("engine"), nodes=nm.get("nodes", 16),
+                breakpoints=[eval_coef(b, params) for b in nm["breakpoints"]] if nm.get("breakpoints") else None,
+                unit=eval_coef(nm["unit"], params) if nm.get("unit") is not None else None,
+                unit_range=eval_coef(nm["unit_range"], params) if nm.get("unit_range") is not None else None,
+                continuation_nodes=nm.get("continuation_nodes"),
+                tol=None if nm.get("tol") is None else float(eval_coef(nm["tol"], params)),
+                damping=None if nm.get("damping") is None else float(eval_coef(nm["damping"], params)),
+                max_newton=nm.get("max_newton"), variable=nm.get("variable"), settings=settings)
+        except TypeError as exc:
+            raise ValueError(str(exc)) from None
         if base_dir and isinstance(horizon.past, dict) and isinstance(horizon.past.get("model"), str) \
                 and not os.path.isabs(horizon.past["model"]):
             horizon.past["model"] = os.path.normpath(os.path.join(base_dir, horizon.past["model"]))
@@ -1294,15 +1256,11 @@ class Model:
                                 terminal=[[eval_coef(t[0], params)] + [str(x) for x in t[1:]] for t in (v.get("terminal") or [])],
                                 terminal_constant=eval_coef(v.get("terminal_constant", 0.0), params)))
         from types import MappingProxyType
-        m = cls(name=d.get("name", "model"), shocks=list(d.get("shocks") or []), states=states,
+        m = cls._of_fields(name=d.get("name", "model"), shocks=list(d.get("shocks") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
-                params=MappingProxyType(params), source=copy.deepcopy(d))     # read-only: see with_params()
+                params=MappingProxyType(params), source=copy.deepcopy(d), numerics=numerics)   # params read-only: see with_params()
         m.validate()                                           # structural errors first (its expansions also record
-        m.horizon.nodes = int(m.horizon.nodes)                 # the lag parameters, 'P@tau'); then the parameter check
-        if m.horizon.engine is not None and m.horizon.engine not in ("stationary", "spectral", "cells"):
-            raise ValueError(f"numerics.engine must be 'stationary', 'spectral' or 'cells', not {m.horizon.engine!r}")
-        if m.horizon.variable is not None and m.horizon.variable not in ("actions", "maps"):
-            raise ValueError(f"numerics.variable must be 'actions' or 'maps', not {m.horizon.variable!r}")
+                                                               # the lag parameters, 'P@tau'); then the parameter check
         for k, v in pdict.items():
             if isinstance(v, str):
                 safe_eval(v, params)                           # a parameter used inside another one counts as used
@@ -1370,3 +1328,30 @@ def _eval_past_block(block, params):
                     if isinstance(sh.get(key), dict):
                         sh[key] = {k: eval_coef(v, params) for k, v in sh[key].items()}
     return block
+
+
+def _read_yaml(path: str):
+    import yaml
+    with open(path) as fh:
+        return yaml.safe_load(fh)
+
+
+def load(path: str) -> Model:
+    """The model of a YAML file, written as equations or in the grammar; a relative path in horizon.past.model
+    is taken from the file's directory, and a file without a name is named after itself."""
+    d = _read_yaml(path)
+    if isinstance(d, dict) and "name" not in d:
+        d = {"name": os.path.splitext(os.path.basename(path))[0], **d}
+    return Model.from_dict(d, base_dir=os.path.dirname(os.path.abspath(path)))
+
+
+def as_model(model) -> Model:
+    """A Model from anything that names one: a Model, a dict (the grammar or the equations form) or a path to a
+    YAML file.  Every entry point (solve, sweep, compare, transition, a past) reads its model through this."""
+    if isinstance(model, str):
+        return load(model)
+    if isinstance(model, dict):
+        return Model.from_dict(model)
+    if isinstance(model, Model):
+        return model
+    raise TypeError(f"expected a Model, a dict or a path to a model file, not {type(model).__name__}")

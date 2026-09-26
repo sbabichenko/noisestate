@@ -11,9 +11,9 @@ import noisestate as ns
 def _model():
     w = ns.shocks('w0', 'w1')
     x, u = ns.State('X'), ns.Control('D')
-    x.drift = -x + u + 2 * w.w0
+    x.d = (-x + u) * ns.dt + 2 * w.w0
     agent = ns.Agent('player', controls=[u],
-                     signals=[ns.Signal('y', x + w.w1, delay=0.5)],
+                     observes=ns.Signal('y', x * ns.dt + w.w1, delay=0.5),
                      loss=(x - 1)**2 + u**2)
     return ns.Model('tracking', states=[x], agents=[agent], horizon=ns.Stationary(window=3))
 
@@ -27,10 +27,10 @@ def test_description_information_and_loss():
     model = _model()
     before = model.to_dict()
     summary = model.describe()
-    assert 'dX = (-X + D) dt + 2 * dW[w0]' in summary
-    assert 'dy = X dt + dW[w1]' in summary
+    assert 'dX = (-X + D) dt + 2 dw0' in summary
+    assert 'dy = X dt + dw1' in summary
     assert 'observed with delay 0.5' in summary
-    assert 'X^2 - 2 * X + D^2' in summary
+    assert 'X^2 - 2 X + D^2' in summary
     assert model.to_dict() == before
 
 
@@ -45,8 +45,8 @@ def test_notebook_description_is_html_carrying_the_same_content():
     html = summary._repr_html_()
     _parsed(html)
     text = ''.join(_parsed(html).itertext())
-    for fragment in ('tracking', 'dX = (-X + D) dt + 2 * dW[w0]', 'dy = X dt + dW[w1]',
-                     'observed with delay 0.5', 'X^2 - 2 * X + D^2'):
+    for fragment in ('tracking', 'dX = (-X + D) dt + 2 dw0', 'dy = X dt + dw1',
+                     'observed with delay 0.5', 'X^2 - 2 X + D^2'):
         assert fragment in text
     assert 'Flow loss' in text
     assert not hasattr(summary, '_repr_markdown_')
@@ -57,7 +57,7 @@ def test_description_uses_current_fields_and_exposes_control_notes():
     model.states[0].noise['wV'] = 7
     summary = model.describe()
     flat = ' '.join(summary.split())
-    assert '7 * dW[wV]' in flat and '7 * dW[wV]' in ''.join(_parsed(summary._repr_html_()).itertext())
+    assert '7 dwV' in flat and '7 dwV' in ''.join(_parsed(summary._repr_html_()).itertext())
     assert 'predictable' in flat
     assert 'myopic' in flat
     assert 'flow loss' in flat

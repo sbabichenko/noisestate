@@ -164,12 +164,9 @@ def _as_list(x) -> list:
     return [] if x is None else [x] if isinstance(x, str) else list(x)
 
 
-def to_grammar(d: dict) -> dict:
-    """The model file of spec.py's grammar that this equations dict means (compiled through expr.py)."""
-    bad = sorted(set(d) - _KEYS)
-    if bad:
-        raise ValueError(f"unknown key(s) {bad} in an equations model; allowed: {sorted(_KEYS)}")
-    name = d.get("name", "model")
+def _environment(d: dict):
+    """The names an equation of the equations dict `d` may use: (env, params, states, controls), env mapping
+    each parameter, d<shock>, state, control and definition (evaluated, in dependency order) to its object."""
     values = dict(d.get("params") or {})
     params = {k: E.Param(k, v) for k, v in values.items()}
     shock_names = _shock_names(d)
@@ -187,6 +184,36 @@ def to_grammar(d: dict) -> dict:
     env.update(states); env.update(controls)
     for k, v in _in_dependency_order(d.get("definitions") or {}):
         env[k] = E.define(k, _eval(v, env, f"definition {k}"))
+    return env, params, states, controls
+
+
+def _signal(sname: str, v, env: dict, where: str):
+    """One observed row, "..." or {d: "...", delay: tau}, as a Signal."""
+    if isinstance(v, dict):
+        ex = sorted(set(v) - {"d", "delay"})
+        if ex:
+            raise ValueError(f"{where}, signal {sname}: unknown key(s) {ex}")
+        delay = v.get("delay", 0.0)
+        delay = _eval(delay, env, where) if isinstance(delay, str) else delay
+        return E.Signal(sname, _eval(v.get("d"), env, f"{where}, signal {sname}"), delay=delay)
+    return E.Signal(sname, _eval(v, env, f"{where}, signal {sname}"))
+
+
+def signal_block(d: dict, name: str, row) -> dict:
+    """The grammar's block of one row written as an equation ("..." or {d: "...", delay: tau}) in the context of
+    the equations dict `d` (its parameters, shocks, states, controls and definitions): Model.with_signal's reader."""
+    env = _environment(d)[0]
+    return _signal(name, row, env, f"signal {name}").compile()
+
+
+def to_grammar(d: dict) -> dict:
+    """The model file of spec.py's grammar that this equations dict means (compiled through expr.py)."""
+    bad = sorted(set(d) - _KEYS)
+    if bad:
+        raise ValueError(f"unknown key(s) {bad} in an equations model; allowed: {sorted(_KEYS)}")
+    name = d.get("name", "model")
+    values = dict(d.get("params") or {})
+    env, params, states, controls = _environment(d)
     defs = [env[k] for k in (d.get("definitions") or {})]           # the file's order: load(save(m)) == m
 
     for k, v in (d.get("states") or {}).items():
@@ -208,14 +235,7 @@ def to_grammar(d: dict) -> dict:
             raise ValueError(f"{where}: unknown key(s) {extra}; allowed: controls, observes, loss, terminal, myopic")
 
         def signal(sname, v):
-            if isinstance(v, dict):
-                ex = sorted(set(v) - {"d", "delay"})
-                if ex:
-                    raise ValueError(f"{where}, signal {sname}: unknown key(s) {ex}")
-                delay = v.get("delay", 0.0)
-                delay = _eval(delay, env, where) if isinstance(delay, str) else delay
-                return E.Signal(sname, _eval(v.get("d"), env, f"{where}, signal {sname}"), delay=delay)
-            return E.Signal(sname, _eval(v, env, f"{where}, signal {sname}"))
+            return _signal(sname, v, env, where)
 
         obs = spec.get("observes")
         if obs is None:
@@ -229,7 +249,7 @@ def to_grammar(d: dict) -> dict:
         loss = spec.get("loss")
         if loss is None:
             raise ValueError(f"{where}: a loss is required")
-        agents.append(E.Agent(a, controls=[controls[u] for u in _as_list(spec.get("controls"))], signals=signals,
+        agents.append(E.Agent(a, controls=[controls[u] for u in _as_list(spec.get("controls"))], observes=signals,
                               loss=_eval(loss, env, f"{where}, loss"), myopic=bool(spec.get("myopic", False)),
                               terminal=_eval(spec["terminal"], env, f"{where}, terminal") if spec.get("terminal") is not None else None))
 

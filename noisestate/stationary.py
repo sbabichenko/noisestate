@@ -35,9 +35,6 @@ from .spec import Agent, Atom, Model
 
 
 
-WITHDRAWN_NAIVE = ("naive_observers was withdrawn in 1.1: it did not compute Chapter 6's naive or privy equilibria "
-                   "(its 'naive' was the chapter's privy, and its solves failed their own first-order conditions). "
-                   "Monitored deviations will come back as a model's monitoring relation.")
 
 class Compiled(CompiledBase):
     """Grid, index maps and constant operators for a stationary model."""
@@ -48,16 +45,16 @@ class Compiled(CompiledBase):
         self.settings = Settings.of(settings)
         hz = model.horizon
         lags = model.all_lags()
-        if hz.breakpoints:
-            bp = list(hz.breakpoints)
-        elif lags or hz.unit:
-            bp = AgeGrid.breakpoints_from_delays(hz.extent, lags, hz.unit, hz.unit_range)
+        if model.numerics.breakpoints:
+            bp = list(model.numerics.breakpoints)
+        elif lags or model.numerics.unit:
+            bp = AgeGrid.breakpoints_from_delays(hz.extent, lags, model.numerics.unit, model.numerics.unit_range)
         else:
             bp = [0.0, hz.extent]
         for l in lags:
             if not any(abs(l - b) < 1e-12 for b in bp):
-                raise ValueError(f"lag {l} is not a panel breakpoint {[round(b, 6) for b in bp]}; set horizon.unit so every lag is a "
-                                 f"multiple of it, and horizon.unit_range at least {max(lags)} so the unit panels reach the largest lag")
+                raise ValueError(f"lag {l} is not a panel breakpoint {[round(b, 6) for b in bp]}; set numerics.unit so every lag is a "
+                                 f"multiple of it, and numerics.unit_range at least {max(lags)} so the unit panels reach the largest lag")
         # the map on a row observed with delay d is read by the action at age b + d: for the map's panels to be
         # the action's panels shifted by d (the instantaneous entry node to node, the map's window edge L - d a
         # panel edge, no map mode the action cannot see) the breakpoints are closed under subtraction of every
@@ -65,7 +62,7 @@ class Compiled(CompiledBase):
         delays = sorted({float(r[3]) for rr in self.rows.values() for r in rr if r[3] > 0})
         if delays:
             bp = close_under_delays(bp, delays)
-        self.grid = age_grid(tuple(round(float(b), 12) for b in bp), hz.nodes)   # shared, with its operator caches
+        self.grid = age_grid(tuple(round(float(b), 12) for b in bp), model.numerics.nodes)   # shared, with its operator caches
         self.N = self.grid.N
         self.rho = float(hz.discount)
         if self.rho > 0:
@@ -511,12 +508,8 @@ class StationarySolver(EngineBase):
     #  not rely on the rho > 0 hypothesis", reporting the exact quadratic form positive definite
     #  with smallest eigenvalue 2 eps.  cost_mass() is that average-cost Gram at every rho.
 
-    def __init__(self, model: Model, verbose: bool = False, settings=None, **withdrawn):
+    def __init__(self, model: Model, verbose: bool = False, settings=None):
         """settings: the tuning constants (noisestate.Settings, or a dict of its fields; the defaults when None)."""
-        if "naive_observers" in withdrawn:
-            raise TypeError(WITHDRAWN_NAIVE)
-        if withdrawn:
-            raise TypeError(f"unknown option(s) {sorted(withdrawn)} for the stationary engine")
         if model.horizon.kind == "transition":
             raise ValueError(f"horizon.kind 'transition' ({model.name!r}) runs on the spectral finite engine only "
                              "(noisestate.solve routes it there; this engine has no past)")

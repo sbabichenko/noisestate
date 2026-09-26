@@ -427,14 +427,13 @@ along a parameter.  `examples/make_ch5_cycle_market.py` builds an N-firm market 
 
 ## Changing what agents see
 
-`with_signal()` adds an observation row and any new shocks, returning a new model.
-By default, every agent observes the row.  `with_signals()` adds several rows at once;
+`with_signal()` adds an observation row, written as in a model file's `observes:`, and any new shocks,
+returning a new model.  It also takes a `Signal` from the Python form.  By default, every agent observes the row.  `with_signals()` adds several rows at once;
 `without_signal()` removes a row.
 
 ```python
-public = game.with_signal("flow", drift={"D1": 1, "D2": 1}, noise={"w_flow": 1})
-player1_only = game.with_signal("flow", drift={"D1": 1}, noise={"w_flow": 1}, audience="player1")
-same_row = game.with_signal(Signal("flow", D1 + D2 + w.w_flow))      # the expression form's own type
+public = game.with_signal("flow", "(D1 + D2) dt + dw_flow")                 # a new shock w_flow is added
+player1_only = game.with_signal("flow", "D1 dt + dw_flow", audience="player1")
 
 study = ns.compare({"none": game, "balanced": public, "only player 1": player1_only},
                    baseline="none", stability=True)
@@ -582,8 +581,7 @@ The table is [docs/settings.md](https://github.com/sbabichenko/noisestate/blob/H
 Exception types distinguish invalid inputs from solver failures.  A `ValueError` is a model problem: a file that does not
 validate, a parameter that is not the model's, a lag off the panels, a singular best-response system, a
 solve bound out of range.  A `TypeError` is a wrong argument: an unknown solve option (the message names
-the `Numerics` field it belongs to, or the `Numerics(settings=...)` route for a `Settings` field),
-`naive_observers` that is not a mapping.  A `NotImplementedError` is a feature the engine does not have
+the `Numerics` field it belongs to, or the `Numerics(settings=...)` route for a `Settings` field).  A `NotImplementedError` is a feature the engine does not have
 (leads on the finite engines); a past on the cell engine is a `ValueError` from the numerics
 (`numerics.engine 'cells' solves a finite horizon only`).  A `RuntimeError` is a solver problem: a Krylov
 best response not converging, a non-finite value from the best-response map.

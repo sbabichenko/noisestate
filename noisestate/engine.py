@@ -390,7 +390,7 @@ class EngineBase(MeanLayer):
 
     # ----------------------------------------------------- best response
     def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
-        """Hook (no engine overrides it since naive_observers was withdrawn in 1.1): the responses R (n_prim N, nU) of the primary kernels
+        """Hook (no engine overrides it): the responses R (n_prim N, nU) of the primary kernels
         to a unit impulse of each of the agent's controls, with the agent's own reaction switched
         off and every other agent reacting through `maps`.  Receives the columns closed_loop
         returned for `impulse_controls=agent.controls`; must return an array of the same shape.
@@ -733,7 +733,7 @@ class EngineBase(MeanLayer):
         """Relative residual of the best-response action kernels after projection on the agent's raw
         rows.  Zero in exact arithmetic; on the grid it measures how well products of kernels are
         resolved, so a value above about 1e-6 means the equilibrium is under-resolved: raise
-        horizon.nodes."""
+        numerics.nodes."""
         rows, inst = self._seen_rows(agent, Zfull, set())
         Bk = self._row_operator(agent, rows, inst)
         worst = 0.0
@@ -761,8 +761,8 @@ class EngineBase(MeanLayer):
         """Raw maps to start from: the equilibrium at `factor` times the nodes, interpolated to this
         grid.  A coarse solve costs a few fine evaluations and usually saves many."""
         hz = self.model.horizon
-        n0 = max(4, int(round(hz.nodes * factor)))
-        if n0 >= hz.nodes:
+        n0 = max(4, int(round(self.model.numerics.nodes * factor)))
+        if n0 >= self.model.numerics.nodes:
             return None
         coarse = type(self)(self.model.with_numerics(nodes=n0), **self.solver_kw)
         res = coarse.solve(**{k: v for k, v in solve_kw.items() if k not in ("start_from", "start_policy")})

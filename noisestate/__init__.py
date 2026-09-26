@@ -11,7 +11,7 @@ model's own, builds the engine (noisestate.engines) and returns one Result.
 """
 import dataclasses
 
-from .spec import Model
+from .spec import Model, load, as_model
 from .numerics import Numerics
 from .accel import ConvergenceError, DiagnosticsError, ResultValidationError
 from ._settings import Settings
@@ -28,7 +28,7 @@ from .expr import dt, Differential, params, Game
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
 
-__all__ = ["Model", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_yaml", "read_json",
+__all__ = ["Model", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_json", "as_model",
            "compare", "ComparisonResult", "ScenarioResult", "Assessment", "Policy", "Status", "clear_grid_cache", "schema",
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
            "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh", "dt", "Differential", "params", "Game"]
@@ -52,12 +52,6 @@ def _read_version() -> str:
 
 
 __version__ = _read_version()
-
-
-def read_yaml(path: str) -> dict:
-    import yaml
-    with open(path) as fh:
-        return yaml.safe_load(fh)
 
 
 def read_json(path: str):
@@ -96,26 +90,6 @@ def example(name: str) -> str:
     if not os.path.exists(path):
         raise FileNotFoundError(f"no shipped example named {name!r}; ns.examples() lists them: {examples()}")
     return path
-
-
-def load(path: str) -> Model:
-    """The model of a YAML file; a relative path in horizon.past.model is taken from the file's directory."""
-    import os
-    d = read_yaml(path)
-    if isinstance(d, dict) and "name" not in d:
-        d = {"name": os.path.splitext(os.path.basename(path))[0], **d}     # a file without a name is named after itself
-    return Model.from_dict(d, base_dir=os.path.dirname(os.path.abspath(path)))
-
-
-def as_model(model) -> Model:
-    """A Model from what solve() accepts: a Model, a dict (the grammar or the equations form) or a path to a YAML file."""
-    if isinstance(model, str):
-        return load(model)
-    if isinstance(model, dict):
-        return Model.from_dict(model)
-    if isinstance(model, Model):
-        return model
-    raise TypeError(f"expected a Model, a dict or a path, not {type(model).__name__}")
 
 
 def _radius_when_the_window_fails(res, asked: bool) -> None:
@@ -181,9 +155,6 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
                         "starting point (kernels or maps); start_policy is a name (\"zero\", \"coarse\", "
                         "\"stationary\") for one the solver generates. Drop whichever you did not mean.")
     model = as_model(model)
-    if "naive_observers" in unknown:
-        from .stationary import WITHDRAWN_NAIVE
-        raise TypeError(WITHDRAWN_NAIVE)
     grid = {k: unknown.pop(k) for k in list(unknown) if k in Numerics.field_names()}
     if grid:
         # solve(model, nodes=24): a Numerics field given directly is laid over numerics, like numerics={"nodes": 24}

@@ -9,79 +9,12 @@ from html import escape
 from textwrap import wrap
 
 WIDTH = 88
-NOTATION = ('coefficients are written in the parameters above; name@tau is that quantity tau time '
-            'units earlier (negative tau is a lead); dW[c] is a primitive Brownian increment')
+NOTATION = ('written as the model file writes it: coefficients in the parameters above, name@tau is that '
+            'quantity tau time units earlier (negative tau is a lead), and d<shock> is that shock\'s Brownian '
+            'increment')
 
 
 # ---------------------------------------------------------------- the model's pieces, rendered once
-
-def _sum(terms):
-    """terms: (value, atom) or (value, atom, text), text the coefficient as written in the parameters (sqrt(p1))."""
-    out = ''
-    for t in terms:
-        coefficient, atom = t[0], t[1]
-        text = t[2] if len(t) > 2 else None
-        if coefficient == 0:
-            continue
-        if text:
-            text = text.replace('**', '^')                  # the powers as the loss writes them (D1^2)
-            negative = text.startswith('-') and not text.startswith('-(')
-            body = text[1:] if negative else text
-            if not negative and text.startswith('-('):
-                negative, body = True, text[2:-1]
-            if ' + ' in body or ' - ' in body:
-                body = f'({body})'
-            term = body + (f' * {atom}' if atom else '')
-            out += (' - ' if negative else ' + ') + term if out else ('-' if negative else '') + term
-            continue
-        magnitude = abs(coefficient)
-        term = atom if magnitude == 1 and atom else f'{magnitude:g}' + (f' * {atom}' if atom else '')
-        out += (' - ' if coefficient < 0 else ' + ') + term if out else ('-' if coefficient < 0 else '') + term
-    return out or '0'
-
-
-def _written(value, source, params):
-    """The coefficient as the model file writes it, when that is an expression in the parameters that still
-    evaluates to the resolved value (a stale source falls back to the number)."""
-    if not isinstance(source, str):
-        return None
-    try:
-        from .spec import safe_eval
-        return source if abs(safe_eval(source, dict(params)) - float(value)) <= 1e-12 * max(1.0, abs(float(value))) else None
-    except Exception:
-        return None
-
-
-def _linear(expr, src=None, params=None):
-    src = src or {}
-    return _sum((coef, '' if atom == 'const' else atom, _written(coef, src.get(atom), params or {})) for atom, coef in expr.items())
-
-
-def _group(text):
-    """Parenthesise a sum, so that a coefficient in front of it reads unambiguously."""
-    return f'({text})' if ' + ' in text or ' - ' in text else text
-
-
-def _equation(row, src=None, params=None):
-    """Write the row as its differential, dropping a part that is identically zero."""
-    src = src or {}; params = params or {}
-    drift = _linear(row.drift, src.get('drift'), params)
-    diffusion = _sum((coef, f'dW[{channel}]', _written(coef, (src.get('noise') or {}).get(channel), params))
-                     for channel, coef in row.noise.items())
-    parts = ([f'{_group(drift)} dt'] if drift != '0' else []) + ([diffusion] if diffusion != '0' else [])
-    return f'd{row.name} = ' + (' + '.join(parts) or '0')
-
-
-def _loss(agent, src=None, params=None):
-    src = src or {}; params = params or {}
-    written = src.get('loss') or []
-    terms = [(term[0], f'{term[1]}^2' if len(term) == 3 and term[1] == term[2] else ' * '.join(term[1:]),
-              _written(term[0], written[i][0] if i < len(written) and list(map(str, written[i][1:])) == list(map(str, term[1:])) else None, params))
-             for i, term in enumerate(agent.loss)]
-    if getattr(agent, 'constant', 0):
-        terms.append((agent.constant, '', _written(agent.constant, src.get('constant'), params)))
-    return _sum(terms)
-
 
 def _align(equations):
     """Line up the equals signs of a block of differentials."""
@@ -113,24 +46,30 @@ def _past(past):
 
 
 def _pieces(model):
-    """Read the resolved fields once, rather than a potentially stale source dictionary."""
+    """The model's equations as the file writes them (model.to_equations(), the one renderer), with the
+    resolved horizon and notes."""
     hz = model.horizon
     span = f'{"lag window" if hz.kind == "stationary" else "T"} {hz.extent:g}'
-    src = getattr(model, 'source', None) or {}; P = dict(model.params)
+    eq = model.to_equations()
+
+    def text(v):
+        return v["d"] if isinstance(v, dict) else v
     agents = []
     for agent in model.agents:
-        a_src = (src.get('agents') or {}).get(agent.name) or {}
+        observes = eq["agents"][agent.name]["observes"]
+        if not isinstance(observes, dict) or "d" in observes:
+            observes = {agent.signals[0].name: observes}
         agents.append(dict(
-            name=agent.name, controls=list(agent.controls), loss=_loss(agent, a_src, P),
-            signals=[(equation, row.delay) for equation, row
-                     in zip(_align([_equation(row, (a_src.get('signals') or {}).get(row.name), P) for row in agent.signals]), agent.signals)]))
+            name=agent.name, controls=list(agent.controls), loss=eq["agents"][agent.name]["loss"],
+            signals=list(zip(_align([f'd{row.name} = {text(observes[row.name])}' for row in agent.signals]),
+                             [row.delay for row in agent.signals]))))
     return dict(
         name=model.name,
         horizon=f'{hz.kind}, {span}, discount {hz.discount:g}',
         params=[f'{k} = {v:g}' for k, v in model.params.items()],
-        states=list(zip(_align([_equation(s, (src.get('states') or {}).get(s.name), P) for s in model.states]),
+        states=list(zip(_align([f'd{s.name} = {text(eq["states"][s.name])}' for s in model.states]),
                         [s.initial for s in model.states])),
-        definitions=[f'{d.name} = {_linear(d.expr, (src.get("definitions") or {}).get(d.name), P)}' for d in model.definitions],
+        definitions=[f'{d.name} = {eq["definitions"][d.name]}' for d in model.definitions],
         agents=agents,
         ties=[list(group) for group in model.ties],
         transition=(dict(past=_past(hz.past), continuation=str(hz.continuation or 'stationary'))

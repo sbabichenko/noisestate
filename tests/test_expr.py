@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 import noisestate as ns
-from noisestate import Param, State, Control, Signal, Agent, shocks, define, sqrt, exp
+from noisestate import Param, State, Control, Signal, Agent, shocks, define, sqrt, exp, dt
 from noisestate.spec import safe_eval
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -68,21 +68,21 @@ def test_slow_examples_solve_to_the_files():
 
 TARGET = '''
 import noisestate as ns
-from noisestate import Param, State, Control, Signal, Agent, shocks
-r1, r2, p1, p2, sigma = Param.many(r1=0.1, r2=0.1, p1=3.0, p2=3.0, sigma=1.0)
-w = shocks("w0", "w1", "w2")
-X = State("X"); D1, D2 = Control("D1"), Control("D2")
-X.drift = D1 + D2 + sigma * w.w0
-player1 = Agent("player1", controls=[D1], signals=[Signal("y1", p1**0.5 * X + w.w1)], loss=X**2 + r1 * D1**2)
-player2 = Agent("player2", controls=[D2], signals=[Signal("y2", p2**0.5 * X + w.w2, delay=0.5)], loss=(X - 1)**2 + r2 * D2**2)
-game = ns.Model("ch1", states=[X], agents=[player1, player2], horizon=ns.Stationary(window=3.0))
+from noisestate import Signal, dt, sqrt
+r1, r2, p1, p2, sigma = ns.params(r1=0.1, r2=0.1, p1=3.0, p2=3.0, sigma=1.0)
+dw0, dw1, dw2 = ns.shocks("w0", "w1", "w2")
+X = ns.State("X"); D1, D2 = ns.Control("D1"), ns.Control("D2")
+X.d = (D1 + D2) * dt + sigma * dw0
+player1 = ns.Agent("player1", controls=D1, observes={"y1": sqrt(p1) * X * dt + dw1}, loss=X**2 + r1 * D1**2)
+player2 = ns.Agent("player2", controls=D2, observes=Signal("y2", sqrt(p2) * X * dt + dw2, delay=0.5), loss=(X - 1)**2 + r2 * D2**2)
+game = ns.Game(X, [player1, player2], window=3.0, name="ch1")
 eq = game.solve()
 eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
 eq.diagnostics.assess().accepted; eq.costs["player1"]; eq.cost_parts["player1"]; eq.means["X"]
 k = eq.kernel("X", "w0"); k.values; k.axes; k.at(0.7)
 for point in game.sweep(p1=[0.3, 1, 3, 10]): point.value, point.result, point.jump
 old = game.solve(); new = game.with_params(p1=10.0).with_finite(T=6.0); path = new.solve(past=old)
-game.save("ch1.yaml"); ns.Model.load("ch1.yaml")
+game.save("ch1.yaml"); ns.load("ch1.yaml")
 game.solve(settings={"second_order_tol": 1e-3})
 '''
 
@@ -127,7 +127,7 @@ def test_target_script_pieces(tmp_path):
     assert new.with_stationary(window=4.0).horizon.kind == "stationary"
     path = os.path.join(tmp_path, "ch1.yaml")
     game.save(path)
-    loaded = ns.Model.load(path)
+    loaded = ns.load(path)
     assert loaded == game and loaded.to_dict() == game.to_dict()
     assert ns.solve(loaded, ns.Numerics(nodes=16, unit=0.5)).costs == eq.costs
     res = game.solve(ns.Numerics(nodes=16, unit=0.5), settings={"second_order_tol": 1e-3})
@@ -140,10 +140,10 @@ def test_target_script_pieces(tmp_path):
 def test_round_trip_of_a_model_with_lags_and_definitions(tmp_path):
     m = EXAMPLES["ch1_delayed_finite"]()
     path = os.path.join(tmp_path, "m.yaml"); m.save(path)
-    assert ns.Model.load(path) == m
+    assert ns.load(path) == m
     m = EXAMPLES["ch5_cycle_market"]()
     path = os.path.join(tmp_path, "ch5.yaml"); m.save(path)
-    assert ns.Model.load(path) == m and ns.Model.load(path).to_dict() == m.to_dict()
+    assert ns.load(path) == m and ns.load(path).to_dict() == m.to_dict()
 
 
 def test_coefficient_rendering_agrees_with_the_evaluator():
@@ -168,7 +168,7 @@ def test_errors_name_the_object():
     w = shocks("w0", "w1")
     X = State("X"); D = Control("D")
     with pytest.raises(ValueError, match="signal 'y' has no shock term"):
-        Signal("y", X)
+        Signal("y", X * dt)
     with pytest.raises(ValueError, match="cubic"):
         X**2 * D
     with pytest.raises(ValueError, match="not quadratic"):
@@ -181,18 +181,18 @@ def test_errors_name_the_object():
         (X + w.w0).lag(0.5)
     with pytest.raises(ValueError, match="unknown Param 'q'"):
         q = Param("q")                                       # no value
-        X.drift = D + q * w.w0
-        ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X + w.w1)], X**2 + p * D**2)])
+        X.d = D * dt + q * w.w0
+        ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)])
     with pytest.raises(ValueError, match="unknown Param 'p'"):
-        X.drift = D + w.w0
-        ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X + w.w1)], X**2 + p * D**2)], params={"r": 1.0})
+        X.d = D * dt + w.w0
+        ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)], params={"r": 1.0})
     with pytest.raises(ValueError, match="two states named 'X'"):
-        ns.Model("m", states=[X, State("X")], agents=[Agent("me", [D], [Signal("y", X + w.w1)], X**2 + p * D**2)])
+        ns.Model("m", states=[X, State("X")], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)])
     with pytest.raises(ValueError, match="shocks of an expression model"):
-        ns.Model("m", shocks=["w0"], states=[X], agents=[Agent("me", [D], [Signal("y", X + w.w1)], X**2 + p * D**2)])
+        ns.Model("m", shocks=["w0"], states=[X], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)])
     with pytest.raises(ValueError, match="agent me: its loss uses State\\('Y'\\)"):
         Y = State("Y")
-        ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X + w.w1)], Y**2 + p * D**2)])
+        ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], Y**2 + p * D**2)])
     with pytest.raises(ValueError, match="a shock \\(w0\\) cannot enter a loss"):
         (X + w.w0) * D
 
@@ -202,8 +202,8 @@ def test_definitions_lags_leads_and_constants():
     w = shocks("w0", "w1")
     X = State("X"); D = Control("D")
     Xl = define("Xl", X.lag(tau))
-    X.drift = -X + D.lag(0.25) + 0.3 + w.w0                      # a constant drift is `const`
-    me = Agent("me", [D], [Signal("y", Xl + w.w1, delay=0.25)], (Xl - k)**2 + D**2 + D * X.lead(0.5))
+    X.d = (-X + D.lag(0.25) + 0.3) * dt + w.w0                   # a constant drift is `const`
+    me = Agent("me", [D], [Signal("y", Xl * dt + w.w1, delay=0.25)], (Xl - k)**2 + D**2 + D * X.lead(0.5))
     m = ns.Model("m", states=[X], agents=[me], horizon=ns.Stationary(window=3.0))
     d = m.to_dict()
     assert d["states"]["X"]["drift"] == {"X": -1, "D@0.25": 1, "const": 0.3}

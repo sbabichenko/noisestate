@@ -484,7 +484,7 @@ class Result:
         Stored in self.refinement and shown by summary().  Returns a Refinement, which carries the
         finer Result itself rather than only numbers taken from it."""
         import math
-        n0 = int(self.model.horizon.nodes)
+        n0 = int(self.model.numerics.nodes)
         n1 = 2 * n0 if self.kind == "finite_cells" else max(n0 + 2, int(math.ceil(n0 * factor)))   # cells: keep lags aligned
         # this solve's bounds and a skipped diagnostics pass are not the refinement's
         kw = {k: v for k, v in self.solve_kw.items()

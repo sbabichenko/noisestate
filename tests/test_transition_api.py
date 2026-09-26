@@ -56,7 +56,7 @@ def test_transition_helper_starts_from_the_new_stationary_maps(regime):
     bit the keyword form with the same start, in fewer evaluations than from zero (21 against 23)."""
     m = regime["m"]; z = regime["zero"]
     res = ns.transition(EX + "ch3_two_player.yaml", m.with_params(p1=10.0), T=6.0, numerics={"nodes": 8})
-    assert res.model.horizon.kind == "transition" and res.model.horizon.T == 6.0 and res.model.horizon.nodes == 8
+    assert res.model.horizon.kind == "transition" and res.model.horizon.T == 6.0 and res.model.numerics.nodes == 8
     assert res.model.horizon.past == {"model": EX + "ch3_two_player.yaml"} and res.solve_kw["start_policy"] == "stationary"
     assert res.past is not None and res.stationary is res.continuation and res.stationary.model.horizon.kind == "stationary"
     kw = ns.solve(regime["new"], past=regime["old"], continuation="stationary", start_policy="stationary")

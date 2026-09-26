@@ -71,7 +71,7 @@ def test_model_is_single_sourced():
     fresh = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict(); fresh["params"]["p1"] = 4.0
     assert abs(r4.costs["player1"] - ns.solve(fresh).costs["player1"]) < 1e-12   # the same model as from a file
     r4.refine(); assert r4.refinement.cost_change < 1e-8                    # refine compares like with like
-    m.horizon.nodes = 30                                                       # horizon fields are read live
+    m.numerics.nodes = 30                                                       # horizon fields are read live
     r = ns.solve(m); assert r.compiled.N == 30 and m.to_dict()["numerics"]["nodes"] == 30
     r.refine(); assert r.refinement.nodes == 45
     assert ns.solve(m.with_numerics(nodes=12)).compiled.N == 12
@@ -87,7 +87,7 @@ def test_numeric_export_is_loadable_and_equivalent():
     a, b = ns.solve(m), ns.solve(ns.Model.from_dict(m.to_dict(numeric=True)))
     assert abs(a.costs["player1"] - b.costs["player1"]) < 1e-12
     # a Model built directly from the dataclasses (no source) refines and sweeps
-    direct = ns.Model(name="d", shocks=m.shocks, states=m.states, agents=m.agents, horizon=m.horizon, params=dict(m.params))
+    direct = ns.Model._of_fields(name="d", shocks=m.shocks, states=m.states, agents=m.agents, horizon=m.horizon, params=dict(m.params))
     assert ns.solve(direct, refine=True).refinement.resolved
 
 
@@ -280,16 +280,15 @@ def test_lag_beyond_horizon_rejected_on_every_engine():
             ns.Model.from_dict(d)
 
 
-def test_naive_observers_is_withdrawn():
-    """1.1 withdrew naive_observers: it used Chapter 6's naive and privy the other way round and its solves failed
-    their own first-order conditions.  Every route that took it now says so."""
+def test_naive_observers_is_gone():
+    """naive_observers used Chapter 6's naive and privy the other way round and its solves failed their own
+    first-order conditions; it is removed, and passing it is an ordinary unknown argument."""
     kb = ns.load(os.path.join(EX, "ch4_kyle_back.yaml"))
     for call in (lambda: ns.solve(kb, naive_observers={"trader1": ["market_maker"]}),
-                 lambda: engines.stationary(kb, naive_observers={"trader1": ["market_maker"]})):
-        with pytest.raises(TypeError, match="withdrawn in 1.1"):
+                 lambda: engines.stationary(kb, naive_observers={"trader1": ["market_maker"]}),
+                 lambda: ns.Agent("a", controls=[ns.Control("D")], loss=ns.Control("D")**2, naive_observers=["b"])):
+        with pytest.raises(TypeError):
             call()
-    with pytest.raises(ValueError, match="withdrawn in 1.1"):
-        ns.Agent("a", controls=[ns.Control("D")], loss=ns.Control("D")**2, naive_observers=["b"])
 
 
 def test_wrong_grid_warm_start_is_an_error_on_every_engine():

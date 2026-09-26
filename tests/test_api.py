@@ -1,5 +1,6 @@
 """The API stage's surface: Numerics apart from the model, the explicit solve(), the engines namespace."""
 import json
+import yaml
 import os
 import warnings
 
@@ -37,7 +38,7 @@ def test_solve_takes_a_numerics_and_names_the_field_of_a_stray_keyword():
     m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
     r = ns.solve(m, Numerics(nodes=12, tol=1e-8))
     assert r.compiled.N == 12 and r.numerics.nodes == 12 and r.numerics.engine == "stationary" and r.numerics.tol == 1e-8
-    assert r.to_dict()["options"]["numerics"]["nodes"] == 12 and r.model.horizon.nodes == 12 and m.horizon.nodes == 24
+    assert r.to_dict()["options"]["numerics"]["nodes"] == 12 and r.model.numerics.nodes == 12 and m.numerics.nodes == 24
     r2 = ns.solve(m, {"nodes": 12}, tol=1e-6)                     # a dict; the keyword tol over the numerics'
     assert r2.numerics.tol == 1e-6 and r2.solve_kw["tol"] == 1e-6
     assert ns.solve(m, Numerics(nodes=12, settings={"anderson_m": 5})).settings.anderson_m == 5
@@ -56,19 +57,19 @@ def test_solve_takes_a_numerics_and_names_the_field_of_a_stray_keyword():
 
 def test_signal_transforms_are_immutable_validated_and_serialisable():
     m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
-    public = m.with_signal("public_flow", drift={"D1": 1, "D2": 1}, noise={"wf": 0.5})
+    public = m.with_signal("public_flow", "(D1 + D2) dt + 0.5 dwf")
     assert "wf" not in m.shocks and "wf" in public.shocks
     assert all("public_flow" not in [r.name for r in a.signals] for a in m.agents)
     assert all("public_flow" in [r.name for r in a.signals] for a in public.agents)
     assert ns.Model.from_dict(public.to_dict()).to_dict() == public.to_dict()
 
-    one = m.with_signal("extra", drift={"X": 1}, noise={"we": 1}, audience="player1")
+    one = m.with_signal("extra", "X dt + dwe", audience="player1")
     assert "extra" in [r.name for r in one.agents[0].signals]
     assert "extra" not in [r.name for r in one.agents[1].signals]
     with pytest.raises(ValueError, match="unknown agent"):
-        m.with_signal("extra", drift={"X": 1}, noise={"we": 1}, audience="nobody")
+        m.with_signal("extra", "X dt + dwe", audience="nobody")
     with pytest.raises(ValueError, match="already has a signal"):
-        m.with_signal("y1", drift={"X": 1}, noise={"we": 1}, audience="player1")
+        m.with_signal("y1", "X dt + dwe", audience="player1")
 
 
 def test_category_verdict_excludes_by_root_not_by_full_name():
@@ -100,7 +101,7 @@ def test_compare_summary_keeps_the_assessment_and_dynamics_in_their_own_columns(
                           "loss": [[1, "X", "X"], [1, "D", "D"]]}},
         "horizon": {"kind": "stationary", "window": 4}, "numerics": {"nodes": 8}})
     study = ns.compare({"base": m, "a considerably longer scenario name": m.with_signal(
-        "public", drift={"X": 1}, noise={"wp": 1})}, baseline="base", stability=True)
+        "public", "X dt + dwp")}, baseline="base", stability=True)
     lines = study.summary().splitlines()
     head = lines[0]
     for column in ("assessment", "full response"):
@@ -119,7 +120,7 @@ def test_compare_keeps_results_and_separates_costs_from_dynamics():
                           "loss": [[1, "X", "X"], [1, "D", "D"]]}},
         "horizon": {"kind": "stationary", "window": 4}, "numerics": {"nodes": 8},
     })
-    more = base.with_signal("public", drift={"X": 1}, noise={"wp": 1})
+    more = base.with_signal("public", "X dt + dwp")
     study = ns.compare({"base": base, "more information": more}, baseline="base", stability=True)
     assert study["base"].result.model is base
     assert study["base"].total_change == 0 and study["more information"].cost_changes["a"]["value"] == study["more information"].result.costs["a"]
@@ -208,7 +209,7 @@ def test_schema_accepts_the_shipped_files_and_names_the_path_of_an_error():
     import glob, json
     from noisestate.cli import main
     for f in sorted(glob.glob(os.path.join(EX, "*.yaml"))):
-        assert ns.schema.validate(ns.read_yaml(f), "model") == [], f
+        assert ns.schema.validate(yaml.safe_load(open(f)), "model") == [], f
     s = ns.schema("model")
     assert s["$schema"].endswith("2020-12/schema")
     assert "nodes" not in s["properties"]["horizon"]["properties"]          # the grid lives in numerics: alone
@@ -336,28 +337,28 @@ def test_a_signal_is_one_type_across_both_workflows():
     """PART 8.1: the expression form and the transform form say a row with the SAME object.
     Signal.compile() already produced the block with_signals consumes, so the object form is not a
     parallel path -- it compiles to the same thing the file form writes."""
-    from noisestate import Signal, State, shocks
+    from noisestate import Signal, State, shocks, dt
     m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
-    w, X = shocks("wf"), State("X")
-    by_object = m.with_signal(Signal("flow", X + w.wf))
-    by_name = m.with_signal("flow", drift={"X": 1.0}, noise={"wf": 1.0})
-    by_keyword = m.with_signal(name="flow", drift={"X": 1.0}, noise={"wf": 1.0})
-    assert by_object.to_dict(numeric=True) == by_name.to_dict(numeric=True) == by_keyword.to_dict(numeric=True)
+    (dwf,), X = shocks("wf"), State("X")
+    by_object = m.with_signal(Signal("flow", X * dt + dwf))
+    by_equation = m.with_signal("flow", "X dt + dwf")
+    assert by_object.to_dict(numeric=True) == by_equation.to_dict(numeric=True)
     #  several at once, in either form
-    assert m.with_signals([Signal("a", X + w.wf), Signal("b", X + w.wf)]).agents[0].signals[-1].name == "b"
-    with pytest.raises(TypeError, match="a sequence must hold Signals"):
-        m.with_signals([{"drift": {"X": 1.0}, "noise": {"wf": 1.0}}])
+    assert m.with_signals([Signal("a", X * dt + dwf), Signal("b", X * dt + dwf)]).agents[0].signals[-1].name == "b"
+    assert m.with_signals({"a": "X dt + dwf", "b": {"d": "X dt + dwf", "delay": 0.5}}).agents[0].signals[-1].delay == 0.5
+    with pytest.raises(TypeError, match="sequence of Signals"):
+        m.with_signals(["X dt + dwf"])
 
 
 def test_with_signal_refuses_the_ambiguous_calls():
-    from noisestate import Signal, State, shocks
+    from noisestate import Signal, State, shocks, dt
     m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
-    w, X = shocks("wf"), State("X")
-    with pytest.raises(TypeError, match="given twice"):
-        m.with_signal("flow", name="flow", drift={"X": 1.0}, noise={"wf": 1.0})
-    with pytest.raises(TypeError, match="a Signal OR name/drift/noise"):
-        m.with_signal(Signal("f", X + w.wf), drift={"X": 1.0})
-    with pytest.raises(TypeError, match="a Signal or the row's name"):
+    (dwf,), X = shocks("wf"), State("X")
+    with pytest.raises(TypeError, match="give it alone"):
+        m.with_signal(Signal("f", X * dt + dwf), "X dt + dwf")
+    with pytest.raises(TypeError, match="as strings, or a Signal"):
+        m.with_signal("flow")
+    with pytest.raises(TypeError, match="as strings, or a Signal"):
         m.with_signal(7)
 
 
@@ -367,7 +368,7 @@ def test_removing_a_row_is_the_inverse_of_adding_one():
     the ones a row loads, so without_signal drops the ones left unloaded -- the model refuses a
     channel nothing uses, and a round trip would not validate otherwise."""
     m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
-    added = m.with_signal("flow", drift={"X": 1.0}, noise={"wf": 1.0})
+    added = m.with_signal("flow", "X dt + dwf")
     assert "wf" in added.shocks and "wf" not in m.shocks
     back = added.without_signal("flow")
     #  BOTH forms: numeric=True resolves the parameter expressions to numbers, so on its own it
@@ -379,7 +380,7 @@ def test_removing_a_row_is_the_inverse_of_adding_one():
     assert "wf" not in back.shocks
 
     with pytest.raises(ValueError, match="already has a signal"):
-        added.with_signal("flow", drift={"X": 1.0}, noise={"wf": 1.0})
+        added.with_signal("flow", "X dt + dwf")
     with pytest.raises(ValueError, match="has no signal named"):
         m.without_signal("nope")
     with pytest.raises(ValueError, match="no rows at all"):

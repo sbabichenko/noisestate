@@ -167,7 +167,6 @@ def payload_schema() -> dict:
                                 "numerics": {"$ref": "#/$defs/numerics"},
                                 "solver": {"type": "object", "additionalProperties": False,
                                            "properties": {"verbose": {"type": "boolean"},
-                                                          "naive_observers": {"type": ["object", "null"]},
                                                           "past": {},
                                                           "continuation": {}}},
                                 "solve": {"type": "object", "additionalProperties": False,

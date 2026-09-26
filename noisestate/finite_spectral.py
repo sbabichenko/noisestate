@@ -41,7 +41,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         transition (a Past, a StationaryResult, a stationary Model/dict/path solved on the fly, or a list
         of initial shocks; see past.py): the game then starts at time zero from that regime.  continuation:
         how it goes on after T: None or "end" (the game ends at T), a converged StationaryResult of this
-        model at the past's window, or "stationary" (that result solved here, at horizon.nodes): every
+        model at the past's window, or "stationary" (that result solved here, at numerics.nodes): every
         agent's map is then frozen at the stationary map on a buffer [T, T + L] after the horizon, the
         closed loop and the first-order conditions run to T + L, and res.settled measures how far the maps
         on [T - L, T] are from the stationary ones.  Both are recorded in solver_kw, so refine() and
@@ -54,7 +54,8 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             if continuation is None:
                 continuation = hz.continuation or "stationary"
         past = Past.of(past) if past is not None else None
-        continuation = self._continuation_of(model, past, continuation, hz.stationary if hz.kind == "transition" else None)
+        continuation = self._continuation_of(model, past, continuation,
+                                             model.numerics.continuation_nodes if hz.kind == "transition" else None)
         opts = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
         super().__init__(model, verbose, settings=settings, **opts)
         self.c = SpectralCompiled(model, past=past, continuation=continuation)
@@ -72,11 +73,10 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         self._fixed_actions: Dict[str, np.ndarray] = {}        # agent -> its action kernels (nU, N, ncol) on the fixed panels, zero elsewhere
 
     @staticmethod
-    def _continuation_of(model: Model, past, continuation, stationary: Optional[dict] = None):
+    def _continuation_of(model: Model, past, continuation, nodes: Optional[int] = None):
         """None / "end" -> None; "stationary" -> this model's stationary equilibrium at the past's window, solved
-        here (numerics.nodes per panel, or numerics.continuation_nodes when given; the finite horizon's
-        breakpoints, initial values and transition blocks dropped; `stationary` = {"window", "nodes"}, the
-        horizon's sizing block, must agree with the past's window); a StationaryResult -> itself (checked by
+        here (numerics.nodes per panel, or `nodes`, numerics.continuation_nodes, when given; the finite horizon's
+        breakpoints, initial values and transition blocks dropped); a StationaryResult -> itself (checked by
         the compile)."""
         if continuation is None or continuation == "end":
             return None
@@ -93,13 +93,13 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             #  transition's extent, which is T.  The terminal time goes with the other transition
             #  blocks: a stationary horizon has none.
             hz = d.setdefault("horizon", {}); hz.update(kind="stationary", window=float(past.window))
-            for k in ("past", "continuation", "stationary", "T"):
+            for k in ("past", "continuation", "T"):
                 hz.pop(k, None)
             nm = d.setdefault("numerics", {})
             for k in ("breakpoints", "engine", "continuation_nodes"):
                 nm.pop(k, None)
-            if stationary and stationary.get("nodes") is not None:
-                nm["nodes"] = int(stationary["nodes"])
+            if nodes is not None:
+                nm["nodes"] = int(nodes)
             return solve(Model.from_dict(d)).require_converged()
         return continuation
 

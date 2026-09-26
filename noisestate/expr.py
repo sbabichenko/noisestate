@@ -554,26 +554,14 @@ class Quantity(Linear):
 
 
 class State(Quantity):
-    """A state: `X = State("X"); X.drift = D + sigma * w.w0` (the drift's quantity terms, the noise's shock
-    terms, a constant under const); `initial` moves the mean on a finite horizon."""
+    """A state: `X = State("X"); X.d = D * dt + sigma * dW0` (its differential: the dt terms are the drift, a
+    constant among them under const, and the shock terms the noise); `initial` moves the mean on a finite horizon."""
     role = "state"
 
-    def __init__(self, name: str, initial: Optional[Number] = None, drift=None):
+    def __init__(self, name: str, initial: Optional[Number] = None):
         super().__init__(name)
         self.initial = initial
-        self._drift = None
-        if drift is not None:
-            self.drift = drift
-
-    @property
-    def drift(self) -> Optional[Linear]:
-        return self._drift
-
-    @drift.setter
-    def drift(self, expr) -> None:
-        if isinstance(expr, Quad):
-            raise ValueError(f"state {self.name}: the drift must be linear, not {expr}")
-        self._drift = expr.combined() if isinstance(expr, Differential) else Linear.of(expr)
+        self._drift = None                  # the differential's drift and noise as one linear expression
 
     @property
     def d(self) -> "Differential":
@@ -794,7 +782,7 @@ class Differential:
     __rmul__ = __mul__
 
     def combined(self) -> Linear:
-        """The drift and the noise as one linear expression, the form State.drift and Signal take."""
+        """The drift and the noise as one linear expression, the form a State and a Signal store."""
         return self.drift + self.noise
 
     def __repr__(self) -> str:
@@ -836,8 +824,8 @@ dt = _Dt()
 # -------------------------------------------------------------------------------------- signals and agents
 
 class Signal:
-    """One observed row: `Signal("y", sqrt(p) * X + w.w1, delay=0.5)`; the quantity terms are the row's drift,
-    the shock terms its noise loading (at least one is required)."""
+    """One observed row, the differential of what is observed: `Signal("y", sqrt(p) * X * dt + dW1, delay=0.5)`;
+    the dt terms are the row's drift, the shock terms its noise loading (at least one is required)."""
 
     def __init__(self, name: str, expr, delay=0.0):
         if not isinstance(name, str) or not name.isidentifier():
@@ -845,9 +833,9 @@ class Signal:
         if isinstance(expr, Quad):
             raise ValueError(f"signal {name}: a signal is linear, not {expr}")
         self.name = name
-        self.expr = expr.combined() if isinstance(expr, Differential) else Linear.of(expr)
+        self.expr = Differential.of(expr).combined()
         if not self.expr.shocks:
-            raise ValueError(f"signal {name!r} has no shock term: every row needs a noise loading, e.g. Signal({name!r}, {self.expr} + w.v)")
+            raise ValueError(f"signal {name!r} has no shock term: every row needs a noise loading, e.g. Signal({name!r}, {self.expr} dt + dV)")
         if not (_is_number(delay) or isinstance(delay, Coef)) or (_is_number(delay) and delay < 0):
             raise ValueError(f"signal {name}: delay must be a non-negative number or a Param, not {delay!r}")
         self.delay = delay
@@ -866,24 +854,22 @@ class Signal:
 
 
 class Agent:
-    """An agent: its controls, its signal rows, its quadratic loss; `myopic` ignores the continuation effects
-    of its own actions (a competitive agent).  (`naive_observers` was withdrawn in 1.1: it did not compute Chapter 6.)"""
+    """An agent: its controls, what it observes, its quadratic loss; `myopic` ignores the continuation effects
+    of its own actions (a competitive agent).  `observes` is one differential (the signal "y"), a list (y1, y2,
+    ...), a dict {name: differential}, or Signals (for a name and a delay) in any of these."""
 
-    def __init__(self, name: str, controls: Sequence[Control], signals: Sequence[Signal] = (), loss=None,
-                 myopic: bool = False, naive_observers=None, observes=None, terminal=None):
+    def __init__(self, name: str, controls: Sequence[Control], observes=None, loss=None, myopic: bool = False,
+                 terminal=None):
         if not isinstance(name, str) or not name.isidentifier():
             raise ValueError(f"an agent name must be an identifier, not {name!r}")
-        if observes is not None:
-            # observes= what the agent sees: one expression (the signal "y"), a list (y1, y2, ...; an item may be a
-            # Signal, for a delay), or a dict {name: expression}
-            if signals:
-                raise ValueError(f"agent {name}: give signals= or observes=, not both")
-            if isinstance(observes, dict):
-                signals = [o if isinstance(o, Signal) else Signal(k, o) for k, o in observes.items()]
-            elif isinstance(observes, (list, tuple)):
-                signals = [o if isinstance(o, Signal) else Signal(f"y{i + 1}", o) for i, o in enumerate(observes)]
-            else:
-                signals = [observes if isinstance(observes, Signal) else Signal("y", observes)]
+        if observes is None:
+            raise ValueError(f"agent {name}: observes= is required (what the agent sees)")
+        if isinstance(observes, dict):
+            signals = [o if isinstance(o, Signal) else Signal(k, o) for k, o in observes.items()]
+        elif isinstance(observes, (list, tuple)):
+            signals = [o if isinstance(o, Signal) else Signal(f"y{i + 1}", o) for i, o in enumerate(observes)]
+        else:
+            signals = [observes if isinstance(observes, Signal) else Signal("y", observes)]
         controls = list(controls) if not isinstance(controls, Control) else [controls]
         for u in controls:
             if not isinstance(u, Control):
@@ -901,9 +887,6 @@ class Agent:
         if not self.loss.terms:
             raise ValueError(f"agent {name}: the loss {loss!r} has no term in a quantity")
         self.name = name; self.controls = controls; self.signals = signals
-        if naive_observers is not None:
-            from .stationary import WITHDRAWN_NAIVE
-            raise ValueError(WITHDRAWN_NAIVE)
         self.myopic = bool(myopic)
         # the loss paid at T, on the states: terminal=q * (X - b)**2
         try:
@@ -1075,8 +1058,8 @@ class _Walk:
     def model(self, states, agents, definitions, horizon):
         self._reach(definitions)
         for s in states:
-            if s.drift is not None:
-                self.linear(s.drift)
+            if s._drift is not None:
+                self.linear(s._drift)
             self.coef(s.initial)
         for a in agents:
             for sg in a.signals:
@@ -1107,8 +1090,8 @@ def _check_quantities(name, states, controls, defs, agents):
                 raise ValueError(f"{where} uses {q!r}, which is not a state, control or definition of the model {name!r}")
 
     for s in states:
-        if s.drift is not None:
-            check(f"state {s.name}: its drift", s.drift.quantities.values())
+        if s._drift is not None:
+            check(f"state {s.name}: its drift", s._drift.quantities.values())
     for a in agents:
         for sg in a.signals:
             check(f"signal {a.name}.{sg.name}:", sg.expr.quantities.values())

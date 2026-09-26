@@ -38,7 +38,7 @@ class FiniteCompiled(CompiledBase):
         reject_leads(model, 'cell engine')
         hz = model.horizon
         self.T = float(hz.extent)
-        self.N = int(hz.nodes)
+        self.N = int(model.numerics.nodes)
         self.h = self.T / self.N
         self.rho = float(hz.discount)
         self.times = np.arange(self.N) * self.h
