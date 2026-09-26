@@ -30,7 +30,9 @@ In an equation, multiplication may be written as a space, `^` is a power, `dt` m
 loss only).  `observes` is one equation (the signal `y`), a list (`y1`, `y2`, ...) or a mapping of named
 signals, and a signal may be `{d: "...", delay: 0.5}`.  `definitions: {name: "..."}` names a linear
 combination.  A loss keeps its constant (`(X - b1)^2` has `b1^2`), reported in the cost as its
-`constant` part.  A horizon with `kind:` (a transition) is the grammar's block, unchanged.  `noisestate
+`constant` part.  A transition's horizon is `{T: 6, past: old.yaml}` (or `past:` a list of
+initial shocks, `settle:` in place of `T`, and `continuation: end` when the game ends at T); its window is the
+past's.  `noisestate
 validate` reads the equations into the grammar and checks that.
 
 To read a file back as equations rather than as keys, `print(ns.load(path).describe())` lays the loaded

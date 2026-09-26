@@ -182,6 +182,11 @@ def _environment(d: dict):
         for u in _as_list((spec or {}).get("controls")):
             controls[u] = E.Control(u)
     env.update(states); env.update(controls)
+    names = set(params) | set(states) | set(controls) | set(d.get("definitions") or {})
+    clash = sorted(n for n in shock_names if "d" + n in names)
+    if clash:
+        raise ValueError(f"shock(s) {clash}: 'd' + the shock's name is also the name of a parameter, state, control or "
+                         "definition, so an equation could not tell the increment from the quantity; rename one of them")
     for k, v in _in_dependency_order(d.get("definitions") or {}):
         env[k] = E.define(k, _eval(v, env, f"definition {k}"))
     return env, params, states, controls
@@ -254,13 +259,21 @@ def to_grammar(d: dict) -> dict:
                               terminal=_eval(spec["terminal"], env, f"{where}, terminal") if spec.get("terminal") is not None else None))
 
     hz = d.get("horizon") or {}
+    if "kind" not in hz and "past" in hz:               # a transition: {T (or settle), past, continuation, discount}
+        ex = sorted(set(hz) - {"T", "settle", "past", "continuation", "discount"})
+        if ex:
+            raise ValueError(f"horizon: unknown key(s) {ex} for a transition; it takes T (or settle), past, continuation "
+                             "and discount (its window is the past's)")
+        past = hz["past"]
+        block = ({"model": past} if isinstance(past, str) else {"initial": past} if isinstance(past, list) else dict(past))
+        hz = {"kind": "transition", "continuation": "stationary", **{k: v for k, v in hz.items() if k != "past"}, "past": block}
     if "kind" in hz:
         horizon = None                                  # the grammar's own block, laid in below
     else:
         ex = sorted(set(hz) - {"T", "window", "discount"})
         if ex or ("T" in hz) == ("window" in hz):
             raise ValueError("horizon: give T (a finite game on [0, T]) or window (a stationary game), and optionally "
-                             "discount; a transition is written with kind: transition, as in the grammar")
+                             "discount; a transition adds past: (the old model's file, or initial shocks) to T")
         val = lambda x: _eval(x, env, "horizon") if isinstance(x, str) else x
         disc = val(hz.get("discount", 0.0))
         horizon = E.Finite(T=val(hz["T"]), discount=disc) if "T" in hz else E.Stationary(window=val(hz["window"]), discount=disc)
@@ -363,6 +376,12 @@ def from_grammar(g: dict) -> dict:
         out["horizon"] = {"T": hz["T"], **({"discount": hz["discount"]} if hz.get("discount") not in (None, 0, 0.0) else {})}
     elif hz.get("kind") == "stationary" and set(hz) <= {"kind", "window", "discount"}:
         out["horizon"] = {"window": hz["window"], **({"discount": hz["discount"]} if hz.get("discount") not in (None, 0, 0.0) else {})}
+    elif hz.get("kind") == "transition" and set(hz) <= {"kind", "T", "settle", "past", "continuation", "discount"}:
+        past = hz.get("past") or {}
+        past = past["model"] if set(past) == {"model"} else past["initial"] if set(past) == {"initial"} else past
+        out["horizon"] = {**({"T": hz["T"]} if hz.get("T") is not None else {"settle": hz["settle"]}), "past": past,
+                          **({"continuation": hz["continuation"]} if hz.get("continuation") not in (None, "stationary") else {}),
+                          **({"discount": hz["discount"]} if hz.get("discount") not in (None, 0, 0.0) else {})}
     else:
         out["horizon"] = hz
     if g.get("ties"):

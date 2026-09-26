@@ -33,8 +33,7 @@ That solve converged — `res.converged` is `True` and `res.require_converged()`
 | `ns.as_model(x)` | a Model from a Model, a dict (either form) or a path: what every function taking a model does with it |
 | `ns.Model.from_dict(d)` | you have the file structure as a dict — generated models, tests, anything programmatic |
 | `ns.Model.from_dict(d)` with equations | the same dict written as equations: `shocks: [W0]`, `states: {X: "(D1 + D2) dt + sigma dW0"}`, `observes:`, `loss: "(X - b)^2 + r D^2"` (docs/model_file.md). `load()` reads it from a file |
-| `ns.Game(states, agents, T=..., window=..., discount=..., nodes=...)` | you wrote the equations in Python (below): a finite game with `T`, a stationary one with `window`. Returns a `Model`; `game.solve()` solves it |
-| `ns.Model(name=..., states=..., agents=..., horizon=...)` | the same, with an explicit horizon object |
+| `ns.Game(states, agents, T=..., window=..., discount=..., nodes=..., horizon=..., name=..., params=...)` | you wrote the equations in Python (below): a finite game with `T`, a stationary one with `window`, or `horizon=ns.Transition(...)`. Returns a `Model`; `game.solve()` solves it. `ns.Model(...)` itself is not a constructor |
 
 ### The expression API
 

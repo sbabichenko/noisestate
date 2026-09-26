@@ -56,7 +56,7 @@ def build(N=3, tau=0.5, L=24.0, nodes=8, unit_range=8.0, **over):
             "order_book": o[cus] * dt + p["s3"] * wv[f"w_{v}_2"],
             "upstream_order": o[sup] * dt + p["s4"] * wv[f"w_{v}_3"],
             "own_prod": wv[f"w_a{v}"]}))
-    return ns.Model("ch5_cycle_market", states=[q] + [x for v in range(N) for x in (a[v], eta[v])], agents=firms,
+    return ns.Game([q] + [x for v in range(N) for x in (a[v], eta[v])], firms, name="ch5_cycle_market",
                     ties=[firms], horizon=ns.Stationary(window=L, discount=0.0), params=p.values(),
                     numerics={"nodes": nodes, "unit": tau, "unit_range": unit_range})
 

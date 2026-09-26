@@ -18,10 +18,9 @@ name; every coefficient, delay, loss and discount may change.
 
 ```yaml
 horizon:
-  kind: transition
-  window: 6.0                          # the horizon T (any positive multiple of the unit; or settle: a tolerance the horizon is found for)
-  past: {model: ch3_two_player.yaml}   # or an inline model, or initial: [{name, loads, rows}, ...]
-  continuation: stationary             # the new model's stationary equilibrium closes the game (or: end)
+  T: 6.0                               # any positive multiple of the unit; or settle: a tolerance T is found for
+  past: ch3_two_player.yaml            # or a list of initial shocks [{name, loads, rows}, ...]
+  # continuation: end                  # the game ends at T; by default the new model's stationary equilibrium closes it
 numerics: {nodes: 12, continuation_nodes: 12}   # per side of each piece; the continuation's solve (its window is the past's)
 ```
 

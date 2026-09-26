@@ -53,6 +53,14 @@ A model reads like its equations, in a file and in Python.
 - **`sweep()` and `compare()` take `solve()`'s options as keywords** (`sweep(m, "p1", values, nodes=12,
   max_evaluations=40)`); `solver_kw=` and `solve_kw=` are gone.  A sweep now applies the `tol` and `damping` of
   its numerics, which it ignored.
+- **`ns.Game(...)` is the Python form's constructor** (`params=` fixes the order the file writes them);
+  `ns.Model(...)` is the type and no longer builds.
+- **Transitions in the equations form:** `horizon: {T: 6, past: ch3_two_player.yaml}` (or `past:` a list of initial
+  shocks, `settle:` for `T`, `continuation: end`); `save()` writes it that way.
+- **A shock named so that `d` + its name is another symbol is refused** (a definition `dev0` beside a shock `ev0`):
+  the equations could not tell the increment `dev0` from the quantity.
+- The README leads with `res.response(...).over(t)`, `res.estimate` and `res.strategy`, which read the same on every
+  engine; `res.kernel()` and `res.maps` are the engine-layout arrays underneath.
 - **The old Python spelling is gone:** `X.drift = ...`, `Agent(signals=...)` and signal rows without `dt`.
 - **The cell engine left the package** for `extras/cells.py`, where it stays as the first-order cross-check;
   `numerics.engine` is `stationary` or `spectral`, and the `cell_*` settings went with it.

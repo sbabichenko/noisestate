@@ -32,14 +32,11 @@ agents:
       flow: sigma_Z dwZ
     loss: -D1 V + D1 P + eps D1^2
 horizon:
-  kind: transition
-  discount: 0.0
   T: 2.0
   past:
-    initial:
-    - name: v0
-      loads:
-        V: sqrt(Sigma0)
-      rows: {trader1.flow: 1.0}
+  - name: v0
+    loads:
+      V: sqrt(Sigma0)
+    rows: {trader1.flow: 1.0}
   continuation: end
 numerics: {nodes: 12}

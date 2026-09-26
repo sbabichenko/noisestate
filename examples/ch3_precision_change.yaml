@@ -29,10 +29,6 @@ agents:
       y2: sqrt(p2) X dt + dw2
     loss: 0.5 X^2 + 0.5 r2 D2^2
 horizon:
-  kind: transition
-  discount: 0.0
   T: 6.0
-  past:
-    model: ch3_two_player.yaml
-  continuation: stationary
+  past: ch3_two_player.yaml
 numerics: {nodes: 12, continuation_nodes: 12}

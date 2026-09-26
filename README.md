@@ -283,11 +283,14 @@ The remaining sections provide the reference for these objects.
 ```python
 res.costs["player1"]         # the cost of each agent (res.cost_kind says what it is)
 res.cost_parts["player1"]    # its {"variance", "mean"} parts, and "constant": a loss's constant ((X - b)^2 has b^2)
+res.response("X", to="w0", at=0).over(t)                     # a shock at 0 followed through time, on any engine
+res.response("X", to="w0", at=0, seen_by="player1").over(t)  # player 1's estimate of the same path
+res.strategy("D1")           # the action as a rule on the noise-state (D), a kernel; .at(t, s)
+res.estimate("player1", "X") # player 1's estimate of X, a kernel; .at(t, s)
+
+# the arrays underneath, in the engine's own layout (res.axes gives their coordinates):
 res.kernel("X")              # closed-loop kernel of a state, one column per shock; .axes, .at(), .plot()
 res.kernel("D1")             # a control's response to the shocks (D_W)
-res.strategy("D1")           # the same action as a rule on the noise-state (D)
-res.estimate("player1", "X") # player 1's estimate of X, as a kernel
-res.response("X", to="w0")   # one shock followed through time: .over(t)
 res.maps["player1"]          # raw strategy g[u][r](b) on the agent's own signal rows
 res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"}: the first-order condition decomposed
 res.means["X"]               # the mean of a state or control: a constant here, a path on a finite horizon
@@ -362,7 +365,7 @@ for each field's type and default.  `noisestate schema model` prints the JSON Sc
 ```yaml
 horizon: {window: 8.0, discount: 0.5}                              # stationary: L = 8, no terminal time
 horizon: {T: 1.0}                                                  # finite: ends at 1, no lag window
-horizon: {kind: transition, T: 6.0, past: {model: old.yaml}}      # both: T here, L the past's
+horizon: {T: 6.0, past: old.yaml}                                  # a transition: T here, L the past's
 ```
 
 `discount` is the rate *rho* and defaults to 0.  For stationary models, this gives the formal

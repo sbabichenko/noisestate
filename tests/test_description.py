@@ -15,7 +15,7 @@ def _model():
     agent = ns.Agent('player', controls=[u],
                      observes=ns.Signal('y', x * ns.dt + w.w1, delay=0.5),
                      loss=(x - 1)**2 + u**2)
-    return ns.Model('tracking', states=[x], agents=[agent], horizon=ns.Stationary(window=3))
+    return ns.Game(x, agent, window=3, name='tracking')
 
 
 def _parsed(html):

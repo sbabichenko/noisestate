@@ -182,17 +182,17 @@ def test_errors_name_the_object():
     with pytest.raises(ValueError, match="unknown Param 'q'"):
         q = Param("q")                                       # no value
         X.d = D * dt + q * w.w0
-        ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)])
+        ns.Game([X], [Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)], window=3.0)
     with pytest.raises(ValueError, match="unknown Param 'p'"):
         X.d = D * dt + w.w0
-        ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)], params={"r": 1.0})
+        ns.Game([X], [Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)], window=3.0, params=[Param("r", 1.0)])
     with pytest.raises(ValueError, match="two states named 'X'"):
-        ns.Model("m", states=[X, State("X")], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)])
-    with pytest.raises(ValueError, match="shocks of an expression model"):
-        ns.Model("m", shocks=["w0"], states=[X], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)])
+        ns.Game([X, State("X")], [Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)], window=3.0)
+    with pytest.raises(TypeError, match="ns.Game"):
+        ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], X**2 + p * D**2)])
     with pytest.raises(ValueError, match="agent me: its loss uses State\\('Y'\\)"):
         Y = State("Y")
-        ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X * dt + w.w1)], Y**2 + p * D**2)])
+        ns.Game([X], [Agent("me", [D], [Signal("y", X * dt + w.w1)], Y**2 + p * D**2)], window=3.0)
     with pytest.raises(ValueError, match="a shock \\(w0\\) cannot enter a loss"):
         (X + w.w0) * D
 
@@ -204,7 +204,7 @@ def test_definitions_lags_leads_and_constants():
     Xl = define("Xl", X.lag(tau))
     X.d = (-X + D.lag(0.25) + 0.3) * dt + w.w0                   # a constant drift is `const`
     me = Agent("me", [D], [Signal("y", Xl * dt + w.w1, delay=0.25)], (Xl - k)**2 + D**2 + D * X.lead(0.5))
-    m = ns.Model("m", states=[X], agents=[me], horizon=ns.Stationary(window=3.0))
+    m = ns.Game([X], [me], window=3.0, name="m")
     d = m.to_dict()
     assert d["states"]["X"]["drift"] == {"X": -1, "D@0.25": 1, "const": 0.3}
     assert d["definitions"] == {"Xl": {"X@tau": 1}}
@@ -212,9 +212,9 @@ def test_definitions_lags_leads_and_constants():
     assert d["agents"]["me"]["signals"]["y"] == {"drift": {"Xl": 1}, "noise": {"w1": 1}, "delay": 0.25}
     assert d["params"] == {"tau": 0.5, "k": 0.3} and d["shocks"] == ["w0", "w1"]
     assert m.drives_means and m.all_lags() == [0.25, 0.5, 0.75]
-    # the field form still constructs and compares as before
+    # the file structure builds the same model
     plain = ns.Model.from_dict(d)
-    assert plain == m and isinstance(plain, ns.Model) and ns.Model("empty").shocks == []
+    assert plain == m and isinstance(plain, ns.Model)
 
 
 def test_kernel_on_every_engine():

@@ -242,9 +242,8 @@ def _file_dumper():
 
 @dataclass(init=False)
 class Model:
-    """The game as data.  Built from its equations (`ns.Game(...)`, or `Model("ch1", states=[X], agents=[...],
-    horizon=Stationary(window=3.0))` with State, Control, Signal, Agent and Param objects), from a file
-    (`ns.load`), or from its dict (`Model.from_dict`, either form).  Every route compiles to the same fields,
+    """The game as data.  Built from its equations in Python (`ns.Game(...)` with State, Control, Signal, Agent and
+    Param objects), from a file (`ns.load`), or from its dict (`Model.from_dict`, either form).  Every route compiles to the same fields,
     the file's structure: shocks, states, agents, horizon, definitions, ties, params; `to_dict()` is the file."""
     name: str
     shocks: List[str]
@@ -257,22 +256,9 @@ class Model:
     numerics: object = None                                   # a Numerics: how the model is solved (nodes 16 unless given)
     source: Optional[dict] = field(default=None, repr=False)  # the file structure with its expressions, if built from one
 
-    def __init__(self, name: str = "model", shocks=None, states=None, agents=None, horizon=None, definitions=None,
-                 ties=None, params=None, source=None, *, numerics=None):
-        from . import expr
-        if not any(x for x in (states, agents, definitions)) and horizon is None:
-            self._set_fields(name, shocks, states, agents, horizon, definitions, ties, params, source)   # the empty model
-            return
-        if not expr.is_expression_form(states, agents, horizon, definitions):
-            raise TypeError("Model() builds a model from its equations (ns.State, ns.Control, ns.Agent, ...; or ns.Game); "
-                            "a model from its file structure is Model.from_dict(d) or ns.load(path)")
-        if shocks is not None:
-            raise ValueError("Model(): the shocks of an expression model are the ones it uses; do not give shocks=")
-        d = expr.compile_model(name, states, agents, definitions=definitions, ties=ties, horizon=horizon,
-                               numerics=numerics, params=params)
-        built = Model.from_dict(d)
-        self.__dict__.update(built.__dict__)
-        self.source = built.to_dict()                 # the normalised file (as load(save()) reads it back)
+    def __init__(self, *args, **kwargs):
+        raise TypeError("a Model is built by ns.Game(states, agents, T=... or window=...) from the Python form's "
+                        "objects, by ns.load(path) from a file, or by Model.from_dict(d)")
 
     def _set_fields(self, name, shocks, states, agents, horizon, definitions, ties, params, source, numerics=None):
         from .numerics import Numerics
@@ -376,15 +362,17 @@ class Model:
         if form not in ("equations", "grammar"):
             raise ValueError(f"save(): form is 'equations' or 'grammar', not {form!r}")
         d = self.to_equations() if form == "equations" else self.to_dict()
-        past = (d.get("horizon") or {}).get("past")
-        if isinstance(past, dict) and isinstance(past.get("model"), str):
+        hzd = d.get("horizon") or {}
+        past = hzd.get("past")
+        where = (hzd, "past") if isinstance(past, str) else (past, "model") if isinstance(past, dict) else (None, None)
+        if where[0] is not None and isinstance(where[0].get(where[1]), str):    # the equations form writes past: path
             base = os.path.dirname(os.path.abspath(path)) or os.curdir
             try:
-                rel = os.path.relpath(past["model"], base)
+                rel = os.path.relpath(where[0][where[1]], base)
             except ValueError:                    # another drive on Windows: no relative path exists
                 rel = None
             if rel is not None and not rel.startswith(os.pardir + os.sep) and rel != os.pardir:
-                past["model"] = rel
+                where[0][where[1]] = rel
         with open(path, "w") as fh:
             yaml.dump(d, fh, Dumper=_file_dumper(), sort_keys=False, width=110)
 
@@ -585,6 +573,7 @@ class Model:
         self._check_agents()
         self._check_ties()
         self._check_channels_used()
+        self._check_shock_names()
         self._check_control_terms()
         self._check_horizon()
         self._check_transition()
@@ -724,6 +713,15 @@ class Model:
                 if sig != sigs[0]:
                     raise ValueError(f"tied agents {group[0]} and {a.name} are not structurally identical "
                                      f"(same rows, losses and coefficients up to relabelling); untie them or fix the model")
+
+    def _check_shock_names(self) -> None:
+        """No shock is named so that 'd' + its name is another symbol: the equations form writes a shock's
+        increment d<name>, and could not tell it from the quantity."""
+        names = set(self.params) | set(self.state_names) | set(self.control_names) | set(self.def_names)
+        clash = sorted(w for w in self.shocks if "d" + w in names)
+        if clash:
+            raise ValueError(f"shock(s) {clash}: 'd' + the shock's name is also the name of a parameter, state, control "
+                             "or definition, so an equation could not tell the increment from the quantity; rename one")
 
     def _check_channels_used(self) -> None:
         """Every shock is loaded by a state or a signal row."""

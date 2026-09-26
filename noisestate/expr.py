@@ -328,11 +328,12 @@ def params(**values) -> Tuple["Param", ...]:
 
 
 def Game(states, agents, *, T=None, window=None, discount=0.0, horizon=None, definitions=None, ties=None,
-         name: str = "game", nodes=None, numerics=None):
-    """A model from its equations: states (a State or a list), agents, and the horizon, either T (a finite game on
-    [0, T]), or window (a stationary game, its kernels cut at that lag), or an explicit horizon (Finite, Stationary,
-    Transition); discount the rate on future losses.  `nodes` (or numerics) sets the grid.  Returns a Model:
-    game.solve() solves it."""
+         name: str = "game", nodes=None, numerics=None, params=None):
+    """A model from its equations, the Python form's one constructor: states (a State or a list), agents, and the
+    horizon, either T (a finite game on [0, T]), or window (a stationary game, its kernels cut at that lag), or an
+    explicit horizon (Finite, Stationary, Transition); discount the rate on future losses.  `nodes` (or numerics)
+    sets the grid; `params` lists the Params in the order the file should write them (default: as first used).
+    Returns a Model: game.solve() solves it."""
     from .spec import Model
     given = [x for x in (T, window, horizon) if x is not None]
     if len(given) != 1:
@@ -343,7 +344,13 @@ def Game(states, agents, *, T=None, window=None, discount=0.0, horizon=None, def
         numerics = dict(numerics or {}, nodes=nodes)
     states = [states] if isinstance(states, State) else list(states)
     agents = [agents] if isinstance(agents, Agent) else list(agents)
-    return Model(name, states=states, agents=agents, horizon=horizon, definitions=definitions, ties=ties, numerics=numerics)
+    if not is_expression_form(states, agents, horizon, definitions):
+        raise TypeError("Game() takes the Python form's objects (ns.State, ns.Agent, ...); a model from its file "
+                        "structure is Model.from_dict(d) or ns.load(path)")
+    built = Model.from_dict(compile_model(name, states, agents, definitions=definitions, ties=ties, horizon=horizon,
+                                          numerics=numerics, params=params))
+    built.source = built.to_dict()                  # the normalised file (as load(save()) reads it back)
+    return built
 
 
 # --------------------------------------------------------------------------------------- linear expressions

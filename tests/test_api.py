@@ -302,7 +302,7 @@ def test_a_saved_transition_keeps_its_past_beside_it():
     ns.load(os.path.join(EX, "ch3_two_player.yaml")).save(os.path.join(d, "past.yaml"))
     tr = ns.load(os.path.join(EX, "ch3_precision_change.yaml"))._patch_horizon(past={"model": os.path.join(d, "past.yaml")})
     tr.save(os.path.join(d, "tr.yaml"))
-    assert yaml.safe_load(open(os.path.join(d, "tr.yaml")))["horizon"]["past"] == {"model": "past.yaml"}
+    assert yaml.safe_load(open(os.path.join(d, "tr.yaml")))["horizon"]["past"] == "past.yaml"     # the equations form's past: path
 
     moved = tempfile.mkdtemp()                       # the pair copied elsewhere reads the copy, not the original
     for f in ("past.yaml", "tr.yaml"):
@@ -314,7 +314,7 @@ def test_a_saved_transition_keeps_its_past_beside_it():
 
     elsewhere = tempfile.mkdtemp()                    # a past outside the directory stays absolute
     ns.load(os.path.join(EX, "ch3_precision_change.yaml")).save(os.path.join(elsewhere, "tr.yaml"))
-    saved = yaml.safe_load(open(os.path.join(elsewhere, "tr.yaml")))["horizon"]["past"]["model"]
+    saved = yaml.safe_load(open(os.path.join(elsewhere, "tr.yaml")))["horizon"]["past"]
     assert os.path.isabs(saved) and os.path.exists(saved)
 
 
