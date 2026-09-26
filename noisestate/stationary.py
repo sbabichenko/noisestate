@@ -960,8 +960,9 @@ class StationarySolver(EngineBase):
 
     def _monitoring(self, maps):
         """({agent: R^mon (n_prim N, nU)}, {origin: W (n_prim N, n origin controls)}) for the agents with privy
-        others, the response kernels found by the iteration described above, from the naive responses, to 1e-12
-        relative.  (Starting from the previous call's kernels carried a trial point's kernels into the next
+        others, the response kernels found by the iteration described above, from the naive responses, to 1e-10
+        relative or until 10 rounds pass without improving on the best, which is kept (the plain iteration reaches
+        rounding and then only wanders).  (Starting from the previous call's kernels carried a trial point's kernels into the next
         evaluation and broke the market of Chapter 6; Anderson on this iteration found other roots.  Neither is used.)"""
         key = self._maps_key(maps)
         if self._monitored is not None and self._monitored[0] == key:

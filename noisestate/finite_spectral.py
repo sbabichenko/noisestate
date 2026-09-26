@@ -97,8 +97,16 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             #  transition's extent, which is T.  The terminal time goes with the other transition
             #  blocks: a stationary horizon has none.
             hz = d.setdefault("horizon", {}); hz.update(kind="stationary", window=float(past.window))
-            for k in ("past", "continuation", "T"):
-                hz.pop(k, None)
+            dropped = [hz.pop(k, None) for k in ("past", "continuation", "T", "settle")]
+            #  a parameter that only the dropped lengths used (T: T) is unused in the continuation, where the
+            #  unused-parameter check, a guard against typos in a written file, would refuse it: drop it too
+            import json, re
+            params = d.get("params") or {}
+            for name in {n for v in dropped[2:] if isinstance(v, str) for n in re.findall(r"[A-Za-z_]\w*", v)} & set(params):
+                elsewhere = json.dumps({k: v for k, v in d.items() if k != "params"}) + \
+                    json.dumps({k: v for k, v in params.items() if k != name})
+                if not re.search(rf"(?<![\w.]){re.escape(name)}(?!\w)", elsewhere):
+                    params.pop(name)
             nm = d.setdefault("numerics", {})
             for k in ("breakpoints", "engine", "continuation_nodes"):
                 nm.pop(k, None)

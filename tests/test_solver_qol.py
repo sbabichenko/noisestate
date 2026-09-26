@@ -154,3 +154,24 @@ def test_kernels_of_expressions(two):
     assert two.estimate("player2", "r1 * D1").shape == two.estimate("player2", "D1").shape
     with pytest.raises(ValueError, match="shock"):
         two.kernel("X + dw0")
+
+
+def test_a_parameter_used_only_by_the_transitions_T_does_not_break_its_continuation():
+    """The continuation is the transition's model with its horizon made stationary; a parameter only horizon.T used
+    must go with T, or the unused-parameter check refuses the continuation (the site explorer's regime change)."""
+    d = ns.load(ns.example("ch3_precision_change")).to_dict()
+    d["params"]["T"] = 3.0
+    d["horizon"]["T"] = "T"
+    res = ns.solve(ns.Model.from_dict(d).with_numerics(nodes=8, continuation_nodes=8))
+    assert res.converged and res.model.horizon.T == 3.0
+    d["params"]["sigma"] = 1.0                                          # a parameter nothing uses is still refused
+    with pytest.raises(ValueError, match=r"\['sigma'\] are defined but never used"):
+        ns.Model.from_dict(d)
+
+
+def test_the_settled_check_names_T_and_a_grid_mismatch():
+    d = ns.load(ns.example("ch3_precision_change")).to_dict()
+    d["horizon"]["T"] = 1.0
+    res = ns.solve(ns.Model.from_dict(d).with_numerics(nodes=8, continuation_nodes=12))
+    flag = next(r["flag"] for r in res._check_rows() if r["name"] == "settled")
+    assert "raise horizon.T" in flag and "8 nodes and its continuation's 12" in flag

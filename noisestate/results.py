@@ -1527,13 +1527,17 @@ class TriangleResult(Result):
         if self.settled is not None:
             info = self.compiled.continuation_info or {}
             stopped = getattr(self, "march_stop", None) == "max_window"
+            cont = getattr(self, "continuation", None)
+            n_cont = getattr(getattr(cont, "numerics", None), "nodes", None)
+            unequal = n_cont is not None and int(n_cont) != int(self.numerics.nodes)
             row("settled", float(self.settled), self.SETTLED_TOL, bool(self.settled <= self.SETTLED_TOL),
-                f"TRANSITION NOT SETTLED by T - L: raise horizon.window (a map on [T - L, T] is {self.settled:.1e} of its peak "
-                f"from the stationary map the buffer is frozen at, against settled_tol {self.SETTLED_TOL:g}: the closed-loop "
-                "decay over a unit of t, not the grid's floor)"
+                f"TRANSITION NOT SETTLED by T - L: raise horizon.T (a map on [T - L, T] is {self.settled:.1e} of its peak "
+                f"from the stationary map the buffer is frozen at, against settled_tol {self.SETTLED_TOL:g})"
+                + (f"; the transition's grid has {int(self.numerics.nodes)} nodes and its continuation's {int(n_cont)}: unequal "
+                   "grids leave a floor under this measure that no T removes (numerics.continuation_nodes = nodes)" if unequal else "")
                 + (f"; the settle march stopped at max_window, T = {self.compiled.T:g}, with the gap at "
                    f"{max(self.march[-1].gap.values()):.1e} against settle {self.march_settle:g}: raise max_window" if stopped else ""),
-                "raise max_window" if stopped else "raise horizon.window")
+                "raise max_window" if stopped else "raise horizon.T" + (" and match continuation_nodes to nodes" if unequal else ""))
             if getattr(self, "march_stop", None) == "floor" and self.march:
                 fl = max(self.march_floor.values()) if self.march_floor else float("nan")
                 g1 = max(self.march[-1].gap.values())

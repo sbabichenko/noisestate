@@ -9,31 +9,32 @@ page says which module holds what, and follows one best response and one transit
 
 | module | lines | holds |
 |---|---|---|
-| `spec.py` | 1356 | the model as data: shocks, states, definitions, agents with signal rows and losses, the horizon (the economics) and `Model.numerics`; `Model.from_dict` (either form), `to_dict`, `to_equations`, `save`, the `with_*` transforms, validation; `load` and `as_model`, the one way in from a path, dict or Model |
-| `equations.py` | 372 | the equations form of a file: the evaluator (`to_grammar`, and `signal_block` for `with_signal`), the writer (`from_grammar`), which is also what `describe()` prints |
-| `expr.py` | 1176 | the Python form: `Param`, `State` (`X.d = ... * dt + ...`), `Control`, `define`, `Signal`, `Agent`, `shocks`, `dt`, `Game`; `compile_model` to the grammar |
-| `description.py` | 234 | `Model.describe()`, text and HTML, from the equations writer |
+| `spec.py` | 1457 | the model as data: shocks, states, definitions, agents (signal rows, losses, terminal losses, `monitors`, `instant`, `risk_aversion`), the horizon (the economics) and `Model.numerics`; `Model.from_dict` (either form), `to_dict`, `to_equations`, `save`, the `with_*` transforms, `privy` (Chapter 6's monitoring relation, transitive), validation; `load` and `as_model`, the one way in from a path, dict or Model |
+| `equations.py` | 432 | the equations form of a file: every block's keys checked first (`_check_all_keys`), the evaluator (`to_grammar`, and `signal_block` for `with_signal`), the writer (`from_grammar`), which is also what `describe()` prints |
+| `expr.py` | 1368 | the Python form: `Param`, `State` (`X.d = ... * dt + ...`), `Control`, vectors (`Vec`: `State("X", 3)`, matrix coefficients), `define`, `Signal`, `level` (an instant observation of another agent's control), `Agent`, `shocks`, `dt`, `Game`; `compile_model` to the grammar |
+| `names.py` | 45 | the message for a name that is not there, with the nearest ones (case, one edit, prefix, difflib), shared by the readers, the loaders and `solve()`'s options |
+| `description.py` | 241 | `Model.describe()`, text and HTML, from the equations writer |
 | `numerics.py` | 121 | `Numerics`: engine, nodes, unit, unit_range, breakpoints, continuation_nodes, tol, damping, max_newton, variable, settings |
 | `_settings.py` | 100 | `Settings`, the tuning constants; `tunable` binds a class attribute to one of them |
 | `algebra.py` | 153 | `KernelAlgebra`, the interface of a compiled model the engines call |
-| `compile.py` | 145 | `CompiledBase`, what every engine reads off a model: primaries, state inputs, rows, losses (atoms, Q, q), ties |
+| `compile.py` | 215 | `CompiledBase`, what every engine reads off a model: primaries, state inputs, rows, losses and terminal losses (atoms, Q, q: the loss is 1/2 z'Qz + q'z), ties; for instant observations `instant_loads` (the observer's loading, from its loss's Hessian) and `composite` (a control's spike with the instant reactions it draws) |
 | `grid.py`, `grid_cache.py` | 511, 96 | the stationary engine's piecewise-Chebyshev age grid; grids shared between compiles |
 | `triangle.py` | 804 | the spectral engine's triangle in (time, age), its strip and buffer for a transition, the interpolation, and `LinePath`, the quadrature of a family of line integrals |
 | `past.py` | 245 | `Past`: what the time before zero leaves behind (a stationary result's kernels, or initial shocks) |
-| `accel.py` | 178 | the Anderson fixed point and the Newton-Krylov polish |
-| `engine.py` | 597 | `EngineBase`, what every engine shares: tie packing, the passive world and rows, the fixed point (`solve`), `_result` and `_finish`, the diagnostics loop, the second-order Lanczos, the hooks |
-| `means.py` | 167 | `MeanLayer`, a base of `EngineBase`: the mean system from the engines' mean hooks, its solve and the mean cost |
-| `stationary.py` | 1094 | the stationary engine: `Compiled` (the kernel algebra on the age grid, the closed loop and its cyclic-symmetric reduction) and `StationarySolver` with its best response (the FOC system on the passive rows, the projection, the decomposition, the second-order form) |
-| `spectral_compiled.py`, `closed_loop.py` | 937, 299 | the spectral engine's compiled model: breakpoints, grid, the past's and the buffer's wiring, reads and shifts, line paths; the closed loop (I - M) Z = B one time panel at a time, each panel by block elimination |
-| `spectral_operators.py`, `finite_free.py` | 484, 458 | the spectral best response as operators (`RowOps`, `ProjOps`, `RespOps`, `FocOps`) and its solve (`FocSystem`: factored, or GMRES), decomposition and second-order form |
-| `spectral_means.py`, `finite_spectral.py` | 265, 659 | the means on the time line; `SpectralFiniteSolver`, the engine (a past, a continuation, the projection, the costs, the transition's paths) |
-| `results.py` | 1285 | `Result` and its engine subclasses; `kernel`, `response`, `estimate`, `strategy`, `check`, `refine`, `stability`, `to_dict`, the summaries |
+| `accel.py` | 192 | the Anderson fixed point and the Newton-Krylov polish; with `verbose`, one line per evaluation through the progress hook |
+| `engine.py` | 623 | `EngineBase`, what every engine shares: the capability refusals (`MONITORING`, `RISK_SENSITIVE`), tie packing, the passive world and rows, the fixed point (`solve`), `_result` and `_finish`, the diagnostics loop, the second-order Lanczos, the hooks |
+| `means.py` | 179 | `MeanLayer`, a base of `EngineBase`: the mean system from the engines' mean hooks, its solve and the mean cost |
+| `stationary.py` | 1299 | the stationary engine: `Compiled` (the kernel algebra on the age grid, the closed loop and its cyclic-symmetric reduction) and `StationarySolver` with its best response (the FOC system on the passive rows, the projection, the decomposition, the second-order form) and Chapter 6's monitored deviations (below) |
+| `spectral_compiled.py`, `closed_loop.py` | 937, 310 | the spectral engine's compiled model: breakpoints, grid, the past's and the buffer's wiring, reads and shifts, line paths, the terminal quadrature; the closed loop (I - M) Z = B one time panel at a time, each panel by block elimination |
+| `spectral_operators.py`, `finite_free.py` | 524, 491 | the spectral best response as operators (`RowOps`, `ProjOps`, `RespOps`, `FocOps`) and its solve (`FocSystem`: factored, or GMRES), decomposition, second-order form and the terminal loss's terms |
+| `spectral_means.py`, `finite_spectral.py` | 328, 852 | the means on the time line; `SpectralFiniteSolver`, the engine (a past, a continuation, the projection, the costs, the transition's paths, and Chapter 6's monitored deviations without a past) |
+| `results.py` | 1679 | `Result` and its engine subclasses; the readers `kernel`, `response`, `estimate`, `strategy` (names, lists, or expressions such as `"X + 2 D1"`), `mean`, `deviation_response` and `foc_residual` (Chapter 6); `status`, `refine`, `stability`, `save`, `to_dict`, the summaries and the one-line repr |
 | `kernel.py`, `diagnostics.py` | 132, 348 | `Kernel` (a kernel with its axes and interpolant); the checks and the `Assessment` |
 | `engines.py` | 74 | `stationary`, `spectral` and `solver`: the power user's namespace, and where `solve()` builds the engine |
-| `sweep.py`, `comparison.py`, `transition.py` | 153, 202, 373 | parameter sweeps with warm starts; scenario comparisons; transitions and the march in T |
+| `sweep.py`, `comparison.py`, `transition.py` | 208, 202, 373 | parameter sweeps with warm starts (`Sweep`, a list with columns); scenario comparisons; transitions and the march in T |
 | `symmetry.py` | 154 | the cyclic symmetry of a tied model |
-| `schema.py` | 323 | JSON Schema for the model file and the payload, and `validate` |
-| `plotting.py`, `cli.py`, `__init__.py` | 319, 337, 184 | the plots; the command line; `solve` and the exports |
+| `schema.py` | 329 | JSON Schema for the model file and the payload, and `validate` |
+| `plotting.py`, `cli.py`, `__init__.py` | 319, 337, 221 | the plots; the command line; `solve`, `load_result` and the exports |
 
 The engines never import each other: `finite_spectral` reaches the stationary engine through `noisestate.solve`
 for a `continuation="stationary"` only.  The first-order uniform-cell engine that used to be the third
@@ -93,6 +94,44 @@ The means (`spectral_means.py`, the hooks of `EngineBase`'s mean layer) are solv
    past's window through `noisestate.solve`; a `StationaryResult` is checked for the same channels, states,
    controls, rows and window.  `continuation_cost` reports the buffer's cost apart; `loss_path`, `excess_costs`
    and `belief_error` are the transition's paths on the time nodes.
+
+## Chapter 6: monitored deviations and instant reactions
+
+A model without `monitors` is the all-naive corner: every player filters a deviation as if it were on the
+equilibrium path, and the best response above is the whole story.  With `monitors` (`spec.privy(origin)`: the
+origin and every player who monitors it, transitively) the players privy to a deviation respond to it as a known
+input, and a player's first-order condition must price that response.  The stationary engine and the spectral
+engine without a past solve it the same way; the pieces are `stationary.py`'s and `finite_spectral.py`'s methods
+of the same names:
+
+1. **Spikes** (`_spikes`).  The responses to a spike of each of an agent's controls with that agent's own
+   reaction switched off (the frozen spike, Lemma 6.6), the other players' maps on; with instant observations
+   the spike carries the reactions it draws at once (`compile.composite`).
+2. **Seed setup** (`_seed_setup`).  For an origin: the privy players' controls, the spike columns with the privy
+   players' maps off, and one response operator per privy control.
+3. **Response kernels** (`_monitoring`).  The privy players' responses to the origin's seed, as paths in the
+   seed's age (on the triangle, in (time, seed time)), fixed by their first-order conditions in the seed's world
+   (`FocOps` on the monitored spike responses), iterated from the naive responses to 1e-10, keeping the best
+   round.  The naive players run their filters in that world, so their displaced beliefs, and the rectangular
+   structure of Proposition 6.10, are in it without being formed as gains.
+4. **Monitored spikes** (`_frozen_responses`).  An origin's own spike as its privy observers read it: blip seeds
+   by a Volterra equation in the seed's time, their responses composed along the path.
+5. **Into the best response** (`_impulse_responses`).  The FOC of an agent whose deviations are monitored uses
+   the monitored spike responses in place of R; the on-path world keeps the ordinary R.
+
+`res.deviation_response(origin, quantities)` reads the seed's world; `res.foc_residual(agent, seed=origin)`
+checks the response kernels against the loss by quadrature, independently of `FocOps` (it holds at any maps,
+since step 3 runs inside every evaluation, so it tests the response machinery, not the on-path equilibrium).
+The spectral engine refuses monitoring and instant observations with a past or a continuation.
+
+## What each engine solves
+
+Both engines solve ordinary games, ties, delays and lags, means, vectors and Chapter 6 (the spectral engine
+without a past or a continuation).  Terminal losses are the finite horizon's (with or without a past).
+Transitions are the spectral engine's.  Instant observations with ties are refused (ties iterate on the raw maps,
+which hold such an equilibrium but do not reach it).  `risk_aversion` > 0 (the entropic objective) is declared, validated and
+saved, and refused by every engine (`RISK_SENSITIVE`) until one solves it.  A refusal is a NotImplementedError
+that names the engine and what it lacks.
 
 ## Where the engines share the base
 

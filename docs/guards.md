@@ -147,9 +147,9 @@ computed.
   error, the usual sign of a misspelled name elsewhere in the file; so are a drift that depends on
   a future value, a zero noise loading, `breakpoints` that do not end at the window, a
   `myopic` that is not a boolean, a `risk_aversion` that is negative or not finite, a lag, delay or lead that is not below the window, a
-  `unit_range` above the window, and a misspelled agent in `naive_observers`.
+  `unit_range` above the window, and an unknown agent in `monitors` (or a cycle of instant observations).
 * `refine()` and `stability()` rebuild the engine that produced the result, with the same options
-  (naive observers, tolerances, iteration variable).  A built model is single-sourced: its
+  (tolerances, iteration variable, tuning settings).  A built model is single-sourced: its
   coefficients are numbers, so `model.params` is read-only and `model.with_params(p=4.0)` returns a
   new model.  Use `model.with_numerics(nodes=32)` to change resolution or, for a stationary model,
   `model.with_stationary(9.0)` to change its lag window.  Both return new models; pass the changed

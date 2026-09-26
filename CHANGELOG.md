@@ -36,6 +36,10 @@ A model reads like its equations, in a file and in Python.
   (..., quantities, shocks); `sweep()` returns `ns.Sweep`, still a list, with `.values`, `.costs[agent]`,
   `.converged`, `.results` and `.table()`; `res.kernel("X + 2 D1")`, `res.response(X - D1, ...)` and
   `res.estimate(agent, expression)` read weighted sums of unlagged quantities.
+- **Fixes for transitions.** A parameter used only by a transition's `horizon.T` (`T: T`) no longer makes its
+  stationary continuation fail the unused-parameter check (1.0.1 has the same bug).  The "settled" check now says
+  to raise `horizon.T` (it said `horizon.window`, a pre-0.8 name) and, when the transition's grid and its
+  continuation's differ, that the mismatch leaves a floor no T removes.
 - **Risk aversion, declared (not yet solved).** `risk_aversion: theta` on an agent (`ns.Agent(..., risk_aversion=gamma)`,
   a number or a parameter) is the entropic objective theta^-1 log E exp(theta C) of the realised cost C, CARA with
   coefficient theta when the loss is minus wealth (the Ch1 appendix, thm:risk_sensitive_appendix).  It is validated
