@@ -1013,7 +1013,7 @@ class Agent:
     ...), a dict {name: differential}, or Signals (for a name and a delay) in any of these."""
 
     def __init__(self, name: str, controls: Sequence[Control], observes=None, loss=None, myopic: bool = False,
-                 terminal=None):
+                 terminal=None, monitors=()):
         if not isinstance(name, str) or not name.isidentifier():
             raise ValueError(f"an agent name must be an identifier, not {name!r}")
         if observes is None:
@@ -1046,6 +1046,8 @@ class Agent:
             raise ValueError(f"agent {name}: the loss {loss!r} has no term in a quantity")
         self.name = name; self.controls = controls; self.signals = signals
         self.myopic = bool(myopic)
+        # the agents whose deviations this one is privy to (Chapter 6), as Agents or names
+        self.monitors = [m if isinstance(m, str) else m.name for m in ([monitors] if isinstance(monitors, (str, Agent)) else monitors)]
         # the loss paid at T, on the states: terminal=q * (X - b)**2
         try:
             self.terminal = None if terminal is None else Quad.of(terminal)
@@ -1069,6 +1071,8 @@ class Agent:
                 block["terminal_constant"] = _coef_str(tconst)
         if self.myopic:
             block["myopic"] = True
+        if self.monitors:
+            block["monitors"] = list(self.monitors)
         return block, const
 
     def __repr__(self) -> str:

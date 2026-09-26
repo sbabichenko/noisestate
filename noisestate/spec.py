@@ -172,6 +172,7 @@ class Agent:
     constant: float = 0.0             # the loss's constant: moves no strategy, but is part of the cost
     terminal: List[list] = field(default_factory=list)   # the loss at T (finite horizon): [[coef, a, b], [coef, a]], states only
     terminal_constant: float = 0.0    # the terminal loss's constant
+    monitors: List[str] = field(default_factory=list)   # the agents whose deviations this one is privy to (Chapter 6's j |> i)
 
 
 @dataclass
@@ -572,11 +573,36 @@ class Model:
         self._check_definitions()
         self._check_agents()
         self._check_ties()
+        self._check_monitoring()
         self._check_channels_used()
         self._check_shock_names()
         self._check_control_terms()
         self._check_horizon()
         self._check_transition()
+
+    def _check_monitoring(self) -> None:
+        """The monitoring relation (Chapter 6, Definition 6.1): `monitors` names other agents, and the relation is
+        transitive (Assumption 6.4: k monitors j and j monitors i imply k monitors i -- no player sees a response
+        without seeing the deviation that caused it).  Reflexivity is implicit: every agent knows its own deviations."""
+        names = [a.name for a in self.agents]
+        mon = {a.name: set(a.monitors) for a in self.agents}
+        for a in self.agents:
+            bad = sorted(set(a.monitors) - set(names))
+            if bad:
+                raise ValueError(f"agent {a.name}: monitors unknown agent(s) {bad}; the agents are {names}")
+            if a.name in a.monitors:
+                raise ValueError(f"agent {a.name}: monitors itself; every agent knows its own deviations, leave it out")
+        for k in names:
+            for j in mon[k]:
+                for i in mon[j]:
+                    if i != k and i not in mon[k]:
+                        raise ValueError(f"monitoring is not transitive: {k} monitors {j}, who monitors {i}, but {k} does not "
+                                         f"monitor {i} -- {k} would see {j}'s response to a deviation of {i} without seeing "
+                                         f"its origin (Assumption 6.4); add {i} to {k}'s monitors or drop {j}")
+
+    def privy(self, origin: str) -> List[str]:
+        """The agents privy to deviations of `origin`, the origin itself first (Chapter 6's P_i)."""
+        return [origin] + [a.name for a in self.agents if origin in a.monitors]
 
     def _check_names(self) -> None:
         """Quantity names (states, controls, definitions) are distinct and none is the reserved `const`;
@@ -864,7 +890,7 @@ class Model:
         "numerics": {"engine", "nodes", "unit", "unit_range", "breakpoints", "continuation_nodes", "tol", "damping", "max_newton",
                      "variable", "settings"},
         "state": {"drift", "noise", "initial"},
-        "agent": {"controls", "signals", "loss", "myopic", "constant", "terminal", "terminal_constant"},
+        "agent": {"controls", "signals", "loss", "myopic", "constant", "terminal", "terminal_constant", "monitors"},
         "signal": {"drift", "noise", "delay"},
     }
 
@@ -964,6 +990,8 @@ class Model:
                 d["agents"][a.name]["terminal"] = [[float(t[0])] + [atom(x) for x in t[1:]] for t in a.terminal]
             if a.terminal_constant:
                 d["agents"][a.name]["terminal_constant"] = float(a.terminal_constant)
+            if a.monitors:
+                d["agents"][a.name]["monitors"] = list(a.monitors)
         return d
 
     def with_params(self, **values) -> "Model":
@@ -1251,7 +1279,8 @@ class Model:
             agents.append(Agent(name=k, controls=list(v.get("controls") or []), signals=rows, loss=loss,
                                 myopic=v.get("myopic", False), constant=eval_coef(v.get("constant", 0.0), params),
                                 terminal=[[eval_coef(t[0], params)] + [str(x) for x in t[1:]] for t in (v.get("terminal") or [])],
-                                terminal_constant=eval_coef(v.get("terminal_constant", 0.0), params)))
+                                terminal_constant=eval_coef(v.get("terminal_constant", 0.0), params),
+                                monitors=[str(x) for x in ([v["monitors"]] if isinstance(v.get("monitors"), str) else (v.get("monitors") or []))]))
         from types import MappingProxyType
         m = cls._of_fields(name=d.get("name", "model"), shocks=list(d.get("shocks") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],

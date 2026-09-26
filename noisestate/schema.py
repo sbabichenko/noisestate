@@ -88,6 +88,8 @@ def model_schema() -> dict:
                             "signals": {"type": "object", "additionalProperties": signal},
                             "loss": {"type": "array", "items": _LOSS_TERM},
                             "myopic": {"type": "boolean"},
+                            "monitors": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}],
+                                         "description": "the agents whose deviations this agent is privy to (Chapter 6)"},
                             "constant": {**_NUMBER_OR_EXPR, "description": "the loss's constant: part of the cost, moves no strategy"},
                             "terminal": {"type": "array", "items": _LOSS_TERM, "description": "the loss at T, on the states (finite horizon)"},
                             "terminal_constant": {**_NUMBER_OR_EXPR, "description": "the terminal loss's constant"}}}

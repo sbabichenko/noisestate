@@ -61,7 +61,7 @@ def _pieces(model):
             observes = {agent.signals[0].name: observes}
         agents.append(dict(
             name=agent.name, controls=list(agent.controls), loss=eq["agents"][agent.name]["loss"],
-            terminal=eq["agents"][agent.name].get("terminal"),
+            terminal=eq["agents"][agent.name].get("terminal"), monitors=list(agent.monitors),
             signals=list(zip(_align([f'd{row.name} = {text(observes[row.name])}' for row in agent.signals]),
                              [row.delay for row in agent.signals]))))
     return dict(
@@ -136,6 +136,8 @@ def _text(p):
         lines += _field('flow loss', agent['loss'], indent=4)
         if agent['terminal']:
             lines += _field('at T', agent['terminal'], indent=4)
+        if agent['monitors']:
+            lines += _field('privy to', ', '.join(agent['monitors']) + "'s deviations", indent=4)
         lines += ['']
     if lines[-1] == '':
         lines.pop()

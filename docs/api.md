@@ -46,7 +46,7 @@ That solve converged — `res.converged` is `True` and `res.require_converged()`
 | `ns.State("X", 3)`, `ns.Control("D", 2)`, `ns.shocks(3)` | vectors (components `X0, X1, X2`): matrices act with `@` (`A @ X * dt + Sigma @ dW`), `x @ Q @ x` is a quadratic form, `observes=H @ X * dt + dV` gives rows `y0, y1, ...`, `define("Y", H @ X)` a vector of definitions, and `res.response(X, ...)` every component |
 | `ns.Control("D")` | a control; it belongs to whichever `Agent` lists it |
 | `ns.Signal(name, expr, delay=0.0)` | one named, possibly delayed, observed row. The same object `with_signal()` takes |
-| `ns.Agent(name, controls, observes=..., loss=..., myopic=False, terminal=None)` | an agent's controls, what it observes (an expression, a list, a dict of named signals, or Signals) and its quadratic loss, whose constant is kept as part of the cost |
+| `ns.Agent(name, controls, observes=..., loss=..., myopic=False, terminal=None, monitors=())` | an agent's controls, what it observes (an expression, a list, a dict of named signals, or Signals) and its quadratic loss, whose constant is kept as part of the cost |
 | `ns.define(name, expr)` | a named linear expression reported as its own kernel |
 | `ns.sqrt exp log sin cos tanh` | these functions of a `Param` expression, kept symbolic |
 

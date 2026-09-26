@@ -21,6 +21,10 @@ A model reads like its equations, in a file and in Python.
 - **`describe()`** writes coefficients in the parameters (`sqrt(p1) * X dt`, `sigma * dW[W0]`), not their values.
 - **`solve(model, nodes=24)`**: a Numerics field given directly is laid over the numerics, in solve() and
   transition() (refused since 0.6).
+- **The monitoring relation of Chapter 6 in the model:** `monitors: [market_maker]` on an agent makes it privy to
+  that agent's deviations (`Agent(..., monitors=...)` in Python), checked for transitivity; `model.privy(i)` lists
+  the privy set.  No engine solves a model with monitoring yet (it is refused); without it a model is the
+  all-naive corner, as before.
 - **Removed: `naive_observers`.** It used Chapter 6's naive and privy the other way round, computed neither of the
   chapter's corners, and its solves failed their own first-order conditions (it zeroed the observers' reactions in
   the impulse responses that also build the on-path world).  Monitored deviations will come back as a model's

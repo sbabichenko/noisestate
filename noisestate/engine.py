@@ -163,6 +163,7 @@ class EngineBase(MeanLayer):
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.5, 60       # solve() defaults; each engine sets its own
     ANDERSON_M = tunable("anderson_m")              # Anderson memory (settings.anderson_m)
     ACTIONS = True                  # whether the engine can iterate on action kernels
+    MONITORING = False              # whether the engine solves the monitored deviations of Chapter 6 (agents' `monitors`)
     FOC_RCOND = tunable("foc_rcond")    # a best-response system whose reciprocal condition estimate is below this is singular (settings)
     SECOND_ORDER_TOL = tunable("second_order_tol")      # curvature below which a negative value is window truncation (settings)
     SECOND_ORDER_DENSE = tunable("second_order_dense")  # strategy dimension up to which the form is built densely (settings)
@@ -177,6 +178,9 @@ class EngineBase(MeanLayer):
         settings: a Settings (or a dict of its fields) with the tuning constants, DEFAULT when None;
         self.settings is what the engine and its result read, and solver_kw records the fields that
         differ from the defaults."""
+        if any(a.monitors for a in model.agents) and not self.MONITORING:
+            raise NotImplementedError(f"{type(self).__name__} does not solve monitored deviations (Chapter 6: an agent's "
+                                      "monitors); a model without `monitors` is the all-naive corner, what it solves")
         self.model = model
         self.verbose = verbose
         self.settings = Settings.of(settings)
