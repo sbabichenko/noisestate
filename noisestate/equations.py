@@ -193,7 +193,15 @@ def _environment(d: dict):
 
 
 def _signal(sname: str, v, env: dict, where: str):
-    """One observed row, "..." or {d: "...", delay: tau}, as a Signal."""
+    """One observed row, "..." or {d: "...", delay: tau}, as a Signal; {level: P} is the instant observation of another
+    agent's control P (a Level)."""
+    if isinstance(v, dict) and "level" in v:
+        if set(v) != {"level"}:
+            raise ValueError(f"{where}, {sname}: an instant observation is {{level: P}} alone")
+        q = env.get(str(v["level"]))
+        if not isinstance(q, E.Control):
+            raise ValueError(f"{where}, {sname}: {v['level']!r} is not a control; {{level: ...}} observes another agent's control")
+        return E.Level(q)
     if isinstance(v, dict):
         ex = sorted(set(v) - {"d", "delay"})
         if ex:
@@ -358,6 +366,8 @@ def from_grammar(g: dict) -> dict:
     out["agents"] = {}
     for a, v in (g.get("agents") or {}).items():
         sig = {}
+        for u in _as_list(v.get("instant")):
+            sig[u] = {"level": u}
         for sname, row in (v.get("signals") or {}).items():
             eq = _differential(row)
             delay = row.get("delay", 0)

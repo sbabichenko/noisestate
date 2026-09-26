@@ -37,6 +37,8 @@ class Structure:
     reps: List[str]
     terminal: Dict[str, Tuple[List[Atom], np.ndarray, np.ndarray]] = None    # agent -> the loss at T, the same form (agents with one)
     terminal_constant: Dict[str, float] = None       # agent -> the terminal loss's constant
+    composite: Dict[str, Dict[str, float]] = None     # control u -> {control v: coef}: a spike of u with the instant reactions it draws
+    instant_loads: Dict[str, Dict[str, float]] = None  # observer's control v -> {seen control u: h}: v's contemporaneous loading on u
 
     @property
     def nW(self) -> int:
@@ -48,7 +50,7 @@ class CompiledBase(KernelAlgebra):
     fields are adopted as attributes (c.rows, c.loss, c.rep, ...); the kernel algebra (algebra.KernelAlgebra)
     each engine's compiled model implements on top."""
     FIELDS = ("channels", "nW", "prim", "index", "nX", "nU", "A", "state_inputs", "sigma", "const", "x0", "rows", "loss", "rep", "reps",
-              "terminal", "terminal_constant")
+              "terminal", "terminal_constant", "composite", "instant_loads")
 
     def __init__(self, model: Model):
         model.validate()
@@ -97,7 +99,65 @@ def compile_structure(model: Model) -> Structure:
     reps = [a.name for a in model.agents if rep[a.name] == a.name]
     return Structure(model=model, channels=channels, prim=prim, index=index, nX=nX, nU=nU, A=A,
                      state_inputs=state_inputs, sigma=sigma, const=const, x0=x0, rows=rows, loss=loss, rep=rep, reps=reps,
-                     terminal=terminal, terminal_constant=terminal_constant)
+                     terminal=terminal, terminal_constant=terminal_constant, composite=_composite(model, loss),
+                     instant_loads=_instant_loadings(model, loss))
+
+
+def _instant_loadings(model: Model, loss) -> Dict[str, Dict[str, float]]:
+    """{observer's control v: {seen control u: h}}: the contemporaneous loadings of the instant observations,
+    h = -(G^DD)^-1 G^Du from the observer's loss (see _composite)."""
+    out: Dict[str, Dict[str, float]] = {}
+    for a in model.agents:
+        if not a.instant:
+            continue
+        atoms, Q, _ = loss[a.name]
+        ix = [atoms.index((u, 0.0)) for u in a.controls]
+        G = Q[np.ix_(ix, ix)]
+        for u in a.instant:
+            g = np.array([Q[i, atoms.index((u, 0.0))] if (u, 0.0) in atoms else 0.0 for i in ix])
+            for v, h in zip(a.controls, -np.linalg.solve(G, g)):
+                if h:
+                    out.setdefault(v, {})[u] = float(h)
+    return out
+
+
+def _composite(model: Model, loss) -> Dict[str, Dict[str, float]]:
+    """For every control u, the spike of u together with the instant reactions it draws: {u: 1, v: coef, ...}.  An
+    agent j that sees u's level (Agent.instant) reacts at once with the loading h = -(G^DD_j)^-1 G^{D u}_j from its
+    loss's Hessian (the action of Remark 1.13 with u known exactly); an agent that sees one of j's controls reacts to
+    that in turn (the instant graph has no cycle, spec._check_instant)."""
+    owner = {u: a for a in model.agents for u in a.controls}
+    direct: Dict[str, Dict[str, float]] = {u: {} for u in owner}       # u -> {v: h_vu} for the observers' controls v
+    for a in model.agents:
+        if not a.instant:
+            continue
+        atoms, Q, _ = loss[a.name]
+        own = [(u, 0.0) for u in a.controls]
+        if any(x not in atoms for x in own):
+            raise ValueError(f"agent {a.name}: an instant observation needs a quadratic term in each of its controls "
+                             "(the loading on the level it sees is its loss's -G^DD^-1 G^Du)")
+        ix = [atoms.index(x) for x in own]
+        G = Q[np.ix_(ix, ix)]
+        for u in a.instant:
+            g = np.array([Q[i, atoms.index((u, 0.0))] if (u, 0.0) in atoms else 0.0 for i in ix])
+            h = -np.linalg.solve(G, g)
+            for v, hv in zip(a.controls, h):
+                if hv:
+                    direct[u][v] = float(hv)
+    out: Dict[str, Dict[str, float]] = {}
+
+    def spread(u):                                  # {u: 1} plus everything downstream, coefficients multiplied along the way
+        if u in out:
+            return out[u]
+        acc = {u: 1.0}
+        for v, h in direct[u].items():
+            for w, cw in spread(v).items():
+                acc[w] = acc.get(w, 0.0) + h * cw
+        out[u] = acc
+        return acc
+    for u in owner:
+        spread(u)
+    return out
 
 
 def _quadratic(model: Model, terms) -> Tuple[List[Atom], np.ndarray, np.ndarray]:

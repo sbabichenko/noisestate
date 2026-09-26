@@ -21,6 +21,13 @@ A model reads like its equations, in a file and in Python.
 - **`describe()`** writes coefficients in the parameters (`sqrt(p1) * X dt`, `sigma * dW[W0]`), not their values.
 - **`solve(model, nodes=24)`**: a Numerics field given directly is laid over the numerics, in solve() and
   transition() (refused since 0.6).
+- **Instant reactions.**  An agent can see the current level of another agent's control and react within the same
+  instant: `observes: {quote: {level: P}}` (Python: `observes={"quote": ns.level(P)}`), a trader trading on the posted
+  quote.  A signal is reacted to predictably, after it is observed; a level is reacted to at once, with the loading
+  its loss gives (`-G^DD^-1 G^DP`).  On the path the two coincide; they differ for deviations, where a spike of the
+  quote draws an order spike at once, which moves the inventory and gives a quote with no square in its owner's loss
+  its curvature (Chapter 6's G^{MM,0}).  The instant reactions may not form a cycle.  Stationary engine; with
+  `gamma = 0` the strategic market maker of Chapter 6 reproduces Chapter 4's competitive market exactly.
 - **Monitored deviations (Chapter 6) on the stationary engine.**  `monitors: [market_maker]` on an agent makes it
   privy to that agent's deviations (`Agent(..., monitors=...)` in Python), checked for transitivity; `model.privy(i)`
   lists the privy set.  The players privy to a deviation respond to it through response kernels fixed by their own

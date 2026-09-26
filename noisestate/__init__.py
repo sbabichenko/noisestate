@@ -23,7 +23,7 @@ from .diagnostics import Assessment, Policy, Status
 from .grid_cache import clear as clear_grid_cache
 from .transition import transition, transition_gap
 from .schema import schema
-from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition
+from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition, level
 from .expr import dt, Differential, params, Game
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
@@ -31,7 +31,7 @@ from .kernel import Kernel
 __all__ = ["Model", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_json", "as_model",
            "compare", "ComparisonResult", "ScenarioResult", "Assessment", "Policy", "Status", "clear_grid_cache", "schema",
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
-           "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh", "dt", "Differential", "params", "Game"]
+           "Kernel", "level", "sqrt", "exp", "log", "sin", "cos", "tanh", "dt", "Differential", "params", "Game"]
 
 def _read_version() -> str:
     """The version pyproject.toml declares when the package is imported from a source tree (a checkout on

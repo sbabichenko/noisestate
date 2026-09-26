@@ -91,3 +91,50 @@ def test_a_privy_market_maker_leaves_the_trader_a_nonpositive_cost():
     assert res.costs["trader1"] <= 1e-8
     assert res.costs["trader1"] == pytest.approx(-0.4999997, abs=1e-6)
     assert all(res.second_order[a]["ok"] for a in res.second_order)
+
+
+#  ------------------------------------------------------------------ instant observations: a quote seen at once
+#  Chapter 6's market: a strategic market maker quotes P and carries the inventory Q it absorbs; the trader sees the
+#  quote's level and trades on it within the instant (`observes: {quote: {level: P}}`), and in the transparent market
+#  also sees its deviations (monitors the market maker).  The market maker's loss has no P^2: its curvature is the
+#  trader's instant reaction, h = -1/(2 eps), the G^{MM,0} = 2 D^{1<-0,M} of the chapter.
+
+def market(gamma, transparent=True, nodes=16):
+    tr = {"controls": "D", "observes": {"y": "(V - P) dt + dwY", "flow": "sigma_Z dwZ", "quote": {"level": "P"}},
+          "loss": "-V D + P D + eps D^2"}
+    if transparent:
+        tr["monitors"] = "mm"
+    return ns.Model.from_dict({
+        "name": "market", "params": {"eps": 0.2, "gamma": gamma, "rho": 0.5, "sigma_Z": 1.0},
+        "shocks": ["wV", "wZ", "wY"], "states": {"V": "dwV", "Q": "-D dt - sigma_Z dwZ"},
+        "agents": {"mm": {"controls": "P", "observes": {"flow": "D dt + sigma_Z dwZ"}, "loss": "V D - P D + gamma Q^2"},
+                   "trader": tr},
+        "horizon": {"window": 8.0, "discount": "rho"}, "numerics": {"nodes": nodes}})
+
+
+def test_an_instant_observation_is_compiled_from_the_observers_loss():
+    from noisestate.compile import compile_structure
+    st = compile_structure(market(0.1))
+    assert st.instant_loads == {"D": {"P": pytest.approx(-2.5)}}             # -1/(2 eps)
+    assert st.composite["P"] == {"P": 1.0, "D": pytest.approx(-2.5)}        # a quote spike draws an order spike
+    assert market(0.1).to_equations()["agents"]["trader"]["observes"]["P"] == {"level": "P"}
+
+
+def test_instant_reactions_must_not_cycle():
+    d = market(0.1).to_dict()
+    d["agents"]["mm"]["instant"] = ["D"]
+    with pytest.raises(ValueError, match="cycle"):
+        ns.Model.from_dict(d)
+
+
+@pytest.mark.parametrize("transparent", [True, False])
+def test_with_no_inventory_cost_the_strategic_market_maker_is_competitive(transparent):
+    """gamma = 0: the market maker's first-order condition returns the competitive quote E[V | flow] (Chapter 6), so
+    the market is Chapter 4's (examples/ch4_kyle_back.yaml at the same eps and rho): the trader's cost -0.82082 and the
+    price's kernel on the noise trades to 1e-6.  Counting the trader's reaction to the quote twice -- in its map, where
+    the flow already carries the quote, and again as the instant loading -- gave 0.58 for the price's first response."""
+    kb = ns.solve(ns.load(ns.example("ch4_kyle_back")).with_numerics(nodes=16))
+    res = ns.solve(market(0.0, transparent)).require_converged()
+    assert res.costs["trader"] == pytest.approx(kb.costs["trader1"], abs=1e-6)
+    a = np.array([0.0, 1.0, 3.0])
+    assert np.abs(res.kernel("P", "wZ").at(a) - kb.kernel("P", "wZ").at(a)).max() < 1e-6

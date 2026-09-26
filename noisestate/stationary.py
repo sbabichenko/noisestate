@@ -236,7 +236,7 @@ class Compiled(CompiledBase):
         `excluded` may also be a tuple of agents, every one of them switched off (a deviation's privy set)."""
         if isinstance(excluded, (tuple, list)) and len(excluded) == 1:
             excluded = excluded[0]
-        if self.sym is not None and not isinstance(excluded, (tuple, list)) and self._maps_symmetric(maps):
+        if self.sym is not None and not self.instant_loads and not isinstance(excluded, (tuple, list)) and self._maps_symmetric(maps):
             return self.closed_loop_symmetric(maps, excluded, impulse_controls)
         return self._closed_loop_eliminated(maps, excluded, impulse_controls)
 
@@ -275,6 +275,14 @@ class Compiled(CompiledBase):
                     for nm, op in blocks.items():                       # only the primaries the row reads
                         MU[bl, self.block(nm)] += C @ op
                     self._add_point_columns(B, slice(nxs + bl.start, nxs + bl.stop), deltas, gur, impulse_controls)
+        # instant observations: an observer's control moves with the level it sees, contemporaneously (its map covers
+        # the rest of its action, see _map_part)
+        for v, loads in (self.instant_loads or {}).items():
+            if v in excl or any(v in a.controls for a in self.model.agents if a.name in off):
+                continue
+            bl = slice(self.block(v).start - nxs, self.block(v).stop - nxs)
+            for u, h in loads.items():
+                MU[bl, self.block(u)] += h * np.eye(N)
         Z = np.zeros((n, ncol))
         if nX:
             MUX, MUU = MU[:, :nxs], MU[:, nxs:]
@@ -562,6 +570,9 @@ class StationarySolver(EngineBase):
         for ui, u in enumerate(agent.controls):
             Cu = c.response(R[:, ui].reshape(len(c.prim), N), c.prim.index(u))
             Cu[c.block(u)] = np.eye(N)
+            for v, coef in (c.composite or {}).get(u, {}).items():   # an instant reaction moves with the action itself
+                if v != u:
+                    Cu[c.block(v)] += coef * np.eye(N)
             out.append(Cu)
         return out
 
@@ -584,8 +595,9 @@ class StationarySolver(EngineBase):
             # term, continuation, delayed own read, lead term; contracted as sum_i (sum_j Q_ji M_j) AO_i
             # so the products are N x N x N per atom block instead of N x N x n_prim N per atom
             M = np.zeros((len(atms), N, N))
-            if (u, 0.0) in atms:
-                M[atms.index((u, 0.0))] += np.eye(N)
+            for v, coef in (c.composite or {}).get(u, {u: 1.0}).items():   # the control and the instant reactions it draws
+                if (v, 0.0) in atms:
+                    M[atms.index((v, 0.0))] += coef * np.eye(N)
             if not agent.myopic:
                 # impulse responses of every atom: its block against its own primary's rows of R
                 Rj = np.stack([sum(A @ R[p * N:(p + 1) * N, ui] for p, A in AO_blocks[j]) for j in range(len(atms))], axis=1)
@@ -830,10 +842,9 @@ class StationarySolver(EngineBase):
         reads; an engine without them must not call the base _diagnostics.  With project=False the
         raw map is None and its projection is skipped (response_actions needs the action kernels
         only).  A singular system raises the ValueError of singular_system_message."""
-        c = self.c; N, nW = c.N, c.nW
+        c = self.c; N = c.N
         nR, nU = len(agent.signals), len(agent.controls)
-        Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
-        Zpass, R0 = Zp[:, :nW], Zp[:, nW:]
+        Zpass, R0 = self._spikes(c, maps, agent)
         # two uses of the impulse responses, kept apart: the on-path world is the passive world plus the agent's
         # actions as every other player sees them on the path (their filters, R0); the first-order condition and
         # the second-order form are about the agent's deviations, to which the players privy to it respond
@@ -856,7 +867,19 @@ class StationarySolver(EngineBase):
         out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
         if want_decomp:
             self._decompose(agent, out, Fu, Resp, Gk, maps)
-        return (self._project(agent, Zfull, cact) if project else None), out
+        return (self._project(agent, Zfull, self._map_part(agent, Zfull, cact)) if project else None), out
+
+    def _map_part(self, agent: Agent, Z: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        """The part of the agent's action kernels its map carries: the action less its instant loadings on the
+        levels it sees (h times their kernels in Z), which the closed loop adds contemporaneously."""
+        loads = self.c.instant_loads or {}
+        if not any(u in loads for u in agent.controls):
+            return actions
+        out = np.array(actions, dtype=float, copy=True)
+        for ui, v in enumerate(agent.controls):
+            for u, h in loads.get(v, {}).items():
+                out[ui] -= h * Z[self.c.block(u)]
+        return out
 
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
         """Relative residual of the best-response action kernels after projection on the agent's raw
@@ -865,6 +888,7 @@ class StationarySolver(EngineBase):
         numerics.nodes."""
         rows, inst = self._seen_rows(agent, Zfull, set())
         Bk = self._row_operator(agent, rows, inst)
+        actions = self._map_part(agent, Zfull, actions)
         worst = 0.0
         for ui in range(len(agent.controls)):
             recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(self.c.nW)], axis=1)
@@ -886,6 +910,18 @@ class StationarySolver(EngineBase):
     #  R^mon, so they are found by iterating: kernels from the R^mon, R^mon from the kernels.  Every agent's best
     #  response then uses its R^mon (Definition 6.3 (i)).
 
+    def _spikes(self, c, maps, agent: Agent, excluded=None):
+        """(Zpass, R): the closed loop with `excluded` (default the agent) switched off, and the responses to a spike
+        of each of the agent's controls together with the instant reactions it draws (c.composite: a trader seeing
+        the quote trades at once), (n_prim N, nU).  Without instant observations the spikes are the controls' own."""
+        comp = c.composite or {}
+        extra = [v for u in agent.controls for v in comp.get(u, {u: 1.0}) if v not in agent.controls]
+        ctrls = list(agent.controls) + list(dict.fromkeys(extra))
+        Zp = c.closed_loop(maps, excluded=agent.name if excluded is None else excluded, impulse_controls=ctrls)
+        cols = Zp[:, c.nW:]; k = {v: i for i, v in enumerate(ctrls)}
+        R = np.stack([sum(coef * cols[:, k[v]] for v, coef in comp.get(u, {u: 1.0}).items()) for u in agent.controls], axis=1)
+        return Zp[:, :c.nW], R
+
     def _maps_key(self, maps) -> bytes:
         import hashlib
         h = hashlib.sha1()
@@ -894,26 +930,33 @@ class StationarySolver(EngineBase):
         return h.digest()
 
     def _seed_setup(self, maps, origin: str):
-        """(ctrls, Z0, C): the privy controls (origin's first), the closed loop with the privy players' maps off
-        and their impulse columns (n_prim N, len(ctrls)), and per privy control the stacked convolution
-        (n_prim N x N) with its impulse column, the identity on its own block."""
+        """(ctrls, Z0, C): the privy controls (origin's first); Z0 (n_prim N, len(ctrls)), the closed loop with the
+        privy players' maps off, whose columns are the spikes of the privy controls with the instant reactions each
+        draws (c.composite); and per privy control the stacked convolution (n_prim N x N) with its spike's column,
+        plus the identity on its own block and on the blocks of the controls reacting to it at once."""
         c = self.c; N = c.N; nP = len(c.prim)
+        comp = c.composite or {}
         owner = {a.name: a for a in self.model.agents}
         P = self.model.privy(origin)
         ctrls = [u for n in P for u in owner[n].controls]
-        Z0 = c.closed_loop(maps, excluded=tuple(P), impulse_controls=ctrls)[:, c.nW:]
+        need = list(dict.fromkeys(ctrls + [w for v in ctrls for w in comp.get(v, {v: 1.0})]))
+        cols = c.closed_loop(maps, excluded=tuple(P), impulse_controls=need)[:, c.nW:]
+        k = {v: i for i, v in enumerate(need)}
+        spike = {v: sum(coef * cols[:, k[w]] for w, coef in comp.get(v, {v: 1.0}).items()) for v in ctrls}
+        Z0 = np.stack([spike[v] for v in ctrls], axis=1)
         C = {}
-        for k, v in enumerate(ctrls):
+        for v in ctrls:
             Cv = np.zeros((nP * N, N))
             for p in range(nP):
-                Cv[p * N:(p + 1) * N] = c.grid.conv_op(Z0[p * N:(p + 1) * N, k])
-            Cv[c.block(v)] = np.eye(N)
+                Cv[p * N:(p + 1) * N] = c.grid.conv_op(spike[v][p * N:(p + 1) * N])
+            for w, coef in comp.get(v, {v: 1.0}).items():
+                Cv[c.block(w)] = coef * np.eye(N) if w == v else Cv[c.block(w)] + coef * np.eye(N)
             C[v] = Cv
         return ctrls, Z0, C
 
     def _monitoring(self, maps):
         """({agent: R^mon (n_prim N, nU)}, {origin: W (n_prim N, n origin controls)}) for the agents with privy
-        others, the response kernels found by the iteration described above (to 1e-12 relative)."""
+        others, the response kernels found by the iteration described above (to 1e-10 relative)."""
         key = self._maps_key(maps)
         if self._monitored is not None and self._monitored[0] == key:
             return self._monitored[1], self._monitored[2]
@@ -923,7 +966,7 @@ class StationarySolver(EngineBase):
         setup = {i: self._seed_setup(maps, i) for i in origins}
         Rmon = {}
         for a in self.model.agents:                     # to start: the naive responses
-            Rmon[a.name] = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)[:, c.nW:]
+            Rmon[a.name] = self._spikes(c, maps, a)[1]
         D = {}                                          # origin -> (n origin controls, n privy controls, N)
         W = {}
         for it in range(200):
@@ -947,7 +990,7 @@ class StationarySolver(EngineBase):
                 D[i] = Di; W[i] = Wi
             for j in origins:
                 Rmon[j] = self._frozen_responses(j, setup[j], D[j], len(owner[j].controls))
-            if change < 1e-12:
+            if change < 1e-10:                          # the kernels feed a fixed point solved to 1e-10
                 break
         else:
             raise RuntimeError(f"the monitored response kernels did not settle in 200 rounds (last change {change:.1e})")
@@ -1049,8 +1092,7 @@ class StationarySolver(EngineBase):
         maps2 = {a: np.einsum("fn,urn->urf", I, m) for a, m in maps.items()}
         full = np.zeros(nU * nR * N); full[idx] = vec
         d2 = np.concatenate([(I @ full[u * nR * N:(u + 1) * nR * N].reshape(nR, N).T).T.reshape(-1) for u in range(nU)])
-        Zp = c2.closed_loop(maps2, excluded=agent.name, impulse_controls=agent.controls)
-        Zpass, R = Zp[:, :c2.nW], Zp[:, c2.nW:]
+        Zpass, R = S2._spikes(c2, maps2, agent)
         R = S2._impulse_responses(agent, maps2, R)
         ytil, yinst = S2._passive_rows(agent, Zpass)
         Gk2 = S2._row_operator(agent, ytil, yinst); Resp2 = S2._response_operators(agent, R)
@@ -1127,7 +1169,7 @@ class StationarySolver(EngineBase):
     def maps_from_kernels(self, Z: np.ndarray) -> Dict[str, np.ndarray]:
         """Raw maps that reproduce given closed-loop primary kernels Z (n_prim N, nW); tied agents
         share the representative's projection."""
-        return self._over_representatives(lambda a: self._project(a, Z, np.stack([Z[self.c.block(u)] for u in a.controls])))
+        return self._over_representatives(lambda a: self._project(a, Z, self._map_part(a, Z, np.stack([Z[self.c.block(u)] for u in a.controls]))))
 
     def maps_from_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Every agent's raw maps (nU, nR, N) reproducing its action kernels (nU, N, nW) in the world those
@@ -1199,11 +1241,12 @@ class StationarySolver(EngineBase):
         R = None
         for ui, u in enumerate(a.controls):
             m = np.zeros(len(atoms))
-            if (u, 0.0) in atoms:
-                m[atoms.index((u, 0.0))] += 1.0
+            for v, coef in (c.composite or {}).get(u, {u: 1.0}).items():      # the control and the instant reactions it draws
+                if (v, 0.0) in atoms:
+                    m[atoms.index((v, 0.0))] += coef
             if not a.myopic:
                 if R is None:
-                    R = c.closed_loop(maps, excluded=a.name, impulse_controls=a.controls)[:, c.nW:]
+                    R = self._spikes(c, maps, a)[1]
                     R = self._impulse_responses(a, maps, R)
                 for j, (nm, lag) in enumerate(atoms):
                     if nm in a.controls:

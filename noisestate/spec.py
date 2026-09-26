@@ -173,6 +173,7 @@ class Agent:
     terminal: List[list] = field(default_factory=list)   # the loss at T (finite horizon): [[coef, a, b], [coef, a]], states only
     terminal_constant: float = 0.0    # the terminal loss's constant
     monitors: List[str] = field(default_factory=list)   # the agents whose deviations this one is privy to (Chapter 6's j |> i)
+    instant: List[str] = field(default_factory=list)    # other agents' controls whose current level this one sees and reacts to at once
 
 
 @dataclass
@@ -574,6 +575,7 @@ class Model:
         self._check_agents()
         self._check_ties()
         self._check_monitoring()
+        self._check_instant()
         self._check_channels_used()
         self._check_shock_names()
         self._check_control_terms()
@@ -599,6 +601,35 @@ class Model:
                         raise ValueError(f"monitoring is not transitive: {k} monitors {j}, who monitors {i}, but {k} does not "
                                          f"monitor {i} -- {k} would see {j}'s response to a deviation of {i} without seeing "
                                          f"its origin (Assumption 6.4); add {i} to {k}'s monitors or drop {j}")
+
+    def _check_instant(self) -> None:
+        """An instant observation (`observes: {quote: {level: P}}`) is of another agent's control, and the instant
+        reactions have no cycle: within an instant someone moves first (the quote, then the order on it)."""
+        owner = {u: a.name for a in self.agents for u in a.controls}
+        for a in self.agents:
+            for u in a.instant:
+                if u not in owner:
+                    raise ValueError(f"agent {a.name}: sees the level of {u!r}, which is not a control; an instant observation "
+                                     "is of another agent's control (a state's level is continuous: observe it as a signal)")
+                if owner[u] == a.name:
+                    raise ValueError(f"agent {a.name}: sees the level of its own control {u!r}")
+        # the reaction graph between agents: an edge from the observed control's owner to the observer
+        edges = {a.name: {owner[u] for u in a.instant} for a in self.agents}
+        state = {}
+
+        def visit(n, path):
+            if state.get(n) == 1:
+                cyc = path[path.index(n):] + [n]
+                raise ValueError(f"instant reactions form a cycle {' -> '.join(cyc)}: within an instant someone must move "
+                                 "first; make one of these observations a signal (a predictable reaction)")
+            if state.get(n) == 2:
+                return
+            state[n] = 1
+            for m in edges[n]:
+                visit(m, path + [n])
+            state[n] = 2
+        for n in edges:
+            visit(n, [])
 
     def privy(self, origin: str) -> List[str]:
         """The agents privy to deviations of `origin`, the origin itself first (Chapter 6's P_i)."""
@@ -782,6 +813,8 @@ class Model:
                 lagged = sorted(l for l, v in own.items() if l > 0 and v > 0)
                 if cur > 0 or (cur == 0 and lagged and not a.myopic):     # a lagged read pins a non-myopic agent's control
                     continue
+                if cur == 0 and self._instant_curvature(a, u) > 0:        # the instant reactions it draws give it curvature
+                    continue
                 why = (f"; a negative coefficient makes the loss unbounded below in {u}" if cur < 0 else
                        f"; its quadratic term in the lagged read {u}@{lagged[0]:g} does not enter a myopic agent's "
                        "first-order condition" if lagged else "")
@@ -790,6 +823,22 @@ class Model:
                               "condition then has no term in the control itself and determines it only through the "
                               "quantities it moves, so the best-response system is usually singular (every engine "
                               "refuses it) or the problem ill-posed", UserWarning)
+
+    def _instant_curvature(self, a: "Agent", u: str) -> float:
+        """c' Q c over the agent's current-value loss atoms, c the spike of u with the instant reactions it draws (a
+        quote with no square of its own gets its curvature from the orders it draws at once, G^{MM,0} of Chapter 6)."""
+        if not any(b.instant for b in self.agents):
+            return 0.0
+        import numpy as np
+        from .compile import _composite, _quadratic
+        try:
+            loss = {b.name: _quadratic(self, b.loss) for b in self.agents}
+            c = _composite(self, loss)[u]
+        except (ValueError, np.linalg.LinAlgError):
+            return 0.0
+        atoms, Q, _ = loss[a.name]
+        idx = {v: atoms.index((v, 0.0)) for v in c if (v, 0.0) in atoms}
+        return float(sum(c[v] * Q[idx[v], idx[w]] * c[w] for v in idx for w in idx))
 
     def _check_horizon(self) -> None:
         """The horizon: nodes an integer of at least 2, every lag, delay and lead below the primary axis's
@@ -890,7 +939,7 @@ class Model:
         "numerics": {"engine", "nodes", "unit", "unit_range", "breakpoints", "continuation_nodes", "tol", "damping", "max_newton",
                      "variable", "settings"},
         "state": {"drift", "noise", "initial"},
-        "agent": {"controls", "signals", "loss", "myopic", "constant", "terminal", "terminal_constant", "monitors"},
+        "agent": {"controls", "signals", "loss", "myopic", "constant", "terminal", "terminal_constant", "monitors", "instant"},
         "signal": {"drift", "noise", "delay"},
     }
 
@@ -992,6 +1041,8 @@ class Model:
                 d["agents"][a.name]["terminal_constant"] = float(a.terminal_constant)
             if a.monitors:
                 d["agents"][a.name]["monitors"] = list(a.monitors)
+            if a.instant:
+                d["agents"][a.name]["instant"] = list(a.instant)
         return d
 
     def with_params(self, **values) -> "Model":
@@ -1280,7 +1331,8 @@ class Model:
                                 myopic=v.get("myopic", False), constant=eval_coef(v.get("constant", 0.0), params),
                                 terminal=[[eval_coef(t[0], params)] + [str(x) for x in t[1:]] for t in (v.get("terminal") or [])],
                                 terminal_constant=eval_coef(v.get("terminal_constant", 0.0), params),
-                                monitors=[str(x) for x in ([v["monitors"]] if isinstance(v.get("monitors"), str) else (v.get("monitors") or []))]))
+                                monitors=[str(x) for x in ([v["monitors"]] if isinstance(v.get("monitors"), str) else (v.get("monitors") or []))],
+                                instant=[str(x) for x in ([v["instant"]] if isinstance(v.get("instant"), str) else (v.get("instant") or []))]))
         from types import MappingProxyType
         m = cls._of_fields(name=d.get("name", "model"), shocks=list(d.get("shocks") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],

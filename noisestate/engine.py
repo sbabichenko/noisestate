@@ -178,6 +178,9 @@ class EngineBase(MeanLayer):
         settings: a Settings (or a dict of its fields) with the tuning constants, DEFAULT when None;
         self.settings is what the engine and its result read, and solver_kw records the fields that
         differ from the defaults."""
+        if any(a.instant for a in model.agents) and not self.MONITORING:
+            raise NotImplementedError(f"{type(self).__name__} does not solve instant observations (an agent seeing another's "
+                                      "control level, `observes: {quote: {level: P}}`); the stationary engine does")
         if any(a.monitors for a in model.agents) and not self.MONITORING:
             raise NotImplementedError(f"{type(self).__name__} does not solve monitored deviations (Chapter 6: an agent's "
                                       "monitors); a model without `monitors` is the all-naive corner, what it solves")

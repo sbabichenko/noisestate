@@ -1007,6 +1007,22 @@ class Signal:
         return f"Signal({self.name!r}, {self.expr})"
 
 
+class Level:
+    """`level(P)` in an agent's observes: the current value of another agent's control P, seen exactly and reacted to
+    within the same instant (a trader seeing the quote it trades against).  A signal, by contrast, is reacted to
+    predictably: its increments reach the action only after they are observed."""
+
+    def __init__(self, quantity):
+        if not isinstance(quantity, Control):
+            raise ValueError(f"level(): an instant observation is of another agent's control, not {quantity!r}")
+        self.control = quantity
+
+
+def level(quantity) -> Level:
+    """The current level of another agent's control, observed exactly and reacted to at once (see Level)."""
+    return Level(quantity)
+
+
 class Agent:
     """An agent: its controls, what it observes, its quadratic loss; `myopic` ignores the continuation effects
     of its own actions (a competitive agent).  `observes` is one differential (the signal "y"), a list (y1, y2,
@@ -1018,7 +1034,12 @@ class Agent:
             raise ValueError(f"an agent name must be an identifier, not {name!r}")
         if observes is None:
             raise ValueError(f"agent {name}: observes= is required (what the agent sees)")
+        self.instant = []                       # the controls whose level this agent sees (level() entries)
+
         def rows(name, o):                      # one row, or a vector of rows name0, name1, ...
+            if isinstance(o, Level):
+                self.instant.append(o.control.name)
+                return []
             if isinstance(o, Vec):
                 return [Signal(f"{name}{i}", e) for i, e in enumerate(o)]
             return [o if isinstance(o, Signal) else Signal(name, o)]
@@ -1073,6 +1094,8 @@ class Agent:
             block["myopic"] = True
         if self.monitors:
             block["monitors"] = list(self.monitors)
+        if self.instant:
+            block["instant"] = list(self.instant)
         return block, const
 
     def __repr__(self) -> str:

@@ -1,6 +1,6 @@
 # API reference
 
-Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 47
+Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 48
 names; this page covers all of them, plus the methods on the objects they return.
 
 The shortest useful path is three calls:
@@ -44,6 +44,7 @@ That solve converged — `res.converged` is `True` and `res.require_converged()`
 | `ns.dt` | the time increment: `(D1 + D2) * dt` is a drift, which with the shocks makes an `ns.Differential` |
 | `ns.State("X")`, then `X.d = (D1 + D2) * dt + sigma * dW0` | a state and its law of motion |
 | `ns.State("X", 3)`, `ns.Control("D", 2)`, `ns.shocks(3)` | vectors (components `X0, X1, X2`): matrices act with `@` (`A @ X * dt + Sigma @ dW`), `x @ Q @ x` is a quadratic form, `observes=H @ X * dt + dV` gives rows `y0, y1, ...`, `define("Y", H @ X)` a vector of definitions, and `res.response(X, ...)` every component |
+| `ns.level(P)` | in an agent's `observes`: the current level of another agent's control, seen exactly and reacted to within the instant (a trader seeing the quote); a signal is reacted to after it is observed |
 | `ns.Control("D")` | a control; it belongs to whichever `Agent` lists it |
 | `ns.Signal(name, expr, delay=0.0)` | one named, possibly delayed, observed row. The same object `with_signal()` takes |
 | `ns.Agent(name, controls, observes=..., loss=..., myopic=False, terminal=None, monitors=())` | an agent's controls, what it observes (an expression, a list, a dict of named signals, or Signals) and its quadratic loss, whose constant is kept as part of the cost |
