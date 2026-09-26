@@ -48,7 +48,7 @@ def exact(rho):
 def model(rho, kind, nodes):
     """kind "finite_cells" names the cell engine's result; the model asks for kind finite with engine cells."""
     cells = kind == "finite_cells"
-    return {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
+    return {"shocks": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": h}, "noise": {"w1": 1.0}}},
                              "loss": [[1.0, "X", "X"], [r, "D", "D"]]}},
             "horizon": {"kind": "finite" if cells else kind, "T": T, "discount": rho},

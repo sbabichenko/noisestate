@@ -58,7 +58,7 @@ class Past:
             raise ValueError(f"initial shocks must have distinct names, not {names}")
         for sh in self.initial:
             if sh.name in self.channels:
-                raise ValueError(f"initial shock {sh.name!r} is named like a channel")
+                raise ValueError(f"initial shock {sh.name!r} is named like one of the model's shocks")
 
     # ------------------------------------------------------------ constructors
     @classmethod
@@ -184,7 +184,7 @@ class Past:
         out = dict(self.provenance)
         out.setdefault("kind", "stationary" if self.grid is not None else "initial")
         out["window"] = float(self.window)
-        out["channels"] = list(self.channels)
+        out["shocks"] = list(self.channels)
         out["initial"] = [sh.to_dict() for sh in self.initial]
         out["means"] = {k: float(v) for k, v in self.means.items() if v}
         return out
@@ -195,10 +195,10 @@ class Past:
         "agent.row" of the new model present, every control a lagged drift or loss atom reads across zero
         present, the initial shocks' loads on states and rows on rows of the model; with `unit` (the new
         panel unit) the past grid's breakpoints and the old rows' delays on it."""
-        chans = list(model.channels)
+        chans = list(model.shocks)
         if self.grid is not None:
             if self.channels != chans:
-                raise ValueError(f"the past's channels {self.channels} differ from the model's {chans}: a transition keeps "
+                raise ValueError(f"the past's shocks {self.channels} differ from the model's {chans}: a transition keeps "
                                  "the same shocks (names and order)")
             for s in model.state_names:
                 if s not in self.kernels:
@@ -236,7 +236,7 @@ class Past:
         elif not self.channels:
             self.channels = chans
         elif self.channels != chans:
-            raise ValueError(f"the past's channels {self.channels} differ from the model's {chans}")
+            raise ValueError(f"the past's shocks {self.channels} differ from the model's {chans}")
         rows = {f"{a.name}.{r.name}" for a in model.agents for r in a.signals}
         for sh in self.initial:
             for s in sh.loads:

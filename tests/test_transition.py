@@ -411,9 +411,9 @@ def test_past_validation():
     with pytest.raises(ValueError, match="did not converge"):
         Past.of(ns.solve(m, max_evaluations=1))
     stat = ns.solve(m).require_converged()
-    other = m.to_dict(); other["channels"] = ["w0", "w1", "w9"]
+    other = m.to_dict(); other["shocks"] = ["w0", "w1", "w9"]
     other["agents"]["player2"]["signals"]["y2"]["noise"] = {"w9": 1.0}
-    with pytest.raises(ValueError, match="channels"):
+    with pytest.raises(ValueError, match="shocks"):
         engines.spectral(ns.Model.from_dict(other).with_finite(3.0).with_numerics(nodes=6), past=stat)
     with pytest.raises(ValueError, match="not a state"):
         engines.spectral(m.with_finite(3.0).with_numerics(nodes=6), past=[{"name": "v", "loads": {"V": 1.0}}])
@@ -433,7 +433,7 @@ def test_past_validation():
         engines.spectral(fin, past=[{"name": "v", "loads": {"X": 1.0}}], continuation=stat)
     with pytest.raises(ValueError, match="'stationary', 'end' or a StationaryResult"):
         engines.spectral(fin, past=stat, continuation="tail")
-    with pytest.raises(ValueError, match="channels"):
+    with pytest.raises(ValueError, match="shocks"):
         engines.spectral(fin, past=stat, continuation=ns.solve(ns.Model.from_dict(other).with_numerics(nodes=6)).require_converged())
     from noisestate.triangle import TriangleGrid
     with pytest.raises(ValueError, match="age panels shifted"):
@@ -447,7 +447,7 @@ def test_second_order_check_sees_the_initial_shock_columns():
     finite differences of the cost along a point-weight direction say, +1.2).  The Kyle-Back prior's verdict is
     unchanged (its flagged direction has no weight on the point weights, the raw curvature -1.209e-3 at 8 nodes,
     eps 0.2, the same to 1e-7; the reported value is now relative to the prior column's larger curvature)."""
-    d = {"channels": ["w0"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
+    d = {"shocks": ["w0"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
          "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {}, "noise": {"w0": 1.0}}},
                           "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}},
          "numerics": {"nodes": 6},

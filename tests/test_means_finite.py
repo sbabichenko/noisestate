@@ -113,7 +113,7 @@ def _engine(kind):
 def one_state(a, r, theta, rho, x0, kind="finite", nodes=12):
     """dX = (a X + D) dt + dW0, loss X^2 - 2 theta X + r D^2, X(0) = x0, one agent with a noisy signal on X."""
     loss = [[1.0, "X", "X"], [r, "D", "D"]] + ([[-2.0 * theta, "X"]] if theta else [])
-    return ns.Model.from_dict({"name": "lq1", "channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}, "initial": x0}},
+    return ns.Model.from_dict({"name": "lq1", "shocks": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}, "initial": x0}},
                                "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 2.0 ** 0.5}, "noise": {"w1": 1.0}}}, "loss": loss}},
                                "horizon": {"kind": _kind(kind), **({"window": 1.0} if _kind(kind) == "stationary" else {"T": 1.0}),
                                            "discount": rho},
@@ -144,7 +144,7 @@ def test_one_agent_is_the_deterministic_optimum(a, r, theta, rho, x0):
 def test_two_states_matrix_riccati(theta, rho):
     """Two states, dX = (-0.5 X + Y + D) dt + dW0, dY = (-Y + 0.5 D) dt, X(0) = 0.2, Y(0) = -0.4, a target on X and a
     penalty on Y: the matrix Riccati closed form to 1e-11 (2.4e-12 seen), at rho = 0 and 0.8."""
-    d = {"name": "lq2", "channels": ["w0", "w1"],
+    d = {"name": "lq2", "shocks": ["w0", "w1"],
          "states": {"X": {"drift": {"X": -0.5, "Y": 1.0, "D": 1.0}, "noise": {"w0": 1.0}, "initial": 0.2}, "Y": {"drift": {"Y": -1.0, "D": 0.5}, "initial": -0.4}},
          "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.0}, "noise": {"w1": 1.0}}},
                           "loss": [[1.0, "X", "X"], [-2.0 * theta, "X"], [0.3, "Y", "Y"], [0.4, "D", "D"]]}},
@@ -172,7 +172,7 @@ def test_targets_scale_the_means_and_leave_the_kernels_and_the_examples():
         assert all(np.array_equal(v, np.zeros(len(res.mean_times))) for v in res.means.values()) and set(res.model.control_names) <= set(res.means)
         assert all(p["mean"] == 0.0 and p["variance"] == res.costs[k] for k, p in res.cost_parts.items())
         assert "mean" not in res.summary().split("\n")[1] and "means at" not in res.summary()
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d["horizon"] = {"kind": "finite", "T": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 20}
+    d = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); d["horizon"] = {"kind": "finite", "T": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 20}
     rc = ns.solve(d).require_converged()
     assert all(np.array_equal(v, np.zeros(20)) for v in rc.means.values()) and rc.cost_parts["player1"]["mean"] == 0.0
 
@@ -187,7 +187,7 @@ def test_no_information_limit_is_the_open_loop_path():
 
 def delayed_with_targets():
     """The delayed example (a control lag and a delayed observation) with opposite targets and X(0) = 0.3."""
-    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml"))
+    d = ns.load(os.path.join(EX, "ch1_delayed_finite.yaml")).to_dict()
     d["agents"]["player1"]["loss"].append([-2.0, "X"]); d["agents"]["player2"]["loss"].append([2.0, "X"]); d["states"]["X"]["initial"] = 0.3
     return ns.Model.from_dict(d)
 
@@ -221,7 +221,7 @@ def test_delayed_rows_and_lags_keep_the_formulation():
 
 
 def test_ties_share_the_means_and_opposite_targets_cannot_be_tied():
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 8
+    d = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); d.setdefault("numerics", {})["nodes"] = 8
     d["agents"]["player1"]["loss"].append([-2.0, "X"]); d["agents"]["player2"]["loss"].append([-2.0, "X"]); d["ties"] = [["player1", "player2"]]
     tied = ns.solve(d).require_converged(); assert np.abs(tied.means["D1"] - tied.means["D2"]).max() < 1e-13 and tied.means["D1"][0] > 1
     d["ties"] = []; free = ns.solve(d).require_converged(); assert np.abs(free.means["D1"] - tied.means["D1"]).max() < 1e-6

@@ -280,7 +280,7 @@ class Shock:
 
 
 class _Shocks:
-    """The namespace shocks() returns: attribute access to its channels, in order."""
+    """The namespace shocks() returns: attribute access to its shocks, in order."""
 
     def __init__(self, names: Sequence[str]):
         if len(set(names)) != len(names):
@@ -296,7 +296,7 @@ class _Shocks:
         try:
             return self.__dict__["_by_name"][name]
         except KeyError:
-            raise AttributeError(f"no shock {name!r}; the channels are {self.names}") from None
+            raise AttributeError(f"no shock {name!r}; the shocks are {self.names}") from None
 
     def __getitem__(self, name: str) -> Shock:
         return getattr(self, name)
@@ -980,18 +980,15 @@ class Finite(_Horizon):
 
 class Transition(_Horizon):
     """A transition on [0, T] from `past` (a stationary Model, its dict, a path, or a list of initial shocks
-    {name, loads, rows}) continued by "stationary" (the new model's equilibrium, its window the past's unless
-    `window` is given) or "end"."""
+    {name, loads, rows}) continued by "stationary" (the new model's equilibrium, on the past's window) or "end"."""
     kind = "transition"
-    LENGTHS = ("T",)             # `window` there is the continuation's L and is optional
+    LENGTHS = ("T",)
 
-    def __init__(self, T: float = 1.0, past=None, continuation: str = "stationary", discount=0.0, window=None):
-        #  a transition carries BOTH: T is when the game ends, `window` the continuation's L, which
-        #  defaults to the past's
+    def __init__(self, T: float = 1.0, past=None, continuation: str = "stationary", discount=0.0):
         self.T = T; self.discount = discount
         if past is None:
             raise ValueError("Transition(): a past is required (a stationary Model, a path, or a list of initial shocks)")
-        self.past = past; self.continuation = continuation; self.stationary_window = window
+        self.past = past; self.continuation = continuation
 
     def compile(self) -> dict:
         past = self.past
@@ -1002,10 +999,7 @@ class Transition(_Horizon):
                                  for sh in past]}
         else:
             block = {"model": past}
-        out = {**super().compile(), "past": block, "continuation": self.continuation}
-        if self.stationary_window is not None:
-            out["stationary"] = {"window": _coef_str(self.stationary_window)}
-        return out
+        return {**super().compile(), "past": block, "continuation": self.continuation}
 
 
 # ------------------------------------------------------------------------------------------- the compiler
@@ -1092,7 +1086,6 @@ class _Walk:
                 self.quad(a.terminal)
         self.coef(horizon.extent); self.coef(horizon.discount)
         if isinstance(horizon, Transition):
-            self.coef(horizon.stationary_window)
             if isinstance(horizon.past, (list, tuple)):
                 for sh in horizon.past:
                     for key in ("loads", "rows"):
@@ -1178,7 +1171,7 @@ def compile_model(name: str, states, agents, definitions=None, ties=None, horizo
     d: dict = {"name": name}
     if values:
         d["params"] = dict(values)
-    d["channels"] = [w.name for w in sorted(walk.shocks.values(), key=lambda w: (w.space.order, w.index))]
+    d["shocks"] = [w.name for w in sorted(walk.shocks.values(), key=lambda w: (w.space.order, w.index))]
     d["states"] = {s.name: s.compile() for s in states}
     if walk.defs:
         d["definitions"] = {n: q.compile() for n, q in walk.defs.items()}

@@ -72,7 +72,7 @@ def main(out=None):
     fig, axs = plt.subplots(2, 2, figsize=(11, 6.5))
     for ax, (L, r) in zip(axs.ravel(), shown):
         a = np.asarray(r.ages); K = np.asarray(r.kernel("X"))
-        for k, ch in enumerate(r.channels):
+        for k, ch in enumerate(r.shocks):
             if np.abs(K[:, k]).max() > 1e-12:
                 ax.plot(a, K[:, k], lw=1.2, label=ch)
         ax.axhline(0, color="k", lw=0.4)

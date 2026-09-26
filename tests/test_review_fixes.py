@@ -16,7 +16,7 @@ def test_sweep_over_a_model_object_actually_sweeps():
 
 
 def test_ties_require_structural_identity():
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml"))
+    d = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict()
     d["params"]["r2"] = 5.0; d["ties"] = [["player1", "player2"]]
     with pytest.raises(ValueError, match="not structurally identical"):
         ns.Model.from_dict(d)
@@ -25,7 +25,7 @@ def test_ties_require_structural_identity():
 
 
 def test_parameters_may_be_expressions_in_earlier_parameters():
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml"))
+    d = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict()
     d["params"]["p2"] = "2*p1"
     m = ns.Model.from_dict(d)
     assert m.params["p2"] == 2 * m.params["p1"]
@@ -49,8 +49,8 @@ def test_failed_solve_is_reported_and_check_raises():
 
 def test_defective_state_matrix_is_handled():
     """A double integrator (defective A) must propagate exactly: x2' = x1, x1' = 0 -> x2(a) = a."""
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 8
-    d["channels"].append("w3")
+    d = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); d.setdefault("numerics", {})["nodes"] = 8
+    d["shocks"].append("w3")
     d["states"]["X2"] = {"drift": {"X": 1.0}, "noise": {"w3": 1e-6}}
     d["agents"]["player1"]["loss"].append([0.0, "X2", "X2"])
     from noisestate.finite_spectral import SpectralCompiled
@@ -60,6 +60,6 @@ def test_defective_state_matrix_is_handled():
 
 
 def test_misaligned_delay_is_rejected_by_the_spectral_engine():
-    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d.setdefault("numerics", {})["breakpoints"] = [0, 0.3, 1.0]
+    d = ns.load(os.path.join(EX, "ch1_delayed_finite.yaml")).to_dict(); d.setdefault("numerics", {})["breakpoints"] = [0, 0.3, 1.0]
     with pytest.raises(ValueError, match="not a breakpoint"):
         ns.solve(ns.Model.from_dict(d))

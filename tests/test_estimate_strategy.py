@@ -5,7 +5,7 @@ import pytest
 import noisestate as ns
 
 CH1 = {"name": "ch1", "params": {"p1": 3, "p2": 10, "r1": 0.1, "r2": 0.1, "b1": 1, "b2": -1, "sigma": 1, "T": 1},
-       "channels": ["w0", "w1", "w2"], "states": {"X": {"drift": {"D1": 1, "D2": 1}, "noise": {"w0": "sigma"}}},
+       "shocks": ["w0", "w1", "w2"], "states": {"X": {"drift": {"D1": 1, "D2": 1}, "noise": {"w0": "sigma"}}},
        "agents": {"player1": {"controls": ["D1"], "signals": {"y1": {"drift": {"X": "sqrt(p1)"}, "noise": {"w1": 1}}},
                               "loss": [[1, "X", "X"], ["-2*b1", "X"], ["r1", "D1", "D1"]]},
                   "player2": {"controls": ["D2"], "signals": {"y2": {"drift": {"X": "sqrt(p2)"}, "noise": {"w2": 1}}},
@@ -63,7 +63,7 @@ def test_strategy_refuses_delays():
 
 
 def test_channel_argument(res):
-    t = np.array([0.5]); s = np.array([0.2]); k = res.channels.index("w0")
+    t = np.array([0.5]); s = np.array([0.2]); k = res.shocks.index("w0")
     assert abs(float(res.estimate("player2", "X", "w0").at(t, s)[0]) - float(res.estimate("player2", "X").at(t, s)[0, k])) < 1e-12
     assert abs(float(res.strategy("D2", "w0").at(t, s)[0]) - float(res.strategy("D2").at(t, s)[0, k])) < 1e-12
 

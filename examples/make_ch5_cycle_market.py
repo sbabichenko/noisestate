@@ -11,9 +11,9 @@ yH_v = q - Pidx - theta (pi_v - Pidx) + eta_v.  Flow loss of firm v:
   pistar_v = Pidx + xi (q - Pidx) + zeta (pi_{v-1} - Pidx - a_v@tau),  Pnext = mean P_v.
 Signals of firm v (noise s1..s4): yH_v, P_{v-1}, o_{v+1}, o_{v-1}; own productivity a_v seen exactly.
 """
-import sys, yaml
+import sys
 import noisestate as ns
-from noisestate import Param, State, Control, Signal, Agent, define, shocks, dt
+from noisestate import Param, State, Control, Agent, define, shocks, dt
 
 
 def build(N=3, tau=0.5, L=24.0, nodes=8, unit_range=8.0, **over):
@@ -61,6 +61,6 @@ def build(N=3, tau=0.5, L=24.0, nodes=8, unit_range=8.0, **over):
                     numerics={"nodes": nodes, "unit": tau, "unit_range": unit_range})
 
 if __name__ == "__main__":
-    m = build()
-    yaml.safe_dump(m.to_dict(), open(sys.argv[1] if len(sys.argv) > 1 else "examples/ch5_cycle_market.yaml", "w"), sort_keys=False)
-    print("wrote", sys.argv[1] if len(sys.argv) > 1 else "examples/ch5_cycle_market.yaml")
+    path = sys.argv[1] if len(sys.argv) > 1 else "examples/ch5_cycle_market.yaml"
+    build().save(path)
+    print("wrote", path)

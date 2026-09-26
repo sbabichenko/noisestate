@@ -67,9 +67,8 @@ def model_schema() -> dict:
                "properties": {
                    "kind": {"enum": ["stationary", "finite", "transition"]},
                    "discount": _NUMBER_OR_EXPR,
-                   "window": {**_NUMBER_OR_EXPR, "description": "the lag-truncation length L: a stationary "
-                              "horizon, and a transition's continuation (which defaults to the past's). A finite "
-                              "horizon has none -- its length is T"},
+                   "window": {**_NUMBER_OR_EXPR, "description": "the lag-truncation length L of a stationary "
+                              "horizon. A finite horizon has none -- its length is T -- and a transition's is its past's"},
                    "T": {**_NUMBER_OR_EXPR, "description": "the terminal time: a finite horizon or a transition. "
                          "A stationary horizon has none -- its length is the lag window"},
                    "past": {"type": "object", "additionalProperties": False,
@@ -79,10 +78,7 @@ def model_schema() -> dict:
                             "description": "kind transition only"},
                    "continuation": {"enum": ["stationary", "end"], "description": "kind transition only; default stationary"},
                    "settle": {**_NUMBER_OR_EXPR, "description": "kind transition only, in place of T: the settle tolerance the "
-                              "terminal time T is found for by a march in T (exactly one of T and settle)"},
-                   "stationary": {"type": "object", "additionalProperties": False,
-                                  "properties": {"window": {**_NUMBER_OR_EXPR, "description": "must equal the past's window"}},
-                                  "description": "kind transition only: the continuation's stationary solve"}}}
+                              "terminal time T is found for by a march in T (exactly one of T and settle)"}}}
     state = {"type": "object", "additionalProperties": False,
              "properties": {"drift": _EXPR, "noise": _EXPR, "initial": {**_NUMBER_OR_EXPR, "description": "finite horizon only; moves the means"}}}
     signal = {"type": "object", "additionalProperties": False,
@@ -101,7 +97,7 @@ def model_schema() -> dict:
                 "name": {"type": "string"},
                 "params": {"type": "object", "additionalProperties": _NUMBER_OR_EXPR,
                            "description": "parameters, evaluated in order (a later one may use an earlier one)"},
-                "channels": {"type": "array", "items": {"type": "string"}, "description": "the Brownian channels"},
+                "shocks": {"type": "array", "items": {"type": "string"}, "description": "the Brownian shocks, in kernel column order"},
                 "states": {"type": "object", "additionalProperties": state},
                 "definitions": {"type": "object", "additionalProperties": _EXPR},
                 "agents": {"type": "object", "additionalProperties": agent},
@@ -143,7 +139,7 @@ def payload_schema() -> dict:
     return {"$schema": DRAFT, "$id": "https://noisestate/schema/payload", "title": "noisestate result payload",
             "type": "object",
             "required": ["payload_version", "version", "name", "engine", "kind", "converged", "residual", "evaluations", "seconds",
-                         "message", "params", "model", "horizon", "numerics", "axes", "times", "options", "grid", "discount", "channels",
+                         "message", "params", "model", "horizon", "numerics", "axes", "times", "options", "grid", "discount", "shocks",
                          "agents", "map_convention", "kernels", "maps", "foc", "costs", "cost_parts", "means", "mean_times",
                          "representation_error", "diagnostics", "assessment", "cost_kind", "second_order", "notes"],
             "properties": {
@@ -186,7 +182,7 @@ def payload_schema() -> dict:
                                                          "diagnostics": {"type": "boolean"}}}}},
                 "grid": {"type": "object", "required": ["kind"]},
                 "discount": {"type": "number"},
-                "channels": {"type": "array", "items": {"type": "string"}},
+                "shocks": {"type": "array", "items": {"type": "string"}},
                 "agents": by_name({"type": "object", "required": ["controls", "signals"],
                                    "properties": {"controls": {"type": "array", "items": {"type": "string"}},
                                                   "signals": by_name({"type": "object", "required": ["delay"],

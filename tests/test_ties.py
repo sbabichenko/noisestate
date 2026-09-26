@@ -4,7 +4,7 @@ import noisestate as ns
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def test_tied_symmetric_game_matches_untied():
-    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml"))
+    d = ns.load(os.path.join(HERE, "..", "examples", "ch3_two_player.yaml")).to_dict()
     d["params"]["p2"] = d["params"]["p1"]; d["params"]["r2"] = d["params"]["r1"]
     free = ns.solve(ns.Model.from_dict(d))
     d["ties"] = [["player1", "player2"]]

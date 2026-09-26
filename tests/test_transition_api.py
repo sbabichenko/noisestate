@@ -38,12 +38,12 @@ def test_file_form_equals_the_keyword_form_bit_for_bit(regime):
     assert np.array_equal(same.world, z.world)
     other = ns.solve(m, past=regime["m"].with_params(p1=5.0), max_evaluations=2)
     assert not np.array_equal(other.world[:, :1], z.world[:, :1])
-    # `stationary: {nodes: 6}` sizes the continuation's solve; its window must be the past's
+    # numerics.continuation_nodes sizes the continuation's solve; its window is the past's and cannot be given
     d6 = dict(d); d6["numerics"] = {**d.get("numerics", {}), "continuation_nodes": 6}
     r6 = ns.solve(d6, max_evaluations=1)
     assert r6.continuation.compiled.grid.n == 6
-    with pytest.raises(ValueError, match="must equal the past's window"):
-        ns.solve({**d, "horizon": {**d["horizon"], "stationary": {"window": 4.0}}})
+    with pytest.raises(ValueError, match="window is its past's"):
+        ns.solve({**d, "horizon": {**d["horizon"], "window": 4.0}})
     # continuation: end in the file is the keyword "end"
     e = ns.solve({**d, "horizon": {**d["horizon"], "continuation": "end"}}, max_evaluations=2)
     k = ns.solve(regime["new"], past=regime["old"], continuation="end", max_evaluations=2)

@@ -73,7 +73,7 @@ def test_stationary_engine_matches_the_exact_delayed_solution():
     import noisestate as ns
     k0, JX0, JD0 = impulse(0); k1, JX1, JD1 = impulse(1)
     exact_cost = (JX0 + JX1) + r * (JD0 + JD1)
-    model = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
+    model = {"shocks": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
              "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": h}, "noise": {"w1": 1.0}, "delay": delta}},
                               "loss": [[1.0, "X", "X"], [r, "D", "D"]]}},
              "horizon": {"kind": "stationary", "window": 10.0}, "numerics": {"nodes": 16}}
@@ -92,7 +92,7 @@ def test_finite_engine_on_the_delayed_problem_converges_spectrally():
     spectrally with the nodes per side and the cost settles (there is no closed form for the finite
     horizon's discounted integral, so convergence is the check)."""
     import noisestate as ns
-    model = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
+    model = {"shocks": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
              "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": h}, "noise": {"w1": 1.0}, "delay": delta}},
                               "loss": [[1.0, "X", "X"], [r, "D", "D"]]}},
              "horizon": {"kind": "finite", "T": 3.0}, "numerics": {"nodes": 5}}

@@ -8,7 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..",
 
 def _kyle_back(kind, nodes, mm_loss):
     """Kyle-Back with the market maker's loss replaced; on the finite horizons window 2.0 and no discount."""
-    d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml"))
+    d = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict()
     d["agents"]["market_maker"]["loss"] = mm_loss
     if kind != "stationary":
         cells = kind == "finite_cells"      # the cell engine's result kind; the model asks for finite + engine cells
@@ -34,7 +34,7 @@ def test_a_singular_best_response_system_raises_on_every_engine(kind, nodes):
 
 def test_a_lagged_only_own_quadratic_is_singular_on_the_finite_engines():
     # [r, D1@0.5, D1@0.5] without [r, D1, D1]: nothing reads the control over the last 0.5 of the horizon
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 6
+    d = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); d.setdefault("numerics", {})["nodes"] = 6
     d["agents"]["player1"]["loss"] = [[1.0, "X", "X"], ["r1", "D1@0.5", "D1@0.5"]]
     with warnings.catch_warnings():
         warnings.simplefilter("error")                          # no validation warning: the lagged read pins a non-myopic control

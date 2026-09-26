@@ -17,7 +17,7 @@ CLOSED_LOOP = 4.646924          # Dbar1(0) with perfect information (the dissert
 
 
 def model(p: float, nodes: int, b=(1.0, -1.0)) -> ns.Model:
-    d = ns.read_yaml(os.path.join(HERE, "ch1_two_player_finite.yaml"))
+    d = ns.load(os.path.join(HERE, "ch1_two_player_finite.yaml")).to_dict()
     d["name"] = "ch1_targets"; d["params"].update(p1=p, p2=p); d["numerics"] = {"nodes": nodes}
     for i in (1, 2):
         d["agents"][f"player{i}"]["loss"].append([-2.0 * b[i - 1], "X"])          # (X - b_i)^2 less its constant b_i^2

@@ -53,7 +53,7 @@ dYi = sqrt(pi) X dt + dWi                 player i sees X through its own noise;
 player i minimises  E int_0^T (X^2 + ri Di^2) dt
 ```
 
-The state starts at the known value `X(0) = 0`.  The Brownian channels `W0`, `W1`, and `W2` are
+The state starts at the known value `X(0) = 0`.  The Brownian shocks `W0`, `W1`, and `W2` are
 independent.  Player i observes only its own signal history `Yi` up to the current time; it does
 not directly observe `X`, the shocks, or the other player's signal.  The common shock moves the
 shared state; "common" does not mean that the players see it directly.
@@ -114,7 +114,7 @@ A **kernel** describes how a state or action responds to a shock: how much of a 
 moment is still present later.
 
 The curves below show these responses, not simulated sample paths of `X`.  A realised path would
-combine contributions from all three noise channels over time.
+combine contributions from all three shocks over time.
 
 ```python
 res.kernel("X", "w0").plot("kernel.png")     # the state's response to the common shock
@@ -262,11 +262,11 @@ file, inspect them before solving; for the first tracking game:
 ```python
 model.state_names                   # ['X']
 model.control_names                 # ['D1', 'D2']
-model.channels                      # ['w0', 'w1', 'w2']
+model.shocks                        # ['w0', 'w1', 'w2']
 [agent.name for agent in model.agents]  # ['player1', 'player2']
 ```
 
-Use a state or control name as the first argument to `res.kernel()`, a channel as its optional
+Use a state or control name as the first argument to `res.kernel()`, a shock as its optional
 second argument, and an agent name in `res.costs` or `res.maps`.  `print(model.describe())` explains
 which controls and signal rows belong to each agent.  These names belong to the loaded model;
 another example may use different ones.
@@ -283,7 +283,7 @@ The remaining sections provide the reference for these objects.
 ```python
 res.costs["player1"]         # the cost of each agent (res.cost_kind says what it is)
 res.cost_parts["player1"]    # its {"variance", "mean"} parts, and "constant": a loss's constant ((X - b)^2 has b^2)
-res.kernel("X")              # closed-loop kernel of a state, one column per channel; .axes, .at(), .plot()
+res.kernel("X")              # closed-loop kernel of a state, one column per shock; .axes, .at(), .plot()
 res.kernel("D1")             # a control's response to the shocks (D_W)
 res.strategy("D1")           # the same action as a rule on the noise-state (D)
 res.estimate("player1", "X") # player 1's estimate of X, as a kernel
@@ -308,57 +308,61 @@ res.summary(); res.to_dict() # the text report; the JSON-ready payload
 
 ## The model file
 
+`examples/ch4_kyle_back.yaml`, the stationary Kyle-Back market of Chapter 4:
+
 ```yaml
 name: ch4_kyle_back
 params: {eps: 0.2, rho: 0.5, gamma1: 1.0, sigma_V: 1.0, sigma_Z: 1.0}
-channels: [wV, wZ, w1]                          # Brownian channels
+shocks: [wV, wZ, w1]
 states:
-  V: {drift: {}, noise: {wV: sigma_V}}          # dV = sigma_V dW_V (random walk on the window)
+  V: sigma_V dwV                                # a random walk on the window
 agents:
   market_maker:
-    controls: [P]
-    myopic: true                                # competitive: no continuation effects of own action
-    signals:
-      flow: {drift: {D1: 1.0}, noise: {wZ: sigma_Z}}
-    loss: [[1.0, P, P], [-2.0, P, V]]           # (P - V)^2  ->  P = E[V | flow history]
+    controls: P
+    observes:
+      flow: D1 dt + sigma_Z dwZ
+    loss: P^2 - 2 P V                           # (P - V)^2 less V^2:  P = E[V | flow history]
+    myopic: true                                # competitive: no continuation effects of its own action
   trader1:
-    controls: [D1]
-    signals:
-      y1: {drift: {V: gamma1, P: "-gamma1"}, noise: {w1: 1.0}}
-      flow: {drift: {}, noise: {wZ: sigma_Z}}   # sees the flow net of its own orders
-    loss: [[-1.0, D1, V], [1.0, D1, P], [eps, D1, D1]]
-horizon: {kind: stationary, discount: rho, window: 8.0}
+    controls: D1
+    observes:
+      y1: (gamma1 V - gamma1 P) dt + dw1
+      flow: sigma_Z dwZ                         # sees the flow net of its own orders
+    loss: -D1 V + D1 P + eps D1^2
+horizon:
+  window: 8.0
+  discount: rho
 numerics: {nodes: 24}
 ```
 
-An *atom* names a state, control, or definition; `name@tau` refers to its value `tau` earlier.
-A state's `drift` is linear in these atoms, with an optional `const` term.  Its `noise` specifies
-the loading on each Brownian channel.  Finite-horizon states can also have an `initial` value.
-Signal rows have a `drift`, a `noise` loading, and an optional observation `delay`.
+A state is written as its differential and a signal as the differential of what is observed: terms
+with `dt` are the drift, and `d<shock>` terms are the noise.  `X@tau` is `X` a time `tau` earlier.
+`definitions:` names linear combinations usable anywhere, and a signal written
+`{d: ..., delay: tau}` is observed with a delay.  A loss is a quadratic expression.  Its linear
+terms, a constant drift and a state's `initial:` value move only the means.  Its constant is part
+of the cost.  Coefficients can be expressions in the parameters.  `ties` imposes a shared strategy
+on a group of agents, and `numerics` sets the solver options.
 
-Losses sum quadratic terms `[coef, a, b]` and linear terms `[coef, a]`.  Linear loss terms,
-constant drifts, and initial states affect only the means.  Coefficients can be expressions in
-the model's parameters.  `ties` imposes a shared strategy on a group of agents, and `numerics`
-sets the solver options.
-
-See [docs/model_file.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/model_file.md) for each field's type and default.
-`noisestate schema model` prints the JSON Schema.
+`model.save(path)` writes this form, and `form="grammar"` writes the explicit layout it compiles to
+(`{drift: {X: 1.0}, noise: {w0: sigma}}` blocks and `[coef, a, b]` loss terms).  `load()` reads
+both.  See [docs/model_file.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/model_file.md)
+for each field's type and default.  `noisestate schema model` prints the JSON Schema.
 
 ### The horizon: two different lengths
 
 `horizon` specifies the time structure of the game.  Its two length parameters have different roles:
 
 * `window` is **L, the lag-truncation length**: how far back a strategy may look.  Stationary models
-  have one; transitions have one too.
+  have one.  A transition uses its past's.
 * `T` is the **terminal time**: the end of the interval that is solved for.  Finite horizons and
   transitions have one.  On a finite horizon the game does end at `T`.  On a transition it usually
   does not: `T` is where the solved path stops and a stationary continuation takes over on a buffer
   after it.
 
 ```yaml
-horizon: {kind: stationary, discount: 0.5, window: 8.0}    # L = 8, no terminal time
-horizon: {kind: finite, T: 1.0}                            # ends at 1, no lag window
-horizon: {kind: transition, T: 6.0, window: 3.0, past: ...}   # both
+horizon: {window: 8.0, discount: 0.5}                              # stationary: L = 8, no terminal time
+horizon: {T: 1.0}                                                  # finite: ends at 1, no lag window
+horizon: {kind: transition, T: 6.0, past: {model: old.yaml}}      # both: T here, L the past's
 ```
 
 `discount` is the rate *rho* and defaults to 0.  For stationary models, this gives the formal
@@ -423,7 +427,7 @@ along a parameter.  `examples/make_ch5_cycle_market.py` builds an N-firm market 
 
 ## Changing what agents see
 
-`with_signal()` adds an observation row and any new noise channels, returning a new model.
+`with_signal()` adds an observation row and any new shocks, returning a new model.
 By default, every agent observes the row.  `with_signals()` adds several rows at once;
 `without_signal()` removes a row.
 
@@ -547,9 +551,8 @@ builds no second-order form at all.
 **Settled.**  A transition whose maps on [T - L, T] are more than 1e-4 of their peak from the
 stationary continuation prints `TRANSITION NOT SETTLED by T - L` and suggests a larger `--T`; the
 past's and the continuation's own window tails are echoed as `PAST WINDOW TOO SHORT` and
-`CONTINUATION WINDOW TOO SHORT`, which suggest `--past-window L` and `--continuation-window L`.
-Because the buffer reads both stationary regimes over the same ages, the latter enlarges their shared
-lag window.
+`CONTINUATION WINDOW TOO SHORT`.  Both suggest `--past-window L`: the buffer reads both stationary
+regimes over the same ages, so the continuation's window is the past's.
 
 **Stability.**  `res.stability()` (or `solve(..., stability=True)`) reports the spectral radius of the
 best-response map, `best-response dynamics UNSTABLE (spectral radius 1.400)` above one: the Kyle-Back
@@ -557,7 +560,7 @@ equilibrium converges under Anderson mixing while naive best-response adjustment
 The classification is withheld unless the point is a verified equilibrium; the spectrum is reported
 either way.
 
-**What the model rejects.**  A misspelled key, an unused channel or parameter, a control that does not
+**What the model rejects.**  A misspelled key, an unused shock or parameter, a control that does not
 enter its owner's loss, a zero noise loading, a lag or delay not below the window, and a singular
 best-response system (a control with no quadratic term in its current value, two rows carrying the same
 information) are refused with a message naming the item; `model.notes` and `noisestate validate` say

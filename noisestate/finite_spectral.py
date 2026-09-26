@@ -98,12 +98,8 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             nm = d.setdefault("numerics", {})
             for k in ("breakpoints", "engine", "continuation_nodes"):
                 nm.pop(k, None)
-            if stationary:
-                if stationary.get("window") is not None and abs(float(stationary["window"]) - past.window) > 1e-9 * max(1.0, past.window):
-                    raise ValueError(f"horizon.stationary.window ({stationary['window']:g}) must equal the past's window ({past.window:g}): "
-                                     "the buffer after T is one window of the past, on which the stationary maps are read at the node's age")
-                if stationary.get("nodes") is not None:
-                    nm["nodes"] = int(stationary["nodes"])
+            if stationary and stationary.get("nodes") is not None:
+                nm["nodes"] = int(stationary["nodes"])
             return solve(Model.from_dict(d)).require_converged()
         return continuation
 

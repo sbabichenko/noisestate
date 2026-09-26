@@ -48,8 +48,9 @@ def example(name):
 
 
 def example_dict(name):
-    """The shipped example `name` as its raw dictionary (to edit before Model.from_dict)."""
-    return ns.read_yaml(example_path(name))
+    """The shipped example `name` as the grammar's dictionary (to edit before Model.from_dict): the files are
+    written as equations, and to_dict() is the same model in the grammar the tests edit."""
+    return example(name).to_dict()
 
 
 def stationary(m, nodes, window=None):
@@ -131,7 +132,7 @@ P0 = 0.8
 
 def prior_model(rho=0.5, nodes=12):
     """One agent on dX = (A1 X + D) dt + dw0 with the signal H1 X dt + dw1, loss X^2 + R1 D^2, finite at T1."""
-    return {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": A1, "D": 1.0}, "noise": {"w0": 1.0}}},
+    return {"shocks": ["w0", "w1"], "states": {"X": {"drift": {"X": A1, "D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": H1}, "noise": {"w1": 1.0}}},
                              "loss": [[1.0, "X", "X"], [R1, "D", "D"]]}},
             "horizon": {"kind": "finite", "T": T1, "discount": rho}, "numerics": {"nodes": nodes}}

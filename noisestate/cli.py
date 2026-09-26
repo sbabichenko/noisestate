@@ -94,8 +94,7 @@ def transition_lines(m: Model) -> list:
     else:
         st = hz.stationary or {}
         out.append(f"continuation: the new model's stationary equilibrium on a buffer of one window after T = {hz.extent:g}"
-                   + (f" (window {st['window']:g})" if st.get("window") is not None else " (the past's window)")
-                   + f", {st.get('nodes', hz.nodes)} nodes per panel (numerics.continuation_nodes)")
+                   f" (the past's window), {st.get('nodes', hz.nodes)} nodes per panel (numerics.continuation_nodes)")
     return out
 
 
@@ -157,10 +156,6 @@ def main(argv=None) -> int:
     t = sub.add_parser("transition", help="the transition from the stationary regime of old.yaml to the model of new.yaml on [0, T]")
     t.add_argument("old"); t.add_argument("new")
     t.add_argument("--T", type=float, dest="T", metavar="T", help="the terminal time T of the transition (or --settle)")
-    #  --window named the terminal time while --past-window and --continuation-window in the same
-    #  command named lag windows.  Python split the two in 0.8; the flag is refused by name rather
-    #  than re-pointed, because a script passing --window meant T and would now silently get L.
-    t.add_argument("--window", type=float, help=argparse.SUPPRESS)
     t.add_argument("--settle", type=float, metavar="TOL", help="find the horizon by the march in T: stop when the best-response rules "
                    "on the last window are within TOL of the stationary ones (exactly one of --T and --settle)")
     t.add_argument("--step", type=float, metavar="DT", help="the march's step in T (default one window of the past; a unit step "
@@ -168,9 +163,8 @@ def main(argv=None) -> int:
     t.add_argument("--max-window", type=int, metavar="K", help="the march stops at K windows (default 8)")
     t.add_argument("--nodes", type=int, help="numerics.nodes per side of each piece (default 12)")
     t.add_argument("--past-window", type=float, metavar="L",
-                   help="solve the old stationary regime with lag window L (use when PAST WINDOW TOO SHORT)")
-    t.add_argument("--continuation-window", type=float, metavar="L",
-                   help="use lag window L for the new stationary continuation and old regime (the transition buffer requires them to match)")
+                   help="solve the old stationary regime with lag window L, which the continuation shares "
+                        "(use when PAST WINDOW TOO SHORT or CONTINUATION WINDOW TOO SHORT)")
     t.add_argument("-o", "--out", help="write the result as JSON")
     t.add_argument("--plot", help="write the transition plot (.pdf/.png)")
     t.add_argument("--max-evaluations", type=int, metavar="N", help="as for solve")
@@ -259,14 +253,9 @@ def _run(p, args) -> int:
             with open(path) as fh:
                 data = yaml.safe_load(fh)
             _schema_check(data, path); loaded.append(data)
-        if args.window is not None:
-            p.error("--window meant the terminal time T here; it is now --T. The lag window of the "
-                    "old regime and of the continuation stay --past-window L and --continuation-window L.")
         if (args.T is None) == (args.settle is None):
             p.error("transition takes exactly one of --T and --settle TOL")
-        if args.past_window is not None and args.continuation_window is not None and args.past_window != args.continuation_window:
-            p.error("--past-window and --continuation-window must match: the transition buffer uses one shared lag window")
-        stationary_window = args.past_window if args.past_window is not None else args.continuation_window
+        stationary_window = args.past_window
         old = args.old
         if stationary_window is not None:
             if stationary_window <= 0:
@@ -289,9 +278,12 @@ def _run(p, args) -> int:
     with open(args.model) as fh:
         d = yaml.safe_load(fh)
     _schema_check(d, args.model)
+    from . import equations
+    if equations.is_equation_form(d):
+        d = equations.to_grammar(d)                              # the overrides below edit the grammar's keys
     base_dir = os.path.dirname(os.path.abspath(args.model))     # a relative horizon.past.model is taken from the file's directory
     if args.cmd == "sweep":
-        rows = sweep(d, args.param, [float(x) for x in args.values.split(",")], solve_kw=bounds, verbose=args.verbose)
+        rows = sweep(args.model, args.param, [float(x) for x in args.values.split(",")], solve_kw=bounds, verbose=args.verbose)
         with open(args.out, "w") as fh:
             json.dump([r.to_dict() for r in rows], fh)
         print(f"{'value':>12}  {'status':<13} {'residual':>10} {'evals':>6} {'seconds':>8} {'change':>10}  jump")
@@ -307,7 +299,7 @@ def _run(p, args) -> int:
         return 0
     if args.cmd == "validate":
         m = Model.from_dict(d, base_dir=base_dir)
-        print(f"{m.name}: {len(m.channels)} channels, {len(m.states)} states, {len(m.definitions)} definitions, "
+        print(f"{m.name}: {len(m.shocks)} shocks, {len(m.states)} states, {len(m.definitions)} definitions, "
               f"{len(m.agents)} agents, {len(m.control_names)} controls; horizon {m.horizon.kind}, "
               f"discount {m.horizon.discount}, {_horizon_span(m.horizon)}; lags {m.all_lags()}")
         for a in m.agents:

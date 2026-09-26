@@ -23,7 +23,7 @@
     res.means[name]                              mean of every state, control and definition, and the mean drift rate of
                                                  every signal row as "agent.row": a constant (stationary) or the path on the
                                                  time nodes res.mean_times (finite; the spectral res.mean(name, t) interpolates)
-    res.kernel(name, channel=None)               closed-loop kernel of a state or control
+    res.kernel(name, shock=None)                 closed-loop kernel of a state or control
     res.maps[agent]                              raw strategies on the agent's signal rows, indexed by the age of the
                                                  increment as the agent sees it (a delayed row's raw increment is older
                                                  by the delay; the finite engine stores a delayed row's map at the
@@ -37,7 +37,7 @@ Kernel layout by engine:
   TriangleResult      kernel(name) -> (N, nW) at the triangle nodes (res.grid.t, res.grid.s);
                       res.evaluate(name, ch, t, s) interpolates; kernel(name, ch) -> (N,)
   CellResult          kernel(name, ch) -> (N, N) matrix K[i, j]: response at cell i to a unit
-                      increment of the channel in cell j (channel required)
+                      increment of the shock in cell j; kernel(name) -> (N, N, nW)
 """
 from __future__ import annotations
 
@@ -199,7 +199,7 @@ class Result:
         belong, as {axis name: list over the map's nodes} (the time of the control, the age or time of the
         raw increment; the keys MAP_CONVENTION names): to_dict() puts them beside the row's delay so a
         consumer of the payload can place a delayed row's map without this code.
-        The other per-result hooks are kernel(name, channel) (a state's, control's or definition's
+        The other per-result hooks are kernel(name, shock) (a state's, control's or definition's
         closed-loop kernel in the engine's layout, see the module docstring), grid_info() (the JSON-ready
         grid description of to_dict()), _kernel_change(fine) (the relative change of the kernels against
         a finer result of the same engine, for refine()), summary() and plot(path); window_tail is optional
@@ -220,7 +220,7 @@ class Result:
 
     @property
     def axes(self) -> dict:
-        """The coordinate arrays of kernel(name, channel) by name (the module docstring lists them per engine),
+        """The coordinate arrays of kernel(name, shock) by name (the module docstring lists them per engine),
         and under "maps" where every agent's row's map values belong ({agent: {row: {axis: values}}})."""
         out = dict(self._node_axes())
         out["maps"] = {a.name: {r.name: {k: np.asarray(v) for k, v in self.map_axes(r.delay).items()} for r in a.signals}
@@ -335,17 +335,13 @@ class Result:
         err.assessment = verdict
         raise err
 
-    @property
-    def channels(self) -> List[str]:
-        return list(self.compiled.channels)
-
-    def kernel(self, name, channel=None) -> "Kernel":
-        """The closed-loop kernel of a state, control or definition (every channel, or one), as a Kernel: an
+    def kernel(self, name, shock=None) -> "Kernel":
+        """The closed-loop kernel of a state, control or definition (on every shock, or one), as a Kernel: an
         ndarray in the engine's layout (the subclass's _kernel documents it) carrying .axes (res.axes' node
-        coordinates), .at(*coords) (the engine's own interpolant) and .plot(path=None).  name and channel are
+        coordinates), .at(*coords) (the engine's own interpolant) and .plot(path=None).  name and shock are
         names or the objects of the equations form (X, dW0)."""
-        name, channel = _nm(name), _nm(channel)
-        return Kernel.of(self._kernel(name, channel), self, name, channel)
+        name, shock = _nm(name), _nm(shock)
+        return Kernel.of(self._kernel(name, shock), self, name, shock)
 
     def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
         raise NotImplementedError
@@ -353,7 +349,7 @@ class Result:
     @property
     def shocks(self) -> List[str]:
         """The columns of the kernels: the model's shocks (a transition adds the initial shocks of its past)."""
-        return list(self.channels)
+        return list(self.compiled.channels)
 
     def _project(self, agent, K: np.ndarray) -> np.ndarray:
         """Hook: the kernel of E[L_t | agent's information at t] for the process L with kernel K at this result's
@@ -361,25 +357,25 @@ class Result:
         raise NotImplementedError(f"estimates and strategies are not available on the {self.kind} engine; "
                                   "solve with the spectral finite engine or the stationary engine")
 
-    def estimate(self, agent: str, name: str, channel: Optional[str] = None) -> Kernel:
+    def estimate(self, agent: str, name: str, shock: Optional[str] = None) -> Kernel:
         """`agent`'s estimate of the quantity `name` (a state, control or definition) as a kernel on the primitive
         shocks: at the nodes of res.kernel(name), the response of E[name_t | agent's information at t] at time t to a
         unit shock at time s.  Evaluate it with .at(t, s), like res.kernel(name).  Its difference from
         res.kernel(name) is the agent's estimation error, whose variance res.belief_error integrates; an agent's
-        estimate of its own control is the control.  channel picks one shock, as in res.kernel(name, channel)."""
-        agent, name, channel = _nm(agent), _nm(name), _nm(channel)
+        estimate of its own control is the control.  shock picks one, as in res.kernel(name, shock)."""
+        agent, name, shock = _nm(agent), _nm(name), _nm(shock)
         K = self._project(agent, self._kernel(name))
-        return Kernel.of(K if channel is None else K[:, self.shocks.index(channel)], self, f"E[{name} | {agent}]", channel)
+        return Kernel.of(K if shock is None else K[:, self.shocks.index(shock)], self, f"E[{name} | {agent}]", shock)
 
-    def strategy(self, control: str, channel: Optional[str] = None) -> Kernel:
+    def strategy(self, control: str, shock: Optional[str] = None) -> Kernel:
         """The strategy kernel of `control` on its agent's noise-state (Chapter 1, Definition 1.4): the weight the
         action at time t puts on the agent's estimate of the shock at time u.  From the first-order condition
         (Remark 1.13) the action is the agent's estimate of -(G^DD)^-1 (G^DX X + B' H), so this kernel is
         D_W - phi / G^DD, with D_W the control's kernel, phi the kernel of its first-order condition (res.foc) and
         G^DD the curvature of the agent's loss in the control; the agent's estimate of it is the control's kernel
         again.  Defined for an agent with one control and no delayed or lead terms, solved with diagnostics.
-        channel picks one shock, as in res.kernel(name, channel)."""
-        control, channel = _nm(control), _nm(channel)
+        shock picks one, as in res.kernel(name, shock)."""
+        control, shock = _nm(control), _nm(shock)
         agent = next((a for a in self.model.agents if control in a.controls), None)
         if agent is None:
             raise KeyError(f"{control!r} is not a control")
@@ -396,7 +392,7 @@ class Result:
             raise NotImplementedError("strategy() needs the first-order-condition kernels (solve with diagnostics) "
                                       "and a positive curvature in the control")
         K = self._kernel(control) - np.asarray(foc["foc"], dtype=float) / g
-        return Kernel.of(K if channel is None else K[:, self.shocks.index(channel)], self, f"strategy of {control}", channel)
+        return Kernel.of(K if shock is None else K[:, self.shocks.index(shock)], self, f"strategy of {control}", shock)
 
     def response(self, quantity, to, at: float = 0.0, seen_by=None) -> "Response":
         """One shock followed through time: the response of `quantity` (or, with seen_by, that agent's estimate of
@@ -453,7 +449,7 @@ class Result:
 
     def plot(self, path: str) -> None:
         """Write a figure of the result's kernels to `path` (.pdf or .png; matplotlib required).
-        res.kernel(name, channel).plot(path) draws one kernel instead of all of them."""
+        res.kernel(name, shock).plot(path) draws one kernel instead of all of them."""
         raise NotImplementedError
 
     def __repr__(self) -> str:
@@ -629,7 +625,7 @@ class Result:
         elif name == "past window":
             options["past_window"] = 2 * float(self.past.window)
         elif name == "continuation window":
-            options["continuation_window"] = 2 * float((self.compiled.continuation_info or {})["window"])
+            options["past_window"] = 2 * float((self.compiled.continuation_info or {})["window"])   # the continuation's is the past's
         elif name in ("resolution", "settle floor", "refinement"):
             options["nodes"] = max(int(self.numerics.nodes) + 2, int(np.ceil(1.5 * self.numerics.nodes)))
         out = dict(d)
@@ -686,12 +682,7 @@ class Result:
                                  f"benchmark range {lo:.2e}–{hi:.2e})"
                                  + (f"; {trend['reason']}" if trend.get("reason") else ""))
         suggestions = {key: value for d in failed for key, value in d["suggested_options"].items()}
-        if "past_window" in suggestions and "continuation_window" in suggestions:
-            value = max(suggestions.pop("past_window"), suggestions.pop("continuation_window"))
-            suggestions["past_window"] = value
-            shared = " (also enlarges the continuation's shared lag window)"
-        else:
-            shared = ""
+        shared = " (also the continuation's window, which is the past's)" if "past_window" in suggestions else ""
         if suggestions:
             opts = " ".join(f"--{key.replace('_', '-')} {value:g}" for key, value in suggestions.items())
             lines.append(f"  Next: retry with {opts}{shared}")
@@ -805,7 +796,7 @@ class Result:
     def to_dict(self) -> dict:
         """JSON-serialisable view.  Provenance: the package version, the parameter values, the model spec
         (`model`, which Model.from_dict rebuilds), the horizon and the engine and solve options.  Then the
-        grid, the kernels per quantity and channel, the raw maps with each agent's controls and signal rows
+        grid, the kernels per quantity and shock, the raw maps with each agent's controls and signal rows
         (delay and map axes, see MAP_CONVENTION), costs with their variance and mean parts, the means, and the
         first-order-condition decomposition where the engine provides it."""
         from . import __version__
@@ -821,7 +812,7 @@ class Result:
                "options": {"numerics": num.to_dict(),
                            "solver": {k: (v.to_dict() if hasattr(v, "to_dict") else v) for k, v in self.solver_kw.items()},
                            "solve": dict(self.solve_kw)},
-               "grid": self.grid_summary(), "discount": float(c.rho), "channels": self.channels,
+               "grid": self.grid_summary(), "discount": float(c.rho), "shocks": self.shocks,
                "agents": {a.name: {"controls": list(a.controls),
                                    "signals": {r.name: {"delay": float(r.delay), **self.map_axes(r.delay)} for r in a.signals}}
                           for a in m.agents},
@@ -855,14 +846,14 @@ class Result:
             #  the residual, its norm and tolerance, and the reasons when the point is unverified
             out["stability"] = rep.to_dict()
         for name in c.prim:
-            out["kernels"][name] = {ch: self.kernel(name, ch).tolist() for ch in self.channels}
+            out["kernels"][name] = {ch: self.kernel(name, ch).tolist() for ch in self.shocks}
         for a in self.model.agents:
             g = self.maps[a.name]
             out["maps"][a.name] = {u: {r.name: g[ui, ri].tolist() for ri, r in enumerate(a.signals)}
                                    for ui, u in enumerate(a.controls)}
         if self.foc:
             for aname, dec in self.foc.items():
-                out["foc"][aname] = {u: {part: {ch: arr[:, k].tolist() for k, ch in enumerate(self.channels)}
+                out["foc"][aname] = {u: {part: {ch: arr[:, k].tolist() for k, ch in enumerate(self.compiled.channels)}
                                          for part, arr in parts.items()} for u, parts in dec.items()}
         return out
 
@@ -956,10 +947,10 @@ class StationaryResult(Result):
         """Closed-loop kernel of a quantity at the shock ages: (N, nW), or (N,) for one channel."""
         c = self.compiled
         K = self.world[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.world
-        return K if channel is None else K[:, self.channels.index(channel)]
+        return K if channel is None else K[:, self.shocks.index(channel)]
 
     def plot(self, path: str) -> None:
-        """Kernels by channel for every state and control, one panel per quantity (needs matplotlib)."""
+        """Kernels by shock for every state and control, one panel per quantity (needs matplotlib)."""
         from .plotting import plot_stationary
         plot_stationary(self, path)
 
@@ -980,7 +971,7 @@ class StationaryResult(Result):
         out = []
         for u in agent.controls:
             k = self.kernel(u)
-            out.append(f"    {u}(0+) on channels: " + ", ".join(f"{ch}={k[0, j]:+.4f}" for j, ch in enumerate(self.channels)))
+            out.append(f"    {u}(0+) on channels: " + ", ".join(f"{ch}={k[0, j]:+.4f}" for j, ch in enumerate(self.compiled.channels)))
         return out
 
     def _means_line(self) -> str:
@@ -1080,7 +1071,7 @@ class TriangleResult(Result):
         g = self.grid; worst = 0.0
         I = fine.grid.interp(g.t, g.a, side_t=g.side_t, side_a=g.side_a, side_d=g.side_ds)
         for name in self.compiled.prim:
-            for ch in self.channels:
+            for ch in self.compiled.channels:
                 K0 = self.kernel(name, ch); K1 = I @ fine.kernel(name, ch)
                 worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
         return worst
@@ -1098,11 +1089,11 @@ class TriangleResult(Result):
         from .finite_free import reconstruction
         return reconstruction(solver, a, self.world, solver.maps_from_world(a, self.world, np.asarray(K)[None]))[0]
 
-    def evaluate(self, name: str, channel: str, t, s) -> np.ndarray:
-        """Kernel value at (t, s) points: response at time t to a unit shock of `channel` at time s."""
-        name, channel = _nm(name), _nm(channel)
+    def evaluate(self, name: str, shock: str, t, s) -> np.ndarray:
+        """Kernel value at (t, s) points: response at time t to a unit `shock` at time s."""
+        name, shock = _nm(name), _nm(shock)
         t = np.asarray(t, dtype=float); s = np.asarray(s, dtype=float)
-        return self.grid.interp(t, t - s) @ self.kernel(name, channel)
+        return self.grid.interp(t, t - s) @ self.kernel(name, shock)
 
     def mean(self, name: str, t) -> np.ndarray:
         """The mean path of `name` (any key of res.means) interpolated at the times t (from above at a breakpoint)."""
@@ -1169,9 +1160,6 @@ class TriangleResult(Result):
             if self.continuation is not None:                # its provenance, in the result and in the solver options
                 out["continuation"] = dict(self.compiled.continuation_info)
                 out["options"]["solver"]["continuation"] = dict(self.compiled.continuation_info)
-            for name in self.compiled.prim:
-                for ch in self.shocks[len(self.channels):]:
-                    out["kernels"][name][ch] = self.kernel(name, ch).tolist()
         return out
 
     COST_LABEL = "discounted cost"
@@ -1319,7 +1307,7 @@ class CellResult(Result):
         c0, c1 = self.compiled, fine.compiled; worst = 0.0
         idx = np.clip(np.round(c0.times / c1.h).astype(int), 0, c1.N - 1)
         for name in c0.prim:
-            for ch in self.channels:
+            for ch in self.compiled.channels:
                 K0 = self.kernel(name, ch); K1 = fine.kernel(name, ch)[np.ix_(idx, idx)]
                 worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
         return worst

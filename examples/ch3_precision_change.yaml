@@ -14,32 +14,25 @@
 #   noisestate solve examples/ch3_precision_change.yaml --plot change.png
 name: ch3_precision_change
 params: {p1: 10.0, p2: 10.0, r1: 1.0, r2: 1.0}
-channels: [w0, w1, w2]
+shocks: [w0, w1, w2]
 states:
-  X: {drift: {D1: 1.0, D2: 1.0}, noise: {w0: 1.0}}
+  X: (D1 + D2) dt + dw0
 agents:
   player1:
-    controls: [D1]
-    signals:
-      y1: {drift: {X: "sqrt(p1)"}, noise: {w1: 1.0}}
-    loss: [[0.5, X, X], ["0.5*r1", D1, D1]]
+    controls: D1
+    observes:
+      y1: sqrt(p1) X dt + dw1
+    loss: 0.5 X^2 + 0.5 r1 D1^2
   player2:
-    controls: [D2]
-    signals:
-      y2: {drift: {X: "sqrt(p2)"}, noise: {w2: 1.0}}
-    loss: [[0.5, X, X], ["0.5*r2", D2, D2]]
+    controls: D2
+    observes:
+      y2: sqrt(p2) X dt + dw2
+    loss: 0.5 X^2 + 0.5 r2 D2^2
 horizon:
   kind: transition
-  T: 6.0                              # the terminal time of the transition
-                                      # (the past's window L = 3 is the band's depth; horizon.window here
-                                      #  would set the continuation's L, and defaults to the past's)
   discount: 0.0
-  past: {model: ch3_two_player.yaml}  # the old regime, solved on the fly (a path relative to this file)
-  continuation: stationary            # the new model's stationary equilibrium closes the game after T
-numerics:
-  nodes: 12                           # per side of each piece of the strip
-  continuation_nodes: 12              # the continuation's stationary solve (its window is the past's)
-# The summary flags three checks, each true of this configuration rather than a mistake:
-#   UNDER-RESOLVED (8.6e-04, at the band tip; the interior is 4.3e-05 and the buffer 9.9e-07),
-#   PAST WINDOW TOO SHORT -- inherited: the past is ch3_two_player at the dissertation's window 3,
-#   TRANSITION NOT SETTLED by T - L (4.8e-04 against 1e-04): raise horizon.window for a settled T.
+  T: 6.0
+  past:
+    model: ch3_two_player.yaml
+  continuation: stationary
+numerics: {nodes: 12, continuation_nodes: 12}

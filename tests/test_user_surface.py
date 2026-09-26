@@ -98,7 +98,7 @@ def test_with_signal_accepts_its_three_documented_forms():
              model.with_signal(name="flow", drift={"D1": 1}, noise={"w_flow": 1}),   # keyword name
              model.with_signal(Signal("flow", Control("D1") + w.w_flow))]         # a Signal object
     for built in forms:
-        assert "flow" in [r.name for r in built.agents[0].signals] and "w_flow" in built.channels
+        assert "flow" in [r.name for r in built.agents[0].signals] and "w_flow" in built.shocks
     #  without_signal() is the inverse, down to the channel the row brought in
     assert forms[0].without_signal("flow").to_dict() == model.to_dict()
     with pytest.raises(TypeError):                       # a Signal AND blocks is none of the forms

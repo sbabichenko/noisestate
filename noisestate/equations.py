@@ -29,11 +29,10 @@ _KEYS = {"name", "params", "shocks", "states", "agents", "definitions", "horizon
 
 
 def is_equation_form(d: dict) -> bool:
-    """A model dict in this form: it lists shocks, or writes a state or an agent's observations as equations."""
+    """A model dict in this form: it writes a state, an agent's observations or a loss as equations (both forms
+    list their shocks under shocks:)."""
     if not isinstance(d, dict):
         return False
-    if "shocks" in d:
-        return True
     states = d.get("states") or {}
     if any(isinstance(v, str) or (isinstance(v, dict) and "d" in v) for v in states.values()):
         return True
@@ -149,17 +148,27 @@ def _shock_names(d: dict) -> List[str]:
     return seen
 
 
+def _in_dependency_order(defs: dict) -> list:
+    """The definitions as (name, text) pairs, each after the definitions it reads: a map has no order, so
+    `yH: q + Pidx` may come before `Pidx`.  A cycle is left to the evaluator, which names the first unknown."""
+    pending = dict(defs); out = []
+    while pending:
+        ready = [k for k, v in pending.items()
+                 if not (set(re.findall(r"[A-Za-z_]\w*", str(v))) & (set(pending) - {k}))]
+        for k in ready or list(pending)[:1]:
+            out.append((k, pending.pop(k)))
+    return out
+
+
 def _as_list(x) -> list:
     return [] if x is None else [x] if isinstance(x, str) else list(x)
 
 
 def to_grammar(d: dict) -> dict:
     """The model file of spec.py's grammar that this equations dict means (compiled through expr.py)."""
-    bad = sorted(set(d) - _KEYS - {"channels"})
+    bad = sorted(set(d) - _KEYS)
     if bad:
         raise ValueError(f"unknown key(s) {bad} in an equations model; allowed: {sorted(_KEYS)}")
-    if "channels" in d:
-        raise ValueError("an equations model lists its shocks under shocks:, not channels:")
     name = d.get("name", "model")
     values = dict(d.get("params") or {})
     params = {k: E.Param(k, v) for k, v in values.items()}
@@ -176,10 +185,9 @@ def to_grammar(d: dict) -> dict:
         for u in _as_list((spec or {}).get("controls")):
             controls[u] = E.Control(u)
     env.update(states); env.update(controls)
-    defs = []
-    for k, v in (d.get("definitions") or {}).items():
-        q = E.define(k, _eval(v, env, f"definition {k}"))
-        env[k] = q; defs.append(q)
+    for k, v in _in_dependency_order(d.get("definitions") or {}):
+        env[k] = E.define(k, _eval(v, env, f"definition {k}"))
+    defs = [env[k] for k in (d.get("definitions") or {})]           # the file's order: load(save(m)) == m
 
     for k, v in (d.get("states") or {}).items():
         where = f"state {k}"
@@ -249,10 +257,23 @@ def to_grammar(d: dict) -> dict:
 
 # ------------------------------------------------------------------------------------------ writing it
 
+def _is_sum(c: str) -> bool:
+    """Whether the coefficient text has a + or - outside parentheses other than a leading sign ("a - b" does,
+    "-(1 - xi)" and "2e-3*r" do not), so that it needs parentheses as a factor."""
+    depth = 0
+    for i, ch in enumerate(c):
+        depth += (ch == "(") - (ch == ")")
+        if depth == 0 and ch in "+-" and i > 0 and c[i - 1] not in "eE*/^(" and c[:i].strip():
+            return True
+    return False
+
+
 def _coef_text(c) -> str:
     if isinstance(c, str):
         c = c.replace("**", "^")
-        return f"({c})" if (" + " in c or " - " in c) else c
+        if re.fullmatch(r"-?[\w.]+(\*[\w.]+)+", c):
+            return c.replace("*", " ")                  # a plain product reads as the equations write it: 2 kappa
+        return f"({c})" if _is_sum(c) else c
     if isinstance(c, float):
         return str(int(c)) if c.is_integer() and abs(c) < 1e15 else repr(c)      # exact: load(save(m)) is m
     return str(c)
@@ -265,7 +286,7 @@ def _terms(pairs) -> str:
         if isinstance(c, (int, float)) and c == 0:
             continue
         text = _coef_text(c)
-        neg = text.startswith("-") and not text.startswith("-(")
+        neg = text.startswith("-")
         body = text[1:] if neg else text
         if body in ("1", "1.0") and atom:
             body = ""
@@ -293,7 +314,7 @@ def from_grammar(g: dict) -> dict:
     out: dict = {"name": g.get("name", "model")}
     if g.get("params"):
         out["params"] = dict(g["params"])
-    out["shocks"] = list(g.get("channels") or [])
+    out["shocks"] = list(g.get("shocks") or [])
     out["states"] = {}
     for k, v in (g.get("states") or {}).items():
         eq = _differential(v)

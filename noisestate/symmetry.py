@@ -141,7 +141,7 @@ def find_cyclic_symmetry(model: Model, why: Optional[list] = None) -> Optional[C
             return None
         seen.update(orb); orbits.append(orb)
     seen = set(); ch_orbits = []
-    for c in model.channels:
+    for c in model.shocks:
         if c in seen or c not in ren or ren[c] == c:
             continue
         orb = [c]; x = ren[c]

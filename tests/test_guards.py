@@ -9,10 +9,10 @@ def test_refinement_check_on_a_resolved_and_an_unresolved_model():
     res = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), refine=True)
     assert res.refinement.resolved and res.refinement.cost_change < 1e-8
     assert "refinement to" in res.summary() and res.to_dict()["refinement"]["nodes"] > 24
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d.setdefault("numerics", {})["nodes"] = 4
+    d = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict(); d.setdefault("numerics", {})["nodes"] = 4
     coarse = ns.solve(ns.Model.from_dict(d), refine=True)
     assert not coarse.refinement.resolved and "NOT RESOLVED" in coarse.summary()
-    df = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
+    df = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict()
     rf = ns.solve(ns.Model.from_dict(df), refine=True)                 # 12 nodes: resolved to 1e-5 in the kernels
     assert rf.refinement.resolved and rf.refinement.kernel_change < 1e-4
     df.setdefault("numerics", {})["nodes"] = 8
@@ -25,7 +25,7 @@ def test_window_tail_flag():
     trend = short.window_tail_extrapolation()
     assert trend["assessment"] == "decaying" and trend["predicted_at_double_window"] < short.window_tail
     assert trend["projection_range"] == [0.5 * trend["predicted_at_double_window"], 2.5 * trend["predicted_at_double_window"]]
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["horizon"]["window"] = 10.0; d.setdefault("numerics", {})["nodes"] = 48
+    d = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict(); d["horizon"]["window"] = 10.0; d.setdefault("numerics", {})["nodes"] = 48
     long = ns.solve(ns.Model.from_dict(d))
     assert long.window_tail < 1e-3 and "WINDOW TOO SHORT" not in long.summary()
 
@@ -38,7 +38,7 @@ def test_sweep_reports_continuity():
 
 
 def test_unreferenced_parameter_is_an_error_and_notes_exist():
-    d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml")); d["params"]["sigma_v"] = 1.0        # never used
+    d = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict(); d["params"]["sigma_v"] = 1.0        # never used
     with pytest.raises(ValueError, match="never used"):
         ns.Model.from_dict(d)
     m = ns.load(os.path.join(EX, "ch4_kyle_back.yaml"))
@@ -51,7 +51,7 @@ def test_an_agent_with_no_signal_rows_is_refused_by_name():
     """Before 0.6.9 this reached the linear algebra: a RuntimeWarning about a divide, three
     ' ** On entry to DSYRK parameter number 10 had an illegal value' lines on stderr from LAPACK, and
     an IndexError out of numpy.  An agent that reads nothing has no strategy to solve for."""
-    d = {"channels": ["w"], "states": {"X": {"drift": {"D": 1.0}, "noise": {"w": 1.0}}},
+    d = {"shocks": ["w"], "states": {"X": {"drift": {"D": 1.0}, "noise": {"w": 1.0}}},
          "agents": {"a": {"controls": ["D"], "loss": [[1.0, "X", "X"], [1.0, "D", "D"]]}},
          "horizon": {"kind": "stationary", "window": 3.0}, "numerics": {"nodes": 8}}
     with pytest.raises(ValueError, match="agent a has no signal rows"):

@@ -3,7 +3,7 @@
 What the grammar and the engines do not do, and what is done only approximately.
 
 Scalar states and controls (write vector models as several scalars); no exact
-(noise-free) observation of a state that is not itself a channel.  Means (targets, constant
+(noise-free) observation of a state that is not itself a shock.  Means (targets, constant
 drifts, initial states) are solved as constants on the stationary engine, where a random walk
 with no inputs has no stationary mean and is pinned at 0 and an initial state is rejected, and
 as paths on the finite engines (see [method.md](method.md), "Means").  Lead atoms (`X@-0.5`) are accepted only in a

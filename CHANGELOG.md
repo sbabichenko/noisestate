@@ -31,6 +31,15 @@ A model reads like its equations, in a file and in Python.
 - Removed: `ModelBuilder` (the Python equations replace it; examples/make_ch5_cycle_market.py is rewritten and
   compiles to the same model), and `res.strategy_kernel()`, which returned the control's kernel, not its
   strategy (use `res.kernel(control)`, or `res.strategy(control)` for the strategy).
+- **"Shock" everywhere.** `model.shocks`, `res.shocks`, the file key `shocks:` in both forms, and the keyword of
+  `res.kernel(name, shock=)`, `res.estimate(..., shock=)` and `res.strategy(..., shock=)` (was `channel`); the
+  payload's `shocks` lists every kernel column, a transition's initial shocks included.  Files with `channels:`
+  are refused as an unknown key.
+- **A transition's window is its past's.**  `Transition(window=)`, `with_transition(window=)`, a transition's
+  `horizon.window`, `horizon.stationary` and the CLI's `--continuation-window` are gone (the engine always used
+  the past's window, and the options only checked that they agreed); `--past-window` sets it.
+- The shipped examples are written as equations, `model.save()` writes short lists and numeric maps on one line,
+  and definitions in a file may come in any order.
 - Removed: `ns.using_settings` (process-wide and not thread-safe; `solve(..., settings={...})` does the same for
   one solve), the stationary result's `expected_loss` alias (`expected_cost`), and the shims of 0.x names.
 - Faster: a closed-loop time panel is solved by eliminating the primaries with no coupling inside the panel and

@@ -8,7 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 def two_trader(d):
     d = json.loads(json.dumps(d))
     d["params"]["gamma2"] = 1.0
-    d["channels"].append("w2")
+    d["shocks"].append("w2")
     d["agents"]["market_maker"]["signals"]["flow"]["drift"]["D2"] = 1.0
     d["agents"]["trader1"]["signals"]["flow"]["drift"] = {"D2": 1.0}
     d["agents"]["trader2"] = {"controls": ["D2"],
@@ -23,13 +23,13 @@ CASES = [("ch4_N24_L8_e0.2_r0_q1_g1.json", 0.0, False), ("ch4_N24_L8_e0.2_r0.5_q
 @pytest.mark.parametrize("fname,rho,two", CASES)
 def test_ch4_matches_kb_spectral_q(fname, rho, two):
     ref = ns.read_json(os.path.join(SP, fname)) if fname else None
-    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch4_kyle_back.yaml"))
+    d = ns.load(os.path.join(HERE, "..", "examples", "ch4_kyle_back.yaml")).to_dict()
     d["params"]["rho"] = rho
     if two:
         d = two_trader(d)
     res = ns.solve(ns.Model.from_dict(d))
     print(res.summary())
-    nW = len(d["channels"])
+    nW = len(d["shocks"])
     for j, tr in enumerate(ref["traders"] if ref else []):
         assert np.allclose(np.array(ref["lag"]), res.ages, atol=1e-12)
         c_ref = np.stack([np.array(tr["c"][k][0]) for k in range(nW)], axis=1)   # (N, channels)

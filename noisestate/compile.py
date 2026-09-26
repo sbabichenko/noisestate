@@ -57,7 +57,7 @@ class CompiledBase(KernelAlgebra):
 
 def compile_structure(model: Model) -> Structure:
     model.validate()
-    channels = list(model.channels)
+    channels = list(model.shocks)
     prim = model.state_names + model.control_names
     index = {n: i for i, n in enumerate(prim)}
     nX, nU, nW = len(model.state_names), len(model.control_names), len(channels)

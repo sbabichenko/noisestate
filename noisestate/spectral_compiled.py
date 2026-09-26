@@ -377,8 +377,8 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         if not res.converged:
             raise ValueError(f"the continuation {res.model.name!r} did not converge (residual {res.residual:.2e}, {res.message})")
         m = res.model
-        if list(m.channels) != list(model.channels):
-            raise ValueError(f"the continuation's channels {list(m.channels)} differ from the model's {list(model.channels)}")
+        if list(m.shocks) != list(model.shocks):
+            raise ValueError(f"the continuation's shocks {list(m.shocks)} differ from the model's {list(model.shocks)}")
         for what, a, b in (("states", m.state_names, model.state_names), ("controls", m.control_names, model.control_names)):
             if list(a) != list(b):
                 raise ValueError(f"the continuation's {what} {list(a)} differ from the model's {list(b)}")

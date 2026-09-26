@@ -18,14 +18,14 @@ EX = os.path.join(os.path.dirname(__file__), "..", "examples")
 def test_the_numerics_block_is_the_only_place_the_grid_is_sized():
     """The grid lives in numerics: alone; a grid field under horizon: is an unknown key, and the cell engine is
     numerics.engine, not a horizon kind."""
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml"))
+    d = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict()
     assert d["numerics"] == {"nodes": 24} and "nodes" not in d["horizon"]
     m = ns.Model.from_dict(d)
     assert m.numerics == Numerics(nodes=24) and m.numerics.engine is None
     old = {**d, "horizon": {**d["horizon"], "nodes": 24}}; del old["numerics"]
     with pytest.raises(ValueError, match="unknown key"):
         ns.Model.from_dict(old)
-    fc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
+    fc = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict()
     fc.setdefault("numerics", {}).update(nodes=8, engine="cells")
     mc = ns.Model.from_dict(fc)
     assert mc.horizon.kind == "finite" and mc.numerics.engine == "cells"
@@ -57,7 +57,7 @@ def test_solve_takes_a_numerics_and_names_the_field_of_a_stray_keyword():
 def test_signal_transforms_are_immutable_validated_and_serialisable():
     m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
     public = m.with_signal("public_flow", drift={"D1": 1, "D2": 1}, noise={"wf": 0.5})
-    assert "wf" not in m.channels and "wf" in public.channels
+    assert "wf" not in m.shocks and "wf" in public.shocks
     assert all("public_flow" not in [r.name for r in a.signals] for a in m.agents)
     assert all("public_flow" in [r.name for r in a.signals] for a in public.agents)
     assert ns.Model.from_dict(public.to_dict()).to_dict() == public.to_dict()
@@ -76,7 +76,7 @@ def test_category_verdict_excludes_by_root_not_by_full_name():
     Excluding on the full name would silently match nothing for the suffixed ones, so the exclusion
     is on the root -- the part before the ':', which is what the category itself is computed from."""
     m = ns.Model.from_dict({
-        "name": "verdicts", "channels": ["w0", "w1"],
+        "name": "verdicts", "shocks": ["w0", "w1"],
         "states": {"X": {"drift": {"X": -1, "D": 1}, "noise": {"w0": 1}}},
         "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1}, "noise": {"w1": 1}}},
                           "loss": [[1, "X", "X"], [1, "D", "D"]]}},
@@ -94,7 +94,7 @@ def test_category_verdict_excludes_by_root_not_by_full_name():
 
 def test_compare_summary_keeps_the_assessment_and_dynamics_in_their_own_columns():
     m = ns.Model.from_dict({
-        "name": "cols", "channels": ["w0", "w1"],
+        "name": "cols", "shocks": ["w0", "w1"],
         "states": {"X": {"drift": {"X": -1, "D": 1}, "noise": {"w0": 1}}},
         "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1}, "noise": {"w1": 1}}},
                           "loss": [[1, "X", "X"], [1, "D", "D"]]}},
@@ -113,7 +113,7 @@ def test_compare_summary_keeps_the_assessment_and_dynamics_in_their_own_columns(
 
 def test_compare_keeps_results_and_separates_costs_from_dynamics():
     base = ns.Model.from_dict({
-        "name": "comparison", "channels": ["w0", "w1"],
+        "name": "comparison", "shocks": ["w0", "w1"],
         "states": {"X": {"drift": {"X": -1, "D": 1}, "noise": {"w0": 1}}},
         "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1}, "noise": {"w1": 1}}},
                           "loss": [[1, "X", "X"], [1, "D", "D"]]}},
@@ -213,7 +213,7 @@ def test_schema_accepts_the_shipped_files_and_names_the_path_of_an_error():
     assert s["$schema"].endswith("2020-12/schema")
     assert "nodes" not in s["properties"]["horizon"]["properties"]          # the grid lives in numerics: alone
     assert s["properties"]["numerics"]["properties"]["nodes"]["type"] == "integer"
-    bad = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); bad["numerics"]["nodes"] = 1; bad["agents"]["player1"]["extra"] = 1
+    bad = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict(); bad["numerics"]["nodes"] = 1; bad["agents"]["player1"]["extra"] = 1
     errs = ns.schema.validate(bad, "model")
     assert any(e.startswith("numerics.nodes:") for e in errs) and any(e.startswith("agents.player1.extra:") for e in errs)
     r = ns.solve(os.path.join(EX, "ch3_two_player.yaml"), {"nodes": 8})
@@ -229,12 +229,12 @@ def test_schema_accepts_the_shipped_files_and_names_the_path_of_an_error():
 def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
     import json, yaml
     from noisestate.cli import main
-    bad = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); bad["numerics"]["nodes"] = 1
+    bad = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict(); bad["numerics"]["nodes"] = 1
     with open(tmp_path / "bad.yaml", "w") as fh:
         yaml.safe_dump(bad, fh)
     assert main(["validate", str(tmp_path / "bad.yaml")]) == 2 and "numerics.nodes: 1 is below the minimum 2" in capsys.readouterr().err
     assert main(["validate", os.path.join(EX, "ch3_precision_change.yaml")]) == 0
-    new = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); new["params"]["p1"] = 10.0
+    new = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict(); new["params"]["p1"] = 10.0
     with open(tmp_path / "new.yaml", "w") as fh:
         yaml.safe_dump(new, fh)
     out = tmp_path / "change.json"
@@ -255,7 +255,7 @@ def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
 
     from noisestate.plotting import plot_payload
     stationary = r.to_dict()
-    stationary["kernels"]["D1"] = {ch: [0.0] * len(stationary["axes"]["age"]) for ch in stationary["channels"]}
+    stationary["kernels"]["D1"] = {ch: [0.0] * len(stationary["axes"]["age"]) for ch in stationary["shocks"]}
     fig = plot_payload(stationary, str(tmp_path / "zero.png"))
     assert any(ax.get_title().startswith("D1:") for ax in fig.axes)       # a zero kernel remains visible
     assert "WARNING: failed checks" in fig._suptitle.get_text()           # an under-resolved plot cannot look authoritative
@@ -272,12 +272,12 @@ def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
     assert kernel_axes and all(ax.lines for ax in kernel_axes)            # curves drawn, not an empty frame
     assert (tmp_path / "triangle.png").exists()
 
-    cells = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
+    cells = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict()
     cells["numerics"] = {"engine": "cells", "nodes": 6}
     cp = ns.solve(cells, max_evaluations=1).to_dict()
     fig = plot_payload(cp, str(tmp_path / "cells.png"))
     image_axes = [ax for ax in fig.axes if ax.get_title()]
-    assert len(image_axes) == len(cp["kernels"]) * len(cp["channels"])
+    assert len(image_axes) == len(cp["kernels"]) * len(cp["shocks"])
     assert all(len(ax.images) == 1 for ax in image_axes)                  # every cell kernel has data, not an empty panel
     mask = np.ma.getmaskarray(image_axes[0].images[0].get_array())
     assert mask.any() and not mask[-1, 0]                                 # shocks after the observation time are visibly excluded
@@ -368,7 +368,7 @@ def test_removing_a_row_is_the_inverse_of_adding_one():
     channel nothing uses, and a round trip would not validate otherwise."""
     m = ns.load(os.path.join(EX, "ch3_two_player.yaml"))
     added = m.with_signal("flow", drift={"X": 1.0}, noise={"wf": 1.0})
-    assert "wf" in added.channels and "wf" not in m.channels
+    assert "wf" in added.shocks and "wf" not in m.shocks
     back = added.without_signal("flow")
     #  BOTH forms: numeric=True resolves the parameter expressions to numbers, so on its own it
     #  would pass even if the round trip had lost `sqrt(p1)` and left 1.732... in its place.  The
@@ -376,7 +376,7 @@ def test_removing_a_row_is_the_inverse_of_adding_one():
     assert back.to_dict(numeric=True) == m.to_dict(numeric=True)
     assert back.to_dict() == m.to_dict()
     assert "sqrt(p1)" in json.dumps(back.to_dict())                  # the expression, not its value
-    assert "wf" not in back.channels
+    assert "wf" not in back.shocks
 
     with pytest.raises(ValueError, match="already has a signal"):
         added.with_signal("flow", drift={"X": 1.0}, noise={"wf": 1.0})

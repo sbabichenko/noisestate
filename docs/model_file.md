@@ -43,7 +43,7 @@ values and without a solve; a notebook cell shows the same content as HTML.
 |---|---|---|---|
 | `name` | string |  | `model` |
 | `params` | map of number or expression | parameters, evaluated in order (a later one may use an earlier one) | none |
-| `channels` | list of string | the Brownian channels | none (every one listed must load something) |
+| `shocks` | list of string | the Brownian shocks | none (every one listed must load something) |
 | `agents.<name>.constant` | number or expression | the loss's constant: part of the cost, moves no strategy | 0 |
 | `states` | map of object |  |  |
 | `states.<name>.drift` | linear expression | a linear expression: {atom: coef} (an atom is name or name@lag; const for a constant), or [[coef, atom], ...] | empty |
@@ -62,7 +62,7 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `horizon` | object | the economics of time: the kind, the discount, the two lengths, a transition's past and continuation |  |
 | `horizon.kind` | `stationary` \| `finite` \| `transition` | | `stationary` |
 | `horizon.discount` | number or expression | a number, or an expression in the parameters | 0 |
-| `horizon.window` | number or expression | **L, the lag-truncation length**: how far back a strategy may look.  `stationary` and `transition` only; a `finite` horizon has none | 8.0 (`ns.Stationary`); a transition's comes from its past |
+| `horizon.window` | number or expression | **L, the lag-truncation length**: how far back a strategy may look.  `stationary` only: a `finite` horizon has none, and a transition's is its past's | 8.0 (`ns.Stationary`); a transition's comes from its past |
 | `horizon.T` | number or expression | **the terminal time**: when the game ends.  `finite` and `transition` only; a `stationary` horizon has none | 1.0 (`ns.Finite`, `ns.Transition`) |
 | `horizon.past` | object | kind transition only |  |
 | `horizon.past.model` | string or object | the old stationary model: a path (relative to the file) or an inline model |  |
@@ -72,8 +72,6 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `horizon.past.initial[].rows` | map of number or expression |  |  |
 | `horizon.continuation` | `stationary` \| `end` | kind transition only; default stationary | `stationary` |
 | `horizon.settle` | number or expression | kind transition only, in place of `T` (exactly one): the settle tolerance T is found for by the march in T ([transitions.md](transitions.md)) |  |
-| `horizon.stationary` | object | kind transition only: the continuation's stationary solve |  |
-| `horizon.stationary.window` | number or expression | must equal the past's window | the past's window |
 | `numerics` | object | how the model is solved: the engine, the grid, the fixed point's options, the settings |  |
 | `numerics.engine` | `stationary` \| `spectral` \| `cells` | default from horizon.kind: stationary -> stationary, else spectral | `stationary` for kind stationary, else `spectral` |
 | `numerics.nodes` | integer >= 2 | nodes per panel (stationary) or per side of each piece (spectral); cells on the cell engine; default 16 | 16 (12 from the CLI's `transition`) |
@@ -97,14 +95,14 @@ The fields of `numerics.settings` are those of `noisestate.Settings`: [settings.
 * **States.** `drift` is linear in atoms (other states, controls, lagged controls,
   definitions), plus an optional constant under the key `const`
   (`drift: {X: -a, D: 1.0, const: 0.3}`), which moves the means only; `noise` gives the
-  loading on each channel; on a finite horizon an optional `initial` value
+  loading on each shock; on a finite horizon an optional `initial` value
   (`X: {drift: ..., noise: ..., initial: 1.0}`, zero by default) starts the mean path there
   (a stationary model, which has no initial time, rejects it).
 * **Definitions.** Named linear combinations of atoms, usable anywhere:
   `Pidx: {P0@tau: 0.333, P1@tau: 0.333, P2@tau: 0.333}`.
 * **Signals.** Each row has a linear `drift` (states, other agents' controls,
   definitions), a `noise` loading, and an optional observation `delay`.  Rows
-  with a pure noise loading and no drift make a channel directly observed.
+  with a pure noise loading and no drift make a shock directly observed.
 * **Loss.** A list of terms `[coef, a, b]` (quadratic) and `[coef, a]` (linear);
   the flow loss is their sum and the agent minimises `E int e^{-rho t} loss dt`.
   A target `theta` on `X` is `(X - theta)^2` less its constant: `[1, X, X]` and

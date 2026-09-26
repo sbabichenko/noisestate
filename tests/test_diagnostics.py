@@ -13,7 +13,7 @@ from helpers import example
 
 
 def model(kind="stationary", engine=None, nodes=8, **horizon):
-    d = {"name": "diag", "channels": ["w0", "w1"],
+    d = {"name": "diag", "shocks": ["w0", "w1"],
          "states": {"X": {"drift": {"X": -1, "D": 1}, "noise": {"w0": 1}}},
          "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1}, "noise": {"w1": 1}}},
                           "loss": [[1, "X", "X"], [1, "D", "D"]]}},

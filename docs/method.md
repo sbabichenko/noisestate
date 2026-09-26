@@ -115,7 +115,7 @@ dropping the least recently used grids beyond that.
 
 ## Stability guarantees
 
-* A model file with a misspelled key, an unused channel, or a control that does not enter its
+* A model file with a misspelled key, an unused shock, or a control that does not enter its
   owner's loss is rejected with a message naming the offending item.
 * A singular best-response system is refused on every engine with a `ValueError` naming the agent
   and the usual causes: a control with no quadratic term in its current value whose effect on the
@@ -169,4 +169,4 @@ dropping the least recently used grids beyond that.
 * Costs are integrated with exact Gram matrices, so a converged best response is optimal against
   every feasible perturbation to round-off; `tests/test_properties.py` checks this on both engines
   without any reference solution, together with the equivalence of the two iteration variables
-  and invariance to channel relabelling and agent order.
+  and invariance to shock relabelling and agent order.

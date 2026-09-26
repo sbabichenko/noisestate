@@ -24,13 +24,13 @@ class Kernel(np.ndarray):
     axes: dict = {}
     result = None
     name: str = ""
-    channel: Optional[str] = None
+    shock: Optional[str] = None
     note: str = ""
 
     @classmethod
-    def of(cls, values, result, name: str, channel: Optional[str]) -> "Kernel":
+    def of(cls, values, result, name: str, shock: Optional[str]) -> "Kernel":
         k = np.asarray(values).view(cls)
-        k.result = result; k.name = name; k.channel = channel
+        k.result = result; k.name = name; k.shock = shock
         k.axes = {a: np.asarray(v) for a, v in result._node_axes().items()}
         if result.kind == "finite_cells":
             k.note = "the cell engine's kernel is piecewise constant: at() returns the nearest cell"
@@ -44,7 +44,7 @@ class Kernel(np.ndarray):
     def __array_finalize__(self, obj):
         if obj is None:
             return
-        for a in ("axes", "result", "name", "channel", "note"):
+        for a in ("axes", "result", "name", "shock", "note"):
             setattr(self, a, getattr(obj, a, getattr(type(self), a)))
 
     def __reduce__(self):                          # pickle as a plain array (the result is not pickled with it)
@@ -57,7 +57,7 @@ class Kernel(np.ndarray):
         """The kernel interpolated at the coordinates of res.axes, with the engine's own interpolant: at(age)
         on the stationary engine; at(t, s) (time, shock time; arrays broadcast) on the finite triangle and on
         a transition; the nearest cell on the cell engine (self.note).  Returns one value per point, or one
-        row per point over the channels when the kernel holds every channel."""
+        row per point over the shocks when the kernel holds every shock."""
         r = self.result
         if r is None or self.shape[0] != self._nodes():
             raise ValueError("at() needs a kernel as res.kernel() returned it (a slice or a product has lost its nodes)")
@@ -93,13 +93,13 @@ class Kernel(np.ndarray):
             matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         K = np.asarray(self); names = [a for a in self.axes]
-        label = self.name + (f" / {self.channel}" if self.channel else "")
+        label = self.name + (f" / {self.shock}" if self.shock else "")
         fig, ax = plt.subplots(figsize=(5.2, 3.2))
         if names == ["age"]:
             ax.plot(self.axes["age"], K, lw=1.2)
             ax.set_xlabel("age"); ax.set_ylabel(label)
             if K.ndim == 2 and self.result is not None:
-                ax.legend(self.result.channels, fontsize=7)
+                ax.legend(self.result.shocks, fontsize=7)
         elif "shock_time" in names and "age" in names:
             T = float(self.axes["time"].max())
             for t in np.linspace(0.2, 1.0, 5) * T:

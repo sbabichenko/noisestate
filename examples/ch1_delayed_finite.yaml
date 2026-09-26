@@ -3,17 +3,21 @@
 # signal with delay tau.  dX = (D1@tau + D2@tau) dt + dW0, dY_i = sqrt(p_i) X dt + dW_i.
 name: ch1_delayed_finite
 params: {p1: 3.0, p2: 3.0, r1: 0.1, r2: 0.1, sigma: 1.0, tau: 0.25}
-channels: [w0, w1, w2]
+shocks: [w0, w1, w2]
 states:
-  X: {drift: {"D1@tau": 1.0, "D2@tau": 1.0}, noise: {w0: sigma}}
+  X: (D1@tau + D2@tau) dt + sigma dw0
 agents:
   player1:
-    controls: [D1]
-    signals: {y1: {drift: {X: "sqrt(p1)"}, noise: {w1: 1.0}}}
-    loss: [[1.0, X, X], [r1, D1, D1]]
+    controls: D1
+    observes:
+      y1: sqrt(p1) X dt + dw1
+    loss: X^2 + r1 D1^2
   player2:
-    controls: [D2]
-    signals: {y2: {drift: {X: "sqrt(p2)"}, noise: {w2: 1.0}, delay: tau}}
-    loss: [[1.0, X, X], [r2, D2, D2]]
-horizon: {kind: finite, T: 1.0}
-numerics: {nodes: 8}                             # per side of each of the 10 pieces cut by the delay
+    controls: D2
+    observes:
+      y2:
+        d: sqrt(p2) X dt + dw2
+        delay: tau
+    loss: X^2 + r2 D2^2
+horizon: {T: 1.0}
+numerics: {nodes: 8}

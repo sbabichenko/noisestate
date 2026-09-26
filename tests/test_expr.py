@@ -38,7 +38,10 @@ def _canon(d: dict) -> dict:
 
 @pytest.mark.parametrize("name", sorted(EXAMPLES))
 def test_examples_compile_to_their_files(name):
-    yaml_dict = ns.read_yaml(os.path.join(EX, name + ".yaml"))
+    yaml_dict = ns.load(os.path.join(EX, name + ".yaml")).to_dict()
+    past = yaml_dict["horizon"].get("past") or {}
+    if isinstance(past.get("model"), str):
+        past["model"] = os.path.basename(past["model"])          # load() resolved it against the file's directory
     model = EXAMPLES[name]()
     assert _canon(model.to_dict()) == _canon(yaml_dict)
     # and the numeric form, coefficients evaluated, is identical too
@@ -185,8 +188,8 @@ def test_errors_name_the_object():
         ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X + w.w1)], X**2 + p * D**2)], params={"r": 1.0})
     with pytest.raises(ValueError, match="two states named 'X'"):
         ns.Model("m", states=[X, State("X")], agents=[Agent("me", [D], [Signal("y", X + w.w1)], X**2 + p * D**2)])
-    with pytest.raises(ValueError, match="channels of an expression model"):
-        ns.Model("m", channels=["w0"], states=[X], agents=[Agent("me", [D], [Signal("y", X + w.w1)], X**2 + p * D**2)])
+    with pytest.raises(ValueError, match="shocks of an expression model"):
+        ns.Model("m", shocks=["w0"], states=[X], agents=[Agent("me", [D], [Signal("y", X + w.w1)], X**2 + p * D**2)])
     with pytest.raises(ValueError, match="agent me: its loss uses State\\('Y'\\)"):
         Y = State("Y")
         ns.Model("m", states=[X], agents=[Agent("me", [D], [Signal("y", X + w.w1)], Y**2 + p * D**2)])
@@ -207,11 +210,11 @@ def test_definitions_lags_leads_and_constants():
     assert d["definitions"] == {"Xl": {"X@tau": 1}}
     assert d["agents"]["me"]["loss"] == [[1, "Xl", "Xl"], ["-2*k", "Xl"], [1, "D", "D"], [1, "D", "X@-0.5"]]
     assert d["agents"]["me"]["signals"]["y"] == {"drift": {"Xl": 1}, "noise": {"w1": 1}, "delay": 0.25}
-    assert d["params"] == {"tau": 0.5, "k": 0.3} and d["channels"] == ["w0", "w1"]
+    assert d["params"] == {"tau": 0.5, "k": 0.3} and d["shocks"] == ["w0", "w1"]
     assert m.drives_means and m.all_lags() == [0.25, 0.5, 0.75]
     # the field form still constructs and compares as before
     plain = ns.Model.from_dict(d)
-    assert plain == m and isinstance(plain, ns.Model) and ns.Model("empty").channels == []
+    assert plain == m and isinstance(plain, ns.Model) and ns.Model("empty").shocks == []
 
 
 def test_kernel_on_every_engine():

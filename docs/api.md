@@ -59,7 +59,7 @@ nowhere to live.
 |---|---|---|
 | `ns.Stationary(window, discount)` | `window` only | the window |
 | `ns.Finite(T, discount)` | `T` only | `T` |
-| `ns.Transition(T, past, continuation, discount, window)` | **both** — `window` is the continuation's L, defaulting to the past's | `T` |
+| `ns.Transition(T, past, continuation, discount)` | **both** — its window is the past's | `T` |
 
 `horizon.extent` is the length of the primary computational axis: it *selects* whichever of the two
 an operation needs. Grid construction and the lag bounds want it; a transition's continuation wants
@@ -74,7 +74,7 @@ raises `AttributeError` rather than answering `None`.
 | `model.notes` | just the conventions that are easy to misread here |
 | `model.validate()` | every structural rule, in a fixed order. Raises. `from_dict` already runs it |
 | `model.to_dict(numeric=False)` | the file structure back out. Carries everything a solve depends on, including definitions and ties; omits only provenance (`source`, `remarks`, `deprecations`). `numeric=True` resolves parameter expressions to numbers |
-| `model.state_names` / `.control_names` / `.def_names` / `.channels` | the names |
+| `model.state_names` / `.control_names` / `.def_names` / `.shocks` | the names |
 | `model.owner_of(control)` | which agent owns a control |
 | `model.all_lags()` | every distinct positive lag or observation delay |
 | `model.drives_means` | whether anything moves the means at all — a **bool** |
@@ -88,11 +88,11 @@ Every one returns a **new** model, shares no mutable structure with it, and leav
 |---|---|
 | `model.with_params(**values)` | different parameter values; the others keep their expressions |
 | `model.with_horizon(horizon)` | a different horizon, **as an object**: `with_horizon(Finite(T=1.0))`. The horizon is replaced, not patched, so nothing carries over by accident |
-| `model.with_stationary(window)` / `.with_finite(T)` / `.with_transition(T, past, window=None)` | the three kinds, spelled directly |
+| `model.with_stationary(window)` / `.with_finite(T)` / `.with_transition(T, past)` | the three kinds, spelled directly |
 | `model.with_numerics(numerics_or_fields)` | a different grid, engine or tolerance |
-| `model.with_signal(signal)` or `model.with_signal(name, drift=, noise=, audience="all", delay=0)` | add one observed row. Takes a `Signal` **or** the file-form blocks. New noise channels are added for you |
+| `model.with_signal(signal)` or `model.with_signal(name, drift=, noise=, audience="all", delay=0)` | add one observed row. Takes a `Signal` **or** the file-form blocks. New shocks are added for you |
 | `model.with_signals(signals)` or `model.with_signals(rows)` | several at once, in either form |
-| `model.without_signal(name, audience="all")` | remove a row, and the noise channels it alone loaded. The inverse of adding one |
+| `model.without_signal(name, audience="all")` | remove a row, and the shocks it alone loaded. The inverse of adding one |
 | `model.save(path)` | write it back as YAML, parameter expressions intact |
 
 Adding a row an agent already has is an **error**, never a silent replacement — use
@@ -125,9 +125,9 @@ signatures and return types do not.
 | attribute | use it when |
 |---|---|
 | `res.costs` | the equilibrium cost per agent. `res.cost_parts` splits it; `res.cost_kind` names the convention |
-| `res.kernel(name, channel=None)` | the **closed-loop** response to a shock, as a `Kernel` |
-| `res.strategy(control, channel=None)` | the **strategy** on the noise-state, D: the weight the action puts on the agent's estimate of each shock (finite games without delays) |
-| `res.estimate(agent, name, channel=None)` | the agent's estimate of a quantity, as a kernel |
+| `res.kernel(name, shock=None)` | the **closed-loop** response to a shock, as a `Kernel` |
+| `res.strategy(control, shock=None)` | the **strategy** on the noise-state, D: the weight the action puts on the agent's estimate of each shock (finite games without delays) |
+| `res.estimate(agent, name, shock=None)` | the agent's estimate of a quantity, as a kernel |
 | `res.response(q, to=shock, at=s, seen_by=agent).over(t)` | follow one shock through time: the response of q (or an agent's estimate of it) |
 | `res.means` / `.mean_times` | the means and the time nodes they sit on. `res.has_means` is a bool |
 | `res.paths` / `.times` | paths over time on a finite horizon, and their nodes |
@@ -265,5 +265,5 @@ rather than only a failed solve.
 
 The two horizon lengths keep their own names here as in Python: `solve --window L` is the
 lag-truncation length and `solve --T` the terminal time, and asking for the one a model's kind does
-not have is an error naming the other.  `transition --T` is the terminal time; `--past-window L` and
-`--continuation-window L` are lag windows.
+not have is an error naming the other.  `transition --T` is the terminal time and `--past-window L`
+the lag window of the old regime, which the continuation shares.

@@ -26,12 +26,12 @@ def test_delayed_row_map_axes_place_the_map():
     """A delayed row's map is not indexed like an undelayed one: the payload's map_age (stationary) and
     map_time (finite, where the map is stored at t - delay) say where each value belongs, and the map is
     zero exactly where those axes leave the window or the horizon."""
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); d["agents"]["player2"]["signals"]["y2"]["delay"] = 1.0; d.setdefault("numerics", {})["nodes"] = 8
+    d = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict(); d["agents"]["player2"]["signals"]["y2"]["delay"] = 1.0; d.setdefault("numerics", {})["nodes"] = 8
     r = ns.solve(d).require_converged(); p = r.to_dict(); row = p["agents"]["player2"]["signals"]["y2"]
     g = np.array(p["maps"]["player2"]["D2"]["y2"]); age = np.array(row["map_age"]); L = p["horizon"]["window"]
     assert row["delay"] == 1.0 and np.allclose(age, r.ages + 1.0) and "map_age" in p["map_convention"]
     assert (age > L + 1e-9).sum() == 7 and np.abs(g[age > L + 1e-9]).max() == 0.0 and np.abs(g[age < L]).max() > 0.1
-    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 4
+    d = ns.load(os.path.join(EX, "ch1_delayed_finite.yaml")).to_dict(); d.setdefault("numerics", {})["nodes"] = 4
     r = ns.solve(d).require_converged(); p = json.loads(json.dumps(r.to_dict())); row = p["agents"]["player2"]["signals"]["y2"]
     g = np.array(p["maps"]["player2"]["D2"]["y2"]); t = np.array(row["map_time"]); T = p["horizon"]["T"]
     assert row["delay"] == 0.25 and np.allclose(t, r.grid.t + 0.25) and np.allclose(row["map_age"], r.grid.a + 0.25)

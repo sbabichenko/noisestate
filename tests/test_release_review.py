@@ -10,7 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..",
 
 def _ch3(**hz):
     """kind "finite_cells" names the cell engine's result; the model asks for kind finite with engine cells."""
-    d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml"))
+    d = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict()
     d["numerics"] = {**d.get("numerics", {}), **{k: hz.pop(k) for k in list(hz) if k in ("nodes", "unit", "unit_range", "breakpoints")}}
     if hz.get("kind") == "finite_cells":
         hz["kind"] = "finite"; d["numerics"]["engine"] = "cells"
@@ -37,7 +37,7 @@ def test_delayed_row_solves_and_is_window_independent():
 
 
 def test_one_agent_delayed_observation_costs_more_and_passes_second_order():
-    base = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
+    base = {"shocks": ["w0", "w1"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.5}, "noise": {"w1": 1.0}, "delay": 0.5}},
                              "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}},
             "horizon": {"kind": "stationary", "window": 6.0}, "numerics": {"nodes": 12}}
@@ -47,7 +47,7 @@ def test_one_agent_delayed_observation_costs_more_and_passes_second_order():
 
 
 def test_cell_engine_dense_branch_with_delays():
-    d = ns.read_yaml(os.path.join(EX, "ch1_delayed_finite.yaml")); d.setdefault("numerics", {}).update(nodes=16, engine="cells")
+    d = ns.load(os.path.join(EX, "ch1_delayed_finite.yaml")).to_dict(); d.setdefault("numerics", {}).update(nodes=16, engine="cells")
     r = ns.solve(d).require_converged()
     assert r.diagnostics.statuses["resolution"] is Status.UNSUPPORTED          # the cell engine cannot compute it
     assert r.to_dict()["assessment"]["statuses"]["resolution"] == "unsupported"
@@ -68,7 +68,7 @@ def test_model_is_single_sourced():
         m.params["p1"] = 4.0
     m4 = m.with_params(p1=4.0); base = ns.solve(m); r4 = ns.solve(m4)
     assert m4.params["p1"] == 4.0 and abs(r4.costs["player1"] - base.costs["player1"]) > 1e-4
-    fresh = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml")); fresh["params"]["p1"] = 4.0
+    fresh = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict(); fresh["params"]["p1"] = 4.0
     assert abs(r4.costs["player1"] - ns.solve(fresh).costs["player1"]) < 1e-12   # the same model as from a file
     r4.refine(); assert r4.refinement.cost_change < 1e-8                    # refine compares like with like
     m.horizon.nodes = 30                                                       # horizon fields are read live
@@ -87,12 +87,12 @@ def test_numeric_export_is_loadable_and_equivalent():
     a, b = ns.solve(m), ns.solve(ns.Model.from_dict(m.to_dict(numeric=True)))
     assert abs(a.costs["player1"] - b.costs["player1"]) < 1e-12
     # a Model built directly from the dataclasses (no source) refines and sweeps
-    direct = ns.Model(name="d", channels=m.channels, states=m.states, agents=m.agents, horizon=m.horizon, params=dict(m.params))
+    direct = ns.Model(name="d", shocks=m.shocks, states=m.states, agents=m.agents, horizon=m.horizon, params=dict(m.params))
     assert ns.solve(direct, refine=True).refinement.resolved
 
 
 def test_window_tail_ignores_random_walk_states_and_flags_the_undiscounted_kyle_back():
-    kb = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml")); kb["params"]["rho"] = 0.0
+    kb = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict(); kb["params"]["rho"] = 0.0
     bad = ns.solve(kb)
     assert "WINDOW TOO SHORT" in bad.summary()                               # rho = 0: the average-cost artefact
     diagnostic = next(d for d in bad.to_dict()["diagnostics"] if d["name"] == "window")
@@ -167,7 +167,7 @@ def test_linear_terms_are_noted_and_the_equations_form_is_accepted():
 
 
 def test_wrong_kind_warm_start_is_an_error_and_right_kinds_are_converted():
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
+    d = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict()
     r = ns.solve(d).require_converged(); S = engines.spectral(ns.Model.from_dict(d))
     assert S.solve(start_from=r.maps).converged                                     # raw maps are accepted and converted
     with pytest.raises(ValueError, match="expected action kernels"):
@@ -198,7 +198,7 @@ def test_delayed_row_stationary_agrees_with_the_finite_engine_in_the_interior():
     Both engines are exactly causal (the stationary one since the side-aware shift); the finite
     kernel is read at each stationary node from that node's side of its panel, since kernels jump
     at the delay."""
-    base = {"channels": ["w0", "w1"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
+    base = {"shocks": ["w0", "w1"], "states": {"X": {"drift": {"X": -0.3, "D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.5}, "noise": {"w1": 1.0}, "delay": 0.5}},
                              "loss": [[1.0, "X", "X"], [0.5, "D", "D"]]}}}
     import copy
@@ -230,7 +230,7 @@ def test_leads_only_in_cross_terms_with_the_own_current_control():
 
 def test_ties_compare_private_state_dynamics_and_channel_sharing():
     def two(th1, s1, share):
-        d = {"channels": ["w0", "wa0", "wa1", "wy0", "wy1"],
+        d = {"shocks": ["w0", "wa0", "wa1", "wy0", "wy1"],
              "states": {"X": {"drift": {"D0": 1.0, "D1": 1.0}, "noise": {"w0": 1.0}},
                         "a0": {"drift": {"a0": -0.5}, "noise": {"wa0": 1.0}}, "a1": {"drift": {"a1": -th1}, "noise": {"wa1": s1}}},
              "agents": {}, "ties": [["f0", "f1"]], "horizon": {"kind": "stationary", "window": 4.0}, "numerics": {"nodes": 8}}
@@ -296,7 +296,7 @@ def test_wrong_grid_warm_start_is_an_error_on_every_engine():
     d = _ch3(nodes=12); r = ns.solve(d); d.setdefault("numerics", {})["nodes"] = 16
     with pytest.raises(ValueError, match="different grid"):
         engines.stationary(ns.Model.from_dict(d)).solve(start_from=r.maps)
-    dc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); dc.setdefault("numerics", {}).update(nodes=8, engine="cells")
+    dc = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); dc.setdefault("numerics", {}).update(nodes=8, engine="cells")
     rc = ns.solve(dc); dc.setdefault("numerics", {})["nodes"] = 16
     with pytest.raises(ValueError, match="different grid"):
         engines.cells(ns.Model.from_dict(dc)).solve(start_from=rc.maps)
@@ -308,7 +308,7 @@ def test_jump_flag_is_quiet_on_a_geometric_sweep():
 
 
 def test_refine_on_cells_reports_without_a_verdict():
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {}).update(nodes=12, engine="cells")
+    d = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); d.setdefault("numerics", {}).update(nodes=12, engine="cells")
     r = ns.solve(d); r.refine()
     assert r.refinement.resolved is None and "NOT RESOLVED" not in r.summary() and r.refinement.nodes == 24
 

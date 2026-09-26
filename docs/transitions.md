@@ -13,7 +13,7 @@ constant means).  A past is given in three ways: a converged `StationaryResult` 
 model, the old model itself (a `Model`, dict or path, solved on the fly), or a list of initial
 shocks `[{"name": "v0", "loads": {V: sigma}, "rows": {"trader1.flow": 1.0}}]` (a value drawn
 once at time 0- from a given covariance, seen at once by the rows named: a prior on a state).
-Old and new must share the channels, the states, each agent's controls and signal rows by
+Old and new must share the shocks, the states, each agent's controls and signal rows by
 name; every coefficient, delay, loss and discount may change.
 
 ```yaml

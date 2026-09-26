@@ -6,7 +6,7 @@ EX = os.path.join(HERE, "..", "examples")
 def test_ch5_example_matches_its_generator():
     from make_ch5_cycle_market import build
     generated = build().to_dict()
-    committed = ns.read_yaml(os.path.join(EX, "ch5_cycle_market.yaml"))
+    committed = ns.load(os.path.join(EX, "ch5_cycle_market.yaml")).to_dict()
     assert generated == committed, "examples/ch5_cycle_market.yaml is stale: rerun examples/make_ch5_cycle_market.py"
 
 def test_every_example_validates():

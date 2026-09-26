@@ -7,7 +7,7 @@ SP = REFS
 ref = np.loadtxt(f"{SP}/ch1_spec_p3_p3.txt")
 t_ref, s_ref = ref[:, 2], ref[:, 3]; X_ref = ref[:, 6:9]; D1_ref = ref[:, 9:12]
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 40
-d = ns.read_yaml("examples/ch1_two_player_finite.yaml"); d["horizon"]["nodes"] = N
+d = ns.load("examples/ch1_two_player_finite.yaml").to_dict(); d["numerics"]["nodes"] = N
 t0 = time.time(); S = FiniteSolver(ns.Model.from_dict(d), verbose=True); res = S.solve(tol=1e-9)
 print(res.summary(), "| reference Jvar1 = 0.39664911")
 h = S.c.h

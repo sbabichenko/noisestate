@@ -155,4 +155,4 @@ computed.
   `model.with_stationary(9.0)` to change its lag window.  Both return new models; pass the changed
   model to `solve` or `sweep`.  A result's `refine()` and `stability()` use the model it was solved from.
 * `ties` are checked structurally: rows, losses, delays and coefficients up to relabelling, the
-  dynamics of each agent's private states, and whether a row's noise channel also drives a state.
+  dynamics of each agent's private states, and whether the shock in a row's noise also drives a state.

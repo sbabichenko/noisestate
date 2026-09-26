@@ -4,7 +4,7 @@ from noisestate.finite_spectral import SpectralFiniteSolver
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 def load(nodes):
-    d = ns.read_yaml(os.path.join(HERE, "..", "examples", "ch1_two_player_finite.yaml"))
+    d = ns.load(os.path.join(HERE, "..", "examples", "ch1_two_player_finite.yaml")).to_dict()
     d.setdefault("numerics", {})["nodes"] = nodes
     return ns.Model.from_dict(d)
 

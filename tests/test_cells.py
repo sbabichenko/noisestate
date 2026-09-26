@@ -11,10 +11,10 @@ from helpers import example
 
 def test_cell_engine_kernel_without_a_channel_is_the_stack_over_channels(cells):
     K = cells.kernel("X"); N = cells.compiled.N
-    assert K.shape == (N, N, len(cells.channels))
-    for k, ch in enumerate(cells.channels):
+    assert K.shape == (N, N, len(cells.shocks))
+    for k, ch in enumerate(cells.shocks):
         assert np.array_equal(K[..., k], cells.kernel("X", ch))
-    assert cells.kernel("D1").shape == (N, N, len(cells.channels))
+    assert cells.kernel("D1").shape == (N, N, len(cells.shocks))
 
 
 def test_cell_engine_mean_solve_refuses_a_singular_mean_system():

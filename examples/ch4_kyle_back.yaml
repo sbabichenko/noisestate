@@ -9,21 +9,23 @@
 # with the window; the variance of the pricing error is the meaningful number.
 name: ch4_kyle_back
 params: {eps: 0.2, rho: 0.5, gamma1: 1.0, sigma_V: 1.0, sigma_Z: 1.0}
-channels: [wV, wZ, w1]
+shocks: [wV, wZ, w1]
 states:
-  V: {drift: {}, noise: {wV: sigma_V}}
+  V: sigma_V dwV
 agents:
   market_maker:
-    controls: [P]
+    controls: P
+    observes:
+      flow: D1 dt + sigma_Z dwZ
+    loss: P^2 - 2 P V
     myopic: true
-    signals:
-      flow: {drift: {D1: 1.0}, noise: {wZ: sigma_Z}}
-    loss: [[1.0, P, P], [-2.0, P, V]]
   trader1:
-    controls: [D1]
-    signals:
-      y1: {drift: {V: gamma1, P: "-gamma1"}, noise: {w1: 1.0}}
-      flow: {drift: {}, noise: {wZ: sigma_Z}}      # the trader also sees the order flow (net of its own orders)
-    loss: [[-1.0, D1, V], [1.0, D1, P], [eps, D1, D1]]
-horizon: {kind: stationary, discount: rho, window: 8.0}
+    controls: D1
+    observes:
+      y1: (gamma1 V - gamma1 P) dt + dw1
+      flow: sigma_Z dwZ
+    loss: -D1 V + D1 P + eps D1^2
+horizon:
+  window: 8.0
+  discount: rho
 numerics: {nodes: 24}

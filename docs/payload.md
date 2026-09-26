@@ -29,12 +29,12 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `options` | object | `numerics` (the resolved Numerics), `solver` (the engine's constructor options) and `solve` (the solve options: start, bounds, diagnostics, ...); `noisestate plot --re-solve` re-solves under them |
 | `grid` | object | the grid's description (`res.grid_summary()`): its `kind`, nodes, panels or pieces, window |
 | `discount` | number | the discount rate |
-| `channels` | list of string | the Brownian channels in kernel column order |
+| `shocks` | list of string | the kernels' columns in order: the Brownian shocks, then a transition's initial shocks |
 | `agents` | map of object | per agent: its `controls` and its `signals`, each row with its `delay` and the axes of its map (`map_time`, `map_age` or `map_shock_time`, per `map_convention`) |
 | `map_convention` | string | one sentence on how a delayed row's map is indexed (`Result.MAP_CONVENTION`) |
-| `kernels` | map of map of list of any | per state, control and definition, per channel: the closed-loop kernel on the grid (a list over ages; a list over triangle nodes; an (N, N) list of lists on the cell engine) |
+| `kernels` | map of map of list of any | per state, control and definition, per shock: the closed-loop kernel on the grid (a list over ages; a list over triangle nodes; an (N, N) list of lists on the cell engine) |
 | `maps` | map of map of map of list of any | per agent, per control, per signal row: the raw strategy g[u][r] on the row's map axis |
-| `foc` | map of map of map of map of list of number | per agent, per control: `foc`, `physical`, `wedge`, each per channel: the first-order-condition decomposition |
+| `foc` | map of map of map of map of list of number | per agent, per control: `foc`, `physical`, `wedge`, each per shock: the first-order-condition decomposition |
 | `costs` | map of number | per agent: the cost (`cost_kind` says what it is) |
 | `cost_parts` | map of map of number | per agent: `variance` and `mean` (a transition adds `continuation`, the buffer's cost) |
 | `means` | map of number or list of number | per state, control, definition and signal row (`agent.row`): a constant (stationary) or the path on `mean_times` |
@@ -72,7 +72,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 A warm-started sweep point costs a handful of best responses, which is what a slider in a front end needs;
 `to_dict()` is the payload such a front end would render, and it carries its own provenance: the
 package `version`, the `params`, the `model` spec (`Model.from_dict` rebuilds it), the `horizon`,
-the `options` (the resolved `numerics`, the engine's `solver` options and the `solve` options), then the grid, kernels per quantity and channel, raw maps, costs
+the `options` (the resolved `numerics`, the engine's `solver` options and the `solve` options), then the grid, kernels per quantity and shock, raw maps, costs
 with their variance and mean parts (`cost_parts`), the `means`, and the first-order-condition
 decomposition.  `agents` lists each agent's controls and signal rows
 with their `delay` and the axes of the row's map (`map_time`, `map_age` or `map_shock_time`, per

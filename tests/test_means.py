@@ -15,7 +15,7 @@ def one_agent(a, r, theta, rho, L=16.0, nodes=16, const=0.0, unit=2.0):
     """dX = (-a X + D [+ const]) dt + dW, loss (X - theta)^2 + r D^2 less theta^2: [1, X, X], [-2 theta, X], [r, D, D]."""
     drift = {"X": -a, "D": 1.0, **({"const": const} if const else {})}
     loss = [[1.0, "X", "X"], [r, "D", "D"]] + ([[-2.0 * theta, "X"]] if theta else [])
-    return ns.Model.from_dict({"name": "target", "channels": ["w0", "w1"], "states": {"X": {"drift": drift, "noise": {"w0": 1.0}}},
+    return ns.Model.from_dict({"name": "target", "shocks": ["w0", "w1"], "states": {"X": {"drift": drift, "noise": {"w0": 1.0}}},
                                "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 1.0}, "noise": {"w1": 1.0}}}, "loss": loss}},
                                "horizon": {"kind": "stationary", "discount": rho, "window": L}, "numerics": {"unit": unit, "unit_range": L, "nodes": nodes}})
 
@@ -23,7 +23,7 @@ def one_agent(a, r, theta, rho, L=16.0, nodes=16, const=0.0, unit=2.0):
 def two_agents(p, a=1.0, r=1.0, theta=1.0, rho=0.5, L=12.0, nodes=16, opposite=True, tie=False):
     """dX = (-a X + D1 + D2) dt + dW0, agent i sees sqrt(p) X dt + dW_i and has the target theta_i on X."""
     th = [theta, -theta if opposite else theta]
-    d = {"name": "targets", "channels": ["w0", "w1", "w2"],
+    d = {"name": "targets", "shocks": ["w0", "w1", "w2"],
          "states": {"X": {"drift": {"X": -a, "D1": 1.0, "D2": 1.0}, "noise": {"w0": 1.0}}},
          "agents": {f"a{i}": {"controls": [f"D{i}"], "signals": {f"y{i}": {"drift": {"X": float(np.sqrt(p))}, "noise": {f"w{i}": 1.0}}},
                               "loss": [[1.0, "X", "X"], [-2.0 * th[i - 1], "X"], [r, f"D{i}", f"D{i}"]]} for i in (1, 2)},
@@ -180,7 +180,7 @@ def test_validation_of_constants_and_singular_mean_systems():
     res = ns.solve(walk).require_converged(); DC = (1.0 - np.exp(-0.5 * 16.0)) / 0.5
     assert abs(res.means["D"] + 0.3) < 1e-12 and abs(res.means["X"] - (1.0 + 0.3 / DC)) < 1e-12
     # a random walk driven by a control whose first-order condition never reads it: its mean is undetermined
-    sing = {"name": "s", "channels": ["w0", "w1"], "states": {"V": {"drift": {"D": 1.0}, "noise": {"w0": 1.0}}},
+    sing = {"name": "s", "shocks": ["w0", "w1"], "states": {"V": {"drift": {"D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"V": 1.0}, "noise": {"w1": 1.0}}}, "loss": [[1.0, "D", "D"], [-2.0, "D"]]}},
             "horizon": {"kind": "stationary", "window": 4.0}, "numerics": {"nodes": 8}}
     with pytest.raises(ValueError, match="mean system is singular"):

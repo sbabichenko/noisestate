@@ -21,17 +21,17 @@ import numpy as np
 
 
 def plot_stationary(res, path: str) -> None:
-    """Kernels by channel for every state and control, one panel per quantity (needs matplotlib)."""
+    """Kernels by shock for every state and control, one panel per quantity (needs matplotlib)."""
     plt = _pyplot(); c = res.compiled
     names = res.model.state_names + res.model.control_names
     nrow = (len(names) + 1) // 2
     fig, axes = plt.subplots(nrow, 2, figsize=(10.4, 2.6 * nrow), squeeze=False)
     for ax, name in zip(axes.ravel(), names):
         K = res.kernel(name)
-        for k, ch in enumerate(res.channels):
+        for k, ch in enumerate(res.shocks):
             if np.abs(K[:, k]).max() > 1e-12:
                 ax.plot(c.grid.nodes, K[:, k], lw=1.1, label=ch)
-        ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name}: kernel by channel", fontsize=10); ax.set_xlabel("shock age")
+        ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name}: kernel by shock", fontsize=10); ax.set_xlabel("shock age")
         ax.legend(fontsize=7, frameon=False, ncol=2)
     for ax in axes.ravel()[len(names):]:
         ax.axis("off")
@@ -97,7 +97,7 @@ def _mean_paths_row(axes, res, names) -> None:
 
 def _plot_transition(res, path: str) -> None:
     plt = _pyplot()
-    names = res.model.state_names + res.model.control_names; chans = res.channels
+    names = res.model.state_names + res.model.control_names; chans = res.shocks
     agents = [a.name for a in res.model.agents]; states = res.model.state_names
     c = res.compiled; g = res.grid; T = c.T; L = g.L or 0.0
     means = res.has_means and res.mean_times is not None
@@ -141,10 +141,10 @@ def _plot_transition(res, path: str) -> None:
 
 
 def _plot_by_shock_time(res, curves, path: str) -> None:
-    """Finite horizon: one panel per (quantity, channel), the kernel against the shock time s at a few dates t;
+    """Finite horizon: one panel per (quantity, shock), the kernel against the shock time s at a few dates t;
     a last row with the mean paths against t when they are nonzero."""
     plt = _pyplot()
-    names = res.model.state_names + res.model.control_names; chans = res.channels
+    names = res.model.state_names + res.model.control_names; chans = res.shocks
     means = res.has_means and res.mean_times is not None
     fig, axes = plt.subplots(len(names) + means, len(chans), figsize=(3.6 * len(chans), 2.5 * (len(names) + means)), squeeze=False)
     for i, name in enumerate(names):
@@ -180,7 +180,7 @@ def _terminal_time(payload: dict) -> float:
 def plot_payload(payload: dict, path: str):
     """Plot a saved result from the payload alone, without re-solving it.
 
-    `to_dict()` stores every kernel by name and channel, and the node coordinates beside them (`age` on
+    `to_dict()` stores every kernel by name and shock, and the node coordinates beside them (`age` on
     the stationary grid, `time`/`age`/`shock_time` on the triangle).  Curves are drawn through the nodes
     the solve actually produced, not through an interpolant of them: on the triangle that means the
     shock-time slices are the node rows at a few dates, so a jump at a delay line shows where it is instead
@@ -190,7 +190,7 @@ def plot_payload(payload: dict, path: str):
     Raises KeyError if the payload predates the fields it needs; the caller can fall back to re-solving.
     """
     plt = _pyplot()
-    kernels = payload["kernels"]; chans = payload["channels"]; axes_of = payload["axes"]
+    kernels = payload["kernels"]; chans = payload["shocks"]; axes_of = payload["axes"]
     names = list(kernels)                                             # a zero kernel is still a result
     suffix = ", from the saved result"
 
@@ -203,7 +203,7 @@ def plot_payload(payload: dict, path: str):
                 K = np.asarray(kernels[name][ch], dtype=float)
                 if np.abs(K).max() > 1e-12:
                     ax.plot(age, K, lw=1.1, label=ch)
-            ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name}: kernel by channel", fontsize=10)
+            ax.axhline(0, color="k", lw=0.4); ax.set_title(f"{name}: kernel by shock", fontsize=10)
             ax.set_xlabel("shock age")
             if ax.lines[1:]:
                 ax.legend(fontsize=7, frameon=False, ncol=2)

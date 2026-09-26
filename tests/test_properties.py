@@ -22,7 +22,7 @@ def _feasible_perturbation(S, agent, Zpass, rng):
 
 
 def test_stationary_best_response_is_optimal_kyle_back():
-    d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml")); d["params"]["rho"] = 0.0   # the flow loss is the objective only at rho = 0
+    d = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict(); d["params"]["rho"] = 0.0   # the flow loss is the objective only at rho = 0
     S = StationarySolver(ns.Model.from_dict(d)); res = S.solve().require_converged()
     assert (res.diagnostics.statuses["resolution"] is Status.PASSED) and max(res.representation_error.values()) < 1e-9     # well-resolved reference models
     a = S.model.agents[1]; c = S.c; nW = c.nW
@@ -37,7 +37,7 @@ def test_stationary_best_response_is_optimal_kyle_back():
 
 
 def test_spectral_finite_best_response_is_optimal():
-    d = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); d.setdefault("numerics", {})["nodes"] = 8
+    d = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); d.setdefault("numerics", {})["nodes"] = 8
     S = SpectralFiniteSolver(ns.Model.from_dict(d)); res = S.solve().require_converged()
     a = S.model.agents[0]; c = S.c; nW = c.nW
     maps = res.maps; g, out = S.best_response(a, maps)
@@ -58,11 +58,11 @@ def test_map_and_action_iterations_agree():
 
 
 def test_channel_relabelling_and_agent_order_invariance():
-    d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml"))
+    d = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict()
     base = ns.solve(ns.Model.from_dict(d)).require_converged()
     # rename and reorder channels
     ren = {"wV": "fund", "wZ": "noise_flow", "w1": "sig"}
-    d2 = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml")); d2["channels"] = ["sig", "fund", "noise_flow"]
+    d2 = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict(); d2["shocks"] = ["sig", "fund", "noise_flow"]
     for st in d2["states"].values():
         st["noise"] = {ren[k]: v for k, v in st["noise"].items()}
     for ag in d2["agents"].values():
@@ -79,11 +79,11 @@ def test_channel_relabelling_and_agent_order_invariance():
 
 def test_typos_in_model_files_are_rejected():
     import pytest
-    d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml"))
+    d = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict()
     d["agents"]["trader1"]["signals"]["y1"]["dealy"] = 0.5
     with pytest.raises(ValueError, match="unknown key"):
         ns.Model.from_dict(d)
-    d = ns.read_yaml(os.path.join(EX, "ch4_kyle_back.yaml")); d["channels"].append("w_unused")
+    d = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict(); d["shocks"].append("w_unused")
     with pytest.raises(ValueError, match="never loaded"):
         ns.Model.from_dict(d)
 

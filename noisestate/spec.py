@@ -1,6 +1,6 @@
 """Model specification: the game as data.
 
-A model is a finite set of Brownian channels, linear state dynamics, algebraic
+A model is a finite set of Brownian shocks, linear state dynamics, algebraic
 definitions, and agents.  Each agent has controls, signal rows (noisy linear
 observations of states and of other agents' controls, possibly delayed), and a
 quadratic flow loss.  Every coefficient may be a number or a string evaluated
@@ -184,11 +184,11 @@ class Horizon:
     #  TWO DISTINCT QUANTITIES, never aliased.  Before 0.8 one `window` field held both, and the
     #  comment on it read "L for stationary; T for finite and transition" -- so a transition's own
     #  lag window had nowhere to live and was exiled to the nested `stationary` block.
-    window: Optional[float] = None    # L, the lag-truncation length: stationary, and a transition's
+    window: Optional[float] = None    # L, the lag-truncation length: stationary only (a transition's is its past's)
     T: Optional[float] = None         # the terminal time: finite and transition
     # kind "transition" only: the past ({"model": a path or an inline stationary model dict, "initial": [shocks]}),
     # the continuation ("stationary", the default, or "end") and the sizing of the new model's stationary solve
-    # for the continuation ({"window": the past's, "nodes": numerics.continuation_nodes})
+    # for the continuation ({"nodes": numerics.continuation_nodes}; its window is the past's)
     past: Optional[dict] = None
     continuation: Optional[str] = None
     stationary: Optional[dict] = None
@@ -203,7 +203,7 @@ class Horizon:
         deferred there rather than run against a stand-in -- the march builds a real model at each
         T, and each of those is validated.
         """
-        return self.window is not None if self.kind == "stationary" else (self.T is not None or self.window is not None)
+        return self.window is not None if self.kind == "stationary" else self.T is not None
 
     @property
     def extent(self) -> float:
@@ -218,12 +218,8 @@ class Horizon:
             return float(self.window)
         if self.T is not None:
             return float(self.T)
-        #  a transition given `settle` instead of T: the terminal time is not determined yet -- the
-        #  march finds it -- so the template's extent is its continuation window when it has one.
-        if self.window is not None:
-            return float(self.window)
-        raise ValueError("this transition has neither a terminal time T nor a continuation window: "
-                         "its extent is not determined until the settle march sets T")
+        raise ValueError("this transition has no terminal time T: its extent is not determined until the settle "
+                         "march sets T")
     # ---- the resolved numerics (numerics.py): the grid
     breakpoints: Optional[List[float]] = None
     unit: Optional[float] = None
@@ -239,6 +235,26 @@ class Horizon:
 
 
 
+def _file_dumper():
+    """A SafeDumper that writes a list of plain values and a map of numbers on one line (shocks: [w0, w1],
+    params: {p1: 3.0}), and everything else in block style."""
+    import yaml
+
+    class D(yaml.SafeDumper):
+        pass
+
+    def seq(dumper, data):
+        flow = bool(data) and not any(isinstance(v, (dict, list)) for v in data)
+        return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=flow)
+
+    def mapping(dumper, data):
+        flow = bool(data) and all(isinstance(v, (int, float)) for v in data.values())
+        return dumper.represent_mapping("tag:yaml.org,2002:map", data.items(), flow_style=flow)
+    D.add_representer(list, seq)
+    D.add_representer(dict, mapping)
+    return D
+
+
 @dataclass(init=False)
 class Model:
     """The game as data, in one of two spellings.  The field form is the file's structure (from_dict builds it:
@@ -247,7 +263,7 @@ class Model:
     State, Control, Signal, Agent and Param objects, compiled to the same structure through from_dict, so the
     two are one class and one model (`to_dict()` is the file in both cases)."""
     name: str
-    channels: List[str]
+    shocks: List[str]
     states: List[State]
     agents: List[Agent]
     horizon: Horizon
@@ -256,12 +272,12 @@ class Model:
     params: Dict[str, float] = field(default_factory=dict)
     source: Optional[dict] = field(default=None, repr=False)  # the file structure with its expressions, if built from one
 
-    def __init__(self, name: str = "model", channels=None, states=None, agents=None, horizon=None, definitions=None,
+    def __init__(self, name: str = "model", shocks=None, states=None, agents=None, horizon=None, definitions=None,
                  ties=None, params=None, source=None, *, numerics=None):
         from . import expr
         if expr.is_expression_form(states, agents, horizon, definitions):
-            if channels is not None:
-                raise ValueError("Model(): the channels of an expression model are the shocks it uses; do not give channels=")
+            if shocks is not None:
+                raise ValueError("Model(): the shocks of an expression model are the ones it uses; do not give shocks=")
             d = expr.compile_model(name, states, agents, definitions=definitions, ties=ties, horizon=horizon,
                                    numerics=numerics, params=params)
             built = Model.from_dict(d)
@@ -270,7 +286,7 @@ class Model:
             return
         if numerics is not None:
             raise TypeError("Model(): numerics= belongs to the expression form; the field form carries them in its Horizon")
-        self.name = name; self.channels = list(channels or []); self.states = list(states or []); self.agents = list(agents or [])
+        self.name = name; self.shocks = list(shocks or []); self.states = list(states or []); self.agents = list(agents or [])
         self.horizon = horizon if horizon is not None else Horizon()
         self.definitions = list(definitions or []); self.ties = list(ties or [])
         self.params = params if params is not None else {}
@@ -299,7 +315,7 @@ class Model:
         def _plural(n, word):
             return f"{n} {word}" + ("" if n == 1 else "s")
         held = [_plural(len(self.states), "state"), _plural(len(self.agents), "agent"),
-                _plural(len(self.channels), "channel")]
+                _plural(len(self.shocks), "shock")]
         if self.definitions:
             held.append(_plural(len(self.definitions), "definition"))
         if self.ties:
@@ -340,15 +356,9 @@ class Model:
         """The same model on a stationary horizon with lag-truncation length L = `window`."""
         return self._patch_horizon(kind="stationary", window=window, T=None, **fields)
 
-    def with_transition(self, T: float, past, window: Optional[float] = None, **fields) -> "Model":
-        """The same model as a transition on [0, T] from `past`.
-
-        A transition carries BOTH quantities: T is when the game ends, and `window` is the
-        continuation's lag-truncation length L.  `window` defaults to the past's, which is what a
-        transition without one has always used.
-        """
-        extra = {} if window is None else {"window": window}
-        return self._patch_horizon(kind="transition", T=T, past=past, window=extra.get("window"), **fields)
+    def with_transition(self, T: float, past, **fields) -> "Model":
+        """The same model as a transition on [0, T] from `past`.  Its lag window is the past's."""
+        return self._patch_horizon(kind="transition", T=T, past=past, window=None, **fields)
 
     def to_equations(self) -> dict:
         """The model written as equations (noisestate.equations): the form a person reads, and save() writes."""
@@ -376,7 +386,7 @@ class Model:
             if rel is not None and not rel.startswith(os.pardir + os.sep) and rel != os.pardir:
                 past["model"] = rel
         with open(path, "w") as fh:
-            yaml.safe_dump(d, fh, sort_keys=False)
+            yaml.dump(d, fh, Dumper=_file_dumper(), sort_keys=False, width=110)
 
     @classmethod
     def load(cls, path: str) -> "Model":
@@ -548,8 +558,8 @@ class Model:
                 obs = [n for (n, l) in self.expand(r.drift) if n in self.control_names and l == 0]
                 if obs:
                     out.append(f"row {a.name}.{r.name} observes the control(s) {obs}: only their regular (predictable) part is "
-                               "seen; a quantity with a white component (a price that loads on a noise channel) is observed "
-                               "through that channel, e.g. a row with the channel as its noise")
+                               "seen; a quantity with a white component (a price that loads on a shock) is observed "
+                               "through that shock, e.g. a row with the shock as its noise")
             if a.myopic:
                 out.append(f"agent {a.name} is myopic: it ignores the effect of its action on future flows (a competitive pricing agent)")
             lin = [t for t in a.loss if len(t) == 2]
@@ -606,8 +616,8 @@ class Model:
             raise ValueError(f"duplicate quantity names {dup}")
         if CONST in names:
             raise ValueError(f"{CONST!r} is reserved for a constant in a state's drift; name the quantity otherwise")
-        if len(set(self.channels)) != len(self.channels):
-            raise ValueError("duplicate channel names")
+        if len(set(self.shocks)) != len(self.shocks):
+            raise ValueError("duplicate shock names")
         agent_names = [a.name for a in self.agents]
         if len(set(agent_names)) != len(agent_names):
             raise ValueError("duplicate agent names")
@@ -617,8 +627,8 @@ class Model:
         number, and an initial value appears only on a finite horizon."""
         for s in self.states:
             for ch in s.noise:
-                if ch not in self.channels:
-                    raise ValueError(f"state {s.name}: unknown channel {ch}")
+                if ch not in self.shocks:
+                    raise ValueError(f"state {s.name}: unknown shock {ch}")
             for (n, l) in self.expand(s.drift):
                 if l < 0:
                     raise ValueError(f"state {s.name}: its drift depends on the future value {n}@{l}; drifts must be causal")
@@ -657,8 +667,8 @@ class Model:
                              f"nothing to solve for (give it a row, or drop the agent and its controls)")
         for r in a.signals:
             for ch in r.noise:
-                if ch not in self.channels:
-                    raise ValueError(f"row {a.name}.{r.name}: unknown channel {ch}")
+                if ch not in self.shocks:
+                    raise ValueError(f"row {a.name}.{r.name}: unknown shock {ch}")
             if not r.noise:
                 raise ValueError(f"row {a.name}.{r.name} needs a noise loading (exact rows are not supported)")
             if all(v == 0 for v in r.noise.values()):
@@ -734,11 +744,11 @@ class Model:
                                      f"(same rows, losses and coefficients up to relabelling); untie them or fix the model")
 
     def _check_channels_used(self) -> None:
-        """Every channel is loaded by a state or a signal row."""
+        """Every shock is loaded by a state or a signal row."""
         used = {ch for s in self.states for ch in s.noise} | {ch for a in self.agents for r in a.signals for ch in r.noise}
-        unused = [ch for ch in self.channels if ch not in used]
+        unused = [ch for ch in self.shocks if ch not in used]
         if unused:
-            raise ValueError(f"channel(s) {unused} are never loaded by a state or a signal row (misspelled?)")
+            raise ValueError(f"shock(s) {unused} are never loaded by a state or a signal row (misspelled?)")
 
     def _check_control_terms(self) -> None:
         """Every control of an agent enters its loss (else the best response is undetermined), and a control with
@@ -844,7 +854,7 @@ class Model:
         at least 2 nodes; the other kinds refuse all three blocks (a keyword past goes to solve(past=))."""
         hz = self.horizon
         if hz.kind != "transition":
-            for k in ("past", "continuation", "stationary", "settle"):
+            for k in ("past", "continuation", "settle"):
                 if getattr(hz, k) is not None:
                     raise ValueError(f"horizon.{k} belongs to horizon.kind 'transition', not {hz.kind!r} (a past given by keyword goes "
                                      "to solve(model, past=...))")
@@ -869,17 +879,15 @@ class Model:
                 raise ValueError("horizon.settle needs continuation 'stationary': the march measures the rules against the new model's "
                                  "stationary equilibrium")
         if hz.stationary is not None:
-            self._check_keys("horizon.stationary", hz.stationary, {"window", "nodes"})
-            if hz.stationary.get("window") is not None and not hz.stationary["window"] > 0:
-                raise ValueError("horizon.stationary.window must be positive")
+            self._check_keys("horizon.stationary", hz.stationary, {"nodes"})
             n = hz.stationary.get("nodes")
             if n is not None and (n != int(n) or n < 2):
                 raise ValueError("numerics.continuation_nodes must be an integer of at least 2")
 
     # ------------------------------------------------------- construction
     _KEYS = {
-        "model": {"name", "params", "channels", "states", "definitions", "agents", "ties", "horizon", "numerics"},
-        "horizon": {"kind", "discount", "window", "T", "past", "continuation", "stationary", "settle"},
+        "model": {"name", "params", "shocks", "states", "definitions", "agents", "ties", "horizon", "numerics"},
+        "horizon": {"kind", "discount", "window", "T", "past", "continuation", "settle"},
         "numerics": {"engine", "nodes", "unit", "unit_range", "breakpoints", "continuation_nodes", "tol", "damping", "max_newton",
                      "variable", "settings"},
         "state": {"drift", "noise", "initial"},
@@ -912,8 +920,6 @@ class Model:
         for k in ("past", "continuation"):
             if getattr(hz, k) is not None:
                 horizon[k] = copy.deepcopy(getattr(hz, k))
-        if hz.stationary and hz.stationary.get("window") is not None:
-            horizon["stationary"] = {"window": hz.stationary["window"]}
         numerics = self.numerics.to_dict()
         if self.source is not None and not numeric:
             # the source (parameter expressions intact) with the live horizon: horizon fields may be changed
@@ -944,8 +950,6 @@ class Model:
             for k, v in horizon.items():
                 if k == "past" and k in hsrc and _eval_past_block(copy.deepcopy(hsrc[k]), seen) == v:
                     hout[k] = hsrc[k]; continue           # the past block with its expressions (the loadings evaluated agree)
-                if k == "stationary" and isinstance(hsrc.get(k), dict) and same(hsrc[k].get("window"), v["window"]):
-                    hout[k] = {"window": hsrc[k]["window"]}; continue
                 hout[k] = hsrc[k] if k in hsrc and same(hsrc[k], v) else v      # unchanged: keep the source's spelling (an expression)
             nout = {}
             for k, v in numerics.items():
@@ -962,7 +966,7 @@ class Model:
 
         def ex(e: Dict[str, float]) -> Dict[str, float]:
             return {atom(k): float(v) for k, v in e.items()}
-        d = {"name": self.name, "channels": list(self.channels),
+        d = {"name": self.name, "shocks": list(self.shocks),
              "states": {s.name: {"drift": ex(s.drift), "noise": ex(s.noise), **({"initial": float(s.initial)} if s.initial is not None else {})}
                         for s in self.states},
              "definitions": {x.name: ex(x.expr) for x in self.definitions},
@@ -1016,7 +1020,7 @@ class Model:
         building one only to take it apart again would be ceremony.
 
         ``audience`` is ``"all"`` (the default), one agent name, or an iterable of agent names.
-        Noise channels named by the row are added to the model when absent.  Adding a name an
+        Shocks named by the row are added to the model when absent.  Adding a name an
         agent already has is an error, never a silent replacement -- use without_signal() first.
         The operation is model construction only: it does not mutate or solve this model.
         """
@@ -1082,7 +1086,7 @@ class Model:
             raise ValueError(f"with_signals(): unknown agent(s) {unknown}; agents: {known}")
 
         d = self.to_dict()
-        d.setdefault("channels", [])
+        d.setdefault("shocks", [])
         for row_name, block in rows.items():
             if not isinstance(row_name, str) or not row_name:
                 raise ValueError(f"with_signals(): signal names must be non-empty strings, not {row_name!r}")
@@ -1092,8 +1096,8 @@ class Model:
             if not isinstance(block.get("drift") or {}, dict) or not isinstance(block.get("noise") or {}, dict):
                 raise ValueError(f"with_signals(): signal {row_name!r} drift and noise must be mappings")
             for channel in (block.get("noise") or {}):
-                if channel not in d["channels"]:
-                    d["channels"].append(channel)
+                if channel not in d["shocks"]:
+                    d["shocks"].append(channel)
             clean = copy.deepcopy(block)
             if clean.get("delay") == 0:
                 clean.pop("delay", None)
@@ -1134,7 +1138,7 @@ class Model:
         for spec in d["agents"].values():
             for row in (spec.get("signals") or {}).values():
                 used |= set(row.get("noise") or {})
-        d["channels"] = [c for c in d.get("channels", []) if c in used]
+        d["shocks"] = [c for c in d.get("shocks", []) if c in used]
         return self._rebuilt(d)
 
     def with_horizon(self, horizon=None, **fields) -> "Model":
@@ -1243,13 +1247,7 @@ class Model:
         nm, kind = _numerics_block(d)
         from ._settings import Settings
         cls._check_keys("numerics", nm, cls._KEYS["numerics"])
-        stationary = hz.get("stationary")
-        if isinstance(stationary, dict):
-            stationary = {k: eval_coef(v, params) if k == "window" else v for k, v in stationary.items()}
-            if nm.get("continuation_nodes") is not None:
-                stationary["nodes"] = nm["continuation_nodes"]
-        elif stationary is None and nm.get("continuation_nodes") is not None:
-            stationary = {"nodes": nm["continuation_nodes"]}
+        stationary = None if nm.get("continuation_nodes") is None else {"nodes": nm["continuation_nodes"]}
         try:
             settings = Settings.of(nm.get("settings"))
         except TypeError as exc:
@@ -1296,7 +1294,7 @@ class Model:
                                 terminal=[[eval_coef(t[0], params)] + [str(x) for x in t[1:]] for t in (v.get("terminal") or [])],
                                 terminal_constant=eval_coef(v.get("terminal_constant", 0.0), params)))
         from types import MappingProxyType
-        m = cls(name=d.get("name", "model"), channels=list(d.get("channels") or []), states=states,
+        m = cls(name=d.get("name", "model"), shocks=list(d.get("shocks") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
                 params=MappingProxyType(params), source=copy.deepcopy(d))     # read-only: see with_params()
         m.validate()                                           # structural errors first (its expansions also record
@@ -1334,10 +1332,12 @@ def _horizon_length(hz: dict, kind: str, params, which: str):
                                  f"its length is horizon.T")
             return None
         if kind == "transition":
-            #  a transition's L is its CONTINUATION's, which comes from the past unless the file
-            #  states one.  Defaulting it to a number would put a meaningless 8.0 on every
-            #  transition that never asked for one.
-            return None if hz.get("window") is None else eval_coef(hz["window"], params)
+            #  a transition's L is its past's: the buffer after T is one window of the past, on which the
+            #  stationary maps are read at the node's age, so there is no other value it could take
+            if hz.get("window") is not None:
+                raise ValueError("a transition's window is its past's (the lag window the old regime was solved on); "
+                                 "drop horizon.window, and solve the past with a longer window to change it")
+            return None
         return eval_coef(hz.get("window", 8.0), params)
     if not wants_T:
         if hz.get("T") is not None:

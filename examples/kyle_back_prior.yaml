@@ -16,34 +16,30 @@
 #   noisestate solve examples/kyle_back_prior.yaml --plot prior.png
 name: kyle_back_prior
 params: {eps: 0.1, Sigma0: 1.0, sigma_Z: 1.0}
-channels: [wZ]
+shocks: [wZ]
 states:
-  V: {drift: {}, noise: {}}           # the value: constant, drawn at time 0- (the initial shock below)
+  V: '0'
 agents:
   market_maker:
-    controls: [P]
+    controls: P
+    observes:
+      flow: D1 dt + sigma_Z dwZ
+    loss: P^2 - 2 P V
     myopic: true
-    signals:
-      flow: {drift: {D1: 1.0}, noise: {wZ: sigma_Z}}
-    loss: [[1.0, P, P], [-2.0, P, V]]
   trader1:
-    controls: [D1]
-    signals:
-      flow: {drift: {}, noise: {wZ: sigma_Z}}     # the order flow net of its own orders; V(0) is seen on it at once
-    loss: [[-1.0, D1, V], [1.0, D1, P], [eps, D1, D1]]
-numerics: {nodes: 12}
+    controls: D1
+    observes:
+      flow: sigma_Z dwZ
+    loss: -D1 V + D1 P + eps D1^2
 horizon:
   kind: transition
-  T: 2.0
   discount: 0.0
+  T: 2.0
   past:
     initial:
-      - {name: v0, loads: {V: "sqrt(Sigma0)"}, rows: {trader1.flow: 1.0}}
+    - name: v0
+      loads:
+        V: sqrt(Sigma0)
+      rows: {trader1.flow: 1.0}
   continuation: end
-# The summary flags NOT A MINIMUM on trader1 (smallest curvature -1.0e-02 of the largest).  It reads
-# as a saddle but behaves like the discretisation: the curvature shrinks monotonically with the grid,
-# -1.45e-02, -1.02e-02, -8.26e-03, -6.71e-03, -5.63e-03 at 8, 12, 16, 20 and 24 nodes, about n^-0.85,
-# and the offending eigenvector sits on the diagonal a = t (the oldest observation each map reads),
-# alternating in sign between neighbouring age nodes -- a quadrature direction, not a strategy.
-# res.refine() settles it: it re-solves on a finer grid and records the curvature there, and a shrinking
-# one overturns the verdict, leaving the honest NOT RESOLVED at 12 nodes.
+numerics: {nodes: 12}
