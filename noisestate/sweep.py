@@ -19,6 +19,7 @@ import numpy as np
 import yaml
 
 from .spec import Model
+from .numerics import Numerics
 from .past import Past
 from .results import TriangleResult
 from . import engines
@@ -74,29 +75,33 @@ class SweepPoint:
                 "change": self.change, "jump": self.jump, "result": self.result.to_dict()}
 
 
-def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], numerics=None,
-          solver_kw: Optional[dict] = None, solve_kw: Optional[dict] = None, verbose: bool = False) -> "List[SweepPoint]":
+def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], numerics=None, *, past=None,
+          continuation=None, verbose: bool = False, **options) -> "List[SweepPoint]":
     """Solve the model at each value of `param` (a key of `params`, or "horizon.window" / "horizon.T": the
     stationary model, the horizon T of a finite one or of a transition, which then warm-starts each point from
     the previous maps read on the new grid, the stationary maps beyond it), warm-starting each point from
     the linear extrapolation of the last two equilibria in the parameter (a secant predictor;
-    markedly more robust at hard points such as a small trading cost).  numerics (a Numerics or a dict of
-    its fields) is laid over the model's own at every point; solver_kw goes to each point's engine (verbose,
-    past, continuation), solve_kw to each point's solve() (tol, max_evaluations, deadline,
-    progress, diagnostics, start); a point stopped at a bound is a row with converged False, and the sweep goes on.
+    markedly more robust at hard points such as a small trading cost).  The options are solve()'s: numerics
+    (a Numerics or a dict of its fields, or its fields given directly, nodes=12) is laid over the model's own
+    at every point; past and continuation go to each point's engine; the rest (max_evaluations, deadline,
+    progress, diagnostics, start_policy) to each point's solve.  A point stopped at a bound is a row with
+    converged False, and the sweep goes on.
     Returns [{"param", "value", "result", "seconds", "evaluations", "converged", "change", "jump"}] in the
     given order; "change" is the relative change of the strategy from the previous point on the same grid
     (the raw maps; the action kernels on the finite spectral engine)
     and "jump" flags a change more than five times the sweep's median (a possible branch jump).  A transition
-    model's past is solved once and shared by every point (solver_kw={"past": ...} gives it); its
-    continuation, the new model's stationary equilibrium, is solved at each point."""
+    model's past is solved once and shared by every point (past= gives it); its continuation, the new model's
+    stationary equilibrium, is solved at each point."""
     base = _load_dict(model)
     if param not in HORIZON_LENGTHS and param not in (base.get("params") or {}):
         raise ValueError(f"{param!r} is not a parameter of the model (params: {sorted((base.get('params') or {}))}; "
                          "'horizon.window' sweeps the lag window L, 'horizon.T' the terminal time)")
-    solver_kw = dict(solver_kw or {})
-    if (base.get("horizon") or {}).get("kind") == "transition" and "past" not in solver_kw:
-        solver_kw["past"] = Past.from_block(Model.from_dict(base).horizon.past)      # the past solved once for every point
+    grid = {k: options.pop(k) for k in list(options) if k in Numerics.field_names()}
+    if grid:
+        numerics = Numerics.of(numerics).merged(Numerics.of(grid))      # sweep(..., nodes=12), as in solve()
+    if (base.get("horizon") or {}).get("kind") == "transition" and past is None:
+        past = Past.from_block(Model.from_dict(base).horizon.past)      # the past solved once for every point
+    solver_kw = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
     built: List[dict] = []
     prev = prev2 = None
     for v in values:
@@ -106,7 +111,7 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], n
         else:
             d.setdefault("params", {})[param] = float(v)
         m = Model.from_dict(d)
-        S = engines.solver(m, numerics, **solver_kw)
+        S, num = engines._build(m, numerics, **solver_kw)
         t0 = time.time()
         start_from = None
         if prev is not None and not S.same_grid(prev.compiled) and hasattr(S, "warm_maps_from"):
@@ -119,7 +124,7 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], n
                     start_from = {k: w1[k] + (w1[k] - w0[k]) * (float(v) - e1) / (e1 - e0) for k in w1}
             if start_from is None:
                 start_from = w1
-        kw = dict(solve_kw or {})
+        kw = {**num.solve_kw(), **options}
         if start_from is None:
             kw["start_policy"] = default_start(S, kw.get("start_policy"))
         res = S.solve(start_from=start_from, **kw)

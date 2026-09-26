@@ -213,9 +213,9 @@ today and no classification appears. The evidence fields are populated and seria
 
 | call | use it when |
 |---|---|
-| `ns.sweep(model, param, values, …)` | one parameter along a path, warm-started from a secant predictor. Returns `SweepPoint`s |
-| `model.sweep(p1=[0.3, 1, 3])` | the same, as a method |
-| `ns.compare({name: model, …}, baseline=, stability=)` | several **structurally different** models against one baseline |
+| `ns.sweep(model, param, values, **options)` | one parameter along a path, warm-started from a secant predictor; the options are `solve()`'s (`nodes=12`, `max_evaluations=`, `past=`). Returns `SweepPoint`s |
+| `model.sweep(p1=[0.3, 1, 3], nodes=12)` | the same, as a method |
+| `ns.compare({name: model, …}, baseline=, stability=, **options)` | several **structurally different** models against one baseline |
 | `ns.transition(old, new, T)` | the path from one stationary regime to another |
 | `ns.transition_gap(old, new)` | the `T = 0` case: everyone applies the new rules at once, inheriting the old state |
 

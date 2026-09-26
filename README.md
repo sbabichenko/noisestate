@@ -505,7 +505,7 @@ the limit in `res.message`.
 exception it raises cancels the solve.  `diagnostics=False` skips the checks at the end (`res.foc` and
 `res.second_order` stay empty, those checks report `skipped`) and halves a warm-started re-solve.
 `start_policy="coarse"` solves first at half the nodes; `start_from=` takes explicit kernels or maps.
-`sweep(..., solve_kw={...})` forwards these to every point.  Grids and their operator caches are shared
+`sweep()` and `compare()` take the same options and apply them at every point.  Grids and their operator caches are shared
 across solves in a process (`ns.clear_grid_cache()` releases them).
 
 ## The guards

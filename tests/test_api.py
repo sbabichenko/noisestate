@@ -304,7 +304,7 @@ def test_the_zero_start_is_explicit_with_a_continuation():
     assert d.solve_kw["start_policy"] == "stationary" and z.solve_kw["start_policy"] == "zero" and e.solve_kw["start_policy"] == "zero"
     assert d.residual != z.residual
     rows = ns.sweep(new.with_transition(6.0, past={"model": old.model.to_dict()}, continuation="stationary"), "p1",
-                    [10.0], solve_kw={"max_evaluations": 1})
+                    [10.0], max_evaluations=1)
     assert rows[0].result.solve_kw["start_policy"] == "stationary"
 
 

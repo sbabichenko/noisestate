@@ -338,14 +338,15 @@ class Model:
         from . import solve
         return solve(self, numerics, **solve_kw)
 
-    def sweep(self, numerics=None, solver_kw=None, solve_kw=None, verbose: bool = False, **values):
-        """noisestate.sweep over one parameter given by keyword, `model.sweep(p1=[0.3, 1, 3])`: the rows, each
-        with .value, .result, .jump (a SweepPoint, a dict)."""
+    def sweep(self, numerics=None, **kw):
+        """noisestate.sweep over the one parameter given by keyword, `model.sweep(p1=[0.3, 1, 3], nodes=12)`; the
+        other keywords are sweep()'s options.  The rows, each with .value, .result, .jump (a SweepPoint)."""
         from . import sweep
-        if len(values) != 1:
-            raise ValueError(f"sweep() takes exactly one parameter by keyword, e.g. sweep(p1=[...]); got {sorted(values)}")
-        (param, vals), = values.items()
-        return sweep(self, param, list(vals), numerics=numerics, solver_kw=solver_kw, solve_kw=solve_kw, verbose=verbose)
+        swept = [k for k in kw if k in self.params]
+        if len(swept) != 1:
+            raise ValueError(f"sweep() takes exactly one parameter by keyword, e.g. sweep(p1=[...]); got {swept}")
+        param = swept[0]
+        return sweep(self, param, list(kw.pop(param)), numerics, **kw)
 
     def with_finite(self, T: float, **fields) -> "Model":
         """The same model on the finite horizon [0, T].  T is the terminal time, not a lag window."""

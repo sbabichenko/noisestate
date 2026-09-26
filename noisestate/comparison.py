@@ -155,8 +155,9 @@ class ComparisonResult:
 
 
 def compare(models: Mapping[str, object], *, baseline: Optional[str] = None, numerics=None,
-            stability: bool = False, adjustment: float = 0.5, solve_kw: Optional[dict] = None) -> ComparisonResult:
-    """Solve named models independently and compare their costs with one baseline.
+            stability: bool = False, adjustment: float = 0.5, **options) -> ComparisonResult:
+    """Solve named models independently and compare their costs with one baseline.  The other keywords are
+    solve()'s options (numerics fields such as nodes=12 among them), used for every scenario.
 
     Scenarios must have the same agents, horizon kind, discount, window and cost
     convention.  ``stability=True`` adds the response-dynamics classification;
@@ -190,7 +191,7 @@ def compare(models: Mapping[str, object], *, baseline: Optional[str] = None, num
     solved = {}
     expected_cost_kind = None
     for name, model in prepared.items():
-        result = solve(model, Numerics.of(numerics), **dict(solve_kw or {}))
+        result = solve(model, Numerics.of(numerics), **options)
         if expected_cost_kind is None:
             expected_cost_kind = result.cost_kind
         elif result.cost_kind != expected_cost_kind:

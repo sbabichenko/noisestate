@@ -91,7 +91,7 @@ def test_sweeps_over_the_horizon_and_over_the_change_size():
     m = example("ch3_two_player")
     d = m.with_params(p1=10.0).to_dict()
     d["horizon"] = {"kind": "transition", "T": 6.0, "past": {"model": EX + "ch3_two_player.yaml"}}; d["numerics"] = {"nodes": 8}
-    rows = ns.sweep(d, "horizon.T", [6.0, 9.0], solve_kw={"start_policy": "stationary"})
+    rows = ns.sweep(d, "horizon.T", [6.0, 9.0], start_policy="stationary")
     assert [r.value for r in rows] == [6.0, 9.0] and all(r.converged for r in rows) and rows[1].change is None
     assert rows[0].result.past is rows[1].result.past and rows[1].result.model.horizon.T == 9.0
     alone = ns.solve({**d, "horizon": {**d["horizon"], "T": 9.0}}, start_policy="stationary")

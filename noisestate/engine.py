@@ -95,8 +95,11 @@ def singular_system_message(name: str) -> str:
 
 
 class EngineBase(MeanLayer):
-    """The passive-world best response and the outer fixed point, written once against a small
-    kernel algebra that each compiled model supplies and a set of hooks the engines fill in.
+    """What every engine shares: the packing of the tie representatives, the passive world and rows, the
+    outer fixed point, the result, the diagnostics loop, the second-order Lanczos and the mean layer,
+    written against a small kernel algebra that each compiled model supplies and a set of hooks the
+    engines fill in.  The best response itself is each engine's: the stationary engine's on its kernel
+    algebra (stationary.py), the spectral engine's on its operators (finite_free.py), the cell engine's.
 
     Layout.  A kernel is a nodal vector over the engine's N nodes (shock ages on the stationary
     grid, (time, age) nodes on the triangle).  The world Z is (n_prim N, ncol): rows in
@@ -106,9 +109,8 @@ class EngineBase(MeanLayer):
     row's map is stored at the shifted time or age); its action kernels are (nU, N, nW); the
     first-order-condition unknown gamma is the maps flattened in (control, row, node) order, and
     a mask over map nodes is (nR N,) in (row, node) order.  The cell engine has its own layouts
-    (Z (n_prim, N, ncol) per cell, maps (nU, nR, N, N)) and overrides best_response wholesale, so
-    the base's best-response pieces (_seen_rows to _foc_system, _decompose, _second_order) never
-    see them; it uses the packing, the fixed point, _finish and the mean layer only.  The spectral
+    (Z (n_prim, N, ncol) per cell, maps (nU, nR, N, N)); it uses the packing, the fixed point,
+    _finish and the mean layer only.  The spectral
     finite engine (finite_spectral.py) overrides best_response, _seen_rows, _representation_error and
     expected_cost with the operator form of finite_free.py on spectral_operators.py (the same pieces as
     applications of the line paths and sparse reads of its compiled model, spectral_compiled.py, whose
@@ -127,13 +129,12 @@ class EngineBase(MeanLayer):
         hook                 purpose                                                   overridden by
         __init__             build self.c, self.shapes; record the options in solver_kw  all three
         pack, unpack         maps of the tie representatives <-> one vector [flat]     cells
-        best_response        (raw map, {"gamma", "action", "Zfull", ...}) [FOC solve]  spectral, cells
-        _impulse_responses   R with some observers' reactions removed [R]              stationary
+        best_response        (raw map, {"gamma", "action", "Zfull", ...}) [abstract]  all three
+        _representation_error  relative residual of the projection [abstract]         stationary, spectral
+        _impulse_responses   R with some observers' reactions removed [R]              none
         _passive_world       Zpass adjusted [Zpass]                                    none
         _identified          mask of the map nodes that read something [all True]     stationary, spectral
-        _solve_foc           gamma from Amat gamma = -bvec [abstract]                  stationary
         _project             raw maps reproducing action kernels [abstract]            stationary, spectral
-        _lead_term           FOC term of a lead [NotImplementedError]                  stationary
         _embedded_curvature  optional: curvature of a direction on a longer window     stationary
         interpolate_maps     a coarser result's maps on this grid [NotImplementedError] stationary, spectral
         maps_from_actions    raw maps reproducing action kernels in their world [abstract]  stationary, spectral
@@ -162,6 +163,7 @@ class EngineBase(MeanLayer):
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.5, 60       # solve() defaults; each engine sets its own
     ANDERSON_M = tunable("anderson_m")              # Anderson memory (settings.anderson_m)
     ACTIONS = True                  # whether the engine can iterate on action kernels
+    FOC_RCOND = tunable("foc_rcond")    # a best-response system whose reciprocal condition estimate is below this is singular (settings)
     SECOND_ORDER_TOL = tunable("second_order_tol")      # curvature below which a negative value is window truncation (settings)
     SECOND_ORDER_DENSE = tunable("second_order_dense")  # strategy dimension up to which the form is built densely (settings)
 
@@ -288,106 +290,6 @@ class EngineBase(MeanLayer):
         return self._seen_rows(agent, Zpass, set(agent.controls))
 
     # ------------------------------------------------- best-response pieces
-    def _row_support(self, agent: Agent, rows):
-        """Which (row, channel) regular kernels are not identically zero, (nR, nW); the operators of the
-        zero ones are zero and are skipped (a channel the agent's rows never carry, a row that reads
-        nothing regular).  Rows are grouped by observation delay so one batched kernel call serves all
-        rows of a delay."""
-        sup = np.stack([np.any(y != 0, axis=0) for y in rows]) if rows else np.zeros((0, self.c.nW), dtype=bool)
-        groups = {}
-        for r in range(len(rows)):
-            groups.setdefault(float(self.c.rows[agent.name][r][3]), []).append(r)
-        return sup, groups
-
-    def _row_operator(self, agent: Agent, rows, inst):
-        """Per channel, the operator (N x nR N) mapping stacked row maps gamma to the action kernel:
-        c_k = sum_r (Conv[y_rk] + E_rk S_delta) gamma_r."""
-        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
-        Gk = np.zeros((nW, N, nR * N))
-        sup, groups = self._row_support(agent, rows)
-        for d, rs in groups.items():
-            pairs = [(r, k) for r in rs for k in np.where(sup[r])[0]]
-            if pairs:
-                ops = c.conv_rows(np.stack([rows[r][:, k] for r, k in pairs], axis=1), d)     # one call per delay
-                for i, (r, k) in enumerate(pairs):
-                    Gk[k, :, r * N:(r + 1) * N] = ops[i]
-        for r in range(nR):
-            for (k, age, w) in inst[r]:
-                Gk[k, :, r * N:(r + 1) * N] += w * c.instant(age, c.rows[agent.name][r][3])
-        return Gk
-
-    def _response_operators(self, agent: Agent, R: np.ndarray):
-        """Per control, the operator (n_prim N x N) giving the primary kernels' response to that
-        control's action kernel: Z = Zpass + Resp_u c_u, with the own block equal to the action."""
-        c = self.c; N = c.N
-        out = []
-        for ui, u in enumerate(agent.controls):
-            Cu = c.response(R[:, ui].reshape(len(c.prim), N), c.prim.index(u))
-            Cu[c.block(u)] = np.eye(N)
-            out.append(Cu)
-        return out
-
-    def _foc_operators(self, agent: Agent, R: np.ndarray, atoms: bool = False):
-        """Per control, the operator (N x n_prim N) mapping the primary kernels of one channel to the
-        first-order-condition kernel: instantaneous derivative, discounted continuation through the
-        impulse responses R, delayed reads of own lagged controls, and the past-date term of a lead.
-        Called with the physical impulse responses (all reactions off) for the wedge decomposition.
-        With atoms=True returns (Fu, Ms), Ms the per-control operators M (n_atoms, N, N) on the loss
-        atoms' kernels that Fu contracts with Q (the mean part applies them to the targets q)."""
-        c = self.c; N = c.N; n_prim = len(c.prim) * N
-        atms, Q, q = c.loss[agent.name]
-        # an atom operator is one N x N block, the shift into the atom's own primary: the position is the
-        # atom's, so ask for the block rather than build the full-width operator and scan its zeros for it
-        AO_blocks = [[c.atom_block(at)] for at in atms]
-        AO_eye = [[_is_eye(blk) for p, blk in blocks] for blocks in AO_blocks]      # an undelayed atom reads through the identity
-        Fu, Ms = [], []
-        for ui, u in enumerate(agent.controls):
-            # op = sum_j M_j (Q zeta)_j with M_j the operator on atom j: identity for the instantaneous
-            # term, continuation, delayed own read, lead term; contracted as sum_i (sum_j Q_ji M_j) AO_i
-            # so the products are N x N x N per atom block instead of N x N x n_prim N per atom
-            M = np.zeros((len(atms), N, N))
-            if (u, 0.0) in atms:
-                M[atms.index((u, 0.0))] += np.eye(N)
-            if not agent.myopic:
-                # impulse responses of every atom: its block against its own primary's rows of R
-                Rj = np.stack([sum(A @ R[p * N:(p + 1) * N, ui] for p, A in AO_blocks[j]) for j in range(len(atms))], axis=1)
-                CR = c.continuation(Rj)
-                for j, (name, lag) in enumerate(atms):
-                    if name in agent.controls:
-                        if name == u and lag > 0:          # delayed read of the control itself
-                            M[j] += np.exp(-c.rho * lag) * c.own_lag_read(lag)
-                        continue                            # own reactions: envelope
-                    M[j] += CR[j]
-                    if lag < 0:
-                        M[j] += self._lead_term(agent, R[:, ui], name, lag)
-            MQ = np.tensordot(Q.T, M, axes=1)              # MQ[i] = sum_j Q[j, i] M_j
-            op = np.zeros((N, n_prim))
-            for i in range(len(atms)):
-                if np.any(MQ[i]):
-                    for (p, blk), eye in zip(AO_blocks[i], AO_eye[i]):
-                        op[:, p * N:(p + 1) * N] += MQ[i] if eye else MQ[i] @ blk
-            Fu.append(op); Ms.append(M)
-        return (Fu, Ms) if atoms else Fu
-
-    def _lead_term(self, agent: Agent, Ru: np.ndarray, name: str, lag: float) -> np.ndarray:
-        """Hook (stationary only): the FOC term of a lead (name@lag, lag < 0) from the flows before t
-        that read the quantity after t.  Receives the impulse responses Ru (n_prim N,) of the
-        primaries to one of the agent's controls and the led primary's name; must return an (N, N)
-        operator on that atom's (Q zeta) kernel, added to the atom's continuation.  Called only when
-        a loss atom has a negative lag, which the finite engines reject at compile time
-        (reject_leads), so their NotImplementedError is never reached."""
-        raise NotImplementedError("leads are supported by the stationary engine only")
-
-    def _projection_operator(self, agent: Agent, rows, inst):
-        """H (nR N x nW N): E[phi_t dY_r(t - b)] for every row r and lag b, from the FOC kernels."""
-        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
-        H = np.zeros((nR * N, nW * N))
-        for r in range(nR):
-            H[r * N:(r + 1) * N] += c.projection_rows(rows[r], c.rows[agent.name][r][3])
-            for (k, age, w) in inst[r]:
-                H[r * N:(r + 1) * N, k * N:(k + 1) * N] += w * c.instant_adjoint(age, c.rows[agent.name][r][3])
-        return H
-
     # ----------------------------------------------------- best response
     def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
         """Hook (no engine overrides it): the responses R (n_prim N, nU) of the primary kernels
@@ -403,18 +305,6 @@ class EngineBase(MeanLayer):
         """Hook (no engine overrides it): the agent's passive world Zpass (n_prim N, nW), its own
         strategy off, before the passive rows are read from it.  Must return the same shape."""
         return Zpass
-
-    def _solve_foc(self, agent: Agent, Amat: np.ndarray, bvec: np.ndarray) -> np.ndarray:
-        """Hook (stationary): gamma solving Amat gamma = -bvec with the engine's own regularisation.  Receives the FOC system of _foc_system on every map node, (nG, nG) and
-        (nG,) with nG = nU nR N in (control, row, node) order, including the exactly zero rows and
-        columns of the nodes _identified masks out; must return gamma (nG,) in the same order, zero
-        at the masked nodes (best_response reshapes it to (nU, nR, N)).  The base assumes a
-        singular system raises ValueError with singular_system_message(agent.name) (the stationary
-        engine on np.linalg.solve's exact test, the spectral engine on _solve_regular's condition
-        estimate), which solve_fixed_point passes through the Newton polish unchanged."""
-        raise NotImplementedError
-
-    FOC_RCOND = tunable("foc_rcond")    # a best-response system whose reciprocal condition estimate is below this is singular (settings)
 
     def _solve_regular(self, agent: Agent, A: np.ndarray, b: np.ndarray) -> np.ndarray:
         """x solving A x = b for the best-response system of `agent` on its kept unknowns, refusing a
@@ -462,20 +352,6 @@ class EngineBase(MeanLayer):
             self._rphys[agent.name] = self.c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, ncol:]
         return self._rphys[agent.name]
 
-    def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk, maps=None) -> None:
-        """The second-order check and the FOC decomposition (instantaneous/physical/wedge).  Tied agents
-        share the second-order check of their representative (the same problem up to relabelling)."""
-        c = self.c; nW = c.nW; Zfull = out["Zfull"]
-        out["second_order"] = self._shared_second_order(
-            agent, lambda: self._second_order(agent, Resp, Gk, np.tile(self._identified(agent), len(agent.controls)), maps))
-        Fphys = self._foc_operators(agent, self._physical_responses(agent, c.nW))
-        dec = {}
-        for ui, u in enumerate(agent.controls):
-            phi = np.stack([Fu[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
-            phi_phys = np.stack([Fphys[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
-            dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
-        out["decomp"] = dec
-
     def free_mask(self, variable: str) -> Optional[np.ndarray]:
         """Hook: the free entries of the packed fixed-point vector (a boolean mask), or None when every entry
         is (the default; the spectral finite engine under freeze_before fixes part of its maps)."""
@@ -491,92 +367,6 @@ class EngineBase(MeanLayer):
         the same for tied agents up to relabelling, since they share the representative's check."""
         return np.ones(len(agent.signals) * self.c.N, dtype=bool)
 
-    def _second_order(self, agent: Agent, Resp, Gk, keep, maps=None) -> Optional[dict]:
-        """Second-order condition of the best response: the agent's objective is a quadratic form in its
-        strategy, and a first-order condition is a minimum only if that form is positive on the
-        feasible strategies (those its rows can express).  The form is computed exactly from the
-        cost's own Gram matrix: J(delta) = 1/2 delta' M delta with M = T' G T, T the map from a
-        strategy to the world it produces and G the loss form.  Its extreme eigenvalues come from
-        Lanczos on matvecs.  With a past the world has the initial shocks' columns after the channels',
-        each under the point form of the line s = 0 (_loss_form(agent, start_from=True)), as expected_cost
-        integrates them.  Returns {"min", "max", "ok", "converged"} with min/max the eigenvalues
-        of M scaled by max.  The objective is a quadratic form in the strategy at every discount,
-        because it enters the objective only as the strictly positive weight e^{-rho t} on a
-        time-local Hessian, so the form's SIGN -- which is the whole verdict -- is the same at every
-        rho and the check is made on the average-cost system.
-        The objective is truncated at the window, so a strategy can push a little loss past the edge:
-        curvatures within SECOND_ORDER_TOL of the largest are treated as that, not as a saddle.
-        When the form is not positive and the engine defines _embedded_curvature(agent, maps, idx,
-        vmin) (an optional hook, the stationary engine's), that is asked for the curvature of the
-        offending direction on a longer window: a float, or None when it cannot say; a positive
-        value turns the verdict into ok with "edge" and "embedded" recorded."""
-        c = self.c
-        N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
-        GAO = self._loss_form(agent)                                             # symmetric loss form on the world
-        ncol = Gk.shape[0]                                                      # the channels, then a past's initial shocks
-        forms = [(GAO, slice(0, nW))]                                           # (loss form, its columns of the world)
-        if ncol > nW:
-            forms.append((self._loss_form(agent, start_from=True), slice(nW, ncol)))
-        idx = np.where(keep)[0]
-        Nm = Gk.shape[2] // nR if nR else N                                     # a row's map block (N, plus discrete weights with a past)
-
-        def T(delta_full):                     # strategy -> world, per column: (n_prim N, ncol)
-            Zd = np.zeros((GAO.shape[0], ncol))
-            for ui in range(nU):
-                du = delta_full[ui * nR * Nm:(ui + 1) * nR * Nm]
-                for k in range(ncol):
-                    Zd[:, k] += Resp[ui] @ (Gk[k] @ du)
-            return Zd
-
-        def Tt(Zd):                            # its transpose
-            out = np.zeros(nU * nR * Nm)
-            for ui in range(nU):
-                RZ = Resp[ui].T @ Zd                                            # (N, ncol)
-                for k in range(ncol):
-                    out[ui * nR * Nm:(ui + 1) * nR * Nm] += Gk[k].T @ RZ[:, k]
-            return out
-
-        def GT(Zd):                            # the loss form, column by column
-            out = np.empty_like(Zd)
-            for G, sl in forms:
-                out[:, sl] = G @ Zd[:, sl]
-            return out
-
-        def matvec(v):
-            full = np.zeros(nU * nR * Nm); full[idx] = np.asarray(v, dtype=float).ravel()
-            return Tt(GT(T(full)))[idx]
-        n = idx.size
-        if n <= self.SECOND_ORDER_DENSE:
-            # the form explicitly, M = sum_k T_k' G_(k) T_k with T_k = [Resp_u G_k]_u and G_(k) the column's loss
-            # form, associated as M[u, v] = sum_k G_k' (Resp_u' G_(k) Resp_v) G_k: the inner form H_uv is N x N
-            # (through the responding primaries' nodes only), and the sum over the columns of one loss form is
-            # one product of the stacked row operators, restricted per column to the rows whose block of G_k is
-            # not identically zero
-            # eigenvalues only (no n x n eigenvectors and their workspace); the lowest direction is
-            # computed only when the embedding below needs it
-            Mfull = symmetrize(dense_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx))
-            w = np.linalg.eigvalsh(Mfull)
-            lo, hi = float(w[0]), float(w[-1])
-            vmin = lambda: sla.eigh(Mfull, subset_by_index=[0, 0])[1][:, 0]
-        else:
-            vmin = None
-            res = self._lanczos_extremes(matvec, n)
-            if "message" in res:
-                return res
-            lo, hi = res["lo"], res["hi"]
-        scale = max(abs(lo), abs(hi), 1e-300)
-        out = {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -self.SECOND_ORDER_TOL * scale), "converged": True}
-        if not out["ok"] and vmin is not None and maps is not None and hasattr(self, "_embedded_curvature"):
-            # the windowed objective omits the flows past the edge that read the strategy within the last lag:
-            # a negative direction is a truncation artefact if the same direction, zero-extended onto a window
-            # longer by two lags, has positive curvature under the same maps
-            emb = self._embedded_curvature(agent, maps, idx, vmin())
-            if emb is not None:
-                out["embedded"] = float(emb / scale)
-                out["edge"] = bool(emb >= 0.0)
-                out["ok"] = out["edge"]
-        return out
-
     def _lanczos_extremes(self, matvec, n: int) -> dict:
         """The extreme eigenvalues {"lo", "hi"} of the symmetric form given by matvec on n unknowns, by Lanczos
         (settings.second_order_lanczos_tol and _maxiter); when it does not settle, the check's record saying
@@ -591,158 +381,20 @@ class EngineBase(MeanLayer):
             return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
         return {"lo": lo, "hi": hi}
 
-    def _loss_form(self, agent: Agent, start_from: bool = False) -> np.ndarray:
-        """The loss form on the primary kernels, AO' kron(Q, mass) AO for the stacked atom operators AO,
-        assembled block by block over the atoms' primary blocks (each atom reads one primary through one
-        N x N block; an undelayed atom through the identity, whose products are skipped).  Map-independent,
-        cached per agent.  With start_from=True the form of a past's initial-shock column: the same atoms under
-        the point mass of the line s = 0 (_init_mass), as expected_cost integrates those columns."""
-        key = (agent.name, start_from)
-        if key not in self._loss_forms:
-            c = self.c; N = c.N; n = len(c.prim) * N
-            atoms, Q, q = c.loss[agent.name]
-            if start_from:
-                raise NotImplementedError("the form of an initial-shock column is the spectral finite engine's (finite_free)")
-            mass = c.cost_mass()
-            blocks = [[c.atom_block(at)] for at in atoms]
-            GAO = np.zeros((n, n))
-            for i in range(len(atoms)):
-                for j in range(len(atoms)):
-                    if Q[i, j] == 0.0:
-                        continue
-                    W = Q[i, j] * mass
-                    for p, Ai in blocks[i]:
-                        for p2, Aj in blocks[j]:
-                            WA = W if _is_eye(Aj) else W @ Aj
-                            GAO[p * N:(p + 1) * N, p2 * N:(p2 + 1) * N] += WA if _is_eye(Ai) else Ai.T @ WA
-            self._loss_forms[key] = GAO
-        return self._loss_forms[key]
-
     # ------------------------------------------------ maps from kernels
 
-    def _causal_chunks(self):
-        """Node ranges [(lo, hi)] in increasing age such that the regular projection operator of any row is
-        zero from ages in one chunk to nodes in an earlier one (a correlation reads only older ages); the
-        products over those blocks are skipped (c.causal_chunks; the stationary Compiled declares them)."""
-        return self.c.causal_chunks()
-
-    def _foc_system(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu):
-        """The first-order-condition system Amat gamma = -bvec on the passive rows,
-        Amat[u, v] = sum_k H_k (Fu_u Resp_v) G_k, bvec[u] = sum_k H_k (Fu_u Zpass)_k, with G_k the row
-        operator and H_k the projection operator of channel k.  Both split into a regular part (the
-        convolution and correlation with the row kernels, zero for every (row, channel) whose kernel is
-        zero) and the instantaneous entries (scaled shifts on one row block); the regular parts are
-        assembled over the nonzero rows and channels only, with the projection's columns ordered
-        (node, channel) so the product Fu Resp G comes out in the right layout without a transpose, and
-        the instantaneous terms are added block by block.  Identical to the dense assembly to round-off."""
-        c = self.c; N = c.N; nR, nU = len(rows), len(Fu)
-        sup, groups = self._row_support(agent, rows)
-        delay = [c.rows[agent.name][r][3] for r in range(nR)]
-        Rn = np.where(sup.any(axis=1))[0]; Kn = np.where(sup.any(axis=0))[0]
-        nRn, nKn = len(Rn), len(Kn)
-        kpos = {int(k): i for i, k in enumerate(Kn)}
-        # regular parts: Hs[(ri, a), (j, ki)] and Gs[a, (ki, ri, j)]
-        Hs = np.zeros((nRn, N, N, nKn)); Gs = np.zeros((N, nKn, nRn, N))
-        for d, rs in groups.items():
-            pairs = [(ri, int(k)) for ri, r in enumerate(Rn) if r in rs for k in np.where(sup[r])[0]]
-            if not pairs:
-                continue
-            Y = np.stack([rows[Rn[ri]][:, k] for ri, k in pairs], axis=1)
-            Hp = c.projection_rows(Y, d).reshape(N, len(pairs), N)             # (a, pair, j)
-            Gp = c.conv_rows(Y, d)                                              # (pair, a, j)
-            for i, (ri, k) in enumerate(pairs):
-                Hs[ri, :, :, kpos[k]] = Hp[:, i, :]
-                Gs[:, kpos[k], ri, :] = Gp[i]
-            del Y, Hp, Gp                                                       # two (N pairs N) arrays: not held through the assembly
-        Hs = Hs.reshape(nRn * N, N * nKn); Gs = Gs.reshape(N, nKn * nRn * N)
-        chunks = self._causal_chunks() if nKn else []
-        Hc = [np.ascontiguousarray(Hs.reshape(nRn, N, N * nKn)[:, lo:hi, lo * nKn:]).reshape(nRn * (hi - lo), (N - lo) * nKn)
-              for lo, hi in chunks]                                             # rows of ages in the chunk, columns of nodes not younger
-        # instantaneous entries: (row, channel, weighted shift on the row operator, on the projection); a shift that is the
-        # identity (an undelayed row's own noise) is applied as the scaling by its weight, which is what the product gives
-        ent = [(r, k, w * c.instant(age, delay[r]), w * c.instant_adjoint(age, delay[r])) for r in range(nR) for (k, age, w) in inst[r]]
-        ent = [(r, k, Sg, Sh, (w if _is_eye(c.instant(age, delay[r])) else None), (w if _is_eye(c.instant_adjoint(age, delay[r])) else None))
-               for (r, k, Sg, Sh), (r_, k_, age, w) in zip(ent, [(r, k, age, w) for r in range(nR) for (k, age, w) in inst[r]])]
-        rmul = lambda X, S, w: X * w if w is not None else X @ S            # X @ S with S = w I
-        lmul = lambda S, w, X: w * X if w is not None else S @ X            # S @ X with S = w I
-        nG = nU * nR * N
-        Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
-        A6 = Amat.reshape(nU, nR, N, nU, nR, N); B3 = bvec.reshape(nU, nR, N)
-        for ui in range(nU):
-            phi = Fu[ui] @ Zpass                                                # (N, nW): the FOC of the passive world
-            if nKn:
-                B3[ui][Rn] += (Hs @ phi[:, Kn].reshape(-1)).reshape(nRn, N)
-            for (r, k, Sg, Sh, wg, wh) in ent:
-                B3[ui, r] += lmul(Sh, wh, phi[:, k])
-            for vi in range(nU):
-                FR = Fu[ui] @ Resp[vi]
-                FRG = (FR @ Gs).reshape(N, nKn, nRn * N) if nKn else None      # [(j, ki), (ri, j')]
-                for (lo, hi), H_ in zip(chunks, Hc):
-                    T = (H_ @ FRG[lo:].reshape((N - lo) * nKn, nRn * N)).reshape(nRn, hi - lo, nRn, N)
-                    for ri, r in enumerate(Rn):
-                        A6[ui, r, lo:hi, vi][:, Rn, :] += T[ri]
-                for (r, k, Sg, Sh, wg, wh) in ent:
-                    if k in kpos:                                               # the channel also has regular kernels
-                        ki = kpos[k]
-                        X = (Hs.reshape(nRn * N, N, nKn)[:, :, ki] @ rmul(FR, Sg, wg)).reshape(nRn, N, N)     # H_reg FR G_inst
-                        for ri, rr in enumerate(Rn):
-                            A6[ui, rr, :, vi, r] += X[ri]
-                        A6[ui, r, :, vi][:, Rn, :] += lmul(Sh, wh, FRG[:, ki, :]).reshape(N, nRn, N)        # H_inst FR G_reg
-                    for (r2, k2, Sg2, Sh2, wg2, wh2) in ent:
-                        if k2 == k:
-                            A6[ui, r, :, vi, r2] += lmul(Sh, wh, rmul(FR, Sg2, wg2))                       # H_inst FR G_inst
-        return Amat, bvec
-
+    # ------------------------------------------------------ fixed points
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):
-        """The agent's best response to `maps`: (raw map, {"gamma", "action", "Zfull", ...}).  The
-        agent's information is the passive signal history, so its first-order condition is affine
-        in its map on the passive rows: one linear solve.
-        Hook (the cell engine overrides it wholesale, with the signature (agent, maps)).  Receives
-        every agent's raw maps in self.shapes; must return the agent's raw map (its shape in
-        self.shapes) and a dict with "gamma" (the FOC unknown), "action" (the action kernels,
-        (nU, N, nW), what response_actions iterates on) and "Zfull" (the world with the response
-        in).  With want_decomp=True the dict also carries "second_order" (the check, or None) and
-        "decomp" (control -> {"foc", "physical", "wedge"} kernels (N, nW)), which _diagnostics
-        reads; an engine without them must not call the base _diagnostics.  With project=False the
-        raw map is None and its projection is skipped (response_actions needs the action kernels
-        only).  A singular system raises the ValueError of singular_system_message."""
-        c = self.c; N, nW = c.N, c.nW
-        nR, nU = len(agent.signals), len(agent.controls)
-        Zp = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls)
-        Zpass, R = Zp[:, :nW], Zp[:, nW:]
-        R = self._impulse_responses(agent, maps, R)
-        Zpass = self._passive_world(agent, maps, Zpass, R)
-        ytil, yinst = self._passive_rows(agent, Zpass)
-        Gk = self._row_operator(agent, ytil, yinst)
-        Resp = self._response_operators(agent, R)
-        Fu = self._foc_operators(agent, R)
-        # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp_v Gk gamma_v)) = 0 for all controls
-        Amat, bvec = self._foc_system(agent, ytil, yinst, Zpass, Resp, Fu)
-        gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
-        del Amat, bvec                                          # (nU nR N)^2: not kept through the diagnostics
-        cact = np.stack([(Gk @ gamma[ui].reshape(-1)).T for ui in range(nU)])
-        Zfull = Zpass.copy()
-        for ui in range(nU):
-            Zfull += Resp[ui] @ cact[ui]
-        out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
-        if want_decomp:
-            self._decompose(agent, out, Fu, Resp, Gk, maps)
-        return (self._project(agent, Zfull, cact) if project else None), out
+        """Hook (every engine): the agent's best response to `maps`, (raw map, {"gamma", "action" (nU, N, nW), "Zfull"});
+        with want_decomp the dict also carries "second_order" and "decomp", which _fill_diagnostics records; with
+        project=False the raw map is None (response_actions needs the action kernels only).  A singular system
+        raises the ValueError of singular_system_message."""
+        raise NotImplementedError
 
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
-        """Relative residual of the best-response action kernels after projection on the agent's raw
-        rows.  Zero in exact arithmetic; on the grid it measures how well products of kernels are
-        resolved, so a value above about 1e-6 means the equilibrium is under-resolved: raise
-        numerics.nodes."""
-        rows, inst = self._seen_rows(agent, Zfull, set())
-        Bk = self._row_operator(agent, rows, inst)
-        worst = 0.0
-        for ui in range(len(agent.controls)):
-            recon = np.stack([Bk[k] @ g[ui].reshape(-1) for k in range(self.c.nW)], axis=1)
-            worst = max(worst, float(np.abs(recon - actions[ui]).max() / max(1e-300, np.abs(actions[ui]).max())))
-        return worst
+        """Hook (stationary, spectral): how far the raw map g falls short of reproducing the action kernels."""
+        raise NotImplementedError
 
-    # ------------------------------------------------------ fixed points
     def interpolate_maps(self, coarse) -> Dict[str, np.ndarray]:
         """Hook (stationary, spectral): the raw maps of `coarse`, a result of the same engine on a
         grid of the same model with fewer nodes (coarse.maps, coarse.compiled), read at this grid's
@@ -760,7 +412,6 @@ class EngineBase(MeanLayer):
     def coarse_start(self, factor: float = 0.5, **solve_kw) -> Dict[str, np.ndarray]:
         """Raw maps to start from: the equilibrium at `factor` times the nodes, interpolated to this
         grid.  A coarse solve costs a few fine evaluations and usually saves many."""
-        hz = self.model.horizon
         n0 = max(4, int(round(self.model.numerics.nodes * factor)))
         if n0 >= self.model.numerics.nodes:
             return None

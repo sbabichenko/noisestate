@@ -43,7 +43,7 @@ def _build(model: Model, numerics=None, *, verbose: bool = False, past=None, con
     given = Numerics.of(numerics)
     num = model.numerics.merged(given).resolved(model.horizon.kind)
     if num != model.numerics.resolved(model.horizon.kind):
-        model = model.with_numerics(num)                     # the engines read the grid off the model's horizon
+        model = model.with_numerics(num)                     # the engines read the grid off model.numerics
     if num.engine not in ENGINE_CLASSES:
         raise ValueError(f"unknown engine {num.engine!r}; one of {sorted(ENGINE_CLASSES)}")
     kw = {"verbose": verbose}

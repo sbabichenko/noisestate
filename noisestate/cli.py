@@ -283,7 +283,7 @@ def _run(p, args) -> int:
         d = equations.to_grammar(d)                              # the overrides below edit the grammar's keys
     base_dir = os.path.dirname(os.path.abspath(args.model))     # a relative horizon.past.model is taken from the file's directory
     if args.cmd == "sweep":
-        rows = sweep(args.model, args.param, [float(x) for x in args.values.split(",")], solve_kw=bounds, verbose=args.verbose)
+        rows = sweep(args.model, args.param, [float(x) for x in args.values.split(",")], verbose=args.verbose, **bounds)
         with open(args.out, "w") as fh:
             json.dump([r.to_dict() for r in rows], fh)
         print(f"{'value':>12}  {'status':<13} {'residual':>10} {'evals':>6} {'seconds':>8} {'change':>10}  jump")

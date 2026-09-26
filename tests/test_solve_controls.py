@@ -152,7 +152,7 @@ def test_cli_and_sweep_forward_the_bounds(tmp_path, capsys):
     assert main(["sweep", CH3, "p2", "3,5", "-o", str(out), "--max-evaluations", "2"]) == 1
     rows = json.load(open(out))          # JSON: dicts, not SweepPoints
     assert [r["evaluations"] for r in rows] == [2, 2] and not any(r["converged"] for r in rows)
-    rows = sweep(CH3, "p2", [3.0, 5.0], solve_kw={"max_evaluations": 2}); assert all(r.evaluations == 2 and not r.converged for r in rows)
+    rows = sweep(CH3, "p2", [3.0, 5.0], max_evaluations=2); assert all(r.evaluations == 2 and not r.converged for r in rows)
 
 
 def test_lead_term_under_a_discount_neither_overflows_nor_is_silent():
