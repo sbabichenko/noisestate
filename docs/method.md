@@ -54,7 +54,7 @@ action from a map, response to an action, discounted continuation, projection on
 the observation history) is a line integral built by Gauss quadrature split at
 the piece boundaries; their quadrature structure is cached once per model, so a
 best response is a few sparse products and one dense solve.  A first-order
-uniform-cell scheme (`numerics.engine: cells`) is kept as a cross-check.
+uniform-cell scheme is kept outside the package as a cross-check (`extras/cells.py`).
 
 ## Means
 
@@ -77,8 +77,8 @@ carries a path on the time nodes of its triangle as a kernel constant in shock a
 kernels' own operators restricted to the line `s = 0` (a kernel's response to a shock at time 0)
 are the path's, so the continuation is the same spectral line integral as the kernels' and a lagged
 read is the path at `t - lag` (zero before 0), and the state is `xbar(t) = e^{At} x0 + int_0^t
-e^{A(t-r)} (inputs + const) dr`; the cell engine does the same on its cells, first order in the cell
-length like its kernels, as a cross-check.  The limits are exact: with no information (kernels
+e^{A(t-r)} (inputs + const) dr`; the cross-check cell engine (`extras/cells.py`) does the same on its cells,
+first order in the cell length like its kernels.  The limits are exact: with no information (kernels
 zero) the means are the open-loop Nash equilibrium of the deterministic game, with perfect
 information the closed-loop (feedback) Nash equilibrium, one agent alone gets the deterministic
 optimum; under private information they lie between (the separation failure), which
@@ -125,7 +125,7 @@ dropping the least recently used grids beyond that.
   through to a least-squares solve and report a zero strategy as a converged equilibrium with a
   clean `check()`; they now LU-factor the system on its kept unknowns and refuse a reciprocal
   condition estimate below `EngineBase.FOC_RCOND` (1e-10; the worst regular system in the tests
-  is at 2.6e-3).  On the cell engine's Krylov branch (above 200 unknowns) the test is one probe per
+  is at 2.6e-3).  On the cross-check cell engine's Krylov branch (above 200 unknowns) the test is one probe per
   control, which catches a control its first-order condition does not respond to; a partial
   deficiency there ends as a non-converged linear solve.  Validation warns (`UserWarning`) when a
   control has no strictly positive quadratic term in its own current value, or in a lagged read of
@@ -138,9 +138,8 @@ dropping the least recently used grids beyond that.
 * Errors are typed by whose problem they are.  A `ValueError` is a model problem: a file that does
   not validate, a parameter that is not the model's, a lag off the panels, a singular best-response
   system; a solve bound out of range (`max_evaluations` below one, a negative `deadline`) is one as
-  well.  A `TypeError` is a wrong argument (an unknown solve option, `naive_observers` that is not
-  a mapping), a `NotImplementedError` a feature the engine does not have (leads on the finite
-  engines).  A `RuntimeError` is a solver problem: the cell engine's Krylov best response not
+  well.  A `TypeError` is a wrong argument (an unknown solve option), a `NotImplementedError` a feature the engine does not have (leads on the finite
+  engines).  A `RuntimeError` is a solver problem: a Krylov best response not
   converging, a best-response map that returns a non-finite value (an overflow; the iteration stops
   at that evaluation instead of running on NaN), and `ConvergenceError` (a `RuntimeError`) from
   `check()`.  A fixed-point iteration

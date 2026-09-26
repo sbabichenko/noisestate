@@ -61,18 +61,7 @@ def test_ch1_p10_path_against_the_dissertation_and_the_cell_engine():
     assert np.abs(d1 - data[:, 2]).max() < 1.4e-2 and abs(d1[100] - data[100, 2]) < 1e-3       # t = 0.5
     assert np.abs(sp.mean("D2", data[:, 0]) + d1).max() < 1e-12 and np.abs(sp.mean("X", data[:, 0])).max() < 1e-12
     assert abs(d1[-1]) < 1e-12                                                                     # Dbar1(T) = 0
-    tq = np.array([0.0, 0.05, 0.1, 0.2, 0.5, 0.75, 0.9]); d1sp = sp.mean("D1", tq); Jsp = sp.cost_parts["player1"]["mean"]
-    got = {}
-    for N in (40, 80, 160):
-        d = ch1_targets(10.0, nodes=12).to_dict(); d["horizon"] = {"kind": "finite", "T": 1.0}; d["numerics"] = {"engine": "cells", "nodes": N}
-        res = ns.solve(d).require_converged(); idx = np.round(tq / res.compiled.h).astype(int)
-        got[N] = (res.means["D1"][idx], res.cost_parts["player1"]["mean"])
-        assert res.mean_times.shape == (N,) and np.abs(res.means["D2"] + res.means["D1"]).max() < 1e-12
-    assert np.abs(got[160][0] - d1sp).max() < np.abs(got[80][0] - d1sp).max() < np.abs(got[40][0] - d1sp).max()
-    r1 = 2 * got[80][0] - got[40][0] - d1sp; r2 = 2 * got[160][0] - got[80][0] - d1sp
-    assert np.abs(r2).max() < 1.5e-3 and np.abs(r2).max() < 0.5 * np.abs(r1).max()
-    J1 = 2 * got[80][1] - got[40][1] - Jsp; J2 = 2 * got[160][1] - got[80][1] - Jsp
-    assert abs(J2) < 5e-4 and abs(J2) < 0.5 * abs(J1)
+    #  the cell engine's Richardson pairs against these spectral paths: extras/test_cells.py
 
 
 def riccati(A, B, Qx, theta, r, rho, x0, T, ts):
@@ -101,23 +90,14 @@ def riccati(A, B, Qx, theta, r, rho, x0, T, ts):
     return xs, us, fw.y[n, -1], 0.5 * x0 @ y0[:n * n].reshape(n, n) @ x0 + y0[n * n:n * n + n] @ x0 + y0[-1]
 
 
-def _kind(kind):
-    """kind "finite_cells" names the cell engine's result; the model asks for kind finite with engine cells."""
-    return "finite" if kind == "finite_cells" else kind
-
-
-def _engine(kind):
-    return {"engine": "cells"} if kind == "finite_cells" else {}
-
-
 def one_state(a, r, theta, rho, x0, kind="finite", nodes=12):
     """dX = (a X + D) dt + dW0, loss X^2 - 2 theta X + r D^2, X(0) = x0, one agent with a noisy signal on X."""
     loss = [[1.0, "X", "X"], [r, "D", "D"]] + ([[-2.0 * theta, "X"]] if theta else [])
     return ns.Model.from_dict({"name": "lq1", "shocks": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}, "initial": x0}},
                                "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": 2.0 ** 0.5}, "noise": {"w1": 1.0}}}, "loss": loss}},
-                               "horizon": {"kind": _kind(kind), **({"window": 1.0} if _kind(kind) == "stationary" else {"T": 1.0}),
+                               "horizon": {"kind": kind, **({"window": 1.0} if kind == "stationary" else {"T": 1.0}),
                                            "discount": rho},
-                               "numerics": {"nodes": nodes, **_engine(kind)}})
+                               "numerics": {"nodes": nodes}})
 
 
 @pytest.mark.parametrize("a,r,theta,rho,x0", [(-1.0, 0.5, 1.0, 0.0, 0.0), (0.3, 0.2, 0.0, 0.0, 1.0), (-0.5, 0.3, 2.0, 0.5, -1.0)])
@@ -131,13 +111,6 @@ def test_one_agent_is_the_deterministic_optimum(a, r, theta, rho, x0):
     assert np.abs(res.means["X"] - xs[0]).max() < 1e-11 and np.abs(res.means["D"] - us).max() < 1e-11
     assert abs(res.cost_parts["a"]["mean"] - J) < 1e-10 and abs(res.cost_parts["a"]["mean"] - V0) < 1e-10
     assert res.means["X"][0] == x0 and abs(res.means["D"][-1]) < 1e-12 and np.array_equal(res.means["a.y"], 2.0 ** 0.5 * res.means["X"])
-    if rho:
-        errs = []
-        for N in (40, 80):
-            rc = ns.solve(one_state(a, r, theta, rho, x0, kind="finite_cells", nodes=N)).require_converged()
-            xs, us, J, V0 = riccati(a, 1.0, 1.0, theta, r, rho, x0, 1.0, rc.mean_times)
-            errs.append(np.abs(rc.means["X"] - xs[0]).max())
-        assert 0.4 < errs[1] / errs[0] < 0.6 and errs[1] < 1e-2
 
 
 @pytest.mark.parametrize("theta,rho", [(1.0, 0.0), (-0.7, 0.8)])
@@ -172,9 +145,6 @@ def test_targets_scale_the_means_and_leave_the_kernels_and_the_examples():
         assert all(np.array_equal(v, np.zeros(len(res.mean_times))) for v in res.means.values()) and set(res.model.control_names) <= set(res.means)
         assert all(p["mean"] == 0.0 and p["variance"] == res.costs[k] for k, p in res.cost_parts.items())
         assert "mean" not in res.summary().split("\n")[1] and "means at" not in res.summary()
-    d = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); d["horizon"] = {"kind": "finite", "T": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 20}
-    rc = ns.solve(d).require_converged()
-    assert all(np.array_equal(v, np.zeros(20)) for v in rc.means.values()) and rc.cost_parts["player1"]["mean"] == 0.0
 
 
 def test_no_information_limit_is_the_open_loop_path():

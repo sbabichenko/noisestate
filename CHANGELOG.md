@@ -40,6 +40,22 @@ A model reads like its equations, in a file and in Python.
   the past's window, and the options only checked that they agreed); `--past-window` sets it.
 - The shipped examples are written as equations, `model.save()` writes short lists and numeric maps on one line,
   and definitions in a file may come in any order.
+- **One way in.**  `ns.load(path)` and `ns.as_model(x)` (a Model, a dict in either form, or a path) are what every
+  function taking a model uses; `Model.load` and `ns.read_yaml` are gone.  `Model(...)` builds from equations only
+  (a file structure is `Model.from_dict` or `ns.load`).
+- **`describe()` prints the file's equations** (`dX = (D1 + D2) dt + sigma dw0`), from the same writer as `save()`.
+  A state, definition or agent changed in place on a model is now written as it is: `save()` wrote the stale source
+  while `solve()` used the new value.
+- **Numerics live on `model.numerics` only**; the horizon holds the economics.  Error messages name
+  `numerics.unit`, `numerics.breakpoints`, ... (they said `horizon.unit`, a key that does not exist).
+- **`with_signal(name, equation)`** takes the row as a file writes it, `"(D1 + D2) dt + 0.5 dw_flow"`, or a
+  `Signal`; a shock it names that the model lacks is added.  The `drift={...}, noise={...}` form is gone.
+- **`sweep()` and `compare()` take `solve()`'s options as keywords** (`sweep(m, "p1", values, nodes=12,
+  max_evaluations=40)`); `solver_kw=` and `solve_kw=` are gone.  A sweep now applies the `tol` and `damping` of
+  its numerics, which it ignored.
+- **The old Python spelling is gone:** `X.drift = ...`, `Agent(signals=...)` and signal rows without `dt`.
+- **The cell engine left the package** for `extras/cells.py`, where it stays as the first-order cross-check;
+  `numerics.engine` is `stationary` or `spectral`, and the `cell_*` settings went with it.
 - Removed: `ns.using_settings` (process-wide and not thread-safe; `solve(..., settings={...})` does the same for
   one solve), the stationary result's `expected_loss` alias (`expected_cost`), and the shims of 0.x names.
 - Faster: a closed-loop time panel is solved by eliminating the primaries with no coupling inside the panel and

@@ -223,9 +223,7 @@ def test_kernel_on_every_engine():
     k = tri.kernel("X", "w0")
     assert set(k.axes) == {"time", "age", "shock_time"} and k.at(0.8, 0.3) == pytest.approx(float(np.ravel(tri.evaluate("X", "w0", 0.8, 0.3))[0]))
     assert tri.kernel("X").at([0.8, 0.9], [0.3, 0.3]).shape == (2, 3)
-    cells = m.solve(ns.Numerics(engine="cells", nodes=8), max_evaluations=2, diagnostics=False)
-    kc = cells.kernel("X", "w0")
-    assert kc.shape == (8, 8) and "nearest" in kc.note and kc.at(0.5, 0.2) == kc[np.abs(kc.axes["time"] - 0.5).argmin(), np.abs(kc.axes["time"] - 0.2).argmin()]
+    #  the cell engine's (N, N) kernel and its nearest-cell at(): extras/test_cells.py
     with pytest.raises(ValueError, match="lost its nodes"):
         k[1:].at(0.8, 0.3)
     assert tri.to_dict()["kernels"]["X"]["w0"] == np.asarray(k).tolist()

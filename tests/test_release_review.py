@@ -2,18 +2,14 @@
 import os, json, numpy as np, pytest
 import noisestate as ns
 from noisestate import engines
-from noisestate.diagnostics import Status
 from noisestate.stationary import StationarySolver
 from helpers import slow
 HERE = os.path.dirname(os.path.abspath(__file__)); EX = os.path.join(HERE, "..", "examples")
 
 
 def _ch3(**hz):
-    """kind "finite_cells" names the cell engine's result; the model asks for kind finite with engine cells."""
     d = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict()
     d["numerics"] = {**d.get("numerics", {}), **{k: hz.pop(k) for k in list(hz) if k in ("nodes", "unit", "unit_range", "breakpoints")}}
-    if hz.get("kind") == "finite_cells":
-        hz["kind"] = "finite"; d["numerics"]["engine"] = "cells"
     d["horizon"].update(hz)
     #  the base file is stationary, so `window` is its lag-truncation L.  A caller switching the
     #  kind means "the horizon's length", which for a finite horizon or a transition is T.
@@ -44,14 +40,6 @@ def test_one_agent_delayed_observation_costs_more_and_passes_second_order():
     r = ns.solve(base).require_converged(); base["agents"]["a"]["signals"]["y"]["delay"] = 0.0; r0 = ns.solve(base).require_converged()
     assert r.costs["a"] > r0.costs["a"] and r.second_order["a"]["ok"]
     assert r.stability().radius == 0.0 and "stable" in r.summary()        # one agent: radius 0, not NaN
-
-
-def test_cell_engine_dense_branch_with_delays():
-    d = ns.load(os.path.join(EX, "ch1_delayed_finite.yaml")).to_dict(); d.setdefault("numerics", {}).update(nodes=16, engine="cells")
-    r = ns.solve(d).require_converged()
-    assert r.diagnostics.statuses["resolution"] is Status.UNSUPPORTED          # the cell engine cannot compute it
-    assert r.to_dict()["assessment"]["statuses"]["resolution"] == "unsupported"
-    r.refine(); assert r.refinement.nodes == 32                             # doubled: lags stay aligned
 
 
 # ---------------------------------------------------------------- guards compare like with like
@@ -274,7 +262,7 @@ def test_second_round_validation(edit, match):
 
 
 def test_lag_beyond_horizon_rejected_on_every_engine():
-    for kind in ("stationary", "finite", "finite_cells"):
+    for kind in ("stationary", "finite"):
         d = _ch3(kind=kind, window=0.2, nodes=4); d["states"]["X"]["drift"] = {"D1@0.25": 1.0, "D2": 1.0}
         with pytest.raises(ValueError, match="not below the horizon's extent"):
             ns.Model.from_dict(d)
@@ -295,21 +283,15 @@ def test_wrong_grid_warm_start_is_an_error_on_every_engine():
     d = _ch3(nodes=12); r = ns.solve(d); d.setdefault("numerics", {})["nodes"] = 16
     with pytest.raises(ValueError, match="different grid"):
         engines.stationary(ns.Model.from_dict(d)).solve(start_from=r.maps)
-    dc = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); dc.setdefault("numerics", {}).update(nodes=8, engine="cells")
-    rc = ns.solve(dc); dc.setdefault("numerics", {})["nodes"] = 16
+    dc = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); dc.setdefault("numerics", {})["nodes"] = 6
+    rc = ns.solve(dc); dc["numerics"]["nodes"] = 8
     with pytest.raises(ValueError, match="different grid"):
-        engines.cells(ns.Model.from_dict(dc)).solve(start_from=rc.maps)
+        engines.spectral(ns.Model.from_dict(dc)).solve(start_from=rc.maps)
 
 
 def test_jump_flag_is_quiet_on_a_geometric_sweep():
     rows = ns.sweep(_ch3(), "r1", [2.0 / 2 ** k for k in range(7)])
     assert not any(r.jump for r in rows) and all(r.converged for r in rows)
-
-
-def test_refine_on_cells_reports_without_a_verdict():
-    d = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); d.setdefault("numerics", {}).update(nodes=12, engine="cells")
-    r = ns.solve(d); r.refine()
-    assert r.refinement.resolved is None and "NOT RESOLVED" not in r.summary() and r.refinement.nodes == 24
 
 
 def test_second_order_and_stability_report_their_method():

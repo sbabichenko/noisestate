@@ -52,8 +52,8 @@ which you are holding.
 The finite engines start every state at its `initial` value (a known number, zero when
 not given, which moves the mean path only; with a past, a state without one starts at
 the past's constant mean, and `initial: 0` overrides it) and integrate flow losses only.
-Transitions (see [transitions.md](transitions.md)) run on the spectral finite engine only: the cell engine
-refuses a past, and a model of kind `transition` compiles to the spectral engine.  With
+Transitions (see [transitions.md](transitions.md)) run on the spectral finite engine: a model of kind `transition`
+compiles to it.  With
 a past the map on a row observed with a delay is stored in raw age (zero below the
 delay; `map_convention` in the payload); the mean paths with a stationary continuation
 are frozen at the new stationary means on the buffer, so their own settling by T is

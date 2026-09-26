@@ -60,23 +60,13 @@ def _why_not_accepted(res, verdict) -> list:
     unsupported = by_status.pop(Status.UNSUPPORTED, [])
     if unsupported:
         lines.append("not ok: cannot be checked here: " + ", ".join(sorted(unsupported))
-                     + " -- this engine cannot compute it for this model, so no setting will change it."
-                     + _unsupported_hint(res, unsupported))
+                     + " -- this engine cannot compute it for this model, so no setting will change it.")
     for status, checks in sorted(by_status.items(), key=lambda kv: str(kv[0])):
         lines.append(f"not ok: {status} checks: " + ", ".join(sorted(checks)) + " (see summary)")
     if verdict.policy is not Policy.EXPLORATORY:
         lines.append("       a weaker standard is legitimate and has to be named: --policy exploratory "
                      "requires convergence only.")
     return lines
-
-
-def _unsupported_hint(res, checks) -> str:
-    """The cases the package knows how to explain, rather than a general apology."""
-    engine = (res.numerics.engine or "").lower()
-    if engine == "cells" and {"second_order", "resolution"} & set(checks):
-        return ("\n       the cell engine computes neither a representation error nor a second-order "
-                "form; numerics.engine 'spectral' solves the same finite horizon and does both.")
-    return ""
 
 
 def transition_lines(m: Model) -> list:
@@ -136,7 +126,7 @@ def main(argv=None) -> int:
     s.add_argument("-o", "--out", help="write the result as JSON")
     s.add_argument("--plot", help="write a kernel plot (.pdf/.png)")
     s.add_argument("--nodes", type=int, help="override numerics.nodes: per panel (stationary) or per side of each piece (finite)")
-    s.add_argument("--engine", choices=("stationary", "spectral", "cells"), help="override numerics.engine")
+    s.add_argument("--engine", choices=("stationary", "spectral"), help="override numerics.engine")
     s.add_argument("--window", type=float, metavar="L", help="override horizon.window, the lag-truncation length L "
                    "(stationary and transition models; a finite horizon has none -- use --T)")
     s.add_argument("--T", type=float, dest="T", metavar="T", help="override horizon.T, the terminal time "

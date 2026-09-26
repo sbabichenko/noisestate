@@ -26,20 +26,6 @@ def model(kind="stationary", engine=None, nodes=8, **horizon):
 
 # ------------------------------------------------------------------ status is not acceptance
 
-def test_an_engine_that_cannot_run_a_required_check_is_refused_not_excused():
-    """The defect the specification exists to close.  The cell engine computes neither a
-    representation error nor a second-order form; before this, it passed the whole verdict while
-    running two fewer checks than the others, and absence of evidence read as soundness."""
-    res = ns.solve(model("finite", engine="cells"))
-    st = res.diagnostics.statuses
-    assert st["resolution"] is Status.UNSUPPORTED and st["second_order"] is Status.UNSUPPORTED
-    verdict = res.diagnostics.assess()
-    assert not verdict.accepted
-    assert verdict.uncomputed == ("resolution", "second_order")
-    with pytest.raises(ns.DiagnosticsError, match="cannot compute"):
-        res.require_ok()
-
-
 def test_turning_the_guards_off_does_not_pass_the_guards():
     """solve(diagnostics=False) used to leave require_ok() passing with nothing run at all."""
     res = ns.solve(model(), diagnostics=False)
@@ -50,14 +36,6 @@ def test_turning_the_guards_off_does_not_pass_the_guards():
         res.require_ok()
     #  the reason is distinguishable from a failure: it was not run, not run-and-failed
     assert {b.status for b in res.diagnostics.assess().blocking} == {Status.SKIPPED}
-
-
-def test_a_weaker_policy_is_legitimate_and_must_be_named():
-    res = ns.solve(model("finite", engine="cells"))
-    assert not res.diagnostics.assess(Policy.PUBLICATION).accepted
-    assert res.diagnostics.assess(Policy.EXPLORATORY).accepted
-    assert res.require_ok(Policy.EXPLORATORY) is res
-    assert res.diagnostics.assess(Policy.EXPLORATORY).policy == "exploratory"
 
 
 # ------------------------------------------------------------------ applicability, from the model
@@ -129,25 +107,6 @@ def test_a_failing_past_window_blocks_acceptance():
     assert not (failing - blocking), f"failing rows invisible to acceptance: {sorted(failing - blocking)}"
 
 
-def test_a_check_this_engine_cannot_build_is_unsupported_not_inapplicable():
-    """The cell engine computes neither a representation error nor a second-order form.  That is a
-    limit of the METHOD, not of the question: both are meaningful for the model, so the checks APPLY
-    and the engine cannot run them.
-
-    Calling that NOT_APPLICABLE would assert the conditions have no meaning here, and would let the
-    result be accepted for checks nothing performed.
-    """
-    cells = ns.solve(model("finite", engine="cells", nodes=10))
-    assert cells.diagnostics.statuses["second_order"] is Status.UNSUPPORTED
-    assert cells.diagnostics.statuses["resolution"] is Status.UNSUPPORTED
-    with pytest.raises(ns.DiagnosticsError, match="second_order"):
-        cells.require_ok()
-    assert cells.require_ok(Policy.EXPLORATORY) is cells          # a weaker use, named
-    #  the same model on the spectral engine computes both: it is the ENGINE that cannot, not the model
-    spectral = ns.solve(model("finite", nodes=10))
-    assert spectral.diagnostics.statuses["second_order"] is Status.PASSED
-
-
 def test_the_discount_does_not_take_the_second_order_check_away():
     """It was excluded at rho > 0, on the ground that "the discounted objective is not a quadratic
     form in the stationary kernel".  That is wrong, and it made ch4_kyle_back -- the example the
@@ -204,15 +163,6 @@ def test_the_exceptions_are_siblings_so_neither_catches_the_other():
     with pytest.raises(ns.DiagnosticsError) as caught:
         res.require_ok()
     assert caught.value.assessment.blocking                 # the assessment travels with the error
-
-
-def test_the_payload_carries_every_status_and_the_policy_that_judged_them():
-    res = ns.solve(model("finite", engine="cells"))
-    payload = res.to_dict()["assessment"]
-    assert payload["policy"] == "publication" and payload["accepted"] is False
-    assert payload["statuses"]["resolution"] == "unsupported"
-    assert payload["uncomputed"] == ["resolution", "second_order"]
-    assert ns.schema.validate(res.to_dict(), "payload") == []
 
 
 def test_the_verification_minimum_is_not_a_policy_and_cannot_be_weakened_by_one():

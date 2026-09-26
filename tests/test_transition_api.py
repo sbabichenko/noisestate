@@ -121,9 +121,8 @@ def test_transition_validation():
     with pytest.raises(OSError):
         ns.solve(m)
     t = ns.Model.from_dict({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": "x.yaml"}}})
-    for engine in (engines.cells, engines.stationary):
-        with pytest.raises(ValueError, match="spectral finite engine only"):
-            engine(t)
+    with pytest.raises(ValueError, match="spectral finite engine only"):       # the cell engine refuses it too: extras/test_cells.py
+        engines.stationary(t)
     with pytest.raises(TypeError, match="horizon.kind 'finite'"):
         ns.solve({**d, "horizon": {**d["horizon"], "kind": "transition", "past": {"model": {**d, "horizon": {"kind": "finite", "T": 1.0}}}}})
 

@@ -23,7 +23,7 @@ Each check reports one of six statuses:
 | `passed` | ran; the model met it |
 | `failed` | ran; the model did not meet it |
 | `skipped` | this engine could have run it here; `solve(diagnostics=False)` meant it did not |
-| `unsupported` | this **engine** cannot compute it (the cell engine builds no second-order form) |
+| `unsupported` | this **engine** cannot compute it (the cross-check cell engine in `extras/cells.py` builds no second-order form) |
 | `not_applicable` | the check has no meaning for this **model** (a lag window on a plain finite horizon) |
 | `missing` | applicable, supported, was to run, produced no record |
 
@@ -83,10 +83,10 @@ computed.
   so recorded evaluation counts stay reproducible.  `refine()` always starts the finer solve from the
   result it is refining.
 * `noisestate solve model.yaml --refine` (or `solve(..., refine=True)`, `res.refine()`) re-solves
-  on a grid with 1.5 times the nodes (twice the cells for the cell engine) and reports the change
+  on a grid with 1.5 times the nodes and reports the change
   of every cost, relative to the largest cost, and of the kernels; `res.refinement["resolved"]`
-  is the verdict for the spectral engines, and the summary says `NOT RESOLVED`.  The cell engine
-  is first order, so it reports the changes without a verdict.  On the finite engine with delays
+  is the verdict for the spectral engines, and the summary says `NOT RESOLVED`.  A first-order
+  engine (the cross-check in `extras/cells.py`) reports the changes without a verdict.  On the finite engine with delays
   the refinement rebuilds the delay-cut triangle's quadrature and can take far longer than the
   solve; the delayed Chapter 1 example refines from 8 to 12 nodes per side in about a minute.
 * Stationary results carry `res.window_tail`, the largest change of a kernel over the last tenth

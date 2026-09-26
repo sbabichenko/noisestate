@@ -292,7 +292,7 @@ res.maps["player1"]          # raw strategy g[u][r](b) on the agent's own signal
 res.foc["player1"]["D1"]     # {"foc", "physical", "wedge"}: the first-order condition decomposed
 res.means["X"]               # the mean of a state or control: a constant here, a path on a finite horizon
 res.axes                     # the coordinates of kernel(): {"age"} stationary, {"time","age","shock_time"}
-                             # on the finite triangle, {"time","shock_time"} for the cell engine
+                             # on the finite triangle
 res.times, res.paths         # the paths of a finite horizon
 res.numerics                 # the resolved Numerics
 res.evaluations, res.seconds, res.residual, res.message
@@ -544,8 +544,7 @@ window longer by two lags is reported as `window edge: ... a truncation of the l
 edge, not a saddle` instead.  The check also applies with a positive discount: the discounted objective is
 a quadratic form whose joint running Hessian carries no discount, since `rho` enters only as the
 strictly positive weight `e^{-rho t}`, so the verdict is the same at every `rho` and the check is
-made on the average-cost system.  The cell engine is the one that reports `unsupported` here: it
-builds no second-order form at all.
+made on the average-cost system.
 
 **Settled.**  A transition whose maps on [T - L, T] are more than 1e-4 of their peak from the
 stationary continuation prints `TRANSITION NOT SETTLED by T - L` and suggests a larger `--T`; the
@@ -582,8 +581,7 @@ Exception types distinguish invalid inputs from solver failures.  A `ValueError`
 validate, a parameter that is not the model's, a lag off the panels, a singular best-response system, a
 solve bound out of range.  A `TypeError` is a wrong argument: an unknown solve option (the message names
 the `Numerics` field it belongs to, or the `Numerics(settings=...)` route for a `Settings` field).  A `NotImplementedError` is a feature the engine does not have
-(leads on the finite engines); a past on the cell engine is a `ValueError` from the numerics
-(`numerics.engine 'cells' solves a finite horizon only`).  A `RuntimeError` is a solver problem: a Krylov
+(leads on the finite engines).  A `RuntimeError` is a solver problem: a Krylov
 best response not converging, a non-finite value from the best-response map.
 
 `ResultValidationError` is the base class for two distinct result-validation exceptions:

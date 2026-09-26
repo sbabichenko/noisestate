@@ -4,7 +4,6 @@ import yaml
 import os
 import warnings
 
-import numpy as np
 import pytest
 
 import noisestate as ns
@@ -17,8 +16,8 @@ EX = os.path.join(os.path.dirname(__file__), "..", "examples")
 
 
 def test_the_numerics_block_is_the_only_place_the_grid_is_sized():
-    """The grid lives in numerics: alone; a grid field under horizon: is an unknown key, and the cell engine is
-    numerics.engine, not a horizon kind."""
+    """The grid lives in numerics: alone; a grid field under horizon: is an unknown key, and numerics.engine names
+    one of the two engines (the cell cross-check lives in extras/cells.py, not under an engine name)."""
     d = ns.load(os.path.join(EX, "ch3_two_player.yaml")).to_dict()
     assert d["numerics"] == {"nodes": 24} and "nodes" not in d["horizon"]
     m = ns.Model.from_dict(d)
@@ -27,11 +26,11 @@ def test_the_numerics_block_is_the_only_place_the_grid_is_sized():
     with pytest.raises(ValueError, match="unknown key"):
         ns.Model.from_dict(old)
     fc = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict()
-    fc.setdefault("numerics", {}).update(nodes=8, engine="cells")
+    fc.setdefault("numerics", {}).update(nodes=8, engine="spectral")
     mc = ns.Model.from_dict(fc)
-    assert mc.horizon.kind == "finite" and mc.numerics.engine == "cells"
-    with pytest.raises(ValueError, match="numerics.engine 'cells'"):
-        ns.Model.from_dict({**d, "numerics": {"nodes": 8, "engine": "cells"}})
+    assert mc.horizon.kind == "finite" and mc.numerics.engine == "spectral"
+    with pytest.raises(ValueError, match="numerics.engine"):
+        ns.Model.from_dict({**fc, "numerics": {"nodes": 8, "engine": "cells"}})
 
 
 def test_solve_takes_a_numerics_and_names_the_field_of_a_stray_keyword():
@@ -142,22 +141,24 @@ def test_compare_keeps_results_and_separates_costs_from_dynamics():
         ns.compare({"stationary": base, "finite": base.with_finite(4)})
 
 
-def test_engines_namespace_and_the_cell_engine_by_numerics():
+def test_engines_namespace_and_the_engine_by_numerics():
     from noisestate import engines
-    assert engines.stationary is engines.stationary and engines.spectral is engines.spectral and engines.cells is engines.cells
-    assert set(engines.ENGINE_CLASSES) == {"stationary", "spectral", "cells"}
+    assert engines.stationary is engines.stationary and engines.spectral is engines.spectral
+    assert set(engines.ENGINE_CLASSES) == {"stationary", "spectral"} and not hasattr(engines, "cells")
     m = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml"))
     #  the public factory returns the engine; the resolved Numerics come off the engine's model
-    S = engines.solver(m, {"engine": "cells", "nodes": 8})
+    S = engines.solver(m, {"engine": "spectral", "nodes": 8})
     num = S.model.numerics
-    assert isinstance(S, engines.cells) and num.engine == "cells" and S.solve().kind == "finite_cells"
-    with pytest.raises(TypeError, match="cell engine"):
-        engines.solver(m, {"engine": "cells"}, past=[])
+    assert isinstance(S, engines.spectral) and num.engine == "spectral" and S.solve().kind == "finite"
+    with pytest.raises(TypeError, match="spectral engine"):
+        engines.solver(ns.load(os.path.join(EX, "ch3_two_player.yaml")), past=[])
+    with pytest.raises(ValueError, match="numerics.engine"):                  # the cell cross-check is not an engine name
+        engines.solver(m, {"engine": "cells"})
     rows = ns.sweep(m, "p1", [3.0, 4.0], numerics={"nodes": 6})
     assert all(r.result.compiled.g.nt == 6 for r in rows)
 
 
-@pytest.mark.parametrize("numerics", [{"engine": "spectral", "nodes": 12}, {"engine": "cells", "nodes": 12}])
+@pytest.mark.parametrize("numerics", [{"engine": "spectral", "nodes": 12}])
 def test_one_result_reads_the_same_on_every_engine(numerics):
     """A consumer reads a kernel with its axes without knowing the engine: every axis in res.axes has the
     length of the kernel's node axis (or axes), the maps' axes are there too, and the aliases hold."""
@@ -165,7 +166,7 @@ def test_one_result_reads_the_same_on_every_engine(numerics):
     r = ns.solve(m, numerics).require_converged()
     K = r.kernel("X", "w1")
     node_axes = {k: v for k, v in r.axes.items() if k != "maps"}
-    assert K.ndim == (2 if numerics["engine"] == "cells" else 1) and all(len(v) == K.shape[0] for v in node_axes.values())
+    assert K.ndim == 1 and all(len(v) == K.shape[0] for v in node_axes.values())
     assert "time" in node_axes and "shock_time" in node_axes and r.times is not None and len(r.times) == len(r.paths["means"]["X"])
     assert r.axes["maps"]["player1"]["y1"]["map_time"].shape[0] == r.maps["player1"].shape[2]
     #  one public type; the concrete class is the engine's and is not part of the API
@@ -175,16 +176,10 @@ def test_one_result_reads_the_same_on_every_engine(numerics):
     #  the rows carry the presentation fields; the statuses carry the verdict, keyed on the root
     assert all({"code", "category", "severity", "meaning"} <= set(row) for row in r.diagnostics.rows)
     assert r.diagnostics.statuses["converged"] is Status.PASSED
-    #  Acceptance is NOT the same on every engine, and must not be: the cell engine computes
-    #  neither a representation error nor a second-order form, so under PUBLICATION it reports
-    #  UNSUPPORTED and is refused.  An engine must not pass a verdict because it cannot test it.
+    #  (the cell cross-check, which computes neither a representation error nor a second-order form,
+    #  is refused under PUBLICATION for it: extras/test_cells.py)
     verdict = r.diagnostics.assess()
-    if numerics["engine"] == "cells":
-        assert not verdict.accepted and verdict.uncomputed == ("resolution", "second_order")
-        assert {b.status for b in verdict.blocking} == {Status.UNSUPPORTED}
-        assert r.require_ok(ns.Policy.EXPLORATORY) is r          # a weaker use is legitimate, and named
-    else:
-        assert verdict.accepted is True and verdict.uncomputed == ()
+    assert verdict.accepted is True and verdict.uncomputed == ()
     diagnostic = r.to_dict()["diagnostics"][0]
     assert diagnostic["code"] == "converged" and diagnostic["category"] == "solve"
     assert diagnostic["severity"] == "ok" and diagnostic["meaning"] and "suggested_options" in diagnostic
@@ -272,16 +267,6 @@ def test_cli_validate_transition_schema_and_plot(tmp_path, capsys):
     kernel_axes = [ax for ax in fig.axes if " on " in ax.get_title()]
     assert kernel_axes and all(ax.lines for ax in kernel_axes)            # curves drawn, not an empty frame
     assert (tmp_path / "triangle.png").exists()
-
-    cells = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict()
-    cells["numerics"] = {"engine": "cells", "nodes": 6}
-    cp = ns.solve(cells, max_evaluations=1).to_dict()
-    fig = plot_payload(cp, str(tmp_path / "cells.png"))
-    image_axes = [ax for ax in fig.axes if ax.get_title()]
-    assert len(image_axes) == len(cp["kernels"]) * len(cp["shocks"])
-    assert all(len(ax.images) == 1 for ax in image_axes)                  # every cell kernel has data, not an empty panel
-    mask = np.ma.getmaskarray(image_axes[0].images[0].get_array())
-    assert mask.any() and not mask[-1, 0]                                 # shocks after the observation time are visibly excluded
 
     fig = plot_payload(p, str(tmp_path / "transition.png"))
     titles = [ax.get_title() for ax in fig.axes]

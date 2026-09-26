@@ -36,8 +36,6 @@ Kernel layout by engine:
   StationaryResult    kernel(name) -> (N, nW) values at the shock ages res.ages; kernel(name, ch) -> (N,)
   TriangleResult      kernel(name) -> (N, nW) at the triangle nodes (res.grid.t, res.grid.s);
                       res.evaluate(name, ch, t, s) interpolates; kernel(name, ch) -> (N,)
-  CellResult          kernel(name, ch) -> (N, N) matrix K[i, j]: response at cell i to a unit
-                      increment of the shock in cell j; kernel(name) -> (N, N, nW)
 """
 from __future__ import annotations
 
@@ -162,7 +160,7 @@ class Response:
 
 @dataclass
 class Result:
-    """One result type; the engines' subclasses (StationaryResult, TriangleResult, TransitionResult, CellResult)
+    """One result type; the engines' subclasses (StationaryResult, TriangleResult, TransitionResult)
     fill in the grid-specific hooks and are internal: isinstance(res, noisestate.Result) holds for every
     result, and the fields and methods below read the same on every engine."""
     model: Model
@@ -478,6 +476,13 @@ class Result:
     def cost_kind(self) -> str:
         return "stationary flow loss per unit time" if self.kind == "stationary" else "discounted integral over [0, T]"
 
+    REFINES_EXPONENTIALLY = True        # a small change on refinement means resolved
+    KERNEL_NOTE = ""                    # what Kernel.note says about this engine's kernels
+
+    def _refined_nodes(self, n0: int, factor: float) -> int:
+        import math
+        return max(n0 + 2, int(math.ceil(n0 * factor)))
+
     def refine(self, factor: float = 1.5, **solve_kw) -> "Refinement":
         """Re-solve on a finer grid (nodes x factor) and report the relative change of every agent's
         cost and of the kernels, the honest test of resolution (window, corner and product errors alike).
@@ -485,7 +490,7 @@ class Result:
         finer Result itself rather than only numbers taken from it."""
         import math
         n0 = int(self.model.numerics.nodes)
-        n1 = 2 * n0 if self.kind == "finite_cells" else max(n0 + 2, int(math.ceil(n0 * factor)))   # cells: keep lags aligned
+        n1 = self._refined_nodes(n0, factor)
         # this solve's bounds and a skipped diagnostics pass are not the refinement's
         kw = {k: v for k, v in self.solve_kw.items()
               if k not in ("start_from", "start_policy", "max_evaluations", "deadline", "diagnostics")}
@@ -501,10 +506,10 @@ class Result:
         kernel_change = self._kernel_change(fine)
         rep = {"nodes": n1, "converged": bool(fine.converged), "cost_change": float(cost_change),
                "kernel_change": float(kernel_change)}
-        # the spectral engines converge exponentially, so a small change means resolved; the cell engine is
-        # first order and its change halves per doubling: no verdict, the numbers are the report
-        rep["resolved"] = None if self.kind == "finite_cells" else bool(fine.converged and cost_change < self.REFINE_COST_TOL
-                                                                        and kernel_change < self.REFINE_KERNEL_TOL)
+        # the spectral engines converge exponentially, so a small change means resolved; a first-order engine's
+        # change only halves per doubling: no verdict, the numbers are the report
+        rep["resolved"] = None if not self.REFINES_EXPONENTIALLY else bool(fine.converged and cost_change < self.REFINE_COST_TOL
+                                                                          and kernel_change < self.REFINE_KERNEL_TOL)
         # A saddle the second-order check reports is a claim about the model; a negative curvature that
         # shrinks towards zero as the grid refines is a claim about the grid (a quadrature direction on the
         # diagonal, alternating in sign between neighbouring age nodes, is the shape it takes).  The two read
@@ -1278,67 +1283,3 @@ class TransitionResult(TriangleResult):
         return "\n".join(lines)
 
 
-@dataclass(repr=False)
-class CellResult(Result):
-    kind: str = "finite_cells"
-
-    #  The cell engine computes neither a representation error nor a second-order form, so both
-    #  checks are UNSUPPORTED here -- not missing, and never silently absent.  A result must not
-    #  be accepted because the engine could not test it.
-    SUPPORTED_CHECKS = frozenset(CHECKS) - {"resolution", "second_order"}
-
-    MAP_CONVENTION = ("maps[agent][u][row][i][v] is the weight the control in cell i (time grid.t[i]) puts on the increment "
-                      "of the row as the agent sees it in cell v; that increment entered the raw row in cell v - delay / h "
-                      "(time agents[agent].signals[row].map_shock_time[v] = grid.t[v] - delay), and cells v below the delay "
-                      "are zero")
-
-    @property
-    def times(self) -> np.ndarray:
-        return self.compiled.times
-
-    def _node_axes(self) -> dict:
-        return {"time": self.times, "shock_time": self.times}
-
-    def map_axes(self, delay: float) -> dict:
-        return {"map_time": self.times.tolist(), "map_shock_time": (self.times - delay).tolist()}
-
-    def _kernel_change(self, fine) -> float:
-        # compare at the coarse cell times: fine cell index = round(t / h_fine)
-        c0, c1 = self.compiled, fine.compiled; worst = 0.0
-        idx = np.clip(np.round(c0.times / c1.h).astype(int), 0, c1.N - 1)
-        for name in c0.prim:
-            for ch in self.compiled.channels:
-                K0 = self.kernel(name, ch); K1 = fine.kernel(name, ch)[np.ix_(idx, idx)]
-                worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
-        return worst
-
-    def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
-        """K[i, j]: response of `name` at cell i to a unit increment of `channel` in cell j, (N, N); without a
-        channel the stack over the channels, (N, N, nW): kernel(name)[..., k] is kernel(name, channels[k]), the
-        last axis one column per channel as on the other engines."""
-        c = self.compiled
-        K = c.expr_kernel(self.world, c.model.expand({name: 1.0}))
-        if channel is None:
-            return np.stack([K[:, k * c.N:(k + 1) * c.N] for k in range(len(c.channels))], axis=-1)
-        k = c.channels.index(channel)
-        return K[:, k * c.N:(k + 1) * c.N]
-
-    def grid_summary(self) -> dict:
-        c = self.compiled
-        return {"kind": "finite_cells", "cells": int(c.N), "h": float(c.h), "t": c.times.tolist()}
-
-    def plot(self, path: str) -> None:
-        """Each kernel as a function of the shock time s at five dates t (needs matplotlib)."""
-        from .plotting import plot_cells
-        plot_cells(self, path)
-
-    COST_LABEL = "discounted cost"
-
-    def _grid_line(self) -> str:
-        c = self.compiled
-        return f"{c.N} cells on [0, {c.T}], rho={c.rho}"
-
-    def _means_line(self) -> str:
-        c = self.compiled
-        return "  means at t = 0, T/2: " + ", ".join(
-            f"{n}={self._mz(self.means[n][0]):+.4f}/{self._mz(self.means[n][c.N // 2]):+.4f}" for n in c.prim)

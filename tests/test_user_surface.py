@@ -163,7 +163,7 @@ def test_the_readme_uses_only_calls_that_exist():
     #  belief_error is not on a finite result), and this stays fast enough to run every time.
     from noisestate import results as _r
     available = set()
-    for cls in (ns.Result, _r.StationaryResult, _r.TriangleResult, _r.TransitionResult, _r.CellResult):
+    for cls in (ns.Result, _r.StationaryResult, _r.TriangleResult, _r.TransitionResult):
         available |= set(dir(cls))
         #  a dataclass field with no default is an ANNOTATION, not a class attribute, so it is
         #  absent from dir(); the annotation is the declaration, and giving it a default merely to

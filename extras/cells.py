@@ -1,8 +1,11 @@
 """Finite-horizon equilibrium in noise-state linear strategies (uniform time cells).
 
-CROSS-CHECK ENGINE.  The production finite-horizon engine is finite_spectral.py; this first-order
-scheme is kept as an independent discretisation for validation (Richardson-extrapolated), selected
-with numerics.engine = "cells" (its result reports kind "finite_cells").
+CROSS-CHECK ENGINE, outside the package.  The finite-horizon engine is noisestate's spectral one
+(finite_spectral.py); this first-order scheme is kept here as an independent discretisation for
+validation (Richardson-extrapolated):
+
+    from cells import FiniteSolver
+    res = FiniteSolver(model.with_numerics(nodes=48)).solve()      # N = 48 cells; res.kind == "finite_cells"
 
 Time [0, T] is cut into N cells of length h.  Shocks are the cell increments
 dW_j (variance h).  A kernel K[i, j] is the response at cell i (state at t_i,
@@ -26,10 +29,95 @@ from typing import Dict, Optional
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, lgmres
 
-from .engine import EngineBase, singular_system_message
-from .compile import CompiledBase, reject_leads
-from .results import CellResult
-from .spec import Agent, Atom, Model
+from dataclasses import dataclass
+
+from noisestate.diagnostics import CHECKS
+from noisestate.engine import EngineBase, singular_system_message
+from noisestate.compile import CompiledBase, reject_leads
+from noisestate.results import Result
+from noisestate.spec import Agent, Atom, Model
+
+
+@dataclass(repr=False)
+class CellResult(Result):
+    kind: str = "finite_cells"
+    KERNEL_NOTE = "the cell engine's kernel is piecewise constant: at() returns the nearest cell"
+    REFINES_EXPONENTIALLY = False       # first order: refine() reports the changes, no verdict
+
+    def _refined_nodes(self, n0: int, factor: float) -> int:
+        return 2 * n0                   # keep the lags on cell boundaries
+
+    #  The cell engine computes neither a representation error nor a second-order form, so both
+    #  checks are UNSUPPORTED here -- not missing, and never silently absent.  A result must not
+    #  be accepted because the engine could not test it.
+    SUPPORTED_CHECKS = frozenset(CHECKS) - {"resolution", "second_order"}
+
+    MAP_CONVENTION = ("maps[agent][u][row][i][v] is the weight the control in cell i (time grid.t[i]) puts on the increment "
+                      "of the row as the agent sees it in cell v; that increment entered the raw row in cell v - delay / h "
+                      "(time agents[agent].signals[row].map_shock_time[v] = grid.t[v] - delay), and cells v below the delay "
+                      "are zero")
+
+    @property
+    def times(self) -> np.ndarray:
+        return self.compiled.times
+
+    def _node_axes(self) -> dict:
+        return {"time": self.times, "shock_time": self.times}
+
+    def map_axes(self, delay: float) -> dict:
+        return {"map_time": self.times.tolist(), "map_shock_time": (self.times - delay).tolist()}
+
+    def _kernel_change(self, fine) -> float:
+        # compare at the coarse cell times: fine cell index = round(t / h_fine)
+        c0, c1 = self.compiled, fine.compiled; worst = 0.0
+        idx = np.clip(np.round(c0.times / c1.h).astype(int), 0, c1.N - 1)
+        for name in c0.prim:
+            for ch in self.compiled.channels:
+                K0 = self.kernel(name, ch); K1 = fine.kernel(name, ch)[np.ix_(idx, idx)]
+                worst = max(worst, float(np.abs(K0 - K1).max() / max(1e-12, np.abs(K0).max())))
+        return worst
+
+    def _kernel(self, name: str, channel: Optional[str] = None) -> np.ndarray:
+        """K[i, j]: response of `name` at cell i to a unit increment of `channel` in cell j, (N, N); without a
+        channel the stack over the channels, (N, N, nW): kernel(name)[..., k] is kernel(name, channels[k]), the
+        last axis one column per channel as on the other engines."""
+        c = self.compiled
+        K = c.expr_kernel(self.world, c.model.expand({name: 1.0}))
+        if channel is None:
+            return np.stack([K[:, k * c.N:(k + 1) * c.N] for k in range(len(c.channels))], axis=-1)
+        k = c.channels.index(channel)
+        return K[:, k * c.N:(k + 1) * c.N]
+
+    def grid_summary(self) -> dict:
+        c = self.compiled
+        return {"kind": "finite_cells", "cells": int(c.N), "h": float(c.h), "t": c.times.tolist()}
+
+    def plot(self, path: str) -> None:
+        """Each kernel as a function of the shock time s at five dates t (needs matplotlib)."""
+        plot_cells(self, path)
+
+    COST_LABEL = "discounted cost"
+
+    def _grid_line(self) -> str:
+        c = self.compiled
+        return f"{c.N} cells on [0, {c.T}], rho={c.rho}"
+
+    def _means_line(self) -> str:
+        c = self.compiled
+        return "  means at t = 0, T/2: " + ", ".join(
+            f"{n}={self._mz(self.means[n][0]):+.4f}/{self._mz(self.means[n][c.N // 2]):+.4f}" for n in c.prim)
+
+
+def plot_cells(res, path: str) -> None:
+    """Each kernel as a function of the shock time s at five dates t (needs matplotlib)."""
+    N, h = res.compiled.N, res.compiled.h
+    def curves(name, ch):
+        K = res.kernel(name, ch)
+        for t_i in np.linspace(N // 5, N - 1, 5).astype(int):
+            yield t_i * h, np.arange(t_i) * h, K[t_i, :t_i]
+    from noisestate.plotting import _plot_by_shock_time
+    _plot_by_shock_time(res, curves, path)
+
 
 
 class FiniteCompiled(CompiledBase):
@@ -171,6 +259,9 @@ class FiniteSolver(EngineBase):
     RESULT = CellResult
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 60
     ACTIONS = False
+    # the best-response solve: assembled densely up to DENSE_MAX unknowns, LGMRES beyond (first attempt, retry)
+    DENSE_MAX, KRYLOV_RTOL, KRYLOV_MAXITER, KRYLOV_RETRY = 200, 1e-12, 400, 1000
+
     def __init__(self, model: Model, verbose: bool = False, settings=None):
         """The cell grid's compiled model and the map shapes (nU, nR, N, N): g[u][r][i, v], the weight the
         control in cell i puts on the seen increment of cell v < i.  settings: the tuning constants
@@ -283,8 +374,7 @@ class FiniteSolver(EngineBase):
         for r, (rname, drift, E, dly) in enumerate(c.rows[agent.name]):
             keep[:, r] = tri & (np.arange(N)[None, :] >= dly)
         keep = keep[:, :, tri].reshape(-1)
-        st = self.settings
-        if n <= st.cell_dense_max:
+        if n <= self.DENSE_MAX:
             M = np.column_stack([op.matvec(e) for e in np.eye(n)])
             gvec = np.zeros(n)
             gvec[keep] = self._solve_regular(agent, M[np.ix_(keep, keep)], -b[keep])
@@ -305,9 +395,9 @@ class FiniteSolver(EngineBase):
             x0 = self._warm.get(agent.name)
             if x0 is not None and x0.shape[0] != n:
                 x0 = None
-            gvec, info = lgmres(op, -b, x0=x0, rtol=st.cell_krylov_rtol, atol=0, maxiter=st.cell_krylov_maxiter)
+            gvec, info = lgmres(op, -b, x0=x0, rtol=self.KRYLOV_RTOL, atol=0, maxiter=self.KRYLOV_MAXITER)
             if info != 0:
-                gvec, info = lgmres(op, -b, x0=gvec, rtol=st.cell_krylov_rtol, atol=0, maxiter=st.cell_krylov_retry)
+                gvec, info = lgmres(op, -b, x0=gvec, rtol=self.KRYLOV_RTOL, atol=0, maxiter=self.KRYLOV_RETRY)
             if info != 0:
                 raise RuntimeError(f"cell engine: the best-response linear solve did not converge (lgmres info {info}); "
                                    f"the system of {agent.name} may be singular (a control with no quadratic term in itself)")
@@ -323,7 +413,7 @@ class FiniteSolver(EngineBase):
             G = B @ B.T
             if np.trace(G) <= 0:
                 continue                                   # no information yet (delayed rows): map stays zero
-            G += st.map_ridge * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
+            G += self.settings.map_ridge * np.trace(G) / G.shape[0] * np.eye(G.shape[0])
             for ui in range(nU):
                 sol = np.linalg.solve(G, B @ cact[ui, i])
                 g[ui, :, i, :i] = sol.reshape(nR, i)

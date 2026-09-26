@@ -33,13 +33,9 @@ class Settings:
     foc_rcond: float = 1e-10            # a best-response system whose reciprocal condition estimate is below this is singular
     stationary_map_ridge: float = 1e-14  # ridge of the stationary map projection's Gram, relative to its mean diagonal
     map_ridge: float = 1e-13            # ridge of the finite engines' per-time-row (per-cell) map projection, relative to the row's own Gram
-    cell_dense_max: int = 200           # cell engine: unknowns up to which the best-response system is assembled densely; LGMRES above
-    cell_krylov_rtol: float = 1e-12     # cell engine: relative tolerance of the LGMRES best-response solve
     foc_dense_max: int = 500            # spectral finite engine: unknowns nU nR N (the largest agent's) up to which the first-order-condition system is assembled (the operators applied to the identity) and LU-factored; above it it is solved by GMRES on the operators, preconditioned by time row (finite_free.FocSystem).  Measured 2026-09-06: dense is never faster (0.26 s vs 0.12 s at 482 unknowns, 90 s vs 0.76 s at 4926, four times the memory); 500 keeps the tiny systems on the direct solve
     foc_krylov_tol: float = 1e-12       # spectral finite engine, matrix-free path: relative tolerance of the LGMRES solve of the first-order conditions
     foc_krylov_maxiter: int = 400       # spectral finite engine, matrix-free path: LGMRES iterations at most (beyond them the system is reported singular)
-    cell_krylov_maxiter: int = 400      # cell engine: LGMRES iterations of the first attempt
-    cell_krylov_retry: int = 1000       # cell engine: LGMRES iterations of the second attempt, warm-started from the first
     # ---- the second-order check
     second_order_tol: float = 1e-4      # curvature (relative to the largest) below which a negative value is window truncation
     second_order_dense: int = 4000      # strategy dimension up to which the form is built densely (always settles, 2.7 s at 1600); Lanczos above

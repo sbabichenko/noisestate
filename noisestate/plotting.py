@@ -52,16 +52,6 @@ def plot_transition(res, path: str) -> None:
     belief-error variance of every state, and the mean paths when driven (needs matplotlib)."""
     _plot_transition(res, path)
 
-def plot_cells(res, path: str) -> None:
-    """Each kernel as a function of the shock time s at five dates t (needs matplotlib)."""
-    N, h = res.compiled.N, res.compiled.h
-    def curves(name, ch):
-        K = res.kernel(name, ch)
-        for t_i in np.linspace(N // 5, N - 1, 5).astype(int):
-            yield t_i * h, np.arange(t_i) * h, K[t_i, :t_i]
-    _plot_by_shock_time(res, curves, path)
-
-
 def _pyplot():
     try:
         import matplotlib
@@ -209,26 +199,6 @@ def plot_payload(payload: dict, path: str):
                 ax.legend(fontsize=7, frameon=False, ncol=2)
         for ax in axs.ravel()[len(names):]:
             ax.axis("off")
-    elif payload["kind"] == "finite_cells":
-        t = np.asarray(axes_of["time"], dtype=float); s = np.asarray(axes_of["shock_time"], dtype=float)
-        fig, axs = plt.subplots(len(names), len(chans), figsize=(3.8 * len(chans), 3.0 * len(names)), squeeze=False)
-        extent = [float(s[0]), float(s[-1]), float(t[0]), float(t[-1])]
-        for i, name in enumerate(names):
-            for k, ch in enumerate(chans):
-                ax = axs[i, k]; K = np.asarray(kernels[name][ch], dtype=float)
-                future = s[None, :] > t[:, None] + 1e-12
-                shown = np.ma.array(K, mask=future)
-                cmap = plt.get_cmap("RdBu_r").with_extremes(bad="0.88")
-                scale = float(np.max(np.abs(K[~future]))) if np.any(~future) else 0.0
-                im = ax.imshow(shown, origin="lower", aspect="auto", extent=extent, cmap=cmap,
-                               **({"vmin": -scale, "vmax": scale} if scale > 0 else {"vmin": -1, "vmax": 1}))
-                if scale > 0:
-                    fig.colorbar(im, ax=ax)
-                else:
-                    ax.text(0.5, 0.5, "zero on causal cells", transform=ax.transAxes,
-                            ha="center", va="center", fontsize=8, color="0.35")
-                ax.set_title(f"{name} on {ch}", fontsize=9)
-                ax.set_xlabel("shock time s"); ax.set_ylabel("time t")
     else:
         t = np.asarray(axes_of["time"], dtype=float); s = np.asarray(axes_of["shock_time"], dtype=float)
         T = _terminal_time(payload)

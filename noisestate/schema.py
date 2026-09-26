@@ -147,7 +147,7 @@ def payload_schema() -> dict:
                 "version": {"type": "string", "description": "the package version that wrote it"},
                 "name": {"type": "string"},
                 "engine": {"enum": list(ENGINE_NAMES)},
-                "kind": {"enum": ["stationary", "finite", "transition", "finite_cells"], "description": "the result kind"},
+                "kind": {"enum": ["stationary", "finite", "transition"], "description": "the result kind"},
                 "converged": {"type": "boolean"}, "residual": {"type": "number"}, "evaluations": {"type": "integer"},
                 "seconds": {"type": "number"}, "message": {"type": "string"},
                 "params": by_name({"type": "number"}),

@@ -46,13 +46,13 @@ def exact(rho):
 
 
 def model(rho, kind, nodes):
-    """kind "finite_cells" names the cell engine's result; the model asks for kind finite with engine cells."""
-    cells = kind == "finite_cells"
+    """The one-agent tracking model on [0, T] (kind "finite") or its stationary form; extras/test_cells.py solves
+    the finite one on the cell engine too."""
     return {"shocks": ["w0", "w1"], "states": {"X": {"drift": {"X": a, "D": 1.0}, "noise": {"w0": 1.0}}},
             "agents": {"a": {"controls": ["D"], "signals": {"y": {"drift": {"X": h}, "noise": {"w1": 1.0}}},
                              "loss": [[1.0, "X", "X"], [r, "D", "D"]]}},
-            "horizon": {"kind": "finite" if cells else kind, "T": T, "discount": rho},
-            "numerics": {"nodes": nodes, **({"engine": "cells"} if cells else {})}}
+            "horizon": {"kind": kind, "T": T, "discount": rho},
+            "numerics": {"nodes": nodes}}
 
 
 TS = np.array([0.5, 1.0, 1.0, 2.0, 2.0, 2.8, 2.8]); SS = TS - np.array([0.1, 0.1, 0.5, 0.5, 1.5, 0.1, 2.0])
@@ -67,17 +67,6 @@ def test_spectral_finite_engine_matches_the_discounted_closed_form(rho):
     assert abs(res.costs["a"] - J) < 1e-7
     for name, ch in (("D", "w1"), ("D", "w0"), ("X", "w0"), ("X", "w1")):
         assert np.abs(res.evaluate(name, ch, TS, SS) - kernel(name, ch, TS, SS)).max() < 2e-4, (name, ch)
-
-
-@pytest.mark.parametrize("rho", [0.0, 0.5])
-def test_cell_engine_is_first_order_and_its_richardson_pair_matches_the_closed_form(rho):
-    """48 and 96 cells: the cost error halves (measured 4.5e-2 / 2.3e-2 at rho = 0, 2.4e-2 / 1.2e-2 at 0.5, ratio 1.98)
-    and the Richardson pair is within 4e-4 (measured 4.0e-4 and 2.6e-4; the pair (24, 48) is within 1.8e-3)."""
-    J, _ = exact(rho)
-    e48 = ns.solve(model(rho, "finite_cells", 48)).require_converged().costs["a"] - J
-    e96 = ns.solve(model(rho, "finite_cells", 96)).require_converged().costs["a"] - J
-    assert 1.9 < e48 / e96 < 2.1
-    assert abs(2 * e96 - e48) < 1e-3
 
 
 #  --------------------------------------------------------------- the stationary side of the discount

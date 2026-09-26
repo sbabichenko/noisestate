@@ -13,8 +13,8 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `payload_version` | const 2 | the payload format, 2 (the [pre-release history](design/pre-release-history.md#serialisation) records the changes from version 1) |
 | `version` | string | the package version that wrote it |
 | `name` | string | the model's name |
-| `engine` | `stationary` \| `spectral` \| `cells` | the engine that solved it (`numerics.engine` resolved) |
-| `kind` | `stationary` \| `finite` \| `transition` \| `finite_cells` | the result kind (the cell engine reports `finite_cells`) |
+| `engine` | `stationary` \| `spectral` | the engine that solved it (`numerics.engine` resolved) |
+| `kind` | `stationary` \| `finite` \| `transition` | the result kind |
 | `converged` | boolean | the fixed point reached `tol` |
 | `residual` | number | the fixed point's final residual |
 | `evaluations` | integer | best-response evaluations (Anderson and the Newton-Krylov polish together) |
@@ -24,7 +24,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `model` | model (see above) | the model spec, `Model.from_dict` rebuilds it |
 | `horizon` | object | the model's horizon block (the economics) |
 | `numerics` | numerics (see above) | the resolved numerics |
-| `axes` | map of list of number | the coordinates of every kernel by name: `age` (stationary); `time`, `age`, `shock_time` node-wise on the spectral triangle (`shock_time` < 0 on a transition's band); `time`, `shock_time` for the cell engine's (N, N) matrices; under `maps`, where each row's map values belong |
+| `axes` | map of list of number | the coordinates of every kernel by name: `age` (stationary); `time`, `age`, `shock_time` node-wise on the spectral triangle (`shock_time` < 0 on a transition's band); under `maps`, where each row's map values belong |
 | `times` | list of number or null | the time nodes of the paths; null on the stationary engine |
 | `options` | object | `numerics` (the resolved Numerics), `solver` (the engine's constructor options) and `solve` (the solve options: start, bounds, diagnostics, ...); `noisestate plot --re-solve` re-solves under them |
 | `grid` | object | the grid's description (`res.grid_summary()`): its `kind`, nodes, panels or pieces, window |
@@ -32,7 +32,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `shocks` | list of string | the kernels' columns in order: the Brownian shocks, then a transition's initial shocks |
 | `agents` | map of object | per agent: its `controls` and its `signals`, each row with its `delay` and the axes of its map (`map_time`, `map_age` or `map_shock_time`, per `map_convention`) |
 | `map_convention` | string | one sentence on how a delayed row's map is indexed (`Result.MAP_CONVENTION`) |
-| `kernels` | map of map of list of any | per state, control and definition, per shock: the closed-loop kernel on the grid (a list over ages; a list over triangle nodes; an (N, N) list of lists on the cell engine) |
+| `kernels` | map of map of list of any | per state, control and definition, per shock: the closed-loop kernel on the grid (a list over ages; a list over triangle nodes) |
 | `maps` | map of map of map of list of any | per agent, per control, per signal row: the raw strategy g[u][r] on the row's map axis |
 | `foc` | map of map of map of map of list of number | per agent, per control: `foc`, `physical`, `wedge`, each per shock: the first-order-condition decomposition |
 | `costs` | map of number | per agent: the cost (`cost_kind` says what it is) |

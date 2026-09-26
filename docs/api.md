@@ -107,7 +107,7 @@ Adding a row an agent already has is an **error**, never a silent replacement â€
 | `model.solve(numerics=None, **kw)` | the same as a method |
 | `ns.Numerics(engine=, nodes=, tol=, â€¦)` | the numerical choices. Every field optional; `None` keeps the model's own |
 | `ns.Settings(...)` | the full frozen tunable set |
-| `ns.engines` | the advanced namespace: `engines.stationary`, `engines.spectral`, `engines.cells`, and `engines.solver(model, numerics, **kw)` to construct one directly |
+| `ns.engines` | the advanced namespace: `engines.stationary`, `engines.spectral`, and `engines.solver(model, numerics, **kw)` to construct one directly |
 | `ns.clear_grid_cache()` | free the cached grids. For measuring memory |
 
 **Warm starts are two arguments because they are two things.** `start_from` takes an **object**
@@ -173,8 +173,6 @@ means something is.
 
 `Policy.PUBLICATION` requires `converged`, `resolution`, `window`, `second_order`, `settled`;
 `Policy.EXPLORATORY` requires only `converged` and must be requested explicitly.
-Under `PUBLICATION` the cell engine cannot produce an accepted result, because it computes neither a
-representation error nor a second-order form.
 
 **Exceptions are siblings, not nested:**
 

@@ -11,14 +11,12 @@ def _kyle_back(kind, nodes, mm_loss):
     d = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict()
     d["agents"]["market_maker"]["loss"] = mm_loss
     if kind != "stationary":
-        cells = kind == "finite_cells"      # the cell engine's result kind; the model asks for finite + engine cells
-        d["horizon"] = ({"kind": "finite", "T": 2.0} if cells or kind == "finite"
-                        else {"kind": kind, "window": 2.0})
-        d["numerics"] = {"nodes": nodes, **({"engine": "cells"} if cells else {})}; del d["params"]["rho"]
+        d["horizon"] = {"kind": "finite", "T": 2.0} if kind == "finite" else {"kind": kind, "window": 2.0}
+        d["numerics"] = {"nodes": nodes}; del d["params"]["rho"]
     return d
 
 
-@pytest.mark.parametrize("kind,nodes", [("finite", 6), ("finite_cells", 6), ("finite_cells", 24), ("stationary", 24)])
+@pytest.mark.parametrize("kind,nodes", [("finite", 6), ("stationary", 24)])     # the cell engine's: extras/test_cells.py
 def test_a_singular_best_response_system_raises_on_every_engine(kind, nodes):
     # without [1, P, P] the market maker's price enters its loss only through the cross term with the exogenous V:
     # its first-order condition does not respond to P at all (cells 6: the dense branch; 24: the Krylov branch)

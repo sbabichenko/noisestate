@@ -16,13 +16,9 @@ defaults are recorded in `res.numerics`, `res.solver_kw` and the payload's `opti
 | `foc_rcond` | 1e-10 | a best-response system whose reciprocal condition estimate is below this is singular |
 | `stationary_map_ridge` | 1e-14 | ridge of the stationary map projection's Gram, relative to its mean diagonal |
 | `map_ridge` | 1e-13 | ridge of the finite engines' per-time-row (per-cell) map projection, relative to the row's own Gram |
-| `cell_dense_max` | 200 | cell engine: unknowns up to which the best-response system is assembled densely; LGMRES above |
-| `cell_krylov_rtol` | 1e-12 | cell engine: relative tolerance of the LGMRES best-response solve |
 | `foc_dense_max` | 500 | spectral finite engine: unknowns nU nR N (the largest agent's) up to which the first-order-condition system is assembled (the operators applied to the identity) and LU-factored; above it it is solved by GMRES on the operators, preconditioned by time row (finite_free.FocSystem) |
 | `foc_krylov_tol` | 1e-12 | spectral finite engine, matrix-free path: relative tolerance of the LGMRES solve of the first-order conditions |
 | `foc_krylov_maxiter` | 400 | spectral finite engine, matrix-free path: LGMRES iterations at most (beyond them the system is reported singular) |
-| `cell_krylov_maxiter` | 400 | cell engine: LGMRES iterations of the first attempt |
-| `cell_krylov_retry` | 1000 | cell engine: LGMRES iterations of the second attempt, warm-started from the first |
 | `second_order_tol` | 1e-4 | curvature (relative to the largest) below which a negative value is window truncation |
 | `second_order_dense` | 4000 | strategy dimension up to which the form is built densely (always settles, 2.7 s at 1600); Lanczos above |
 | `second_order_lanczos_tol` | 1e-6 | tolerance of the Lanczos extreme eigenvalues above that dimension |
@@ -44,8 +40,7 @@ defaults are recorded in `res.numerics`, `res.solver_kw` and the payload's `opti
 ## Groups
 
 The outer fixed point (`anderson_m`, `anderson_iters`, `anderson_reg`, `newton_inner_m`); the best response
-(`foc_rcond`, `stationary_map_ridge`, `map_ridge`, the cell engine's `cell_dense_max`, `cell_krylov_rtol`,
-`cell_krylov_maxiter`, `cell_krylov_retry`, and the spectral finite engine's `foc_dense_max`, the unknowns
+(`foc_rcond`, `stationary_map_ridge`, `map_ridge`, and the spectral finite engine's `foc_dense_max`, the unknowns
 nU nR N up to which the first-order-condition system is assembled from the operators' rows and LU-factored,
 beyond which it is solved by GMRES on the applied operators to `foc_krylov_tol` within `foc_krylov_maxiter`,
 preconditioned by its time-row blocks); the second-order check (`second_order_tol`, `second_order_dense`,

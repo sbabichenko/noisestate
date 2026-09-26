@@ -73,8 +73,8 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `horizon.continuation` | `stationary` \| `end` | kind transition only; default stationary | `stationary` |
 | `horizon.settle` | number or expression | kind transition only, in place of `T` (exactly one): the settle tolerance T is found for by the march in T ([transitions.md](transitions.md)) |  |
 | `numerics` | object | how the model is solved: the engine, the grid, the fixed point's options, the settings |  |
-| `numerics.engine` | `stationary` \| `spectral` \| `cells` | default from horizon.kind: stationary -> stationary, else spectral | `stationary` for kind stationary, else `spectral` |
-| `numerics.nodes` | integer >= 2 | nodes per panel (stationary) or per side of each piece (spectral); cells on the cell engine; default 16 | 16 (12 from the CLI's `transition`) |
+| `numerics.engine` | `stationary` \| `spectral` | default from horizon.kind: stationary -> stationary, else spectral | `stationary` for kind stationary, else `spectral` |
+| `numerics.nodes` | integer >= 2 | nodes per panel (stationary) or per side of each piece (spectral); default 16 | 16 (12 from the CLI's `transition`) |
 | `numerics.unit` | number or expression | the panel unit: every lag and delay must be a multiple of it | the smallest lag |
 | `numerics.unit_range` | number or expression | the age (stationary) or time (spectral) up to which the panels are unit panels | the window |
 | `numerics.breakpoints` | list of number or expression | an explicit panel sequence from 0 to the window | the lags' multiples closed under every lag and delay |
@@ -115,8 +115,7 @@ The fields of `numerics.settings` are those of `noisestate.Settings`: [settings.
   `transition` has both, plus its `past` and `continuation` ([transitions.md](transitions.md)).
   Asking a horizon for the length its kind does not have is an error naming the one it does.
 * **Numerics.** How it is solved, an optional block with the fields of `noisestate.Numerics`:
-  `engine` (`stationary`, `spectral`, or `cells` for the first-order cell scheme on a finite
-  horizon; default from the kind), `nodes` per panel (stationary) or per side of each piece of
+  `engine` (`stationary` or `spectral`; default from the kind), `nodes` per panel (stationary) or per side of each piece of
   the triangle (12 is usually converged; 6-8 when delays cut the domain into small pieces; the
   panels are the lags' multiples closed under every lag, see [limits.md](limits.md) for a window that is not a
   multiple of them), `unit`/`unit_range`/`breakpoints` (panels are aligned to the delays

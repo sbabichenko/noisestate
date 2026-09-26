@@ -2,7 +2,7 @@
 
     from noisestate import Numerics, solve
     res = solve("examples/ch4_kyle_back.yaml", Numerics(nodes=32))
-    res = solve(model, {"engine": "cells", "nodes": 48})
+    res = solve(model, {"engine": "spectral", "nodes": 24})
     res = solve(model, Numerics(tol=1e-12, settings={"anderson_m": 10}))
 
 A model file keeps the economics under `horizon:` (kind, window, discount, past, continuation) and may carry
@@ -19,7 +19,7 @@ from typing import List, Optional, Union
 from ._settings import DEFAULT, PRISTINE, Settings
 
 ENGINES_OF_KIND = {"stationary": "stationary", "finite": "spectral", "transition": "spectral"}
-ENGINE_NAMES = ("stationary", "spectral", "cells")
+ENGINE_NAMES = ("stationary", "spectral")
 SOLVE_FIELDS = ("tol", "damping", "max_newton", "variable")
 
 
@@ -28,11 +28,9 @@ class Numerics:
     """The numerical choices of a solve.  Every field is optional: None means the model's own value, and
     beyond that the default named here.
 
-    engine              "stationary" (the age grid), "spectral" (the piecewise-spectral triangle; every finite
-                        horizon and every transition) or "cells" (the first-order uniform-cell cross-check on a
-                        finite horizon); default from the horizon kind (stationary -> stationary, else spectral)
-    nodes               Chebyshev nodes per panel (stationary) or per side of each piece (spectral); cells on
-                        the cell engine; default 16
+    engine              "stationary" (the age grid) or "spectral" (the piecewise-spectral triangle; every finite
+                        horizon and every transition); default from the horizon kind
+    nodes               Chebyshev nodes per panel (stationary) or per side of each piece (spectral); default 16
     unit                the panel unit: every lag and delay must be a multiple of it (default the smallest lag)
     unit_range          the age (stationary) or time (spectral) up to which the panels are unit panels; beyond
                         it they grow geometrically (default the whole window)

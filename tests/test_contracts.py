@@ -122,7 +122,7 @@ def test_T3_every_predicate_name_returns_a_real_bool():
     """is_/has_/drives_ return bool, never None.  A multivalued assessment uses a Status or a
     status object -- that distinction is what res.diagnostics.statuses exists to carry."""
     checked = 0
-    for numerics in ({"nodes": 8}, {"nodes": 8, "engine": "cells"}):
+    for numerics in ({"nodes": 8},):                   # the cell engine's result: extras/test_cells.py
         model = example("ch1_two_player_finite")
         res = ns.solve(model, numerics, diagnostics=False)
         for obj in (res, res.model):

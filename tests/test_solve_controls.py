@@ -85,9 +85,7 @@ def test_diagnostics_off_skips_the_checks_and_their_best_responses(monkeypatch):
     monkeypatch.setattr(type(S), "best_response", counted)
     r = S.solve(start_from=w, diagnostics=False); assert len(calls) == 2 * r.evaluations and not any(calls)
     calls.clear(); r = S.solve(start_from=w); assert len(calls) == 2 * r.evaluations + 2 and calls[-2:] == [True, True]
-    # the cell engine (no checks of its own) accepts the option as well
-    d = ns.load(os.path.join(EX, "ch1_two_player_finite.yaml")).to_dict(); d["horizon"] = {"kind": "finite", "T": 1.0}; d["numerics"] = {"engine": "cells", "nodes": 12}
-    assert ns.solve(ns.Model.from_dict(d), diagnostics=False).converged
+    # the cell engine (no checks of its own) accepts the option as well: extras/test_cells.py
 
 
 def test_non_finite_best_response_stops_with_a_clear_error():

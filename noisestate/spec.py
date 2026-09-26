@@ -781,9 +781,7 @@ class Model:
         if hz.discount < 0:
             raise ValueError("horizon.discount must be non-negative")
         if hz.kind not in ("stationary", "finite", "transition"):
-            raise ValueError("horizon.kind must be 'stationary', 'finite' or 'transition' (the engine, spectral or cells, is numerics.engine)")
-        if self.numerics.engine == "cells" and hz.kind != "finite":
-            raise ValueError(f"numerics.engine 'cells' solves a finite horizon only, not horizon.kind {hz.kind!r}")
+            raise ValueError("horizon.kind must be 'stationary', 'finite' or 'transition' (the engine is numerics.engine)")
         if self.numerics.engine == "stationary" and hz.kind != "stationary":
             raise ValueError(f"numerics.engine 'stationary' solves horizon.kind 'stationary' only, not {hz.kind!r}")
         if self.numerics.engine == "spectral" and hz.kind == "stationary":

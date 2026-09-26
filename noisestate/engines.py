@@ -1,14 +1,14 @@
-"""The three engines by name, and the construction solve() and sweep() share.
+"""The two engines by name, and the construction solve() and sweep() share.
 
     from noisestate import engines
     S = engines.stationary(model, settings={"anderson_m": 10}); res = S.solve(tol=1e-12)
     S = engines.solver(model, Numerics(nodes=24), past=old)
 
 `stationary` is the age-grid engine (StationarySolver), `spectral` the piecewise-spectral triangle
-(SpectralFiniteSolver: finite horizons and transitions), `cells` the first-order uniform-cell cross-check
-(FiniteSolver).
+(SpectralFiniteSolver: finite horizons and transitions).  The first-order uniform-cell cross-check lives
+outside the package, in extras/cells.py.
 
-THE PUBLIC SURFACE IS THE THREE ENGINES AND `solver`.  `solver(model, numerics, ...)` resolves the
+THE PUBLIC SURFACE IS THE TWO ENGINES AND `solver`.  `solver(model, numerics, ...)` resolves the
 numerics against the model (the engine from the horizon kind unless given, the model's own grid
 fields unless overridden), lays them on the model so the engine reads them, and returns the engine.
 `_build` beneath it also returns the RESOLVED NUMERICS, which the solve path records and nobody
@@ -21,11 +21,10 @@ from .numerics import Numerics
 from .spec import Model
 from .stationary import StationarySolver as stationary
 from .finite_spectral import SpectralFiniteSolver as spectral
-from .finite import FiniteSolver as cells
 
-ENGINE_CLASSES = {"stationary": stationary, "spectral": spectral, "cells": cells}
+ENGINE_CLASSES = {"stationary": stationary, "spectral": spectral}
 
-__all__ = ["stationary", "spectral", "cells", "ENGINE_CLASSES", "solver", "default_start"]
+__all__ = ["stationary", "spectral", "ENGINE_CLASSES", "solver", "default_start"]
 
 
 def default_start(S, start_policy=None) -> str:
@@ -58,8 +57,6 @@ def _build(model: Model, numerics=None, *, verbose: bool = False, past=None, con
                 kw["past"] = past
             if continuation is not None:
                 kw["continuation"] = continuation
-        elif past is not None or continuation is not None:
-            raise TypeError("the cell engine has no past or continuation; use numerics.engine 'spectral'")
     return ENGINE_CLASSES[num.engine](model, **kw), num
 
 

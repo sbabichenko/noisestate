@@ -32,8 +32,7 @@ class Kernel(np.ndarray):
         k = np.asarray(values).view(cls)
         k.result = result; k.name = name; k.shock = shock
         k.axes = {a: np.asarray(v) for a, v in result._node_axes().items()}
-        if result.kind == "finite_cells":
-            k.note = "the cell engine's kernel is piecewise constant: at() returns the nearest cell"
+        k.note = getattr(result, "KERNEL_NOTE", "")
         return k
 
     @property
