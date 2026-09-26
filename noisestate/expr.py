@@ -1,20 +1,21 @@
 """Models as equations: symbols whose arithmetic compiles to the model file's grammar (spec.py).
 
     import noisestate as ns
-    from noisestate import Param, State, Control, Signal, Agent, shocks
-    r, p, sigma = Param.many(r=0.1, p=3.0, sigma=1.0)
-    w = shocks("w0", "w1")
-    X = State("X"); D = Control("D")
-    X.drift = D + sigma * w.w0                                  # drift {D: 1}, noise {w0: "sigma"}
-    me = Agent("me", controls=[D], signals=[Signal("y", p**0.5 * X + w.w1)], loss=X**2 + r * D**2)
-    game = ns.Model("one", states=[X], agents=[me], horizon=ns.Stationary(window=8.0))
+    from noisestate import dt, sqrt
+    r, p, sigma = ns.params(r=0.1, p=3.0, sigma=1.0)
+    dW0, dW1 = ns.shocks(2)                                     # named W0, W1
+    X = ns.State("X"); D = ns.Control("D")
+    X.d = D * dt + sigma * dW0                                  # drift {D: 1}, noise {W0: "sigma"}
+    me = ns.Agent("me", controls=D, observes=sqrt(p) * X * dt + dW1, loss=X**2 + r * D**2)
+    game = ns.Game(states=X, agents=me, window=8.0)
     game.to_dict()                                              # the model file, exactly
 
 Three layers.  A *coefficient* is a number or an expression in Params (`Coef`), rendered to the string the
 evaluator in spec.py reads ("sqrt(p)", "0.5*r", "-2*theta").  A *linear expression* (`Linear`) is a sum of
 coefficient x atom, an atom being a quantity (a State, a Control, a define()d quantity, each possibly
-lagged: `X.lag(0.5)` is the atom "X@0.5"), a shock, or the constant 1; assigned to a State's drift, or given
-to a Signal, its quantity terms are the drift dict, its shock terms the noise dict and its constant `const`.
+lagged: `X.lag(0.5)` is the atom "X@0.5"), a shock, or the constant 1.  A *differential* is a linear
+expression times `dt` plus shock terms; assigned to `X.d`, or observed, its dt part is the drift dict, its
+shock terms the noise dict and its constant `const`.
 A *quadratic expression* (`Quad`) is a product of two linear expressions, or `expr**2`, plus linear terms; an
 Agent's loss compiles it to the term list [coef, a, b] / [coef, a]: the loss is the literal sum of the
 terms, so the cross term c * a * b is the one term [c, a, b] (and (X - theta)**2 is [1, X, X], [-2*theta, X]
@@ -1158,7 +1159,7 @@ def _param_values(name, used, params):
 
 
 def compile_model(name: str, states, agents, definitions=None, ties=None, horizon=None, numerics=None, params=None):
-    """The model file dict of an expression model, and its notes.  Channels are the shocks used, in the order
+    """The model file dict of an expression model.  Channels are the shocks used, in the order
     of their shocks() namespaces; params are the Params used (in creation order, values as given, or the
     values `params` supplies: a mapping name -> value or an iterable of Params); definitions are the given
     ones then every define()d quantity that appears."""
@@ -1174,7 +1175,6 @@ def compile_model(name: str, states, agents, definitions=None, ties=None, horizo
     _check_quantities(name, states, controls, walk.defs, agents)
     values = _param_values(name, walk.params, params)
 
-    notes: List[str] = []
     d: dict = {"name": name}
     if values:
         d["params"] = dict(values)
@@ -1192,43 +1192,9 @@ def compile_model(name: str, states, agents, definitions=None, ties=None, horizo
     if numerics is not None:
         from .numerics import Numerics
         d["numerics"] = Numerics.of(numerics).to_dict()
-    return d, notes
-
-
-# ------------------------------------------------------------------------------------ sweep rows, settings
-
-
-
-class using_settings:
-    """`with ns.settings(second_order_tol=1e-3): ...` replaces the default Settings for the block: every
-    engine constructed inside (a solve, a sweep, a transition) reads the overridden defaults.  Process-wide
-    and not thread-safe: another thread solving during the block sees the overrides too."""
-
-    def __init__(self, **overrides):
-        from ._settings import Settings
-        self.overrides = overrides
-        Settings.of(overrides)              # unknown fields raise here, before the block
-
-    @staticmethod
-    def _modules():
-        import importlib
-        return [importlib.import_module("noisestate." + m) for m in ("_settings", "numerics", "results")]
-
-    def __enter__(self):
-        from dataclasses import replace
-        mods = self._modules()
-        self._saved = [m.DEFAULT for m in mods]
-        new = replace(mods[0].DEFAULT, **self.overrides)
-        for m in mods:
-            m.DEFAULT = new
-        return new
-
-    def __exit__(self, *exc):
-        for m, d in zip(self._modules(), self._saved):
-            m.DEFAULT = d
-        return False
+    return d
 
 
 __all__ = ["Param", "Coef", "shocks", "Shock", "State", "Control", "define", "Definition", "Quantity", "Linear", "Quad",
-           "Signal", "Agent", "Stationary", "Finite", "Transition", "using_settings",
+           "Signal", "Agent", "Stationary", "Finite", "Transition",
            "sqrt", "exp", "log", "sin", "cos", "tanh"]

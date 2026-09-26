@@ -18,16 +18,6 @@ from typing import Optional
 import numpy as np
 
 
-class AttrDict(dict):
-    """A dict whose keys are also attributes (res.extra.window_tail, a diagnostic row's .flag)."""
-
-    def __getattr__(self, k):
-        try:
-            return self[k]
-        except KeyError:
-            raise AttributeError(k) from None
-
-
 class Kernel(np.ndarray):
     """An ndarray with .axes, .at(*coords), .plot(path=None); see the module docstring."""
 

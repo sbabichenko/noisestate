@@ -20,7 +20,6 @@ from ._settings import DEFAULT, PRISTINE, Settings
 
 ENGINES_OF_KIND = {"stationary": "stationary", "finite": "spectral", "transition": "spectral"}
 ENGINE_NAMES = ("stationary", "spectral", "cells")
-GRID_FIELDS = ("nodes", "unit", "unit_range", "breakpoints", "continuation_nodes")
 SOLVE_FIELDS = ("tol", "damping", "max_newton", "variable")
 
 

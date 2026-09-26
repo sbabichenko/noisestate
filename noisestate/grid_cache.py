@@ -76,10 +76,6 @@ class _GridCache:
     def cache_clear(self) -> None:
         self._grids.clear()
 
-    def cache_info(self) -> dict:
-        return {"grids": len(self._grids), "bytes": sum(grid_bytes(g) for g in self._grids.values()), "budget": BUDGET_BYTES}
-
-
 def _age_grid(breakpoints: Tuple[float, ...], nodes: int) -> AgeGrid:
     return AgeGrid(list(breakpoints), nodes)
 

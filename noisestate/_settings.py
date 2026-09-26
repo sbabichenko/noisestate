@@ -12,7 +12,7 @@ through the alias, so assigning a class attribute (a monkeypatch in the tests) s
 
 The per-engine defaults of solve()'s own arguments (`TOL`, `DAMPING`, `MAX_NEWTON`) stay on the
 engines: they are public arguments of solve(), recorded in res.solve_kw, and differ by engine.
-`SECOND_ORDER_QUADRATIC` and `ACTIONS` are properties of an engine, not tunables.
+`ACTIONS` is a property of an engine, not a tunable.
 """
 from __future__ import annotations
 

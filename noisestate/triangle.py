@@ -94,14 +94,6 @@ class Piece:
             return t, np.clip(x, 0.0, 1.0)
         return t, a
 
-    def contains(self, t, a, tol=1e-12):
-        if self.triangle and self.upper:
-            return (t >= self.t0 - tol) & (t <= self.t1 + tol) & (a >= t - self.origin - tol) & (a <= self.a1 + tol)
-        if self.triangle:
-            return (t >= self.t0 - tol) & (t <= self.t1 + tol) & (a >= self.a0 - tol) & (a <= t - self.origin + tol)
-        return (t >= self.t0 - tol) & (t <= self.t1 + tol) & (a >= self.a0 - tol) & (a <= self.a1 + tol)
-
-
 class TriangleGrid:
     def __init__(self, breakpoints, nt: int = 16, na: int = 16, T: Optional[float] = None, window: Optional[float] = None,
                  buffer: Optional[float] = None):

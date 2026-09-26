@@ -1,6 +1,6 @@
 # API reference
 
-Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 48
+Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 47
 names; this page covers all of them, plus the methods on the objects they return.
 
 The shortest useful path is three calls:
@@ -105,7 +105,6 @@ Adding a row an agent already has is an **error**, never a silent replacement â€
 | `ns.solve(model, numerics=None, **kw)` | the standard entry point. Returns a `Result`; it does **not** raise when the solve fails to converge |
 | `model.solve(numerics=None, **kw)` | the same as a method |
 | `ns.Numerics(engine=, nodes=, tol=, â€¦)` | the numerical choices. Every field optional; `None` keeps the model's own |
-| `ns.using_settings(**overrides)` | a context manager replacing the solver's defaults for a block |
 | `ns.Settings(...)` | the full frozen tunable set |
 | `ns.engines` | the advanced namespace: `engines.stationary`, `engines.spectral`, `engines.cells`, and `engines.solver(model, numerics, **kw)` to construct one directly |
 | `ns.clear_grid_cache()` | free the cached grids. For measuring memory |

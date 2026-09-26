@@ -29,7 +29,7 @@ def test_stationary_best_response_is_optimal_kyle_back():
     g, out = S.best_response(a, res.maps)
     Zp = c.closed_loop(res.maps, excluded=a.name, impulse_controls=a.controls); Zpass, R = Zp[:, :nW], Zp[:, nW:]
     Resp = S._response_operators(a, R)[0]
-    cost = lambda cc: S.expected_loss(a, Zpass + Resp @ cc)
+    cost = lambda cc: S.expected_cost(a, Zpass + Resp @ cc)
     c0 = out["action"][0]; L0 = cost(c0); rng = np.random.default_rng(0)
     for _ in range(8):
         dc = _feasible_perturbation(S, a, Zpass, rng); dc *= 0.02 / np.abs(dc).max()

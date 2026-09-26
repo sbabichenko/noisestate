@@ -351,15 +351,8 @@ def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None
     physical part through the impulse responses with every reaction off)."""
     c = solver.c; ncol = c.ncol; N = c.N; nP = len(c.prim)
     Zfull = out["Zfull"].reshape(nP, N, ncol)
-    rep = c.rep[agent.name]
-    if rep != agent.name and rep in solver._second_order_cache:
-        out["second_order"] = solver._second_order_cache[rep]
-    else:
-        out["second_order"] = _second_order(solver, agent, system)
-        solver._second_order_cache[agent.name] = out["second_order"]
-    if agent.name not in solver._rphys:
-        solver._rphys[agent.name] = c.closed_loop(solver.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, ncol:]
-    fphys = FocOps(solver, agent, solver._rphys[agent.name])
+    out["second_order"] = solver._shared_second_order(agent, lambda: _second_order(solver, agent, system))
+    fphys = FocOps(solver, agent, solver._physical_responses(agent, ncol))
     a = system.foc.atoms_of(Zfull); ap = fphys.atoms_of(Zfull)
     dec = {}
     for ui, u in enumerate(agent.controls):
@@ -376,8 +369,6 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
     assembled from the operators' dense rows (_dense_form) and diagonalised; beyond, its extreme eigenvalues
     come from Lanczos on the matvec of the applied operators."""
     c = solver.c
-    if not (solver.SECOND_ORDER_QUADRATIC or c.rho == 0):
-        return None
     nW, ncol, N, nP = c.nW, c.ncol, c.N, len(c.prim)
     nU, nR, Nm = system.nU, system.nR, system.Nm
     idx = np.where(np.tile(solver._identified(agent), nU))[0]

@@ -154,8 +154,7 @@ class EngineBase(MeanLayer):
         _mean_weights        discounted quadrature weights (Nt,) [1]                   spectral, cells
 
     Class attributes the engines set: RESULT (the result class), TOL / DAMPING / MAX_NEWTON (solve()
-    defaults), ACTIONS (whether the engine can iterate on action kernels), SECOND_ORDER_QUADRATIC
-    (whether the objective is a quadratic form in the strategy at every discount)."""
+    defaults), ACTIONS (whether the engine can iterate on action kernels)."""
     model: Model
     c: object                       # the compiled model: .reps (tie representatives), .rep (agent -> representative), .N, .nW
     shapes: Dict[str, Tuple[int, ...]]      # agent -> shape of its raw maps
@@ -164,7 +163,6 @@ class EngineBase(MeanLayer):
     ANDERSON_M = tunable("anderson_m")              # Anderson memory (settings.anderson_m)
     ACTIONS = True                  # whether the engine can iterate on action kernels
     SECOND_ORDER_TOL = tunable("second_order_tol")      # curvature below which a negative value is window truncation (settings)
-    SECOND_ORDER_QUADRATIC = True   # whether the objective is a quadratic form in the strategy at every discount
     SECOND_ORDER_DENSE = tunable("second_order_dense")  # strategy dimension up to which the form is built densely (settings)
 
     def __init__(self, model: Model, verbose: bool = False, settings=None, **options):
@@ -447,19 +445,30 @@ class EngineBase(MeanLayer):
         the fixed point iterates on."""
         raise NotImplementedError
 
+    def _shared_second_order(self, agent: Agent, compute) -> dict:
+        """The agent's second-order check, compute() unless its tie representative's is cached (tied agents
+        face the same problem up to relabelling)."""
+        rep = self.c.rep[agent.name]
+        if rep != agent.name and rep in self._second_order_cache:
+            return self._second_order_cache[rep]
+        self._second_order_cache[agent.name] = out = compute()
+        return out
+
+    def _physical_responses(self, agent: Agent, ncol: int) -> np.ndarray:
+        """The impulse responses to the agent's controls with every reaction off (the FOC decomposition's
+        physical part): map-independent, so computed once per agent.  `ncol` is the number of shock columns
+        before the impulse columns."""
+        if agent.name not in self._rphys:
+            self._rphys[agent.name] = self.c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, ncol:]
+        return self._rphys[agent.name]
+
     def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk, maps=None) -> None:
         """The second-order check and the FOC decomposition (instantaneous/physical/wedge).  Tied agents
         share the second-order check of their representative (the same problem up to relabelling)."""
         c = self.c; nW = c.nW; Zfull = out["Zfull"]
-        rep = c.rep[agent.name]
-        if rep != agent.name and rep in self._second_order_cache:
-            out["second_order"] = self._second_order_cache[rep]
-        else:
-            out["second_order"] = self._second_order(agent, Resp, Gk, np.tile(self._identified(agent), len(agent.controls)), maps)
-            self._second_order_cache[agent.name] = out["second_order"]
-        if agent.name not in self._rphys:                                   # physical impulse responses: map-independent
-            self._rphys[agent.name] = c.closed_loop(self.zero_maps(), excluded=None, impulse_controls=agent.controls)[:, nW:]
-        Fphys = self._foc_operators(agent, self._rphys[agent.name])
+        out["second_order"] = self._shared_second_order(
+            agent, lambda: self._second_order(agent, Resp, Gk, np.tile(self._identified(agent), len(agent.controls)), maps))
+        Fphys = self._foc_operators(agent, self._physical_responses(agent, c.nW))
         dec = {}
         for ui, u in enumerate(agent.controls):
             phi = np.stack([Fu[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
@@ -491,9 +500,8 @@ class EngineBase(MeanLayer):
         Lanczos on matvecs.  With a past the world has the initial shocks' columns after the channels',
         each under the point form of the line s = 0 (_loss_form(agent, start_from=True)), as expected_cost
         integrates them.  Returns {"min", "max", "ok", "converged"} with min/max the eigenvalues
-        of M scaled by max; None when the engine declares the objective is not a quadratic form in the
-        strategy (SECOND_ORDER_QUADRATIC).  No shipped engine does: the discount does not take that
-        away, because it enters the objective only as the strictly positive weight e^{-rho t} on a
+        of M scaled by max.  The objective is a quadratic form in the strategy at every discount,
+        because it enters the objective only as the strictly positive weight e^{-rho t} on a
         time-local Hessian, so the form's SIGN -- which is the whole verdict -- is the same at every
         rho and the check is made on the average-cost system.
         The objective is truncated at the window, so a strategy can push a little loss past the edge:
@@ -503,8 +511,6 @@ class EngineBase(MeanLayer):
         offending direction on a longer window: a float, or None when it cannot say; a positive
         value turns the verdict into ok with "edge" and "embedded" recorded."""
         c = self.c
-        if not (self.SECOND_ORDER_QUADRATIC or c.rho == 0):
-            return None
         N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
         GAO = self._loss_form(agent)                                             # symmetric loss form on the world
         ncol = Gk.shape[0]                                                      # the channels, then a past's initial shocks
@@ -840,19 +846,28 @@ class EngineBase(MeanLayer):
         if free is not None:
             full = z0.copy(); full[free] = z; z = full
         maps = self.maps_from_actions(unpack(z)) if variable == "actions" else unpack(z)
-        Z = self.c.closed_loop(maps)
         if coarse_evals:
             message = f"coarse start: {coarse_evals} evaluations at {self._coarse_nodes} nodes; " + message
-        res = self.RESULT(model=self.model, compiled=self.c, maps=maps, world=Z, converged=converged, residual=resid,
-                          evaluations=evals[0], seconds=0.0, message=message, solver_class=type(self),
-                          solver_kw=self.solver_kw, settings=self.settings,
-                          solve_kw={"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start_policy": start_policy,
-                                    **{k: v for k, v in (("max_evaluations", max_evaluations), ("deadline", deadline)) if v is not None},
-                                    **({} if diagnostics else {"diagnostics": False})})
-        if variable == "actions" and "actions" in getattr(res, "__dataclass_fields__", {}):
-            res.actions = unpack(z)                # the iterate itself (the maps are its projection): a later solve's warm start
-        self._finish(res)
+        solve_kw = {"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start_policy": start_policy,
+                    **{k: v for k, v in (("max_evaluations", max_evaluations), ("deadline", deadline)) if v is not None}}
+        res = self._result(maps, converged=converged, residual=resid, evaluations=evals[0], message=message,
+                           solve_kw=solve_kw, diagnostics=diagnostics,
+                           actions=unpack(z) if variable == "actions" else None)
         res.seconds = time.time() - t0            # the diagnostics of _finish are part of the solve's time
+        return res
+
+    def _result(self, maps, *, converged: bool, residual: float, evaluations: int, message: str, solve_kw: dict,
+                diagnostics: bool = True, actions=None):
+        """The result at `maps`: their closed loop as the world, the engine's own outputs filled by _finish.
+        `actions` is the fixed point's iterate when it ran on the action kernels (the maps are its projection),
+        kept as a later solve's warm start on the engines whose result has the field."""
+        res = self.RESULT(model=self.model, compiled=self.c, maps=maps, world=self.c.closed_loop(maps), converged=converged,
+                          residual=residual, evaluations=evaluations, seconds=0.0, message=message, solver_class=type(self),
+                          solver_kw=self.solver_kw, settings=self.settings,
+                          solve_kw={**solve_kw, **({} if diagnostics else {"diagnostics": False})})
+        if actions is not None and "actions" in getattr(res, "__dataclass_fields__", {}):
+            res.actions = actions
+        self._finish(res)
         return res
 
     def _finish(self, res) -> None:

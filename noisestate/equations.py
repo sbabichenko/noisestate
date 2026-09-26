@@ -237,7 +237,7 @@ def to_grammar(d: dict) -> dict:
         disc = val(hz.get("discount", 0.0))
         horizon = E.Finite(T=val(hz["T"]), discount=disc) if "T" in hz else E.Stationary(window=val(hz["window"]), discount=disc)
 
-    out, _ = E.compile_model(name, list(states.values()), agents, definitions=defs, ties=d.get("ties"),
+    out = E.compile_model(name, list(states.values()), agents, definitions=defs, ties=d.get("ties"),
                              horizon=horizon or E.Finite(T=1.0), params=params.values())
     out["params"] = values                              # every parameter, used or not (the horizon may use one)
     if horizon is None:
@@ -274,14 +274,10 @@ def _terms(pairs) -> str:
     return out or "0"
 
 
-def _atom(a: str) -> str:
-    return a
-
-
 def _differential(row: dict) -> str:
     drift = row.get("drift") or {}; noise = row.get("noise") or {}
     parts = []
-    dr = _terms([(c, "" if a == "const" else _atom(a)) for a, c in drift.items()])
+    dr = _terms([(c, "" if a == "const" else a) for a, c in drift.items()])
     if dr != "0":
         parts.append((f"({dr})" if (" + " in dr or " - " in dr) else dr) + " dt")
     nz = _terms([(c, "d" + w) for w, c in noise.items()])

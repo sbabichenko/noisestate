@@ -1,11 +1,11 @@
 # The slow tests
 
-The fast suite (`python -m pytest -q tests`) runs in about two and a half minutes; every solve above about
+The fast suite (`./run-tests`, never a bare `pytest`: see CLAUDE.md) runs in about three minutes; every solve above about
 five seconds whose pin is repeated at a smaller size, by a closed form or by another test is gated behind
 `NOISESTATE_SLOW=1` (`helpers.slow`, `helpers.slow_param`), which also marks the test `slow`:
 
-    NOISESTATE_SLOW=1 python -m pytest -q tests -m slow          # the gated tests only (about 10 minutes)
-    NOISESTATE_SLOW=1 python -m pytest -q tests                  # everything
+    NOISESTATE_SLOW=1 ./run-tests -m slow          # the gated tests only (about 10 minutes)
+    NOISESTATE_SLOW=1 ./run-tests                  # everything
 
 CI runs the fast suite on every push and `-m slow` weekly.
 

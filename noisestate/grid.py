@@ -432,17 +432,6 @@ class AgeGrid:
             C[:, Nu:, :] = (tail @ Y).reshape(N - Nu, N, m).transpose(2, 0, 1)
         return C
 
-    def footprint(self) -> int:
-        """Bytes held by the cached operator arrays (tensors, cores, tail slabs, flats, correlation parts)."""
-        owners = {}
-        arrays = [v for v in self.__dict__.values() if isinstance(v, np.ndarray)]
-        arrays += [v for v in self._corr.values()] + [v for v in self._corr_flat.values()]
-        arrays += [a for parts in self._corr_parts.values() for a in parts]
-        for v in arrays:
-            o = v if v.base is None else v.base
-            owners[id(o)] = o.nbytes
-        return int(sum(owners.values()))
-
     # ----------------------------------------------------------- operators
     def conv_op(self, y: np.ndarray) -> np.ndarray:
         """Matrix C with (C g)(a) = int_0^a g(b) y(a-b) db for the fixed nodal kernel y."""

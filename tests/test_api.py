@@ -1,35 +1,34 @@
 """The API stage's surface: Numerics apart from the model, the explicit solve(), the engines namespace."""
 import json
 import os
+import warnings
 
 import numpy as np
 import pytest
 
 import noisestate as ns
+from noisestate import Numerics, Settings
+from helpers import example, example_path
 from noisestate.schema import PAYLOAD_VERSION
 from noisestate.diagnostics import Status
-from noisestate import Numerics
 
 EX = os.path.join(os.path.dirname(__file__), "..", "examples")
 
 
 def test_the_numerics_block_is_the_only_place_the_grid_is_sized():
-    """The grid lives in numerics: alone.  The spellings 0.5 nested under horizon: were removed in 0.6 and
-    each is refused by the name that replaced it; the cell engine is numerics.engine, not a horizon kind."""
+    """The grid lives in numerics: alone; a grid field under horizon: is an unknown key, and the cell engine is
+    numerics.engine, not a horizon kind."""
     d = ns.read_yaml(os.path.join(EX, "ch3_two_player.yaml"))
     assert d["numerics"] == {"nodes": 24} and "nodes" not in d["horizon"]
     m = ns.Model.from_dict(d)
-    assert m.numerics == Numerics(nodes=24) and m.numerics.engine is None and not m.deprecations
+    assert m.numerics == Numerics(nodes=24) and m.numerics.engine is None
     old = {**d, "horizon": {**d["horizon"], "nodes": 24}}; del old["numerics"]
-    with pytest.raises(ValueError, match="moved under numerics"):
+    with pytest.raises(ValueError, match="unknown key"):
         ns.Model.from_dict(old)
-    f = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml")); f["horizon"]["kind"] = "finite_cells"
-    with pytest.raises(ValueError, match="numerics.engine 'cells'"):
-        ns.Model.from_dict(f)
     fc = ns.read_yaml(os.path.join(EX, "ch1_two_player_finite.yaml"))
     fc.setdefault("numerics", {}).update(nodes=8, engine="cells")
     mc = ns.Model.from_dict(fc)
-    assert mc.horizon.kind == "finite" and mc.numerics.engine == "cells" and not mc.deprecations
+    assert mc.horizon.kind == "finite" and mc.numerics.engine == "cells"
     with pytest.raises(ValueError, match="numerics.engine 'cells'"):
         ns.Model.from_dict({**d, "numerics": {"nodes": 8, "engine": "cells"}})
 
@@ -402,7 +401,47 @@ def test_to_dict_carries_the_behaviour_and_omits_only_provenance():
     rich = ns.load(os.path.join(EX, "ch5_cycle_market.yaml"))
     assert rich.definitions and rich.ties                        # a model that exercises both
     omitted = {f.name for f in dataclasses.fields(ns.Model)} - set(rich.to_dict())
-    assert omitted == {"source", "remarks", "deprecations"}
+    assert omitted == {"source"}
     back = ns.Model.from_dict(rich.to_dict())
     assert back.to_dict() == rich.to_dict()
     assert len(back.definitions) == len(rich.definitions) and len(back.ties) == len(rich.ties)
+
+
+# ---------------------------------------------------------------- numerics given directly, and no warnings
+
+def test_solve_takes_the_numerics_fields_directly_again():
+    # solve(m, nodes=6) is solve(m, {"nodes": 6}) since 1.1 (refused 0.6 to 1.0, when two routes were one too many;
+    # with ModelBuilder gone, the keyword is the plain way to say it)
+    m = example("ch3_two_player")
+    assert ns.solve(m, nodes=6).costs == ns.solve(m, Numerics(nodes=6)).costs
+    assert ns.solve(m, Numerics(nodes=6), settings=Settings(anderson_m=3)).settings.anderson_m == 3   # settings is a Numerics field
+    with pytest.raises(TypeError, match="unknown option"):
+        ns.solve(m, Numerics(nodes=6), bogus=3)
+    assert ns.solve(m, Numerics(nodes=6)).numerics.nodes == 6
+
+
+def test_transition_takes_the_numerics_fields_directly_too():
+    old = ns.solve(example("ch3_two_player").with_numerics(nodes=6)).require_converged()
+    new = example("ch3_two_player").with_params(p1=10.0)
+    assert ns.transition(old, new, 3.0, nodes=6).numerics.nodes == 6
+    with pytest.raises(TypeError, match="unknown option"):
+        ns.transition(old, new, 3.0, stationary={"nodes": 6})
+
+
+def test_a_settings_field_passed_to_solve_names_the_settings_route():
+    with pytest.raises(TypeError, match=r"Numerics\(settings=\{'anderson_m': \.\.\.\}\)"):
+        ns.solve(example_path("ch3_two_player"), anderson_m=3)
+    assert ns.solve(example_path("ch3_two_player"), nodes=6, damping=0.5).numerics.damping == 0.5   # a Numerics field is taken
+
+
+def test_the_package_emits_no_deprecation_warning_in_normal_use():
+    """A deprecated name used INSIDE noisestate warns code the user did not write.  This caught a
+    real one before the layer was deleted: renaming sweep.make_solver to solver left
+    Result._make_solver importing the old name, an ImportError on a path no other test reaches."""
+    import dataclasses
+    m = example("ch3_two_player").with_numerics(nodes=6)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        res = ns.solve(m)
+        res.require_converged(); res.stability(); res.diagnostics.summary(); res.to_dict()
+        assert dataclasses.replace(res, solver_class=None)._make_solver(m) is not None

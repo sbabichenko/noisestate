@@ -164,7 +164,7 @@ class Response:
 class Result:
     """One result type; the engines' subclasses (StationaryResult, TriangleResult, TransitionResult, CellResult)
     fill in the grid-specific hooks and are internal: isinstance(res, noisestate.Result) holds for every
-    result, and the attributes above read the same on every engine."""
+    result, and the fields and methods below read the same on every engine."""
     model: Model
     compiled: object
     maps: Dict[str, np.ndarray]
@@ -185,7 +185,7 @@ class Result:
     foc: Dict[str, dict] = field(default_factory=dict)            # agent -> control -> {"foc", "physical", "wedge"} kernels
     means: Dict[str, object] = field(default_factory=dict)        # quantity -> its mean, a float (stationary) or a path (finite); zero when nothing drives it
     mean_times: Optional[np.ndarray] = None                       # the time nodes of the mean paths (finite engines)
-    cost_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> {"variance", "mean"} parts of its cost
+    cost_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> {"variance", "mean", "constant"} parts of its cost
     settings: Settings = DEFAULT                                  # the tuning constants of the engine that produced this result
     kind: str = "base"
 
@@ -208,7 +208,7 @@ class Result:
 
     MEAN_ZERO = tunable("mean_zero")          # below this a mean is round-off (the mean system is solved only when something drives it)
 
-    # ----------------------------------------------------------- the common surface (C and E of the API design)
+    # ----------------------------------------------------------- the common surface
     @property
     def times(self) -> Optional[np.ndarray]:
         """The time nodes of the paths; None on the stationary engine (its means are constants)."""
@@ -251,7 +251,7 @@ class Result:
         form, and its joint running Hessian carries no discount -- rho enters only as the strictly
         positive weight e^{-rho t}, which cannot change the sign of a form that is semidefinite
         pointwise in t.  The check is made on the average-cost system and holds at every rho, which
-        is what the Kyle-Back chapter does.  See StationarySolver.SECOND_ORDER_QUADRATIC.
+        is what the Kyle-Back chapter does.
         """
         return frozenset(self.SUPPORTED_CHECKS)
 

@@ -78,8 +78,8 @@ def model_schema() -> dict:
                                            "initial": {"type": "array", "items": _SHOCK, "description": "initial shocks {name, loads, rows}"}},
                             "description": "kind transition only"},
                    "continuation": {"enum": ["stationary", "end"], "description": "kind transition only; default stationary"},
-                   "settle": {**_NUMBER_OR_EXPR, "description": "kind transition only, in place of window: the settle tolerance the "
-                              "horizon T is found for by a march in T (exactly one of window and settle)"},
+                   "settle": {**_NUMBER_OR_EXPR, "description": "kind transition only, in place of T: the settle tolerance the "
+                              "terminal time T is found for by a march in T (exactly one of T and settle)"},
                    "stationary": {"type": "object", "additionalProperties": False,
                                   "properties": {"window": {**_NUMBER_OR_EXPR, "description": "must equal the past's window"}},
                                   "description": "kind transition only: the continuation's stationary solve"}}}

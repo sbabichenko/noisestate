@@ -168,13 +168,6 @@ class Past:
             return np.zeros((len(ages), self.nW))
         return self.grid.interp(ages, side=side) @ self.kernel(name)
 
-    def row_read(self, key: str, ages, side: int = +1) -> np.ndarray:
-        """The raw drift kernel of the row "agent.row" at the ages: (len, nW)."""
-        ages = np.atleast_1d(np.asarray(ages, dtype=float))
-        if self.grid is None:
-            return np.zeros((len(ages), self.nW))
-        return self.grid.interp(ages, side=side) @ self.rows[key][0]
-
     def row_noise(self, key: str) -> np.ndarray:
         """E (nW,) of the row "agent.row" in the old regime (zero without a window)."""
         return self.rows[key][1] if key in self.rows else np.zeros(self.nW)

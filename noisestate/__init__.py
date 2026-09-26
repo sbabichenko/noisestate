@@ -23,7 +23,7 @@ from .diagnostics import Assessment, Policy, Status
 from .grid_cache import clear as clear_grid_cache
 from .transition import transition, transition_gap
 from .schema import schema
-from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition, using_settings
+from .expr import Param, shocks, State, Control, define, Signal, Agent, Stationary, Finite, Transition
 from .expr import dt, Differential, params, Game
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
@@ -31,37 +31,7 @@ from .kernel import Kernel
 __all__ = ["Model", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "solve", "sweep", "transition", "transition_gap", "read_yaml", "read_json",
            "compare", "ComparisonResult", "ScenarioResult", "Assessment", "Policy", "Status", "clear_grid_cache", "schema",
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "SweepPoint",
-           "using_settings", "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh", "dt", "Differential", "params", "Game"]
-
-_REMOVED_RESULTS = ("StationaryResult", "TriangleResult", "TransitionResult", "CellResult")   # exported until 0.6
-
-
-#  Renamed in 0.7.  The old spellings are gone rather than aliased -- nothing outside this
-#  repository imports noisestate -- but each still explains itself instead of raising a bare
-#  AttributeError.  "settings" is here only because the settings submodule was renamed _settings
-#  to free the name; while it was bound, this hook could never see it.
-#  Removed in 0.8, and reachable under the advanced namespace instead: one standard entry point
-#  (solve) and one namespace for the engines, rather than four routes to the same three classes.
-_MOVED_TO_ENGINES = {"StationarySolver": "engines.stationary", "SpectralFiniteSolver": "engines.spectral",
-                     "FiniteSolver": "engines.cells", "ENGINE_CLASSES": "engines.ENGINE_CLASSES",
-                     "solver": "engines.solver"}
-
-_RENAMED = {"ENGINES": "ENGINE_CLASSES", "make_solver": "solver", "BaseResult": "Result",
-            "settings": "using_settings"}
-
-
-def __getattr__(name: str):
-    """A removed name explains itself rather than raising a bare AttributeError."""
-    if name in _REMOVED_RESULTS:
-        raise AttributeError(f"noisestate.{name} was removed in 0.6: every engine returns noisestate.Result, and "
-                             f"isinstance(res, noisestate.Result) holds for every result")
-    if name in _RENAMED:
-        raise AttributeError(f"noisestate.{name} was renamed noisestate.{_RENAMED[name]} in 0.7")
-    if name in _MOVED_TO_ENGINES:
-        raise AttributeError(
-            f"noisestate.{name} moved to noisestate.{_MOVED_TO_ENGINES[name]} in 0.8. Solve with "
-            "noisestate.solve(model, numerics); construct an engine directly from noisestate.engines.")
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+           "Kernel", "sqrt", "exp", "log", "sin", "cos", "tanh", "dt", "Differential", "params", "Game"]
 
 def _read_version() -> str:
     """The version pyproject.toml declares when the package is imported from a source tree (a checkout on

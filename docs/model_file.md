@@ -62,8 +62,8 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `horizon` | object | the economics of time: the kind, the discount, the two lengths, a transition's past and continuation |  |
 | `horizon.kind` | `stationary` \| `finite` \| `transition` | | `stationary` |
 | `horizon.discount` | number or expression | a number, or an expression in the parameters | 0 |
-| `horizon.window` | number or expression | **L, the lag-truncation length**: how far back a strategy may look.  `stationary` and `transition` only; a `finite` horizon has none | 8.0 (`ModelBuilder.stationary`); a transition's comes from its past |
-| `horizon.T` | number or expression | **the terminal time**: when the game ends.  `finite` and `transition` only; a `stationary` horizon has none | 1.0 (`ModelBuilder.finite`, `transition`) |
+| `horizon.window` | number or expression | **L, the lag-truncation length**: how far back a strategy may look.  `stationary` and `transition` only; a `finite` horizon has none | 8.0 (`ns.Stationary`); a transition's comes from its past |
+| `horizon.T` | number or expression | **the terminal time**: when the game ends.  `finite` and `transition` only; a `stationary` horizon has none | 1.0 (`ns.Finite`, `ns.Transition`) |
 | `horizon.past` | object | kind transition only |  |
 | `horizon.past.model` | string or object | the old stationary model: a path (relative to the file) or an inline model |  |
 | `horizon.past.initial` | list of object | initial shocks {name, loads, rows} |  |
@@ -76,7 +76,7 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `horizon.stationary.window` | number or expression | must equal the past's window | the past's window |
 | `numerics` | object | how the model is solved: the engine, the grid, the fixed point's options, the settings |  |
 | `numerics.engine` | `stationary` \| `spectral` \| `cells` | default from horizon.kind: stationary -> stationary, else spectral | `stationary` for kind stationary, else `spectral` |
-| `numerics.nodes` | integer >= 2 | nodes per panel (stationary) or per side of each piece (spectral); cells on the cell engine; default 16 | 16 (12 from `ModelBuilder.transition`, the CLI's `transition`) |
+| `numerics.nodes` | integer >= 2 | nodes per panel (stationary) or per side of each piece (spectral); cells on the cell engine; default 16 | 16 (12 from the CLI's `transition`) |
 | `numerics.unit` | number or expression | the panel unit: every lag and delay must be a multiple of it | the smallest lag |
 | `numerics.unit_range` | number or expression | the age (stationary) or time (spectral) up to which the panels are unit panels | the window |
 | `numerics.breakpoints` | list of number or expression | an explicit panel sequence from 0 to the window | the lags' multiples closed under every lag and delay |
@@ -129,13 +129,5 @@ The fields of `numerics.settings` are those of `noisestate.Settings`: [settings.
 
 The same structure can be written as equations (`Param`, `State`, `Control`, `Signal`, `Agent`, `shocks`,
 `define`; README, "Models as equations"; `examples/expr_examples.py` writes every shipped example that way), which
-compile to this file: `model.to_dict()` is the file, `model.save(path)` writes it.  The same structure is available from Python through `ModelBuilder` (see
-`examples/make_ch5_cycle_market.py`, which builds an N-firm cycle in a loop); `stationary()`,
-`finite()` and `transition()` take the horizon and `nodes`, and `numerics(**fields)` sets the rest
-of the block.
-
-## Keys removed in 0.6
-
-The keys once nested under `horizon:` (`nodes`, `unit`, `unit_range`, `breakpoints`, `stationary: {nodes}`) live
-under `numerics:`, and the kind `finite_cells` is `kind: finite` with `numerics: {engine: cells}`.  A file that
-still uses an old spelling is refused, and the error names the key that replaced it.
+compile to this file: `model.to_dict()` is the file, `model.save(path)` writes it
+(`examples/make_ch5_cycle_market.py` builds an N-firm cycle in a loop that way).

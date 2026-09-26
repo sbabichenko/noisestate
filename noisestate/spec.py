@@ -237,11 +237,6 @@ class Horizon:
     variable: Optional[str] = None
     settings: object = None           # a Settings; None: the defaults
 
-    @property
-    def is_transition(self) -> bool:
-        return self.kind == "transition"
-
-    _NUMERICS_KEYS = ("breakpoints", "unit", "unit_range", "nodes")     # nested here before 0.6; under numerics: since
 
 
 @dataclass(init=False)
@@ -260,21 +255,18 @@ class Model:
     ties: List[List[str]] = field(default_factory=list)      # groups of agents sharing one strategy
     params: Dict[str, float] = field(default_factory=dict)
     source: Optional[dict] = field(default=None, repr=False)  # the file structure with its expressions, if built from one
-    deprecations: List[str] = field(default_factory=list, repr=False)   # the old spellings the file used (one note each, in notes)
-    remarks: List[str] = field(default_factory=list, repr=False, compare=False)   # the expression compiler's notes (a dropped loss constant)
 
     def __init__(self, name: str = "model", channels=None, states=None, agents=None, horizon=None, definitions=None,
-                 ties=None, params=None, source=None, deprecations=None, remarks=None, *, numerics=None):
+                 ties=None, params=None, source=None, *, numerics=None):
         from . import expr
         if expr.is_expression_form(states, agents, horizon, definitions):
             if channels is not None:
                 raise ValueError("Model(): the channels of an expression model are the shocks it uses; do not give channels=")
-            d, notes = expr.compile_model(name, states, agents, definitions=definitions, ties=ties, horizon=horizon,
-                                          numerics=numerics, params=params)
+            d = expr.compile_model(name, states, agents, definitions=definitions, ties=ties, horizon=horizon,
+                                   numerics=numerics, params=params)
             built = Model.from_dict(d)
             self.__dict__.update(built.__dict__)
             self.source = built.to_dict()                 # the normalised file (as load(save()) reads it back)
-            self.remarks = list(notes)
             return
         if numerics is not None:
             raise TypeError("Model(): numerics= belongs to the expression form; the field form carries them in its Horizon")
@@ -282,7 +274,7 @@ class Model:
         self.horizon = horizon if horizon is not None else Horizon()
         self.definitions = list(definitions or []); self.ties = list(ties or [])
         self.params = params if params is not None else {}
-        self.source = source; self.deprecations = list(deprecations or []); self.remarks = list(remarks or [])
+        self.source = source
 
     def __repr__(self) -> str:
         """One line: the name, the horizon with its own lengths, and what the model holds.
@@ -406,11 +398,9 @@ class Model:
                         variable=hz.variable, settings=hz.settings)
 
     def _rebuilt(self, d: dict) -> "Model":
-        """from_dict(d), carrying the compiler's remarks, which still describe a transformed copy.  source is not
-        carried: from_dict() rebuilds it from d, which is how with_params() keeps the parameter expressions intact."""
-        out = Model.from_dict(d)
-        out.remarks = list(self.remarks)
-        return out
+        """from_dict(d).  source is not carried: from_dict() rebuilds it from d, which is how with_params() keeps
+        the parameter expressions intact."""
+        return Model.from_dict(d)
 
     def with_numerics(self, numerics=None, **fields) -> "Model":
         """A new model with these numerics fields (a Numerics or dict, and/or keywords) laid over its own:
@@ -581,7 +571,7 @@ class Model:
             out.append("costs are stationary flow losses per unit time" + (" (the discount rate enters the best responses, not the reported cost)" if self.horizon.discount else ""))
         else:
             out.append("costs are discounted integrals over [0, T]")
-        return out + list(self.deprecations) + list(self.remarks or [])
+        return out
 
     def _means_note(self) -> str:
         if self.horizon.kind == "stationary":
@@ -903,9 +893,7 @@ class Model:
             raise ValueError(f"{what}{where} must be a mapping, got {type(d).__name__}")
         bad = sorted(set(d) - allowed)
         if bad:
-            moved = [k for k in bad if what == "horizon" and k in Horizon._NUMERICS_KEYS]
-            hint = (f"; {', '.join('horizon.' + k for k in moved)} moved under numerics: in 0.6" if moved else "")
-            raise ValueError(f"unknown key(s) {bad} in {what}{where}; allowed: {sorted(allowed)}{hint}")
+            raise ValueError(f"unknown key(s) {bad} in {what}{where}; allowed: {sorted(allowed)}")
 
     def to_dict(self, numeric: bool = False) -> dict:
         """The file structure of this model.  When the model was built from a file or dict, that
@@ -919,7 +907,7 @@ class Model:
             horizon["window"] = hz.window
         if hz.T is not None:
             horizon["T"] = hz.T
-        if hz.settle is not None:                             # the horizon is the march's output: the file says settle, not window
+        if hz.settle is not None:                             # the horizon is the march's output: the file says settle, not T
             horizon = {"kind": hz.kind, "discount": hz.discount, "settle": hz.settle}
         for k in ("past", "continuation"):
             if getattr(hz, k) is not None:
@@ -1195,9 +1183,6 @@ class Model:
         bad = sorted(set(fields) - self._KEYS["horizon"])
         if bad:
             raise ValueError(f"unknown horizon field(s) {bad}; the numerics fields go to with_numerics()")
-        if fields.get("kind") == "finite_cells":
-            raise ValueError("horizon kind 'finite_cells' was removed in 0.6: "
-                             "with_finite().with_numerics(engine='cells')")
         changes_kind = fields.get("kind") is not None and fields["kind"] != self.horizon.kind
         if changes_kind:
             if not {"window", "T"} <= set(fields):
@@ -1255,7 +1240,7 @@ class Model:
         if hz.get("settle") is not None and hz.get("T") is not None:
             raise ValueError("horizon takes exactly one of T (the terminal time) and settle (the tolerance the "
                              "horizon is found for by a march in T), not both")
-        nm, kind, deprecations = _numerics_block(d)
+        nm, kind = _numerics_block(d)
         from ._settings import Settings
         cls._check_keys("numerics", nm, cls._KEYS["numerics"])
         stationary = hz.get("stationary")
@@ -1313,7 +1298,7 @@ class Model:
         from types import MappingProxyType
         m = cls(name=d.get("name", "model"), channels=list(d.get("channels") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
-                params=MappingProxyType(params), source=copy.deepcopy(d), deprecations=deprecations)     # read-only: see with_params()
+                params=MappingProxyType(params), source=copy.deepcopy(d))     # read-only: see with_params()
         m.validate()                                           # structural errors first (its expansions also record
         m.horizon.nodes = int(m.horizon.nodes)                 # the lag parameters, 'P@tau'); then the parameter check
         if m.horizon.engine is not None and m.horizon.engine not in ("stationary", "spectral", "cells"):
@@ -1367,25 +1352,12 @@ def _horizon_length(hz: dict, kind: str, params, which: str):
 
 
 def _numerics_block(d: dict):
-    """The numerics of a model dict: its `numerics:` block.  The spellings 0.5 accepted under horizon
-    (nodes, unit, unit_range, breakpoints; `stationary.nodes`; `kind: finite_cells`) were removed in 0.6 and
-    each is refused here by the name that replaced it.  Returns (block, kind, notes)."""
+    """The numerics of a model dict (its `numerics:` block) and the horizon kind."""
     hz = d.get("horizon") or {}
     nm = dict(d.get("numerics") or {}) if isinstance(d.get("numerics"), dict) or d.get("numerics") is None else d["numerics"]
     if not isinstance(nm, dict):
         raise ValueError(f"numerics must be a mapping of its fields, got {type(nm).__name__}")
-    notes = []
-    moved = [k for k in Horizon._NUMERICS_KEYS if k in hz]
-    if moved:
-        raise ValueError(f"{', '.join('horizon.' + k for k in moved)} moved under numerics: in 0.6; write "
-                         f"numerics: {{{', '.join(k + ': ...' for k in moved)}}}")
-    kind = hz.get("kind", "stationary")
-    if kind == "finite_cells":
-        raise ValueError("horizon.kind 'finite_cells' was removed in 0.6: kind 'finite' with numerics.engine 'cells'")
-    st = hz.get("stationary")
-    if isinstance(st, dict) and st.get("nodes") is not None:
-        raise ValueError("horizon.stationary.nodes became numerics.continuation_nodes in 0.6")
-    return nm, kind, notes
+    return nm, hz.get("kind", "stationary")
 
 
 def _eval_past_block(block, params):

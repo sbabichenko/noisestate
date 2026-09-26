@@ -512,7 +512,6 @@ class StationarySolver(EngineBase):
     #  Kyle-Back chapter does: "The second-order checks are made on the average-cost system and do
     #  not rely on the rho > 0 hypothesis", reporting the exact quadratic form positive definite
     #  with smallest eigenvalue 2 eps.  cost_mass() is that average-cost Gram at every rho.
-    SECOND_ORDER_QUADRATIC = True
 
     def __init__(self, model: Model, verbose: bool = False, settings=None, **withdrawn):
         """settings: the tuning constants (noisestate.Settings, or a dict of its fields; the defaults when None)."""
@@ -704,7 +703,6 @@ class StationarySolver(EngineBase):
         G = np.tensordot(MZ, zeta, axes=([1, 2], [2, 1]))              # <zeta_i, zeta_j> over ages and channels
         return float(0.5 * np.sum(Q * G))
 
-    expected_loss = expected_cost                       # the older name
 
     # ------------------------------------------------------------ means (the hooks of EngineBase's mean layer)
     def _mean_start(self) -> np.ndarray:

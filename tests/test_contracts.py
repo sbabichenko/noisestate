@@ -60,11 +60,10 @@ def _fingerprint(model):
     absent from ch3_two_player's dict only because that model has none, and a model with 26
     definitions and a tie round-trips identically.  What it omits is PROVENANCE: source (which
     from_dict rebuilds from the dict it is given, and which is what keeps with_params
-    re-evaluating expressions), remarks, and deprecations.
+    re-evaluating expressions).
 
     That is the right thing for a file format to omit, and the wrong thing for an immutability
-    check to omit: an earlier version of this test compared to_dict() and passed while with_params
-    appended to the receiver's remarks.
+    check to omit.
     """
     omitted = {f.name for f in dataclasses.fields(ns.Model)} - set(model.to_dict())
     return json.dumps({"file": model.to_dict(),

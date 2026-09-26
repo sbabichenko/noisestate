@@ -21,24 +21,6 @@ for sub in ("examples", "extras"):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: runs under NOISESTATE_SLOW=1 only (tests/SLOW.md)")
-    _refuse_deprecated_models()
-
-
-def _refuse_deprecated_models():
-    """No model built anywhere in this suite may use a deprecated spelling.
-
-    A deprecated *file* key is recorded in Model.deprecations, not raised as a DeprecationWarning, so the
-    warning filter in pyproject.toml cannot see it: when 0.6 removed the keys 0.5 had nested under
-    horizon:, 55 sites in this suite were still writing them and nothing had ever said so.  Failing at
-    construction names the test that did it."""
-    from noisestate.spec import Model
-    init = Model.__init__
-
-    def checked(self, *a, **k):
-        init(self, *a, **k)
-        if self.deprecations:
-            raise AssertionError(f"model {self.name!r} uses a deprecated spelling: {list(self.deprecations)}")
-    Model.__init__ = checked
 
 
 if os.environ.get("NOISESTATE_FOC_FREE") or os.environ.get("NOISESTATE_SIZE_LOG"):

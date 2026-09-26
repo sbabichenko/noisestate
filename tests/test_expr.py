@@ -80,7 +80,7 @@ k = eq.kernel("X", "w0"); k.values; k.axes; k.at(0.7)
 for point in game.sweep(p1=[0.3, 1, 3, 10]): point.value, point.result, point.jump
 old = game.solve(); new = game.with_params(p1=10.0).with_finite(T=6.0); path = new.solve(past=old)
 game.save("ch1.yaml"); ns.Model.load("ch1.yaml")
-with ns.using_settings(second_order_tol=1e-3): game.solve()
+game.solve(settings={"second_order_tol": 1e-3})
 '''
 
 
@@ -127,13 +127,11 @@ def test_target_script_pieces(tmp_path):
     loaded = ns.Model.load(path)
     assert loaded == game and loaded.to_dict() == game.to_dict()
     assert ns.solve(loaded, ns.Numerics(nodes=16, unit=0.5)).costs == eq.costs
-    with ns.using_settings(second_order_tol=1e-3):
-        res = game.solve(ns.Numerics(nodes=16, unit=0.5))
-        assert ns.Settings.of(None).second_order_tol == 1e-3
+    res = game.solve(ns.Numerics(nodes=16, unit=0.5), settings={"second_order_tol": 1e-3})
     assert res.settings.second_order_tol == 1e-3 and ns.Settings.of(None).second_order_tol == 1e-4
     assert eq.settings.second_order_tol == 1e-4
     with pytest.raises(TypeError):
-        ns.using_settings(no_such_setting=1)
+        game.solve(settings={"no_such_setting": 1})
 
 
 def test_round_trip_of_a_model_with_lags_and_definitions(tmp_path):

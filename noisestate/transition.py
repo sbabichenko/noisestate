@@ -197,15 +197,10 @@ def _stationary_result(S, gap: Dict[str, float], kw: dict, diagnostics: bool):
     """The transition result when nothing needs solving (the T = 0 pass under settle, or the tolerance below the
     floor): the continuation's stationary maps on the strip built (stationary_start), the world their closed
     loop, no evaluation; the result type is the engine's (a TransitionResult), march_window 0 (res.extra["T"])."""
-    maps = S.stationary_start()
-    Z = S.c.closed_loop(maps)
-    res = S.RESULT(model=S.model, compiled=S.c, maps=maps, world=Z, converged=True, residual=float(max(gap.values())),
-                   evaluations=0, seconds=0.0, message="the stationary equilibrium: the T = 0 pass is under settle (no solve)",
-                   solver_class=type(S), solver_kw=S.solver_kw, settings=S.settings,
-                   solve_kw={k: kw[k] for k in ("tol", "damping", "max_newton", "variable") if k in kw})
-    if not diagnostics:
-        res.solve_kw["diagnostics"] = False
-    S._finish(res)
+    res = S._result(S.stationary_start(), converged=True, residual=float(max(gap.values())), evaluations=0,
+                    message="the stationary equilibrium: the T = 0 pass is under settle (no solve)",
+                    solve_kw={k: kw[k] for k in ("tol", "damping", "max_newton", "variable") if k in kw},
+                    diagnostics=diagnostics)
     res.march_window = 0.0
     return res
 

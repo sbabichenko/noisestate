@@ -31,7 +31,6 @@ def test_description_information_and_loss():
     assert 'dy = X dt + dW[w1]' in summary
     assert 'observed with delay 0.5' in summary
     assert 'X^2 - 2 * X + D^2' in summary
-    assert all(note in ' '.join(summary.split()) for note in model.remarks)
     assert model.to_dict() == before
 
 
