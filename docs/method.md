@@ -141,8 +141,11 @@ A CARA equilibrium is one fixed point.  The kernels, the spike responses and K a
 which every agent plays its risk-averse strategy, the agent's own included.  A best response takes K (and its
 spectrum) in the closed loop of the current profile and solves the FOC with the correction, which is linear in the
 world, exactly: the risk-neutral system is factored and preconditions GMRES on the whole system, one application
-of the correction per iteration (on the matrix-free path the correction is part of the operator).  At the fixed
-point the profile is the equilibrium.
+of the correction per iteration (on the matrix-free path the correction is part of the operator).  A best response
+warm-started from the agent's last one stops once its residual is 1e-4 of the warm start's, or at foc_krylov_tol of
+the right-hand side if that is larger: early in the fixed point the next best response discards more precision than
+that, and near the equilibrium the floor is the one the risk-neutral solve uses.  At the fixed point the profile is
+the equilibrium.
 
 `E exp(theta C)` is finite if and only if `theta lambda_max(K) < 1`, and the conditional condition of the theorem
 follows from it.  A solve checks this at every best response.  At the zero start (the uncontrolled world,
@@ -150,7 +153,9 @@ follows from it.  A solve checks this at every best response.  At the zero start
 theta that has an equilibrium (theta = 2.5 on Chapter 1's game).  So when some agent's `theta lambda_max` exceeds
 0.9 in the uncontrolled world, `solve()` starts from the risk-neutral equilibrium and scales theta up in
 warm-started steps.  Each step closes 0.6 of the gap `1 - theta lambda_max` at the last step's equilibrium, and
-`res.message` lists the steps.  A path whose step equilibrium comes within 1e-3 of the breakdown short of the model's
+`res.message` lists the steps.  A step short of the model's theta is solved to 1e-5, since it is only the next
+step's start and where its size is measured, and from the second step on it starts from the secant through the
+last two step equilibria; the last step is solved to the model's tolerance.  A path whose step equilibrium comes within 1e-3 of the breakdown short of the model's
 theta (or that has not reached it in 40 steps) raises `RiskBreakdown` with `reached`, the theta where it stopped (2.90
 on Chapter 1's game at 8 nodes; 2.9 itself solves at 12 nodes, with `theta lambda_max` = 0.985).  So does a solution
 whose own spectrum is past the breakdown.  An iterate beyond the breakdown inside a
