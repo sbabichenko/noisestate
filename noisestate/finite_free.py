@@ -66,7 +66,6 @@ class FocSystem:
             self.inv = np.arange(self.kept.size); self.n = self.kept.size
         self.matvecs = 0; self.iterations = 0; self.residual = 0.0; self.block_rcond = np.inf
         self.tilt = tilt                        # a risk-averse agent's correction (risk.Tilt), linear in the world
-        self._last_product = None               # (x, A x) of the last matvec, with a correction (matvec)
         # the right-hand side: the FOC of the passive world projected on the rows
         Zp = Zpass.reshape(self.nP, self.N, self.ncol)
         a = foc.atoms_of(Zp)
@@ -115,18 +114,7 @@ class FocSystem:
 
     def matvec(self, x: np.ndarray) -> np.ndarray:
         self.matvecs += 1
-        x = np.asarray(x, dtype=float).ravel()
-        if self.tilt is not None:
-            # a risk-averse agent's system is solved by GMRES, whose last step is the true residual b - A x; solve()
-            # checks it again at the same x.  Each product costs an application of the correction, so the last one is
-            # kept and returned for the same x (the same bits); counted as a product all the same
-            last = self._last_product
-            if last is not None and np.array_equal(last[0], x):
-                return last[1].copy()
-            y = self.reduce(self.apply(self.expand(x)))
-            self._last_product = (x.copy(), y.copy())
-            return y
-        return self.reduce(self.apply(self.expand(x)))
+        return self.reduce(self.apply(self.expand(np.asarray(x, dtype=float).ravel())))
 
     def matrix(self, with_tilt: bool = False) -> np.ndarray:
         """The system on the kept unknowns (n, n), assembled from the operators' dense rows: Amat[u, v] =
@@ -327,24 +315,106 @@ class FocSystem:
             xs = np.asarray(x0, dtype=float).ravel()[self.kept]
             xs = np.bincount(self.inv, weights=xs, minlength=n) / np.maximum(np.bincount(self.inv, minlength=n), 1)
         self.matvecs = 0
-        atol = 0.0
-        if self.tilt is not None and xs is not None:
-            # a risk-averse agent, warm-started: the residual is reduced by RISK_KRYLOV_REDUCTION from the warm start's (or
-            # to foc_krylov_tol of the right-hand side, whichever is larger).  Far from the equilibrium the warm start
-            # is far from this response and 1e-12 of b is precision the next best response discards; near it the
-            # warm start's residual is small and the floor is foc_krylov_tol as before.  GMRES's own first product is
-            # this one (kept by matvec), so the count is GMRES's as before
-            atol = self.RISK_KRYLOV_REDUCTION * float(np.linalg.norm(b - self.matvec(xs)))
-            self.matvecs -= 1
         restart = min(maxiter, 300)                       # scipy's maxiter counts the restarts
-        x, info = gmres(A, b, x0=xs, M=M, rtol=tol, atol=atol, restart=restart, maxiter=-(-maxiter // restart))
-        resid = float(np.linalg.norm(self.matvec(x) - b)) / bn
-        self.iterations = self.matvecs - 1
+        if self.tilt is not None:
+            # a risk-averse agent: every product applies the correction, so none is spent twice (_gmres_left).  Warm-
+            # started, the residual is reduced by RISK_KRYLOV_REDUCTION from the warm start's (or to foc_krylov_tol of
+            # the right-hand side, whichever is larger): far from the equilibrium the warm start is far from this
+            # response and 1e-12 of b is precision the next best response discards; near it the warm start's residual
+            # is small and the floor is foc_krylov_tol as before
+            x = np.zeros(n) if xs is None else xs.copy()
+            r = b.copy() if xs is None else b - self.matvec(x)
+            atol = tol * bn if xs is None else max(tol * bn, self.RISK_KRYLOV_REDUCTION * float(np.linalg.norm(r)))
+            x, rnorm, self.iterations = _gmres_left(self.matvec, prec, b, x, r, atol, restart, -(-maxiter // restart))
+            resid = rnorm / bn
+            atol /= 10.0 * bn                           # the check below: 10 times the tolerance, relative to b
+        else:
+            atol = 0.0
+            x, info = gmres(A, b, x0=xs, M=M, rtol=tol, atol=0.0, restart=restart, maxiter=-(-maxiter // restart))
+            resid = float(np.linalg.norm(self.matvec(x) - b)) / bn
+            self.iterations = self.matvecs - 1
         self.residual = resid
-        if not resid <= 10 * max(tol, atol / bn):
+        if not resid <= 10 * max(tol, atol):
             raise ValueError(singular_system_message(self.agent.name) +
                              f" (GMRES did not converge: relative residual {resid:.1e} after {self.iterations} iterations)")
         return self.expand(x).reshape(self.nU, self.nR, self.Nm), self.iterations
+
+
+def _gmres_left(matvec, psolve, b: np.ndarray, x: np.ndarray, r: np.ndarray, atol: float, restart: int, maxiter: int):
+    """scipy.sparse.linalg.gmres (1.18) with the preconditioner psolve on the left: the same Arnoldi steps (modified
+    Gram-Schmidt, Givens rotations), the same inner tolerance and its control, so the same iterates, from x with its
+    residual r = b - A x given.  One difference: scipy checks each cycle's solution with a product of its own, b - A x;
+    here that residual is r - (A V) y from the products the cycle made (A V, kept), the same vector up to round-off,
+    so a solve costs one product fewer.  Returns (x, the norm of its residual, the Arnoldi steps taken)."""
+    n = b.size
+    eps = np.finfo(float).eps
+    bnrm2 = float(np.linalg.norm(b))
+    ptol_max_factor = 1.0
+    ptol = float(np.linalg.norm(psolve(b))) * min(ptol_max_factor, atol / bnrm2)
+    rnorm = float(np.linalg.norm(r))
+    if rnorm < atol:
+        return x, rnorm, 0
+    lartg = get_lapack_funcs("lartg", dtype=x.dtype)
+    v = np.empty([restart + 1, n]); av = np.empty([restart, n])
+    h = np.zeros([restart, restart + 1]); givens = np.zeros([restart, 2])
+    steps = 0; presid = 0.0
+    for _ in range(maxiter):
+        v[0, :] = psolve(r)
+        tmp = np.linalg.norm(v[0, :])
+        v[0, :] *= (1 / tmp)
+        S = np.zeros(restart + 1); S[0] = tmp
+        breakdown = False
+        for col in range(restart):
+            av[col, :] = matvec(v[col, :])
+            w = psolve(av[col, :])
+            h0 = np.linalg.norm(w)
+            for k in range(col + 1):
+                tmp = np.dot(v[k, :], w)
+                h[col, k] = tmp
+                w -= tmp * v[k, :]
+            h1 = np.linalg.norm(w)
+            h[col, col + 1] = h1
+            v[col + 1, :] = w[:]
+            if h1 <= eps * h0:
+                h[col, col + 1] = 0
+                breakdown = True
+            else:
+                v[col + 1, :] *= (1 / h1)
+            for k in range(col):
+                c, s = givens[k, 0], givens[k, 1]
+                n0, n1 = h[col, [k, k + 1]]
+                h[col, [k, k + 1]] = [c * n0 + s * n1, -s.conj() * n0 + c * n1]
+            c, s, mag = lartg(h[col, col], h[col, col + 1])
+            givens[col, :] = [c, s]
+            h[col, [col, col + 1]] = mag, 0
+            tmp = -np.conjugate(s) * S[col]
+            S[[col, col + 1]] = [c * S[col], tmp]
+            presid = np.abs(tmp)
+            steps += 1
+            if presid <= ptol or breakdown:
+                break
+        if h[col, col] == 0:
+            S[col] = 0
+        y = np.zeros([col + 1])
+        y[:] = S[:col + 1]
+        for k in range(col, 0, -1):
+            if y[k] != 0:
+                y[k] /= h[k, k]
+                tmp = y[k]
+                y[:k] -= tmp * h[k, :k]
+        if y[0] != 0:
+            y[0] /= h[0, 0]
+        x += y @ v[:col + 1, :]
+        r = r - y @ av[:col + 1, :]
+        rnorm = float(np.linalg.norm(r))
+        if rnorm <= atol or breakdown:
+            break
+        elif presid <= ptol:
+            ptol_max_factor = max(eps, 0.25 * ptol_max_factor)
+        else:
+            ptol_max_factor = min(1.0, 1.5 * ptol_max_factor)
+        ptol = presid * min(ptol_max_factor, atol / rnorm)
+    return x, rnorm, steps
 
 
 def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):
