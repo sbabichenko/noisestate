@@ -55,20 +55,6 @@ def _read_version() -> str:
 __version__ = _read_version()
 
 
-def _raise_malloc_threshold() -> None:
-    """Free one 16 MB block at import, untouched (no page is faulted in).  glibc serves a block above its mmap
-    threshold (128 kB at start) by mmap and, when such a block is freed, raises the threshold to its size and the
-    heap's trim threshold to twice that.  A solve's hot temporaries (a path's quadrature reads, a panel's rows:
-    0.1 to 10 MB, made and dropped thousands of times) are then served from the heap instead of being mapped and
-    faulted in afresh each time: measured on ch1_delayed_finite at 8 nodes, 237k minor page faults and 1.86 s
-    without, 49k and 1.56 s with, the peak RSS unchanged.  Elsewhere than glibc this is one allocation and nothing more."""
-    import numpy as np
-    np.empty(1 << 21)                                   # 16 MB, freed at once
-
-
-_raise_malloc_threshold()
-
-
 def read_json(path: str):
     import json
     with open(path) as fh:
