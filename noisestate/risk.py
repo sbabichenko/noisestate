@@ -1,23 +1,23 @@
 """Risk-averse (CARA) agents on the spectral finite engine: the entropic objective J = theta^-1 log E e^{theta C}.
 
 Chapter 1's appendix (thm:risk_sensitive_appendix): an agent that minimises the entropic cost of its realised cost C
-has the risk-neutral first-order condition evaluated at the risk-adjusted noise-state W^theta = (I - theta C_t K)^-1
-(W_hat + theta C_t k), C_t its conditional covariance of all the shocks (past and future), K the quadratic kernel of C
+has the risk-neutral first-order condition evaluated at the risk-adjusted noise-state W^theta = (I - theta Sigma_t K)^-1
+(W_hat + theta Sigma_t k), Sigma_t its conditional covariance of all the shocks (past and future), K the quadratic kernel of C
 over the whole horizon [0, T]^2 (C = c0 + 1/2 <W, K W>, the Hessian convention of the engine's loss) and k its
 linear part.  W^theta is where the derivative is evaluated -- the average of the (linear) marginal cost over the
 outcomes weighted by e^{theta C} / E e^{theta C} -- not a belief: the agent's filter and its information are
 unchanged.  Without means (k = 0) the condition is, for every map node (t, s) of the agent's seen rows,
 
-    < Sigma f_t , Y_s > = 0,      Sigma = (I - theta K)^-1,
+    < S f_t , Y_s > = 0,      S = (I - theta K)^-1,
 
 with f_t the FOC kernel of a spike at t over ALL the shocks (its future part too: certainty equivalence fails) and
-Y_s the rows: when Pi_t (I - theta K C_t)^-1 f_t = 0 the transformed kernel is C_t-invariant, so C_t drops out and
-one operator Sigma, the same at every t, carries it.  (It is the stationarity condition of E^Q C with Q the weighting
-of outcomes e^{theta C} dP / E e^{theta C}, under which the shocks have covariance Sigma: a weighting of the
+Y_s the rows: when P_t (I - theta K Sigma_t)^-1 f_t = 0 the transformed kernel is Sigma_t-invariant, so Sigma_t drops out and
+one operator S, the same at every t, carries it.  (It is the stationarity condition of E^Q C with Q the weighting
+of outcomes e^{theta C} dP / E e^{theta C}, under which the shocks have covariance S: a weighting of the
 derivative's outcomes, not what the agent expects.)  The engine keeps its
 risk-neutral projection and adds the correction
 
-    Delta_t = Sigma f_t - f_t = theta K Sigma f_t      (a kernel on the triangle, u <= t),
+    Delta_t = S f_t - f_t = theta K S f_t      (a kernel on the triangle, u <= t),
 
 projected on the rows like the FOC kernel itself.  K = A' G A with (A g)(tau) = int_0^tau zeta(tau, v) g(v) dv the
 loss atoms' exposure and G = e^{-rho tau} Q dtau (plus the terminal loss at T), all in the world of the current
@@ -268,7 +268,7 @@ class Tilt:
     """What one best response of a risk-averse agent freezes at the profile (everyone's current strategy): the loss
     atoms' kernels zeta in that world, K_G and its spectrum, (I - theta K_G)^-1, Psi = K Phi at the nodes and at the
     quadrature points, and the fixed reads of zeta and of the spike responses along the paths.  delta(world) is
-    then the correction Delta = theta K Sigma f, linear in the world the FOC kernel f is taken in."""
+    then the correction Delta = theta K S f, linear in the world the FOC kernel f is taken in."""
 
     def __init__(self, geo: RiskGeometry, foc, agent, theta: float, Zprof: np.ndarray, R: Optional[np.ndarray], chunk: int = 64,
                  spectrum_only: bool = False, clip: bool = False):

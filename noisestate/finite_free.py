@@ -486,7 +486,7 @@ def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None
         phi = system.foc.foc(ui, a); phi_phys = fphys.foc(ui, ap)
         dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
         if system.tilt is not None:
-            # a risk-averse agent: the kernel whose projection vanishes is Sigma f, the risk-neutral one plus the
+            # a risk-averse agent: the kernel whose projection vanishes is S f, the risk-neutral one plus the
             # correction (risk.py); physical + wedge + risk = foc
             risk = system.tilt.delta(ui, Zfull)
             dec[u]["risk"] = risk
@@ -565,8 +565,8 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
     out = {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -solver.SECOND_ORDER_TOL * scale), "converged": True}
     if system.tilt is not None:
         # the entropic cost's curvature along a change d of the strategy is E^Q[C''] + theta Var^Q(C') >= E^Q[C''] =
-        # tr(Sigma B_d) >= tr(B_d) = E[C''], the form above, when the loss Hessian is positive semidefinite (B_d >= 0 and
-        # Sigma = (I - theta K)^-1 >= I): the expected cost's curvature is then a lower bound of the objective's
+        # tr(S B_d) >= tr(B_d) = E[C''], the form above, when the loss Hessian is positive semidefinite (B_d >= 0 and
+        # S = (I - theta K)^-1 >= I): the expected cost's curvature is then a lower bound of the objective's
         QT = ((c.terminal or {}).get(agent.name) or (None, None, None))[1]
         psd = all(M is None or np.asarray(M).size == 0 or np.linalg.eigvalsh(0.5 * (M + M.T))[0] >= -1e-12 * max(1.0, np.abs(M).max())
                   for M in (Q, QT))

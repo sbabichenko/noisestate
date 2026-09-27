@@ -111,7 +111,7 @@ solves it on a finite horizon without a past, a continuation, monitoring or mean
 NotImplementedError); the code is `noisestate/risk.py`.
 
 Chapter 1's appendix (thm:risk_sensitive_appendix) gives the first-order condition: the risk-neutral one evaluated
-at the risk-adjusted noise-state `W^theta = (I - theta C_t K)^-1 (W_hat + theta C_t k)`, with `C_t` the agent's
+at the risk-adjusted noise-state `W^theta = (I - theta Sigma_t K)^-1 (W_hat + theta Sigma_t k)`, with `Sigma_t` the agent's
 conditional covariance of every shock (the filter's posterior for the past ones, the prior for the future ones), `K`
 the quadratic kernel of C over the whole horizon, `C = c0 + 1/2 <W, K W>`, and `k` its linear part (zero without
 means).  `W^theta` is the point at which the derivative is evaluated: the average of the linear marginal cost over
@@ -119,10 +119,10 @@ the outcomes weighted by `exp(theta C) / E exp(theta C)`.  It is not a belief; t
 information are the risk-neutral ones.  Certainty equivalence fails, so the first-order condition keeps the part
 of its kernel on the future shocks, which the risk-neutral engine drops because those shocks have mean zero.
 
-On the seen rows the condition is `Pi_t (I - theta K C_t)^-1 f_t = 0`, `f_t` the FOC kernel of a spike at t over all
-the shocks.  A kernel whose projection on the rows is zero is left alone by `C_t`, so the condition is the same as
-`Pi_t Sigma f_t = 0` with `Sigma = (I - theta K)^-1`, one operator for every t.  The engine keeps its risk-neutral
-projection and adds the correction `Delta_t = Sigma f_t - f_t = theta K Sigma f_t` to the FOC kernel (a kernel on
+On the seen rows the condition is `P_t (I - theta K Sigma_t)^-1 f_t = 0`, `f_t` the FOC kernel of a spike at t over all
+the shocks.  A kernel whose projection on the rows is zero is left alone by `Sigma_t`, so the condition is the same as
+`P_t S f_t = 0` with `S = (I - theta K)^-1`, one operator for every t.  The engine keeps its risk-neutral
+projection and adds the correction `Delta_t = S f_t - f_t = theta K S f_t` to the FOC kernel (a kernel on
 the triangle like the FOC kernel itself).  With `K = A' G A`, `(A g)(tau) = int_0^tau zeta(tau, v) g(v) dv` the loss
 atoms' exposure and `G = e^{-rho tau} Q dtau` (plus the terminal loss at T), `h = Delta_t` solves
 `h = theta K f + theta K h`:
@@ -169,7 +169,7 @@ third order.  The result carries `res.risk[agent]` (theta, the entropic and the 
 `theta lambda_max`) and `res.entropic_costs`.  `res.costs` stays the expected cost.
 
 The second-order check is the expected cost's form, as for a risk-neutral agent.  With a positive semidefinite loss
-Hessian it bounds the entropic cost's curvature from below (`J'' = E^Q[C''] + theta Var^Q(C') >= tr(Sigma B) >= tr B
+Hessian it bounds the entropic cost's curvature from below (`J'' = E^Q[C''] + theta Var^Q(C') >= tr(S B) >= tr B
 = E[C'']`), and the record says so (`"bound": "entropic"`).  Without one the check is not run and says why.
 `res.foc[agent][control]` gains `"risk"`, the correction, so that `foc` (the kernel whose projection vanishes) is
 `physical + wedge + risk`.  `res.strategy()` is refused for a risk-averse agent: its action weighs the
