@@ -92,6 +92,22 @@ def _gauss(segs, m: int):
     return (h[:, None] * xg[None, :] + (0.5 * (a + b))[:, None]).ravel(), (h[:, None] * wg[None, :]).ravel()
 
 
+class _Interp:
+    """An interpolation at fixed points (interp_sparse's) kept as its factors and applied through them (LinePath's
+    read): the rows of a point are the outer product of its time and age rows, so the factors hold nt + na numbers
+    a point where the sparse matrix holds nt na (and its indices), and the dense products are faster."""
+
+    def __init__(self, g, t, a, side_t):
+        t = np.atleast_1d(np.asarray(t, dtype=float))
+        self.factors = g.interp_factors(t, a, side_t=side_t)
+        self.rows = np.empty(t.size)                  # LinePath._through reads only the number of points from it
+        self.shape = (t.size, g.N)
+
+    def __matmul__(self, kernels: np.ndarray) -> np.ndarray:
+        from .triangle import LinePath
+        return LinePath._through(self, self.factors, kernels)
+
+
 class RiskGeometry:
     """The map-independent quadrature of the correction on one compiled model (built once, cached on it): a
     piecewise-Chebyshev representation of functions of one time on the time panels (n1 nodes each, x1), the
@@ -119,7 +135,7 @@ class RiskGeometry:
             v, w = _gauss(_segments(0.0, tau, bp + [tau - b for b in bp], eps), mq)
             tq.append(np.full(v.size, tau)); vq.append(v); wq.append(w); iq.append(np.full(v.size, i)); sq.append(np.full(v.size, s))
         tq, vq, wq, iq, sq = map(np.concatenate, (tq, vq, wq, iq, sq))
-        self.IE = g.interp_sparse(tq, tq - vq, side_t=sq)
+        self.IE = _Interp(g, tq, tq - vq, sq)
         self.BE = self._basis_sum(iq, vq, wq, len(self.x1))                       # (n1 P P nb, npts)
         # the time quadrature of K_G: Gauss points per panel, E read there from its one-time nodes
         tg, wg = _gauss([(bp[p], bp[p + 1]) for p in range(P)], mq)
@@ -133,7 +149,7 @@ class RiskGeometry:
             tau, w = _gauss(_segments(u, T, bp + [u + b for b in bp], eps), mq)
             tq.append(tau); uq.append(np.full(tau.size, u)); wq.append(w * np.exp(-self.rho * tau)); iq.append(np.full(tau.size, i))
         tq, uq, wq, iq = map(np.concatenate, (tq, uq, wq, iq))
-        self.IPsi = g.interp_sparse(tq, tq - uq, side_t=np.ones(tq.size))
+        self.IPsi = _Interp(g, tq, tq - uq, np.ones(tq.size))
         self.BPsi = self._bary(tq, np.clip(g.panel_of(tq), 0, P - 1))
         from scipy.sparse import csr_matrix
         self.SPsi = csr_matrix((wq, (iq, np.arange(iq.size))), shape=(len(self.x1), iq.size))
@@ -157,8 +173,8 @@ class RiskGeometry:
         tp, ap, wp, rp, sp, vp = map(np.concatenate, (tp, ap, wp, rp, sp, vp))
         tf, af, wf, rf, vf = map(np.concatenate, (tf, af, wf, rf, vf))
         self.n_rows = len(rows)
-        self.Ipast = g.interp_sparse(tp, ap, side_t=sp)
-        self.Ifut = g.interp_sparse(tf, af, side_t=np.ones(tf.size))
+        self.Ipast = _Interp(g, tp, ap, sp)
+        self.Ifut = _Interp(g, tf, af, np.ones(tf.size))
         self.Bpast = self._bary(vp, np.clip(g.panel_of(vp), 0, P - 1))
         self.Bfut = self._bary(vf, np.clip(g.panel_of(vf), 0, P - 1))
         # int w Psi(v)' f(v) dv over a row's points is sum_n Psi(x1_n)' (sum_i w_i B[i, n] f(v_i)): the inner sums, one row of
@@ -319,11 +335,11 @@ class Tilt:
         self.proj_I = lp.read_unknown(zall).reshape(-1, ma, nW) if lp.rows is not None else None  # zeta at (t_k, t_k - r): AU, first part
         if lr.rows is not None:
             self.resp_J = lr.read(zall).reshape(-1, ma, nW)                                       # zeta at (t_k, t_k - r): AU, second part
-            self.resp_I = lr.read_unknown(zf.transpose(1, 0, 2).reshape(N, -1)) * (lr.w * np.exp(-geo.rho * lr.r))[:, None]
-            self.resp_It = np.ascontiguousarray(self.resp_I.reshape(-1, m, nW).transpose(0, 2, 1))        # (nq, nW, m)
+            resp_I = lr.read_unknown(zf.transpose(1, 0, 2).reshape(N, -1)) * (lr.w * np.exp(-geo.rho * lr.r))[:, None]
+            self.resp_It = np.ascontiguousarray(resp_I.reshape(-1, m, nW).transpose(0, 2, 1))             # (nq, nW, m)
         if lc.rows is not None:
-            self.cont_I = lc.read_unknown(zf.transpose(1, 0, 2).reshape(N, -1)) * (lc.w * np.exp(-geo.rho * lc.r))[:, None]
-            self.cont_It = np.ascontiguousarray(self.cont_I.reshape(-1, m, nW).transpose(0, 2, 1))        # (nq, nW, m)
+            cont_I = lc.read_unknown(zf.transpose(1, 0, 2).reshape(N, -1)) * (lc.w * np.exp(-geo.rho * lc.r))[:, None]
+            self.cont_It = np.ascontiguousarray(cont_I.reshape(-1, m, nW).transpose(0, 2, 1))             # (nq, nW, m)
         if self.mt:
             self.zT_at = (geo.IZT @ zT.transpose(1, 0, 2).reshape(N, -1)).reshape(N, self.mt, nW) * np.exp(-geo.rho * geo.T)
         # the spike responses of the continuation (the envelope), per control: read at (r, r - s_k) with the weight
