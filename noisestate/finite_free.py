@@ -46,6 +46,8 @@ class FocSystem:
     Amat gamma = -bvec with Amat = sum_k H_k Fu Resp G_k, its right-hand side, the time-row preconditioner
     and the GMRES solve."""
 
+    RISK_KRYLOV_REDUCTION = 1e-4    # a warm-started risk-averse solve stops at this fraction of its initial residual (solve)
+
     def __init__(self, solver, agent: Agent, rowops: RowOps, projops: ProjOps, resp: RespOps, foc: FocOps,
                  Zpass: np.ndarray, phi_past, tilt=None):
         c = solver.c; self.solver = solver; self.c = c; self.agent = agent
@@ -325,12 +327,21 @@ class FocSystem:
             xs = np.asarray(x0, dtype=float).ravel()[self.kept]
             xs = np.bincount(self.inv, weights=xs, minlength=n) / np.maximum(np.bincount(self.inv, minlength=n), 1)
         self.matvecs = 0
+        atol = 0.0
+        if self.tilt is not None and xs is not None:
+            # a risk-averse agent, warm-started: the residual is reduced by RISK_KRYLOV_REDUCTION from the warm start's (or
+            # to foc_krylov_tol of the right-hand side, whichever is larger).  Far from the equilibrium the warm start
+            # is far from this response and 1e-12 of b is precision the next best response discards; near it the
+            # warm start's residual is small and the floor is foc_krylov_tol as before.  GMRES's own first product is
+            # this one (kept by matvec), so the count is GMRES's as before
+            atol = self.RISK_KRYLOV_REDUCTION * float(np.linalg.norm(b - self.matvec(xs)))
+            self.matvecs -= 1
         restart = min(maxiter, 300)                       # scipy's maxiter counts the restarts
-        x, info = gmres(A, b, x0=xs, M=M, rtol=tol, atol=0.0, restart=restart, maxiter=-(-maxiter // restart))
+        x, info = gmres(A, b, x0=xs, M=M, rtol=tol, atol=atol, restart=restart, maxiter=-(-maxiter // restart))
         resid = float(np.linalg.norm(self.matvec(x) - b)) / bn
         self.iterations = self.matvecs - 1
         self.residual = resid
-        if not resid <= 10 * tol:
+        if not resid <= 10 * max(tol, atol / bn):
             raise ValueError(singular_system_message(self.agent.name) +
                              f" (GMRES did not converge: relative residual {resid:.1e} after {self.iterations} iterations)")
         return self.expand(x).reshape(self.nU, self.nR, self.Nm), self.iterations
