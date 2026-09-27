@@ -45,7 +45,9 @@ def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx) -> np.
     Rnz = [np.ascontiguousarray(Rv[nz]) for Rv in Resp]                                    # (nz, N)
     groups = []                                                                             # per loss form: G Resp_v and its column groups
     for G, sl in forms:
-        GR = [G[np.ix_(nz, nz)] @ Rv for Rv in Rnz]
+        # a loss form is a dense (nP N, nP N) array or the function applying it to a block (nP N, B): through the
+        # responding nodes either way, G[nz, nz] Resp_v[nz] = (G Resp_v)[nz] (Resp_v is zero off nz)
+        GR = [G(Rv)[nz] for Rv in Resp] if callable(G) else [G[np.ix_(nz, nz)] @ Rv for Rv in Rnz]
         rowsof = {}                                                                         # rows with a nonzero block -> columns
         for k in range(sl.start, sl.stop):
             rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * Nm:(r + 1) * Nm]))

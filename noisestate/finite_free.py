@@ -587,27 +587,52 @@ def _dense_form(solver, agent: Agent, system: FocSystem, idx: np.ndarray) -> np.
     Gk = system.rowops.dense()                                                                  # (ncol, N, nR Nm)
     Resp = [system.resp.dense(ui) for ui in range(nU)]                                          # (nP N, N)
 
-    def loss_form(mass, Q=Q, AO=AO[:system.foc.m_flow]):                                       # AO' kron(Q, mass) AO, dense (nP N, nP N)
-        G = np.zeros((nP * N, nP * N))
-        for i, (p, Ai) in enumerate(AO):
-            for j, (p2, Aj) in enumerate(AO):
-                if Q[i, j] != 0.0:
-                    G[p * N:(p + 1) * N, p2 * N:(p2 + 1) * N] += Q[i, j] * (Ai.T @ (mass @ Aj)).toarray()
-        return G
+    def block_mass(mass):
+        """mass (block diagonal by piece, cost_mass_sparse) as the product with its dense diagonal blocks, one batched
+        product when the pieces are of one size and in order; else as the dense matrix."""
+        pcs = sorted((pc.offset, pc.n) for pc in c.g.pieces)
+        n0 = pcs[0][1] if pcs else 0
+        if pcs and all(o == i * n0 and n == n0 for i, (o, n) in enumerate(pcs)) and len(pcs) * n0 == N:
+            Mb = np.stack([mass[o:o + n0, o:o + n0].toarray() for o, _ in pcs])
+            if sum(np.count_nonzero(b) for b in Mb) == mass.count_nonzero():
+                P = len(pcs)
+                return lambda Y: (Mb @ Y.reshape(P, n0, -1)).reshape(N, -1)
+        Md = mass.toarray()
+        return lambda Y: Md @ Y
+
+    def loss_form(mass, Q=Q, AO=AO[:system.foc.m_flow]):                                       # AO' kron(Q, mass) AO, applied
+        mass_at = block_mass(mass)
+        def apply(X):                                                                           # to X (nP N, B): (nP N, B)
+            out = np.zeros((nP * N, X.shape[1]))
+            MA = {}                                                                             # mass Aj X_(p2), each once
+            for i, (p, Ai) in enumerate(AO):
+                acc = None
+                for j, (p2, Aj) in enumerate(AO):
+                    if Q[i, j] != 0.0:
+                        if j not in MA:
+                            MA[j] = mass_at(Aj @ X[p2 * N:(p2 + 1) * N])
+                        acc = Q[i, j] * MA[j] if acc is None else acc + Q[i, j] * MA[j]
+                if acc is not None:
+                    out[p * N:(p + 1) * N] += Ai.T @ acc
+            return out
+        return apply
+
+    def plus(F, H):
+        return lambda X: F(X) + H(X)
     G0 = loss_form(c.cost_mass_sparse())
     terminal = (c.terminal or {}).get(agent.name)
     if terminal:                                    # the terminal loss's form on the shocks' columns, e^{-rho T} at T
         from scipy.sparse import csr_matrix
         IT, wT = c.terminal_quadrature
         tmass = csr_matrix(np.exp(-c.rho * c.T) * (IT.T @ (wT[:, None] * IT.toarray())))
-        G0 = G0 + loss_form(tmass, terminal[1], AO[system.foc.m_flow:])
+        G0 = plus(G0, loss_form(tmass, terminal[1], AO[system.foc.m_flow:]))
     forms = [(G0, slice(0, nW))]
     if ncol > nW:
         w = np.zeros(N); w[c.diag] = c.time_mass(c.rho)[:c.Nd]
         Gi = loss_form(diags(w, format="csr"))
         if terminal:                                # an initial shock's column at T: the point form of the corner
             r = c.terminal_point.toarray()
-            Gi = Gi + loss_form(csr_matrix(np.exp(-c.rho * c.T) * (r.T @ r)), terminal[1], AO[system.foc.m_flow:])
+            Gi = plus(Gi, loss_form(csr_matrix(np.exp(-c.rho * c.T) * (r.T @ r)), terminal[1], AO[system.foc.m_flow:]))
         forms.append((Gi, slice(nW, ncol)))
     return dense_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx)
 

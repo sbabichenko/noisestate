@@ -729,9 +729,10 @@ class LinePath:
         of a solve would hold: most of a refinement's peak memory), or None where they do not serve (I held without
         factors, pieces of different shapes, points not grouped by output node).  Every point's interpolation row is
         Rt Rx' over its piece's nodes, so the block of output node k on the nodes of one piece is Rt_S' diag(d_S)
-        Rx_S over k's points S in that piece: one small product per (node, piece) segment.  Returns (Rt (nq + 1, nt),
-        Rx (nq + 1, na) per point, a zero row last; the segments' points (nseg, longest) padded with nq; each
-        segment's output node and piece offset; the first segment of every node; nt, na)."""
+        Rx_S over k's points S in that piece: one small product per (node, piece) segment.  Returns (Rt, Rx: the
+        factors' rows stacked, a zero row last; each point's row in them (nq + 1, the padding's the zero row); the
+        segments' points (nseg, longest) padded with nq; each segment's output node and piece offset; the first
+        segment of every node; nt, na)."""
         if self.If is None or self.rows is None or not np.all(np.diff(self.rows) >= 0):
             return None
         shapes = {(pc.nt, pc.na) for pc, _, _, _ in self.If}
@@ -739,9 +740,18 @@ class LinePath:
             return None
         nt, na = shapes.pop()
         nq = len(self.rows)
-        Rt = np.zeros((nq + 1, nt)); Rx = np.zeros((nq + 1, na)); off = np.full(nq, -1, dtype=np.int64)
-        for pc, sel, Rt_, Rx_ in self.If:
-            Rt[sel] = Rt_; Rx[sel] = Rx_; off[sel] = pc.offset
+        # the factors' rows stacked (a zero row last), and the factors rewritten as views of them: one copy of the rows
+        # (the list is the path's and its swapped twin's, so both see the views)
+        sizes = [len(sel) for _, sel, _, _ in self.If]
+        Rt = np.concatenate([f[2] for f in self.If] + [np.zeros((1, nt))])
+        Rx = np.concatenate([f[3] for f in self.If] + [np.zeros((1, na))])
+        at = np.full(nq + 1, Rt.shape[0] - 1, dtype=np.int64)      # each point's stacked row (outside any piece: the zero row)
+        off = np.full(nq, -1, dtype=np.int64)
+        start = 0
+        for f, (pc, sel, _, _) in enumerate(list(self.If)):
+            self.If[f] = (pc, sel, Rt[start:start + sizes[f]], Rx[start:start + sizes[f]])
+            at[sel] = np.arange(start, start + sizes[f]); off[sel] = pc.offset
+            start += sizes[f]
         pts = np.flatnonzero(off >= 0)                           # a point outside the domain is in no piece
         pts = pts[np.lexsort((off[pts], self.rows[pts]))]        # by node, then piece, stably: point order within
         k, o = self.rows[pts], off[pts]
@@ -752,7 +762,7 @@ class LinePath:
         seg[np.repeat(np.arange(first.size), n), np.arange(pts.size) - np.repeat(first, n)] = pts
         seg_k, seg_off = k[first], o[first]
         kseg = np.searchsorted(seg_k, np.arange(self.n_out + 1))
-        return Rt, Rx, seg, seg_k, seg_off, kseg, nt, na
+        return Rt, Rx, at, seg, seg_k, seg_off, kseg, nt, na
 
     @cached_property
     def _starts(self):
@@ -803,7 +813,7 @@ class LinePath:
         block the batched product Rt_S' diag(d_S) Rx_S (the padding's zero rows add nothing).  The CSR sum it
         replaces adds the same terms point by point: the two agree to round-off, and a row is the same whichever
         other rows are built."""
-        Rt, Rx, seg, seg_k, seg_off, kseg, nt, na = sf
+        Rt, Rx, at, seg, seg_k, seg_off, kseg, nt, na = sf
         out = np.zeros((hi - lo, self.N))
         s0, s1 = int(kseg[lo]), int(kseg[hi])
         if s1 == s0:
@@ -813,7 +823,8 @@ class LinePath:
         dz = np.zeros(i1 - i0 + 1)                               # d at the rows' points, zero at the padding (last)
         dz[:-1] = d if len(d) == i1 - i0 else d[i0:i1]
         dP = dz[np.minimum(P - i0, i1 - i0)]                     # the padding (nq) is past i1
-        blocks = np.matmul((Rt[P] * dP[:, :, None]).transpose(0, 2, 1), Rx[P])         # (nseg, nt, na)
+        A = at[P]                                                # the points' stacked rows
+        blocks = np.matmul((Rt[A] * dP[:, :, None]).transpose(0, 2, 1), Rx[A])         # (nseg, nt, na)
         out[(seg_k[s0:s1] - lo)[:, None], seg_off[s0:s1][:, None] + np.arange(nt * na)] = blocks.reshape(-1, nt * na)
         return out
 
