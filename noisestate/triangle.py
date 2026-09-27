@@ -724,6 +724,37 @@ class LinePath:
         return indptr, rowidx
 
     @cached_property
+    def _sum_factors(self):
+        """The weighted row sum R (diag(d) I) from I's factors instead of the expanded I (whose entries every path
+        of a solve would hold: most of a refinement's peak memory), or None where they do not serve (I held without
+        factors, pieces of different shapes, points not grouped by output node).  Every point's interpolation row is
+        Rt Rx' over its piece's nodes, so the block of output node k on the nodes of one piece is Rt_S' diag(d_S)
+        Rx_S over k's points S in that piece: one small product per (node, piece) segment.  Returns (Rt (nq + 1, nt),
+        Rx (nq + 1, na) per point, a zero row last; the segments' points (nseg, longest) padded with nq; each
+        segment's output node and piece offset; the first segment of every node; nt, na)."""
+        if self.If is None or self.rows is None or not np.all(np.diff(self.rows) >= 0):
+            return None
+        shapes = {(pc.nt, pc.na) for pc, _, _, _ in self.If}
+        if len(shapes) != 1:
+            return None
+        nt, na = shapes.pop()
+        nq = len(self.rows)
+        Rt = np.zeros((nq + 1, nt)); Rx = np.zeros((nq + 1, na)); off = np.full(nq, -1, dtype=np.int64)
+        for pc, sel, Rt_, Rx_ in self.If:
+            Rt[sel] = Rt_; Rx[sel] = Rx_; off[sel] = pc.offset
+        pts = np.flatnonzero(off >= 0)                           # a point outside the domain is in no piece
+        pts = pts[np.lexsort((off[pts], self.rows[pts]))]        # by node, then piece, stably: point order within
+        k, o = self.rows[pts], off[pts]
+        brk = np.ones(pts.size, dtype=bool); brk[1:] = (k[1:] != k[:-1]) | (o[1:] != o[:-1])
+        first = np.flatnonzero(brk)
+        n = np.diff(np.append(first, pts.size))
+        seg = np.full((first.size, int(n.max()) if n.size else 0), nq, dtype=np.int64)
+        seg[np.repeat(np.arange(first.size), n), np.arange(pts.size) - np.repeat(first, n)] = pts
+        seg_k, seg_off = k[first], o[first]
+        kseg = np.searchsorted(seg_k, np.arange(self.n_out + 1))
+        return Rt, Rx, seg, seg_k, seg_off, kseg, nt, na
+
+    @cached_property
     def _starts(self):
         """First quadrature point of every output node (and the total), the points being grouped by node."""
         return np.searchsorted(self.rows, np.arange(self.n_out + 1))
@@ -736,12 +767,16 @@ class LinePath:
     def _weighted_sum(self, d: np.ndarray, rows=None) -> np.ndarray:
         """R @ (diag(d) @ I) as a dense (n_out, N) array; with rows = (lo, hi) the rows of the output nodes
         [lo, hi) only, (hi - lo, N), from d at their quadrature points (d given at every point, or at
-        theirs).  The rows are the same sums in the same order whether or not the others are built."""
-        layout = self._sum_layout
+        theirs).  The rows are the same sums in the same order whether or not the others are built.  Where I's
+        factors serve (_sum_factors) the rows are made from them and I is never expanded; otherwise from I."""
         if rows is None:
             lo, hi = 0, self.n_out
         else:
             lo, hi = rows
+        sf = self._sum_factors if np.issubdtype(d.dtype, np.floating) else None
+        if sf is not None:
+            return self._factor_sum(sf, d, lo, hi)
+        layout = self._sum_layout
         if layout is None or not np.issubdtype(d.dtype, np.floating):
             from scipy.sparse import diags
             R = self.R if rows is None else self.R[lo:hi]
@@ -761,6 +796,25 @@ class LinePath:
         from scipy.sparse import _sparsetools
         out = np.zeros((hi - lo, self.N))
         _sparsetools.csr_todense(hi - lo, self.N, indptr[lo:hi + 1] - j0, I.indices[j0:j1], data, out)
+        return out
+
+    def _factor_sum(self, sf, d: np.ndarray, lo: int, hi: int) -> np.ndarray:
+        """_weighted_sum from the factors (_sum_factors): the rows [lo, hi) as (hi - lo, N), each (node, piece)
+        block the batched product Rt_S' diag(d_S) Rx_S (the padding's zero rows add nothing).  The CSR sum it
+        replaces adds the same terms point by point: the two agree to round-off, and a row is the same whichever
+        other rows are built."""
+        Rt, Rx, seg, seg_k, seg_off, kseg, nt, na = sf
+        out = np.zeros((hi - lo, self.N))
+        s0, s1 = int(kseg[lo]), int(kseg[hi])
+        if s1 == s0:
+            return out
+        i0, i1 = int(self._starts[lo]), int(self._starts[hi])
+        P = seg[s0:s1]
+        dz = np.zeros(i1 - i0 + 1)                               # d at the rows' points, zero at the padding (last)
+        dz[:-1] = d if len(d) == i1 - i0 else d[i0:i1]
+        dP = dz[np.minimum(P - i0, i1 - i0)]                     # the padding (nq) is past i1
+        blocks = np.matmul((Rt[P] * dP[:, :, None]).transpose(0, 2, 1), Rx[P])         # (nseg, nt, na)
+        out[(seg_k[s0:s1] - lo)[:, None], seg_off[s0:s1][:, None] + np.arange(nt * na)] = blocks.reshape(-1, nt * na)
         return out
 
     def apply(self, factor: np.ndarray, rows=None) -> np.ndarray:
