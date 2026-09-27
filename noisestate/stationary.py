@@ -278,6 +278,12 @@ class Compiled(CompiledBase):
             return self.closed_loop_symmetric(maps, excluded, impulse_controls)
         return self._closed_loop_eliminated(maps, excluded, impulse_controls)
 
+    def _interp0(self) -> np.ndarray:
+        """(N,) the read of a kernel at age 0+ (grid.interp([0.0])[0]), made once."""
+        if getattr(self, "_at0", None) is None:
+            self._at0 = self.grid.interp([0.0])[0]
+        return self._at0
+
     def _closed_loop_eliminated(self, maps, excluded=None, impulse_controls=()):
         nX, nU, N = self.nX, self.nU, self.N
         n = len(self.prim) * N; nxs = nX * N
@@ -316,7 +322,7 @@ class Compiled(CompiledBase):
                     q = (self.levels or {}).get(a.name, {}).get(r)
                     if q is not None:                            # a level row: the map on the quantity's increments,
                         if q not in excl:                        # g * q' + g q(0+), in the kernel of q
-                            MU[bl, self.block(q)] += C @ self.grid.diff() + np.outer(gur, self.grid.interp([0.0])[0])
+                            MU[bl, self.block(q)] += C @ self.grid.diff() + np.outer(gur, self._interp0())
                         elif q in impulse_controls:              # a spike of q: g' after it (the block g(0+) it draws at
                             col = self.nW + list(impulse_controls).index(q)   # once is in the composite, use_maps)
                             B[nxs + bl.start:nxs + bl.stop, col] += self.grid.diff() @ gur
@@ -578,6 +584,7 @@ class StationarySolver(EngineBase):
         self.c = Compiled(model, settings=self.settings)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
         self._monitored = None                          # (maps key, {agent: monitored R}, {origin: seed world}, residual) of the last maps
+        self._spike_cache = (None, {})                  # (maps key, {(agent, excluded): (Zpass, R)}) of the last maps (_spikes)
         self._atom_blocks: Dict[str, tuple] = {}        # agent -> the loss atoms' blocks and which are the identity
         self._kernel_residual = 0.0                     # the inner solve's residual at the last maps
 
@@ -645,11 +652,11 @@ class StationarySolver(EngineBase):
             # op = sum_j M_j (Q zeta)_j with M_j the operator on atom j: identity for the instantaneous
             # term, continuation, delayed own read, lead term; contracted as sum_i (sum_j Q_ji M_j) AO_i
             # so the products are N x N x N per atom block instead of N x N x n_prim N per atom
-            M = np.zeros((len(atms), N, N))
+            M = np.zeros((len(atms), N, N)); diag = np.diag_indices(N)
             comp = c.seed_composite(agent.name) if hasattr(c, "seed_composite") else c.composite   # its own deviations
             for v, coef in (comp or {}).get(u, {u: 1.0}).items():   # the control and the instant reactions it draws
                 if (v, 0.0) in atms:
-                    M[atms.index((v, 0.0))] += coef * np.eye(N)
+                    M[atms.index((v, 0.0))][diag] += coef              # + coef I
             if not agent.myopic:
                 # impulse responses of every atom: its block against its own primary's rows of R
                 Rj = np.stack([sum(A @ R[p * N:(p + 1) * N, ui] for p, A in AO_blocks[j]) for j in range(len(atms))], axis=1)
@@ -662,10 +669,12 @@ class StationarySolver(EngineBase):
                     M[j] += CR[j]
                     if lag < 0:
                         M[j] += self._lead_term(agent, R[:, ui], name, lag)
-            MQ = np.tensordot(Q.T, M, axes=1)              # MQ[i] = sum_j Q[j, i] M_j
+            MQ = np.dot(np.ascontiguousarray(Q.T), M.reshape(len(atms), -1))     # MQ[i] = sum_j Q[j, i] M_j (tensordot's product)
+            nz = MQ.any(axis=1)
+            MQ = MQ.reshape(len(atms), N, N)
             op = np.zeros((N, n_prim))
             for i in range(len(atms)):
-                if np.any(MQ[i]):
+                if nz[i]:
                     for (p, blk), eye in zip(AO_blocks[i], AO_eye[i]):
                         op[:, p * N:(p + 1) * N] += MQ[i] if eye else MQ[i] @ blk
             Fu.append(op); Ms.append(M)
@@ -975,13 +984,27 @@ class StationarySolver(EngineBase):
         the quote trades at once), (n_prim N, nU).  Without instant observations the spikes are the controls' own."""
         if hasattr(c, "use_maps"):
             c.use_maps(maps)                                 # level rows: the reactions a spike draws depend on the maps
+        # the same closed loop is asked for more than once at one set of maps (an agent's best response, then the
+        # monitored responses' naive start for every player privy to someone): kept for the last maps, copies out
+        ck = None
+        if c is self.c and (excluded is None or isinstance(excluded, str)):
+            key = self._maps_key(maps)
+            if self._spike_cache[0] != key:
+                self._spike_cache = (key, {})
+            ck = (agent.name, excluded)
+            hit = self._spike_cache[1].get(ck)
+            if hit is not None:
+                return hit[0].copy(), hit[1].copy()
         comp = c.composite or {}
         extra = [v for u in agent.controls for v in comp.get(u, {u: 1.0}) if v not in agent.controls]
         ctrls = list(agent.controls) + list(dict.fromkeys(extra))
         Zp = c.closed_loop(maps, excluded=agent.name if excluded is None else excluded, impulse_controls=ctrls)
         cols = Zp[:, c.nW:]; k = {v: i for i, v in enumerate(ctrls)}
         R = np.stack([sum(coef * cols[:, k[v]] for v, coef in comp.get(u, {u: 1.0}).items()) for u in agent.controls], axis=1)
-        return Zp[:, :c.nW], R
+        Zpass = Zp[:, :c.nW]
+        if ck is not None:
+            self._spike_cache[1][ck] = (Zpass.copy(), R.copy())
+        return Zpass, R
 
     def _maps_key(self, maps) -> bytes:
         import hashlib
