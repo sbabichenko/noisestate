@@ -36,6 +36,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `maps` | map of map of map of list of any | per agent, per control, per signal row: the raw strategy g[u][r] on the row's map axis |
 | `foc` | map of map of map of map of list of number | per agent, per control: `foc`, `physical`, `wedge`, each per shock: the first-order-condition decomposition |
 | `costs` | map of number | per agent: the cost (`cost_kind` says what it is) |
+| `risk` | map of map of number (optional) | per risk-averse agent: `risk_aversion`, `entropic` (theta^-1 log E exp(theta C)), `expected` (= `costs`), `lambda_max` (the largest eigenvalue of its cost kernel), `theta_lambda_max` |
 | `cost_parts` | map of map of number | per agent: `variance`, `mean` and `constant` (the loss's constant; a transition adds `continuation`, the buffer's cost) |
 | `means` | map of number or list of number | per state, control, definition and signal row (`agent.row`): a constant (stationary) or the path on `mean_times` |
 | `mean_times` | list of number or null | the time nodes of the mean paths; null on the stationary engine |

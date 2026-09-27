@@ -47,7 +47,7 @@ class FocSystem:
     and the GMRES solve."""
 
     def __init__(self, solver, agent: Agent, rowops: RowOps, projops: ProjOps, resp: RespOps, foc: FocOps,
-                 Zpass: np.ndarray, phi_past):
+                 Zpass: np.ndarray, phi_past, tilt=None):
         c = solver.c; self.solver = solver; self.c = c; self.agent = agent
         self.rowops, self.projops, self.resp, self.foc = rowops, projops, resp, foc
         self.N, self.nP, self.ncol, self.Nm = c.N, len(c.prim), c.ncol, solver.Nm
@@ -63,13 +63,17 @@ class FocSystem:
         else:
             self.inv = np.arange(self.kept.size); self.n = self.kept.size
         self.matvecs = 0; self.iterations = 0; self.residual = 0.0; self.block_rcond = np.inf
+        self.tilt = tilt                        # a risk-averse agent's correction (risk.Tilt), linear in the world
         # the right-hand side: the FOC of the passive world projected on the rows
-        a = foc.atoms_of(Zpass.reshape(self.nP, self.N, self.ncol))
+        Zp = Zpass.reshape(self.nP, self.N, self.ncol)
+        a = foc.atoms_of(Zp)
         b = np.zeros((self.nU, self.nR, self.Nm))
         for ui in range(self.nU):
             phi = foc.foc(ui, a)
             if phi_past is not None:
                 phi[:, :c.nW] += phi_past[ui]
+            if tilt is not None:
+                phi = phi + tilt.delta(ui, Zp)
             b[ui] = projops.apply(phi)
         self.bvec = self.reduce(b.reshape(-1))
 
@@ -94,10 +98,14 @@ class FocSystem:
         """Amat gamma on the full unknowns (nG,), or on a block of them (nG, B)."""
         single = gamma.ndim == 1
         G = gamma.reshape(self.nU, self.nR, self.Nm, -1)
-        a = self.foc.atoms_of(self.world_of(G))
+        Zd = self.world_of(G)
+        a = self.foc.atoms_of(Zd)
         out = np.zeros((self.nU, self.nR, self.Nm, G.shape[3]))
         for ui in range(self.nU):
-            out[ui] = self.projops.apply(self.foc.foc(ui, a))
+            phi = self.foc.foc(ui, a)
+            if self.tilt is not None:
+                phi = phi + self.tilt.delta(ui, Zd)
+            out[ui] = self.projops.apply(phi)
         out = out.reshape(self.nG, -1)
         return out[:, 0] if single else out
 
@@ -105,10 +113,12 @@ class FocSystem:
         self.matvecs += 1
         return self.reduce(self.apply(self.expand(np.asarray(x, dtype=float).ravel())))
 
-    def matrix(self) -> np.ndarray:
+    def matrix(self, with_tilt: bool = False) -> np.ndarray:
         """The system on the kept unknowns (n, n), assembled from the operators' dense rows: Amat[u, v] =
         sum_k H_k (Fu_u Resp_v) G_k over the columns of the world, restricted to the kept unknowns with a
-        corner group's columns summed and its equations summed."""
+        corner group's columns summed and its equations summed.  A risk-averse agent's correction is not in it
+        (solve() handles it by preconditioned GMRES) unless with_tilt, which adds it column by column (the
+        tests' check of that solve)."""
         from scipy.sparse import csr_matrix
         N, ncol, nU, nR, Nm, nG = self.N, self.ncol, self.nU, self.nR, self.Nm, self.nG
         Rm = csr_matrix((np.ones(self.kept.size), (self.inv, np.arange(self.kept.size))), shape=(self.n, self.kept.size))
@@ -136,14 +146,26 @@ class FocSystem:
             return np.asarray(Rm @ A @ Rm.T)
         Gk = self.rowops.dense(); H = self.projops.dense()
         Resp = [self.resp.dense(vi) for vi in range(nU)]
-        Amat = np.zeros((nG, nG))
+        Amat = self._tilt_matrix() if (with_tilt and self.tilt is not None) else np.zeros((nG, nG))
         for ui in range(nU):
             Fu = self.foc.dense(ui)
             rows_u = slice(ui * nR * Nm, (ui + 1) * nR * Nm)
             for vi in range(nU):
                 FR = Fu @ Resp[vi]
-                Amat[rows_u, vi * nR * Nm:(vi + 1) * nR * Nm] = sum(H[:, k * N:(k + 1) * N] @ (FR @ Gk[k]) for k in range(ncol))
+                Amat[rows_u, vi * nR * Nm:(vi + 1) * nR * Nm] += sum(H[:, k * N:(k + 1) * N] @ (FR @ Gk[k]) for k in range(ncol))
         return np.asarray(Rm @ Amat[np.ix_(self.kept, self.kept)] @ Rm.T)
+
+    def _tilt_matrix(self) -> np.ndarray:
+        """(nG, nG): the risk-averse correction's part of Amat, sum_u H (Delta_u (sum_v Resp_v G gamma_v)), applied to
+        the identity a block of unknowns at a time (the correction is linear in the world, not diagonal in its columns)."""
+        nG = self.nG; out = np.zeros((nG, nG)); step = self.tilt.chunk
+        for j0 in range(0, nG, step):
+            j1 = min(nG, j0 + step)
+            E = np.zeros((nG, j1 - j0)); E[np.arange(j0, j1), np.arange(j1 - j0)] = 1.0
+            Zd = self.world_of(E.reshape(self.nU, self.nR, self.Nm, -1))
+            for ui in range(self.nU):
+                out[ui * self.nR * self.Nm:(ui + 1) * self.nR * self.Nm, j0:j1] = self.projops.apply(self.tilt.delta(ui, Zd)).reshape(-1, j1 - j0)
+        return out
 
     # ---- the preconditioner: the time-row-diagonal part of the operator
     def preconditioner(self):
@@ -259,19 +281,26 @@ class FocSystem:
         right-hand side) from the warm start x0 (a full gamma), a system that does not converge within
         foc_krylov_maxiter iterations raising the ValueError of a singular system."""
         n = self.n
-        if not self.solver.foc_free:
-            x = self.solver._solve_regular(self.agent, self.matrix(), -self.bvec)
-            self.iterations = 0; self.residual = 0.0
-            return self.expand(x).reshape(self.nU, self.nR, self.Nm), 0
         st = self.solver.settings
         tol, maxiter = st.foc_krylov_tol, st.foc_krylov_maxiter
-        blocks = self.preconditioner()
+        if not self.solver.foc_free:
+            A0 = self.matrix()
+            if self.tilt is None:
+                x = self.solver._solve_regular(self.agent, A0, -self.bvec)
+                self.iterations = 0; self.residual = 0.0
+                return self.expand(x).reshape(self.nU, self.nR, self.Nm), 0
+            # a risk-averse agent: the risk-neutral system factored (its condition refused as always) preconditions GMRES
+            # on the whole one, whose correction is applied (one application of Delta per iteration)
+            lu = self.solver._factor_regular(self.agent, A0)
+            prec = lambda r: lu_solve(lu, np.asarray(r, dtype=float).ravel(), check_finite=False)       # noqa: E731
+        else:
+            blocks = self.preconditioner()
 
-        def prec(r):
-            r = np.asarray(r, dtype=float).ravel(); x = r.copy()
-            for (ix, lu) in blocks:
-                x[ix] = lu_solve(lu, r[ix], check_finite=False)
-            return x
+            def prec(r):
+                r = np.asarray(r, dtype=float).ravel(); x = r.copy()
+                for (ix, lu) in blocks:
+                    x[ix] = lu_solve(lu, r[ix], check_finite=False)
+                return x
         A = LinearOperator((n, n), matvec=self.matvec, dtype=float)
         M = LinearOperator((n, n), matvec=prec, dtype=float)
         b = -self.bvec
@@ -325,9 +354,10 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
         Zpass = Zp.reshape(nP * N, ncol)
     foc = FocOps(solver, agent, Roff)
     phi_past = solver._foc_affine(agent, foc)
-    system = FocSystem(solver, agent, rowops, projops, resp, foc, Zpass, phi_past)
+    tilt = solver._tilt(agent, maps, foc, Roff) if agent.risk_aversion else None
+    system = FocSystem(solver, agent, rowops, projops, resp, foc, Zpass, phi_past, tilt)
     gamma, iters = system.solve(solver._last_gamma.get(agent.name))
-    if solver.foc_free:
+    if solver.foc_free or tilt is not None:
         solver._last_gamma[agent.name] = gamma
         solver._krylov_log.append((agent.name, iters, system.residual))
     cact = np.stack([rowops.apply(gamma[ui]) for ui in range(nU)])          # (nU, N, ncol)
@@ -361,6 +391,12 @@ def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None
     for ui, u in enumerate(agent.controls):
         phi = system.foc.foc(ui, a); phi_phys = fphys.foc(ui, ap)
         dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
+        if system.tilt is not None:
+            # a risk-averse agent: the kernel whose projection vanishes is Sigma f, the risk-neutral one plus the
+            # correction (risk.py); physical + wedge + risk = foc
+            risk = system.tilt.delta(ui, Zfull)
+            dec[u]["risk"] = risk
+            dec[u]["foc"] = phi + risk
     out["decomp"] = dec
 
 
@@ -432,7 +468,20 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
             return res
         lo, hi = res["lo"], res["hi"]
     scale = max(abs(lo), abs(hi), 1e-300)
-    return {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -solver.SECOND_ORDER_TOL * scale), "converged": True}
+    out = {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -solver.SECOND_ORDER_TOL * scale), "converged": True}
+    if system.tilt is not None:
+        # the entropic cost's curvature along a change d of the strategy is E^Q[C''] + theta Var^Q(C') >= E^Q[C''] =
+        # tr(Sigma B_d) >= tr(B_d) = E[C''], the form above, when the loss Hessian is positive semidefinite (B_d >= 0 and
+        # Sigma = (I - theta K)^-1 >= I): the expected cost's curvature is then a lower bound of the objective's
+        QT = ((c.terminal or {}).get(agent.name) or (None, None, None))[1]
+        psd = all(M is None or np.asarray(M).size == 0 or np.linalg.eigvalsh(0.5 * (M + M.T))[0] >= -1e-12 * max(1.0, np.abs(M).max())
+                  for M in (Q, QT))
+        if not psd:
+            return {"min": None, "max": None, "ok": None, "converged": False,
+                    "message": f"{agent.name} is risk averse and its loss Hessian is not positive semidefinite: the expected cost's "
+                               "curvature does not bound the entropic cost's, whose second-order condition is not checked"}
+        out["bound"] = "entropic"          # the form is the expected cost's, a lower bound of the entropic cost's curvature
+    return out
 
 
 def _dense_form(solver, agent: Agent, system: FocSystem, idx: np.ndarray) -> np.ndarray:

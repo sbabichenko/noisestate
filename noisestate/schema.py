@@ -212,6 +212,11 @@ def payload_schema() -> dict:
                 "mean_times": {"anyOf": [numbers, {"type": "null"}]},
                 "representation_error": by_name({"type": "number"}),
                 "representation_parts": by_name(by_name({"type": "number"})),
+                "risk": by_name({"type": "object", "required": ["risk_aversion", "entropic", "expected", "lambda_max"],
+                                 "additionalProperties": {"type": "number"},
+                                 "description": "a risk-averse agent's entropic cost theta^-1 log E exp(theta C) beside its expected "
+                                                "cost, and the largest eigenvalue of its cost kernel K (E exp(theta C) is finite "
+                                                "while theta lambda_max < 1)"}),
                 "diagnostics": {"type": "array", "items": row},
                 "assessment": {"type": "object", "required": ["policy", "accepted", "statuses"],
                                "properties": {"policy": {"type": "string"}, "accepted": {"type": "boolean"},

@@ -22,13 +22,14 @@ page says which module holds what, and follows one best response and one transit
 | `triangle.py` | 804 | the spectral engine's triangle in (time, age), its strip and buffer for a transition, the interpolation, and `LinePath`, the quadrature of a family of line integrals |
 | `past.py` | 245 | `Past`: what the time before zero leaves behind (a stationary result's kernels, or initial shocks) |
 | `accel.py` | 192 | the Anderson fixed point and the Newton-Krylov polish; with `verbose`, one line per evaluation through the progress hook |
-| `engine.py` | 623 | `EngineBase`, what every engine shares: the capability refusals (`MONITORING`, `RISK_SENSITIVE`), tie packing, the passive world and rows, the fixed point (`solve`), `_result` and `_finish`, the diagnostics loop, the second-order Lanczos, the hooks |
+| `engine.py` | 636 | `EngineBase`, what every engine shares: the capability refusals (`MONITORING`, `RISK_SENSITIVE`), tie packing, the passive world and rows, the fixed point (`solve`), `_result` and `_finish`, the diagnostics loop, the second-order Lanczos, the hooks |
 | `means.py` | 179 | `MeanLayer`, a base of `EngineBase`: the mean system from the engines' mean hooks, its solve and the mean cost |
 | `stationary.py` | 1299 | the stationary engine: `Compiled` (the kernel algebra on the age grid, the closed loop and its cyclic-symmetric reduction) and `StationarySolver` with its best response (the FOC system on the passive rows, the projection, the decomposition, the second-order form) and Chapter 6's monitored deviations (below) |
 | `spectral_compiled.py`, `closed_loop.py` | 937, 310 | the spectral engine's compiled model: breakpoints, grid, the past's and the buffer's wiring, reads and shifts, line paths, the terminal quadrature; the closed loop (I - M) Z = B one time panel at a time, each panel by block elimination |
-| `spectral_operators.py`, `finite_free.py` | 524, 491 | the spectral best response as operators (`RowOps`, `ProjOps`, `RespOps`, `FocOps`) and its solve (`FocSystem`: factored, or GMRES), decomposition, second-order form and the terminal loss's terms |
-| `spectral_means.py`, `finite_spectral.py` | 328, 852 | the means on the time line; `SpectralFiniteSolver`, the engine (a past, a continuation, the projection, the costs, the transition's paths, and Chapter 6's monitored deviations without a past) |
-| `results.py` | 1679 | `Result` and its engine subclasses; the readers `kernel`, `response`, `estimate`, `strategy` (names, lists, or expressions such as `"X + 2 D1"`), `mean`, `deviation_response` and `foc_residual` (Chapter 6); `status`, `refine`, `stability`, `save`, `to_dict`, the summaries and the one-line repr |
+| `spectral_operators.py`, `finite_free.py` | 524, 540 | the spectral best response as operators (`RowOps`, `ProjOps`, `RespOps`, `FocOps`) and its solve (`FocSystem`: factored, or GMRES), decomposition, second-order form and the terminal loss's terms |
+| `spectral_means.py`, `finite_spectral.py` | 328, 1000 | the means on the time line; `SpectralFiniteSolver`, the engine (a past, a continuation, the projection, the costs, the transition's paths, risk-averse agents and their continuation in risk aversion, and Chapter 6's monitored deviations without a past) |
+| `results.py` | 1720 | `Result` and its engine subclasses; the readers `kernel`, `response`, `estimate`, `strategy` (names, lists, or expressions such as `"X + 2 D1"`), `mean`, `deviation_response` and `foc_residual` (Chapter 6); `status`, `refine`, `stability`, `save`, `to_dict`, the summaries and the one-line repr |
+| `risk.py` | 458 | risk-averse (CARA) agents on the spectral finite engine: `RiskGeometry` (the map-independent quadrature: the one-time representation, the Legendre basis, the reads), `Tilt` (per best response: K's exposures, its Galerkin form and spectrum, the correction Delta = theta K Sigma f linear in the world, the entropic cost), `RiskBreakdown` |
 | `kernel.py`, `diagnostics.py` | 132, 348 | `Kernel` (a kernel with its axes and interpolant); the checks and the `Assessment` |
 | `engines.py` | 74 | `stationary`, `spectral` and `solver`: the power user's namespace, and where `solve()` builds the engine |
 | `sweep.py`, `comparison.py`, `transition.py` | 208, 202, 373 | parameter sweeps with warm starts (`Sweep`, a list with columns); scenario comparisons; transitions and the march in T |
@@ -61,7 +62,9 @@ evaluation calls `SpectralFiniteSolver.best_response`, which is `finite_free.bes
    kernels, from the envelope responses); `_foc_affine` adds the FOC's pre-zero part on the band.
 5. **FOC solve** (`finite_free.FocSystem`).  Amat gamma = -bvec on the kept unknowns (`_identified`, the corner
    ties of `_corner_index`): the operators' dense rows assembled and LU-factored within `foc_dense_max`, GMRES
-   on the matvec with the time-row preconditioner beyond.  The action kernels are `RowOps.apply(gamma)`, the
+   on the matvec with the time-row preconditioner beyond.  A risk-averse agent adds the correction of `risk.Tilt`
+   (K in the closed loop of the current profile) to the FOC kernel; within `foc_dense_max` its system is solved
+   by GMRES preconditioned with the factored risk-neutral one.  The action kernels are `RowOps.apply(gamma)`, the
    world of the response Z_full = Z_pass + sum_u Resp_u c_u.
 6. **Projection** (`finite_spectral.maps_from_world`).  The raw maps reproducing the action kernels on the
    closed-loop rows of Z_full: one weighted least-squares system per time row (`_time_row_system`, the rows of
@@ -133,8 +136,8 @@ The spectral engine refuses monitoring and instant observations with a past or a
 Both engines solve ordinary games, ties, delays and lags, means, vectors and Chapter 6 (the spectral engine
 without a past or a continuation).  Terminal losses are the finite horizon's (with or without a past).
 Transitions are the spectral engine's.  Instant observations with ties are refused (ties iterate on the raw maps,
-which hold such an equilibrium but do not reach it).  `risk_aversion` > 0 (the entropic objective) is declared, validated and
-saved, and refused by every engine (`RISK_SENSITIVE`) until one solves it.  A refusal is a NotImplementedError
+which hold such an equilibrium but do not reach it).  `risk_aversion` > 0 (the entropic objective) is the spectral finite engine's, on a finite horizon without a
+past, a continuation, monitoring or means (`RISK_SENSITIVE`; [method.md](method.md#risk-averse-agents)); the stationary engine refuses it.  A refusal is a NotImplementedError
 that names the engine and what it lacks.
 
 ## Where the engines share the base

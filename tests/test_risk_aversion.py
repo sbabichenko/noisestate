@@ -1,5 +1,6 @@
 """risk_aversion (CARA, the entropic objective theta^-1 log E exp(theta C)): declared on the three surfaces, carried
-through save/load, validated, and refused by every engine until one solves it.  theta = 0 is today's model exactly."""
+through save/load, validated; the spectral finite engine solves it (test_cara_finite.py), the stationary engine refuses it.
+theta = 0 is today's model exactly."""
 import json
 
 import pytest
@@ -53,12 +54,11 @@ def test_negative_or_infinite_is_rejected(bad):
         ns.Model.from_dict(_file(bad))
 
 
-def test_every_engine_refuses_a_risk_averse_agent():
-    with pytest.raises(NotImplementedError, match="risk-averse"):
-        ns.solve(ns.Model.from_dict(_file(0.5)))
+def test_the_stationary_engine_refuses_a_risk_averse_agent():
+    """The spectral finite engine solves them (tests/test_cara_finite.py); the stationary engine refuses, naming who does."""
     d = ns.load(ns.example("ch3_two_player")).to_dict()
     d["agents"][next(iter(d["agents"]))]["risk_aversion"] = 0.5
-    with pytest.raises(NotImplementedError, match="risk-averse"):
+    with pytest.raises(NotImplementedError, match="risk-averse.*spectral finite engine does"):
         ns.solve(ns.Model.from_dict(d))
 
 

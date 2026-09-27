@@ -4,6 +4,34 @@
 
 ### Added
 
+- Risk-averse (CARA) agents are solved on the spectral finite engine. An agent with `risk_aversion: theta` minimises
+  the entropic cost theta^-1 log E exp(theta C) of its realised cost. The first-order condition is the risk-neutral
+  one evaluated at the risk-adjusted noise-state (Ch1 appendix, thm:risk_sensitive_appendix): the point at which the
+  derivative is taken, not a belief. The engine keeps the future-shock part of the FOC kernel and adds the
+  correction theta K (I - theta K)^-1 f, with K the cost kernel over [0, T]^2 in the risk-averse closed loop
+  (`noisestate/risk.py`). The line integrals are exact; a Legendre Galerkin solve per time panel, with Sloan's
+  iterate, handles the smooth remainder.
+  - Checked against `extras/leqg_reference.py`, a brute-force discrete-time solver (log-det entropic cost, L-BFGS best
+    responses), Richardson-extrapolated in 1/n from n = 50 to 400 steps (`tests/refs/leqg_ch1.json`). The limit's own
+    error is about 5e-8: its value at theta = 0 against the risk-neutral engine. On Chapter 1's game at 12 nodes both
+    players' entropic and expected costs agree to 2e-7 for theta = 0.5 to 1.5, and to 6e-7 at theta = 2. D1's
+    response to a state shock agrees to 1.2e-5 (5e-5 at theta = 2; 2.5e-6 at 16 nodes). Near the breakdown, at
+    theta = 2.5 (theta lambda_max = 0.94), 20 nodes reach 4e-7. A risk-averse player against a risk-neutral one and
+    an asymmetric game (p2 = 1, r2 = 0.2, theta = 1 and 0.5) agree to 1e-7 on the costs and 6e-6 on D1.
+  - The entropic cost of the solution, computed from the closed loop and K's spectrum alone, is stationary in the
+    agent's own strategy. Its slope is 5e-10 at 16 nodes, against 4e-3 to 5e-2 at the risk-neutral equilibrium, and
+    5e-8 with a discount and a terminal loss.
+  - `res.risk[agent]` gives theta, the entropic and the expected cost, lambda_max and theta lambda_max, and
+    `res.entropic_costs` gives every agent's objective. The payload has `risk` and the summary prints the entropic
+    cost. `res.costs` stays the expected cost.
+  - The breakdown (theta lambda_max(K) >= 1, where E exp(theta C) is infinite) raises `ns.RiskBreakdown`, a
+    ValueError.
+  - When the uncontrolled start is past the breakdown, `solve()` starts from the risk-neutral equilibrium and raises
+    theta in warm-started steps. On Chapter 1's game this happens beyond theta = 1.1; at theta = 2.5 even the
+    risk-neutral equilibrium is past the breakdown.
+  - `settings.risk_basis` sets the Galerkin basis. Past, continuation, monitoring and means are refused with a
+    NotImplementedError, and so is the stationary engine. See docs/method.md, "Risk-averse agents".
+
 - Level rows: `observes: {quote: {level: P, filter: true}}` (or `ns.level(P, filter=True)`) makes the exact path of a
   state or of another agent's control information the agent filters, not only a quantity it reacts to. The row is the
   quantity's increments: drift its kernel's rate of change, noise loading its jump at age 0, both set by the

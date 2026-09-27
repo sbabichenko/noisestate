@@ -86,7 +86,11 @@ Chapter 6: monitored deviations (`monitors:`) and instant observations are solve
 finite engine without a past or a continuation (a transition refuses them); instant observations may not form a cycle
 and are refused with ties.  The general rectangular system is solved through response kernels rather than
 Proposition 6.10's gains, which agree in the linear-quadratic case; `res.foc_residual` checks the kernels.
-`risk_aversion` (the entropic objective) is declared and saved but refused by every engine.  The Chapter 4 example is the stationary variant, where V is a
+`risk_aversion` (the entropic objective) is solved by the spectral finite engine without a past, a continuation,
+monitoring or means (a target, a constant drift or an initial state: the tilt of the cost's linear part is not built),
+and refused by the stationary engine.  Near the breakdown (theta lambda_max close to 1) the correction is amplified by
+1 / (1 - theta lambda_max) and a solve needs more nodes and more continuation steps: on Chapter 1's game at theta = 2.5
+(theta lambda_max = 0.94) 12 nodes put the entropic cost 1.4e-5 from 20 nodes, and the solve takes 150 evaluations.  The Chapter 4 example is the stationary variant, where V is a
 random walk on the window and the agents keep receiving V shocks.
 
 On the finite spectral engine the time and age panels are the multiples of the

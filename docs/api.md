@@ -1,6 +1,6 @@
 # API reference
 
-Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 50
+Everything `import noisestate as ns` gives you, grouped by the job it does. `ns.__all__` has 51
 names; this page covers all of them, plus the methods on the objects they return.
 
 The shortest useful path is three calls:
@@ -127,14 +127,15 @@ signatures and return types do not.
 
 | attribute | use it when |
 |---|---|
-| `res.costs` | the equilibrium cost per agent. `res.cost_parts` splits it; `res.cost_kind` names the convention |
+| `res.costs` | the equilibrium cost per agent (the expected cost, for a risk-averse agent too). `res.cost_parts` splits it; `res.cost_kind` names the convention |
+| `res.entropic_costs` / `res.risk[agent]` | each agent's objective: theta^-1 log E exp(theta C) for a risk-averse agent, E C for the others; `res.risk` has, per risk-averse agent, `risk_aversion`, `entropic`, `expected`, `lambda_max` (the largest eigenvalue of its cost kernel K) and `theta_lambda_max` (the breakdown is at 1) |
 | `res.kernel(name, shock=None)` | the **closed-loop** response to a shock, as a `Kernel` |
 | `res.strategy(control, shock=None)` | the **strategy** on the noise-state, D: the weight the action puts on the agent's estimate of each shock (finite games without delays) |
 | `res.estimate(agent, name, shock=None)` | the agent's estimate of a quantity, as a kernel |
 | `res.response(q, to=shock, at=s, seen_by=agent).over(t)` | follow one shock through time: the response of q (or an agent's estimate of it) |
 | `res.means` / `.mean_times` | the means and the time nodes they sit on. `res.has_means` is a bool |
 | `res.paths` / `.times` | paths over time on a finite horizon, and their nodes |
-| `res.foc[agent][control]` | the FOC split into `physical` (if nobody reacted) and `wedge` (because they do) |
+| `res.foc[agent][control]` | the FOC split into `physical` (if nobody reacted) and `wedge` (because they do); for a risk-averse agent also `risk`, the entropic correction, with `foc` = physical + wedge + risk |
 | `res.axes` / `.map_axes(delay)` | what the kernel indices mean; where a delayed row's map values belong |
 | `res.maps` / `.world` | the raw solved objects |
 | `res.converged` / `.residual` / `.evaluations` / `.seconds` / `.message` | what the solve did |
@@ -187,6 +188,8 @@ ResultValidationError          a result is not fit for the use asked of it
 ```
 
 A converged result can fail diagnostics, so `except ConvergenceError` must not catch that.
+
+`ns.RiskBreakdown` (a `ValueError`) is raised when a risk-averse agent's entropic cost is infinite: theta times the largest eigenvalue of its cost kernel is at least one at the solution, or the continuation in risk aversion cannot reach the model's theta.  `.agent`, `.theta`, `.lam_max`, `.theta_star` (1 / lambda_max at those strategies) and `.reached` (where the continuation stopped, or None) say where.
 
 ## 7. Stability: a classification of a *verified* equilibrium
 

@@ -1046,7 +1046,7 @@ class LevelSignal(Signal):
 class Agent:
     """An agent: its controls, what it observes, its quadratic loss; `myopic` ignores the continuation effects
     of its own actions (a competitive agent); `risk_aversion` theta >= 0 makes it minimise theta^-1 log E exp(theta C) of its
-    realised cost C (CARA; no engine solves theta > 0 yet).  `observes` is one differential (the signal "y"), a list (y1, y2,
+    realised cost C (CARA; the spectral finite engine solves theta > 0).  `observes` is one differential (the signal "y"), a list (y1, y2,
     ...), a dict {name: differential}, or Signals (for a name and a delay) in any of these."""
 
     def __init__(self, name: str, controls: Sequence[Control], observes=None, loss=None, myopic: bool = False,

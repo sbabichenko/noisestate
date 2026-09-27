@@ -20,6 +20,9 @@
                                                  integral over [0, T] (res.cost_kind says which): the variance
                                                  part (the shocks) plus the mean part (targets, constant drifts)
     res.cost_parts[agent]                        {"variance", "mean"}, the two parts
+    res.entropic_costs[agent]                    a risk-averse agent's entropic cost theta^-1 log E exp(theta C), the objective
+                                                 it minimises (res.costs stays the expected cost E C); res.risk[agent] has it
+                                                 with theta and the largest eigenvalue of the cost kernel K (breakdown at 1/theta)
     res.means[name]                              mean of every state, control and definition, and the mean drift rate of
                                                  every signal row as "agent.row": a constant (stationary) or the path on the
                                                  time nodes res.mean_times (finite; the spectral res.mean(name, t) interpolates)
@@ -286,6 +289,7 @@ class Result:
     means: Dict[str, object] = field(default_factory=dict)        # quantity -> its mean, a float (stationary) or a path (finite); zero when nothing drives it
     mean_times: Optional[np.ndarray] = None                       # the time nodes of the mean paths (finite engines)
     cost_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> {"variance", "mean", "constant"} parts of its cost
+    risk: Dict[str, Dict[str, float]] = field(default_factory=dict)   # risk-averse agent -> {"risk_aversion", "entropic", "expected", "lambda_max", "theta_lambda_max"}
     settings: Settings = DEFAULT                                  # the tuning constants of the engine that produced this result
     kind: str = "base"
 
@@ -534,6 +538,10 @@ class Result:
         agent = next((a for a in self.model.agents if control in a.controls), None)
         if agent is None:
             raise NameNotFound(unknown("control", control, self.model.control_names))
+        if agent.risk_aversion:
+            raise NotImplementedError(f"strategy() is the risk-neutral decomposition; {agent.name} is risk averse, and its action is "
+                                      "the risk-neutral first-order condition evaluated at the risk-adjusted noise-state, whose "
+                                      "future part the result does not carry (res.foc[agent][control]['risk'] is the correction)")
         atoms, Q, _ = self.compiled.loss[agent.name]
         if any(lag for (nm, lag) in atoms if nm in agent.controls) or self.model.all_lags():
             raise NotImplementedError("strategy() is defined for a game without delayed or lead terms in the control")
@@ -715,11 +723,19 @@ class Result:
                          + (f" (variance {parts['variance']:+.{f}f}, mean {parts['mean']:+.{f}f})"
                             if parts and parts["mean"] != 0.0 else "")
                          + (f" + continuation {parts['continuation']:+.{f}f} on the buffer"
-                            if parts and "continuation" in parts else ""))
+                            if parts and "continuation" in parts else "")
+                         + (f"; entropic {self.risk[a.name]['entropic']:+.{f}f} at risk aversion {self.risk[a.name]['risk_aversion']:g}"
+                            if a.name in self.risk else ""))
             lines.extend(self._agent_lines(a))
         if self.has_means:
             lines.append(self._means_line())
         return "\n".join(lines)
+
+    @property
+    def entropic_costs(self) -> Dict[str, float]:
+        """Every agent's objective: theta^-1 log E exp(theta C) for a risk-averse agent (res.risk), E C (res.costs) for a
+        risk-neutral one."""
+        return {a: (self.risk[a]["entropic"] if a in self.risk else float(v)) for a, v in self.costs.items()}
 
     def plot(self, path: str) -> None:
         """Write a figure of the result's kernels to `path` (.pdf or .png; matplotlib required).
@@ -1150,6 +1166,8 @@ class Result:
                "means": {k: (v.tolist() if isinstance(v, np.ndarray) else float(v)) for k, v in self.means.items()},
                "mean_times": None if self.mean_times is None else self.mean_times.tolist()}
         out["representation_error"] = {k: float(v) for k, v in self.representation_error.items()}
+        if self.risk:
+            out["risk"] = {a: {k: float(v) for k, v in r.items()} for a, r in self.risk.items()}
         if self.representation_parts:
             out["representation_parts"] = {a: {k: float(v) for k, v in p.items()} for a, p in self.representation_parts.items()}
         out["diagnostics"] = [{k: (None if v is None else v) for k, v in self._diagnostic_record(d).items()} for d in self._check_rows()]

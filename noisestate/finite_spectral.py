@@ -32,6 +32,7 @@ __all__ = ["SpectralCompiled", "ClosedLoopRows", "SpectralFiniteSolver"]
 
 class SpectralFiniteSolver(SpectralMeans, EngineBase):
     MONITORING = True                   # monitored deviations and instant observations, without a past (see __init__)
+    RISK_SENSITIVE = True               # risk-averse agents (the entropic objective, risk.py), without a past, monitoring or means (see __init__)
     RESULT = TriangleResult
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
     MAP_RIDGE = tunable("map_ridge")      # ridge of the per-time-row map projection, relative to the row's own Gram (settings)
@@ -58,6 +59,13 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         if (past is not None or continuation not in (None, "end")) and any(a.monitors or a.instant for a in model.agents):
             raise NotImplementedError("monitored deviations and instant observations are solved on a finite horizon "
                                       "without a past or a continuation; a transition with them is not built yet")
+        averse = [a.name for a in model.agents if a.risk_aversion]
+        if averse and (past is not None or continuation not in (None, "end")):
+            raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) are solved on a finite horizon without a past or a "
+                                      "continuation; a transition with them is not built yet")
+        if averse and any(a.monitors or a.instant for a in model.agents):
+            raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) with monitored deviations or instant observations "
+                                      "are not solved yet")
         continuation = self._continuation_of(model, past, continuation,
                                              model.numerics.continuation_nodes if hz.kind == "transition" else None)
         opts = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
@@ -75,6 +83,12 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         self._rep_parts: Dict[str, Dict[str, float]] = {}      # agent -> where the representation error sits (with a past)
         self._fixed_disc: Dict[str, np.ndarray] = {}           # agent -> the fixed discrete weights (freeze_before)
         self._fixed_actions: Dict[str, np.ndarray] = {}        # agent -> its action kernels (nU, N, ncol) on the fixed panels, zero elsewhere
+        self._profile = (None, None)                           # (maps key, their closed loop): the world a risk-averse agent's K is taken in
+        self._risk_scale = 1.0                                 # the continuation's step in risk aversion (solve): theta times this
+        if averse and self._mean_driven():
+            raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) are solved without means (no target, constant drift or "
+                                      "initial state): with them the entropic first-order condition gains the tilt of the linear part "
+                                      "of the cost, which is not built yet")
 
     @staticmethod
     def _continuation_of(model: Model, past, continuation, nodes: Optional[int] = None):
@@ -144,6 +158,12 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 res.converged = False
                 res.message += f"; the monitored response kernels did not settle at the equilibrium (residual {self._kernel_residual:.1e})"
         super()._finish(res)
+        for a in self.model.agents:
+            if a.risk_aversion:
+                # the equilibrium's own spectrum (risk_report raises RiskBreakdown past it): an iterate beyond the
+                # breakdown was answered at a smaller theta (risk.Tilt, clip), so a fixed point that still needs that is
+                # no equilibrium of the entropic game
+                res.risk[a.name] = self.risk_report(a, res.world, res.costs[a.name])
         if self.c.cont is not None:
             for a in self.model.agents:
                 res.cost_parts[a.name]["continuation"] = self.continuation_cost(a, res.world)
@@ -828,6 +848,116 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         if len(foc.atoms) > zp.shape[0]:            # a terminal loss's atoms (states at T) read nothing before zero
             zp = np.concatenate([zp, np.zeros((len(foc.atoms) - zp.shape[0],) + zp.shape[1:])])
         return [foc.foc(ui, zp) for ui in range(len(agent.controls))]
+
+    def _profile_world(self, maps) -> np.ndarray:
+        """The closed loop of every agent's current maps (n_prim N, ncol), kept for the evaluation's other agents."""
+        key = self._maps_key(maps)
+        if self._profile[0] != key:
+            self._profile = (key, self.c.closed_loop(maps))
+        return self._profile[1]
+
+    def _theta(self, agent: Agent) -> float:
+        """The agent's risk aversion as this solve uses it: theta scaled by the continuation's step (solve)."""
+        return float(agent.risk_aversion) * self._risk_scale
+
+    def _tilt(self, agent: Agent, maps, foc, R):
+        """A risk-averse agent's correction (risk.Tilt) frozen at the profile `maps`: the cost kernel K and its spectrum in
+        their closed loop, the spike responses R of the continuation (the envelope, as FocOps has them); None at a
+        continuation step of zero risk aversion.  An iterate past the breakdown is answered at a smaller theta (clip)."""
+        from .risk import Tilt, geometry
+        th = self._theta(agent)
+        if not th:
+            return None
+        return Tilt(geometry(self.c, self.settings), foc, agent, th, self._profile_world(maps), R, clip=True)
+
+    def _spectrum(self, agent: Agent, world: np.ndarray):
+        """risk.Tilt with K's spectrum only, at theta = 0 (no breakdown test): its lam, lam_max and trace_K2."""
+        from .risk import Tilt, geometry
+        c = self.c
+        foc = finite_free.FocOps(self, agent, np.zeros((len(c.prim) * c.N, len(agent.controls))))
+        return Tilt(geometry(c, self.settings), foc, agent, 0.0, world, None, spectrum_only=True)
+
+    def risk_report(self, agent: Agent, world: np.ndarray, expected: float) -> dict:
+        """A risk-averse agent's entropic cost in the closed loop `world` (n_prim N, ncol) whose expected cost is `expected`:
+        {"risk_aversion", "entropic" (theta^-1 log E exp(theta C)), "expected", "lambda_max" (the largest eigenvalue of the
+        cost kernel K), "theta_lambda_max"}; the discounted cost over [0, T] as res.costs has it.  Raises RiskBreakdown
+        when theta lambda_max >= 1 (E exp(theta C) infinite)."""
+        from .risk import RiskBreakdown
+        th = self._theta(agent)
+        t = self._spectrum(agent, world)
+        if th * t.lam_max >= 1.0:
+            raise RiskBreakdown(agent.name, th, t.lam_max)
+        t.theta = th
+        return {"risk_aversion": th, "entropic": float(expected) + t.entropic_excess(), "expected": float(expected),
+                "lambda_max": t.lam_max, "theta_lambda_max": th * t.lam_max}
+
+    RISK_STEP = 0.9          # a start at which every theta lambda_max is at most this is solved from directly (solve)
+    RISK_GAIN = 0.6          # else a continuation step closes this fraction of the gap to the breakdown, 1 - theta lambda_max
+    RISK_STEPS = 40          # continuation steps at most before the path is taken to end at the breakdown
+    RISK_EDGE = 1e-3         # ... or once a step's equilibrium is within this of it (1 - theta lambda_max) short of the model's theta
+
+    def solve(self, start_from=None, tol=None, damping=None, max_newton=None, variable: str = "actions", start_policy: str = "zero",
+              max_evaluations=None, deadline=None, progress=None, diagnostics: bool = True):
+        """EngineBase.solve; with risk-averse agents and no start given, by continuation in risk aversion when the start
+        needs it.  The zero start is the uncontrolled world, whose entropic cost is infinite beyond a small theta (1/0.81
+        on Chapter 1's game), and even the risk-neutral equilibrium can be past the breakdown (theta 2.5 there), where no
+        best response is defined.  When every agent's theta lambda_max (lambda_max the largest eigenvalue of its cost
+        kernel K, the breakdown at theta lambda_max = 1) is at most RISK_STEP in the uncontrolled world the solve starts
+        from zero as any other; else from the risk-neutral equilibrium (every theta scaled by 0), then scaling theta up
+        in steps warm-started from the last, each closing RISK_GAIN of the gap 1 - theta lambda_max at the last
+        equilibrium (a step lands on scale 1 as soon as theta lambda_max <= RISK_STEP there).  A path whose step
+        equilibrium comes within RISK_EDGE of the breakdown short of the model's theta, or that has not reached it within
+        RISK_STEPS steps, ends at the breakdown: RiskBreakdown.  res.evaluations counts
+        every step's; res.message names the steps."""
+        kw = dict(tol=tol, damping=damping, max_newton=max_newton, variable=variable, progress=progress)
+        averse = [a for a in self.model.agents if a.risk_aversion]
+        self._risk_scale = 1.0
+        if not averse or start_from is not None or start_policy != "zero":
+            return super().solve(start_from=start_from, start_policy=start_policy, max_evaluations=max_evaluations,
+                                 deadline=deadline, diagnostics=diagnostics, **kw)
+        import time
+        from .risk import RiskBreakdown
+
+        def use(world, scale):             # the largest theta lambda_max over the agents at `scale`, and whose it is
+            lam = {a.name: self._spectrum(a, world).lam_max for a in averse}
+            worst = max(averse, key=lambda a: a.risk_aversion * lam[a.name])
+            return worst, lam[worst.name], worst.risk_aversion * lam[worst.name]
+        zero = self.zero_maps()
+        worst, lam, x = use(self.c.closed_loop(zero), 0.0)
+        scale = 1.0 if x <= self.RISK_STEP else 0.0
+        t0 = time.time(); evals = 0; scales = []; maps = None
+        try:
+            while True:
+                self._risk_scale = scale; scales.append(scale)
+                last = scale >= 1.0
+                left = None if max_evaluations is None else max(1, max_evaluations - evals)
+                dl = None if deadline is None else max(0.0, deadline - (time.time() - t0))
+                try:
+                    res = super().solve(start_from=maps, max_evaluations=left, deadline=dl, diagnostics=diagnostics if last else False, **kw)
+                except RiskBreakdown as exc:
+                    if last and len(scales) == 1:
+                        raise
+                    raise RiskBreakdown(exc.agent, max(a.risk_aversion for a in averse if a.name == exc.agent), exc.lam_max,
+                                        reached=exc.theta) from None
+                evals += res.evaluations
+                if last or not res.converged:
+                    break
+                maps = res.maps
+                worst, lam, x = use(res.world, scale)                   # x = theta lambda_max at the full theta
+                done = scale * x                                        # ... and at this step's
+                if 1.0 - done < self.RISK_EDGE or len(scales) > self.RISK_STEPS:   # at the breakdown short of the model's theta
+                    raise RiskBreakdown(worst.name, worst.risk_aversion, lam, reached=scale * worst.risk_aversion)
+                scale = 1.0 if x <= self.RISK_STEP else min(1.0, (done + self.RISK_GAIN * (1.0 - done)) / x)
+        finally:
+            self._risk_scale = 1.0
+        steps = ", ".join(f"{s:.3g}" for s in scales)
+        res.evaluations = evals
+        res.seconds = time.time() - t0
+        res.message = (f"continuation in risk aversion, theta scaled by {steps}: " + res.message) if len(scales) > 1 else res.message
+        if not (scales[-1] >= 1.0):
+            res.converged = False
+            res.message += f"; stopped at risk aversion scaled by {scales[-1]:.3g} of the model's (that step did not converge)"
+        return res
 
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):
         """The agent's best response to `maps` (EngineBase.best_response's contract): finite_free.best_response,

@@ -102,6 +102,74 @@ refused with a `ValueError`.  On the stationary engine the continuation integral
 the window like the kernels' own, which is what `window_tail` reports; the flag says so when the
 means are nonzero.
 
+## Risk-averse agents
+
+An agent with `risk_aversion: theta > 0` minimises the entropic cost `J = theta^-1 log E exp(theta C)` of its
+realised cost C (the loss integrated, discounted, plus the terminal loss, as `res.costs` integrates it), instead of
+`E C`; `theta = 0` is the risk-neutral model and takes exactly the risk-neutral path.  The spectral finite engine
+solves it on a finite horizon without a past, a continuation, monitoring or means (the others refuse it with a
+NotImplementedError); the code is `noisestate/risk.py`.
+
+Chapter 1's appendix (thm:risk_sensitive_appendix) gives the first-order condition: the risk-neutral one evaluated
+at the risk-adjusted noise-state `W^theta = (I - theta C_t K)^-1 (W_hat + theta C_t k)`, with `C_t` the agent's
+conditional covariance of every shock (the filter's posterior for the past ones, the prior for the future ones), `K`
+the quadratic kernel of C over the whole horizon, `C = c0 + 1/2 <W, K W>`, and `k` its linear part (zero without
+means).  `W^theta` is the point at which the derivative is evaluated: the average of the linear marginal cost over
+the outcomes weighted by `exp(theta C) / E exp(theta C)`.  It is not a belief; the agent's filter and its
+information are the risk-neutral ones.  Certainty equivalence fails, so the first-order condition keeps the part
+of its kernel on the future shocks, which the risk-neutral engine drops because those shocks have mean zero.
+
+On the seen rows the condition is `Pi_t (I - theta K C_t)^-1 f_t = 0`, `f_t` the FOC kernel of a spike at t over all
+the shocks.  A kernel whose projection on the rows is zero is left alone by `C_t`, so the condition is the same as
+`Pi_t Sigma f_t = 0` with `Sigma = (I - theta K)^-1`, one operator for every t.  The engine keeps its risk-neutral
+projection and adds the correction `Delta_t = Sigma f_t - f_t = theta K Sigma f_t` to the FOC kernel (a kernel on
+the triangle like the FOC kernel itself).  With `K = A' G A`, `(A g)(tau) = int_0^tau zeta(tau, v) g(v) dv` the loss
+atoms' exposure and `G = e^{-rho tau} Q dtau` (plus the terminal loss at T), `h = Delta_t` solves
+`h = theta K f + theta K h`:
+
+* `theta K f_t` is computed on the nodes by line integrals on the triangle, with no basis.  `A f_t(tau)` is carried
+  as two nodal kernels, for `tau <= t` and for `tau >= t`, read along the projection and response paths.  The
+  future part of `f_t` is itself a nodal kernel, `fU(v, t) = f_t(v)` for `v > t`: the continuation path with the
+  roles of the spike and the shock exchanged.  Then `K f_t = A' G (A f_t)` along the response and continuation
+  paths.
+* The rest, `theta K h`, is a Galerkin solve on an orthonormal Legendre basis per time panel and channel
+  (`settings.risk_basis` functions, by default the nodes per side plus 4), then Sloan's iterate:
+  `c_t = theta (I - theta K_G)^-1 Phi' K f_t` and `Delta_t = theta K f_t + theta (K Phi) c_t`, with
+  `K_G = E' G E` built from the exposures `E = A Phi`.  `h` is smooth, so this part converges fast.
+
+A CARA equilibrium is one fixed point.  The kernels, the spike responses and K all come from the closed loop in
+which every agent plays its risk-averse strategy, the agent's own included.  A best response takes K (and its
+spectrum) in the closed loop of the current profile and solves the FOC with the correction, which is linear in the
+world, exactly: the risk-neutral system is factored and preconditions GMRES on the whole system, one application
+of the correction per iteration (on the matrix-free path the correction is part of the operator).  At the fixed
+point the profile is the equilibrium.
+
+`E exp(theta C)` is finite if and only if `theta lambda_max(K) < 1`, and the conditional condition of the theorem
+follows from it.  A solve checks this at every best response.  At the zero start (the uncontrolled world,
+`lambda_max = 8 / pi^2` on Chapter 1's game) and even at the risk-neutral equilibrium the condition can fail for a
+theta that has an equilibrium (theta = 2.5 on Chapter 1's game).  So when some agent's `theta lambda_max` exceeds
+0.9 in the uncontrolled world, `solve()` starts from the risk-neutral equilibrium and scales theta up in
+warm-started steps.  Each step closes 0.6 of the gap `1 - theta lambda_max` at the last step's equilibrium, and
+`res.message` lists the steps.  A path whose step equilibrium comes within 1e-3 of the breakdown short of the model's
+theta (or that has not reached it in 40 steps) raises `RiskBreakdown` with `reached`, the theta where it stopped (2.90
+on Chapter 1's game at 8 nodes; 2.9 itself solves at 12 nodes, with `theta lambda_max` = 0.985).  So does a solution
+whose own spectrum is past the breakdown.  An iterate beyond the breakdown inside a
+solve is answered at `theta_eff = 0.9 / lambda_max`, a safeguard that a converged equilibrium never uses.
+
+The entropic cost is `J = E C + (2 theta)^-1 sum_i (-log(1 - theta lambda_i) - theta lambda_i)` over the eigenvalues
+of K.  The Ritz values of `K_G` give the large ones.  The ones the basis misses (on each channel lambda_i decays
+like i^-2) enter through their second-order term `theta / 4 (tr K^2 - sum of the Ritz values squared)`, with
+`tr K^2` computed exactly as the triangle kernel K(u, v) squared under the grid's Gram.  The truncation left is of
+third order.  The result carries `res.risk[agent]` (theta, the entropic and the expected cost, `lambda_max` and
+`theta lambda_max`) and `res.entropic_costs`.  `res.costs` stays the expected cost.
+
+The second-order check is the expected cost's form, as for a risk-neutral agent.  With a positive semidefinite loss
+Hessian it bounds the entropic cost's curvature from below (`J'' = E^Q[C''] + theta Var^Q(C') >= tr(Sigma B) >= tr B
+= E[C'']`), and the record says so (`"bound": "entropic"`).  Without one the check is not run and says why.
+`res.foc[agent][control]` gains `"risk"`, the correction, so that `foc` (the kernel whose projection vanishes) is
+`physical + wedge + risk`.  `res.strategy()` is refused for a risk-averse agent: its action weighs the
+risk-adjusted noise-state, whose future part the result does not carry.
+
 ## Grids and caches
 
 On panels of equal width the convolution and correlation tensors are block-Toeplitz in the panel

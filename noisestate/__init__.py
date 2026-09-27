@@ -14,6 +14,7 @@ import dataclasses
 from .spec import Model, load, as_model
 from .numerics import Numerics
 from .accel import ConvergenceError, DiagnosticsError, ResultValidationError
+from .risk import RiskBreakdown
 from ._settings import Settings
 from .results import Result
 from . import engines
@@ -28,7 +29,7 @@ from .expr import dt, Differential, params, Game
 from .expr import sqrt, exp, log, sin, cos, tanh
 from .kernel import Kernel
 
-__all__ = ["Model", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "Settings", "Result", "engines", "load", "load_result", "solve", "sweep", "transition", "transition_gap", "read_json", "as_model",
+__all__ = ["Model", "Numerics", "example", "examples", "ConvergenceError", "DiagnosticsError", "ResultValidationError", "RiskBreakdown", "Settings", "Result", "engines", "load", "load_result", "solve", "sweep", "transition", "transition_gap", "read_json", "as_model",
            "compare", "ComparisonResult", "ScenarioResult", "Assessment", "Policy", "Status", "clear_grid_cache", "schema",
            "Param", "shocks", "State", "Control", "define", "Signal", "Agent", "Stationary", "Finite", "Transition", "Sweep", "SweepPoint",
            "Kernel", "level", "sqrt", "exp", "log", "sin", "cos", "tanh", "dt", "Differential", "params", "Game"]

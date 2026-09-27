@@ -164,7 +164,7 @@ class EngineBase(MeanLayer):
     ANDERSON_M = tunable("anderson_m")              # Anderson memory (settings.anderson_m)
     ACTIONS = True                  # whether the engine can iterate on action kernels
     MONITORING = False              # whether the engine solves the monitored deviations of Chapter 6 (agents' `monitors`)
-    RISK_SENSITIVE = False          # whether the engine solves risk-averse agents (risk_aversion > 0, the entropic objective)
+    RISK_SENSITIVE = False          # whether the engine solves risk-averse agents (risk_aversion > 0, the entropic objective): the spectral finite engine
     FOC_RCOND = tunable("foc_rcond")    # a best-response system whose reciprocal condition estimate is below this is singular (settings)
     SECOND_ORDER_TOL = tunable("second_order_tol")      # curvature below which a negative value is window truncation (settings)
     SECOND_ORDER_DENSE = tunable("second_order_dense")  # strategy dimension up to which the form is built densely (settings)
@@ -185,8 +185,9 @@ class EngineBase(MeanLayer):
         averse = [a.name for a in model.agents if a.risk_aversion]
         if averse and not self.RISK_SENSITIVE:
             raise NotImplementedError(f"{type(self).__name__} does not solve risk-averse agents ({', '.join(averse)} with "
-                                      "risk_aversion > 0); no engine does yet (planned: the finite-horizon engine, Ch1 "
-                                      "appendix thm:risk_sensitive_appendix); risk_aversion 0 is the risk-neutral model")
+                                      "risk_aversion > 0); the spectral finite engine does, on a finite horizon without a past, "
+                                      "monitoring or means (Ch1 appendix thm:risk_sensitive_appendix); risk_aversion 0 is the "
+                                      "risk-neutral model")
         if any(a.monitors for a in model.agents) and not self.MONITORING:
             raise NotImplementedError(f"{type(self).__name__} does not solve monitored deviations (Chapter 6: an agent's "
                                       "monitors); a model without `monitors` is the all-naive corner, what it solves")
@@ -337,6 +338,11 @@ class EngineBase(MeanLayer):
         model in the tests solves a system at 1e-23 whose strategy its second-order check must flag."""
         if A.shape[0] == 0:
             return np.zeros(0)
+        lu, piv = self._factor_regular(agent, A)
+        return sla.lu_solve((lu, piv), b, check_finite=False)
+
+    def _factor_regular(self, agent: Agent, A: np.ndarray):
+        """The LU factors (lu, piv) of the best-response system A of `agent`, refusing a singular one (_solve_regular)."""
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", sla.LinAlgWarning)               # an exactly zero pivot: raised below
             lu, piv = sla.lu_factor(A, check_finite=False)
@@ -344,7 +350,7 @@ class EngineBase(MeanLayer):
         rcond = float(gecon(lu, np.linalg.norm(A, 1))[0])
         if not rcond > self.FOC_RCOND:
             raise ValueError(singular_system_message(agent.name) + f" (reciprocal condition estimate {rcond:.1e})")
-        return sla.lu_solve((lu, piv), b, check_finite=False)
+        return lu, piv
 
     def _project(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray) -> np.ndarray:
         """Hook (stationary, spectral): raw maps (nU, nR, N) reproducing the action kernels `actions`
