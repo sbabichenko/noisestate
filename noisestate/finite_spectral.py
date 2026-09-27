@@ -894,6 +894,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
     RISK_STEP = 0.9          # a start at which every theta lambda_max is at most this is solved from directly (solve)
     RISK_GAIN = 0.6          # else a continuation step closes this fraction of the gap to the breakdown, 1 - theta lambda_max
     RISK_STEPS = 40          # continuation steps at most before the path is taken to end at the breakdown
+    RISK_PATH_TOL = 1e-5     # the fixed-point tolerance of a continuation step short of the model's theta (solve)
     RISK_EDGE = 1e-3         # ... or once a step's equilibrium is within this of it (1 - theta lambda_max) short of the model's theta
 
     def solve(self, start_from=None, tol=None, damping=None, max_newton=None, variable: str = "actions", start_policy: str = "zero",
@@ -925,15 +926,29 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         zero = self.zero_maps()
         worst, lam, x = use(self.c.closed_loop(zero), 0.0)
         scale = 1.0 if x <= self.RISK_STEP else 0.0
-        t0 = time.time(); evals = 0; scales = []; maps = None
+        t0 = time.time(); evals = 0; scales = []; maps = None; prev = None
         try:
             while True:
                 self._risk_scale = scale; scales.append(scale)
                 last = scale >= 1.0
                 left = None if max_evaluations is None else max(1, max_evaluations - evals)
                 dl = None if deadline is None else max(0.0, deadline - (time.time() - t0))
+                # a step short of the model's theta is only the next one's start and where its size is measured: solved to
+                # RISK_PATH_TOL (the model's tol, if looser); from the second step on it starts from the secant through the
+                # last two equilibria, extended to this scale (and from the last equilibrium itself if that does not converge)
+                step_kw = kw if last else {**kw, "tol": max(self.TOL if tol is None else tol, self.RISK_PATH_TOL)}
+                start = maps
+                if prev is not None:
+                    w = (scale - scales[-2]) / (scales[-2] - prev[0])
+                    start = {n: maps[n] + w * (maps[n] - prev[1][n]) for n in maps}
                 try:
-                    res = super().solve(start_from=maps, max_evaluations=left, deadline=dl, diagnostics=diagnostics if last else False, **kw)
+                    res = super().solve(start_from=start, max_evaluations=left, deadline=dl, diagnostics=diagnostics if last else False, **step_kw)
+                    if (not res.converged and prev is not None and (max_evaluations is None or evals + res.evaluations < max_evaluations)
+                            and (deadline is None or time.time() - t0 < deadline)):
+                        evals += res.evaluations
+                        left = None if max_evaluations is None else max(1, max_evaluations - evals)
+                        dl = None if deadline is None else max(0.0, deadline - (time.time() - t0))
+                        res = super().solve(start_from=maps, max_evaluations=left, deadline=dl, diagnostics=diagnostics if last else False, **step_kw)
                 except RiskBreakdown as exc:
                     if last and len(scales) == 1:
                         raise
@@ -942,6 +957,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 evals += res.evaluations
                 if last or not res.converged:
                     break
+                prev = None if maps is None else (scales[-2], maps)
                 maps = res.maps
                 worst, lam, x = use(res.world, scale)                   # x = theta lambda_max at the full theta
                 done = scale * x                                        # ... and at this step's
