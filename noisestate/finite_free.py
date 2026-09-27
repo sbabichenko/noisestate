@@ -64,16 +64,18 @@ class FocSystem:
             self.inv = np.arange(self.kept.size); self.n = self.kept.size
         self.matvecs = 0; self.iterations = 0; self.residual = 0.0; self.block_rcond = np.inf
         self.tilt = tilt                        # a risk-averse agent's correction (risk.Tilt), linear in the world
+        self._last_product = None               # (x, A x) of the last matvec, with a correction (matvec)
         # the right-hand side: the FOC of the passive world projected on the rows
         Zp = Zpass.reshape(self.nP, self.N, self.ncol)
         a = foc.atoms_of(Zp)
         b = np.zeros((self.nU, self.nR, self.Nm))
         for ui in range(self.nU):
             phi = foc.foc(ui, a)
+            d = None if tilt is None else tilt.delta(ui, Zp, a, phi)       # before the past's part joins phi (in place)
             if phi_past is not None:
                 phi[:, :c.nW] += phi_past[ui]
             if tilt is not None:
-                phi = phi + tilt.delta(ui, Zp)
+                phi = phi + d
             b[ui] = projops.apply(phi)
         self.bvec = self.reduce(b.reshape(-1))
 
@@ -104,14 +106,25 @@ class FocSystem:
         for ui in range(self.nU):
             phi = self.foc.foc(ui, a)
             if self.tilt is not None:
-                phi = phi + self.tilt.delta(ui, Zd)
+                phi = phi + self.tilt.delta(ui, Zd, a, phi)
             out[ui] = self.projops.apply(phi)
         out = out.reshape(self.nG, -1)
         return out[:, 0] if single else out
 
     def matvec(self, x: np.ndarray) -> np.ndarray:
         self.matvecs += 1
-        return self.reduce(self.apply(self.expand(np.asarray(x, dtype=float).ravel())))
+        x = np.asarray(x, dtype=float).ravel()
+        if self.tilt is not None:
+            # a risk-averse agent's system is solved by GMRES, whose last step is the true residual b - A x; solve()
+            # checks it again at the same x.  Each product costs an application of the correction, so the last one is
+            # kept and returned for the same x (the same bits); counted as a product all the same
+            last = self._last_product
+            if last is not None and np.array_equal(last[0], x):
+                return last[1].copy()
+            y = self.reduce(self.apply(self.expand(x)))
+            self._last_product = (x.copy(), y.copy())
+            return y
+        return self.reduce(self.apply(self.expand(x)))
 
     def matrix(self, with_tilt: bool = False) -> np.ndarray:
         """The system on the kept unknowns (n, n), assembled from the operators' dense rows: Amat[u, v] =

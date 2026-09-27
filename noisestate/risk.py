@@ -346,24 +346,32 @@ class Tilt:
             self.per_control.append(item)
 
     # ------------------------------------------------------------------ the correction
-    def delta(self, ui: int, Zw: np.ndarray) -> np.ndarray:
-        """Delta (N, nW[, B]) of control ui for the world Zw (nP, N, nW[, B]) the FOC kernel is taken in."""
+    def delta(self, ui: int, Zw: np.ndarray, a: Optional[np.ndarray] = None, phi: Optional[np.ndarray] = None) -> np.ndarray:
+        """Delta (N, nW[, B]) of control ui for the world Zw (nP, N, nW[, B]) the FOC kernel is taken in.  The caller that
+        has them already passes the atoms' kernels a = foc.atoms_of(Zw) and the FOC kernel phi = foc.foc(ui, a) (the
+        same arrays, so the same bits), which are then not recomputed."""
         single = Zw.ndim == 3
-        Zw = Zw[..., None] if single else Zw
+        if single:
+            Zw = Zw[..., None]
+            a = None if a is None else a[..., None]
+            phi = None if phi is None else phi[..., None]
         B = Zw.shape[3]
         out = np.empty((self.geo.N, self.geo.nW, B))
         for b0 in range(0, B, self.chunk):
-            out[:, :, b0:b0 + self.chunk] = self._delta(ui, Zw[:, :, :, b0:b0 + self.chunk])
+            sl = slice(b0, b0 + self.chunk)
+            out[:, :, sl] = self._delta(ui, Zw[:, :, :, sl], None if a is None else a[..., sl], None if phi is None else phi[..., sl])
         return out[:, :, 0] if single else out
 
-    def _delta(self, ui: int, Zw: np.ndarray) -> np.ndarray:
+    def _delta(self, ui: int, Zw: np.ndarray, a: Optional[np.ndarray] = None, phi: Optional[np.ndarray] = None) -> np.ndarray:
         geo = self.geo; foc = self.foc; th = self.theta
         N, nW = geo.N, geo.nW
         m, mt = self.m, self.mt
         B = Zw.shape[3]
-        a = foc.atoms_of(Zw)                                                      # (ma, N, nW, B)
+        if a is None:
+            a = foc.atoms_of(Zw)                                                  # (ma, N, nW, B)
         bQ = np.tensordot(foc.Q, a, axes=1)                                       # Q zeta
-        phi = foc.foc(ui, a)                                                      # (N, nW, B)
+        if phi is None:
+            phi = foc.on_qzeta(ui, bQ)                                            # (N, nW, B): foc.foc(ui, a)
         fU = self._future(ui, bQ, B)                                              # (N, nW, B): f_t(v), v > t, at (v, t)
         lp, lr, lc = geo.lp_proj, geo.lp_resp, geo.lp_cont
         ma = m + mt
