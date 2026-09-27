@@ -50,6 +50,8 @@ from typing import Callable, List, Optional
 
 from functools import cached_property
 
+import threading
+
 import numpy as np
 from numpy.polynomial import legendre
 
@@ -603,6 +605,30 @@ class TriangleGrid:
         return lp.apply_weights(w)
 
 
+_SCRATCH = threading.local()
+
+
+def _scratch(name: str, shape) -> np.ndarray:
+    """A float work buffer of `shape`, one per name and thread, grown as needed and kept: the line paths' products
+    write their large temporaries (hundreds of kB each, thousands per solve) into it instead of fresh arrays, which
+    glibc would map and fault in anew on every call above its mmap threshold.  A buffer's contents are dead once the
+    caller that asked for it returns; two live at once must have different names."""
+    pool = getattr(_SCRATCH, "pool", None)
+    if pool is None:
+        pool = _SCRATCH.pool = {}
+    n = int(np.prod(shape))
+    buf = pool.get(name)
+    if buf is None or buf.size < n:
+        buf = pool[name] = np.empty(n)
+    return buf[:n].reshape(shape)
+
+
+def _scratch_owner() -> dict:
+    """The thread's {buffer name: id of the object whose contents it holds}, for a buffer whose contents outlive a
+    call (PanelRows' block): an object finding another's id there knows its contents are gone."""
+    return _SCRATCH.__dict__.setdefault("owner", {})
+
+
 class LinePath:
     """Cached quadrature of a family of line integrals; see TriangleGrid.path."""
 
@@ -665,17 +691,21 @@ class LinePath:
     def J(self, value):
         self._J = value
 
-    def _through(self, factors, kernels: np.ndarray) -> np.ndarray:
+    def _through(self, factors, kernels: np.ndarray, scratch: bool = False) -> np.ndarray:
         """M @ kernels (nq, m) for kernels (N, m) and M the interpolation `factors` describe: read piece by piece
         as the dense products Rt (K_piece) Rx', associating over the piece's time nodes first.  The interpolation
         row of a point is the outer product Rt Rx', so this is the sparse product's sums in another order and
-        agrees with it to round-off, at a fraction of the cost (dense blocks, no index indirection)."""
+        agrees with it to round-off, at a fraction of the cost (dense blocks, no index indirection).  scratch=True
+        returns a work buffer (_scratch), for a caller that uses the result before any other read."""
         K = kernels if kernels.ndim == 2 else kernels[:, None]
         m = K.shape[1]
-        F = np.zeros((len(self.rows), m))
+        if scratch:
+            F = _scratch("read", (len(self.rows), m)); F.fill(0.0)
+        else:
+            F = np.zeros((len(self.rows), m))
         for pc, sel, Rt, Rx in factors:
             KB = K[pc.offset:pc.offset + pc.n].reshape(pc.nt, pc.na * m)
-            A = (Rt @ KB).reshape(len(sel), pc.na, m)
+            A = np.matmul(Rt, KB, out=_scratch("through", (len(sel), pc.na * m))).reshape(len(sel), pc.na, m)
             # the sum over the piece's age nodes per point: a batched (1 x na) (na x m) product for several
             # columns (a third faster at m = 3), the einsum for one (twice as fast as the product there)
             F[sel] = (Rx[:, None, :] @ A)[:, 0, :] if m > 1 else np.einsum("qjc,qj->qc", A, Rx)
@@ -685,9 +715,10 @@ class LinePath:
         """J @ kernels: the known kernels at the quadrature points, through J's factors."""
         return self._through(self.Jf, kernels)
 
-    def read_unknown(self, V: np.ndarray) -> np.ndarray:
-        """I @ V: the unknown at the quadrature points, through I's factors when the path kept them."""
-        return self._through(self.If, V) if self.If is not None else self.I @ V
+    def read_unknown(self, V: np.ndarray, scratch: bool = False) -> np.ndarray:
+        """I @ V: the unknown at the quadrature points, through I's factors when the path kept them (into a work
+        buffer with scratch=True, see _through)."""
+        return self._through(self.If, V, scratch) if self.If is not None else self.I @ V
 
     def swapped(self) -> "LinePath":
         """The same path with the unknown's and the known's read matrices exchanged: the integral of a
@@ -774,7 +805,7 @@ class LinePath:
         lo, hi = rows
         return int(self._starts[lo]), int(self._starts[hi])
 
-    def _weighted_sum(self, d: np.ndarray, rows=None) -> np.ndarray:
+    def _weighted_sum(self, d: np.ndarray, rows=None, cols=None) -> np.ndarray:
         """R @ (diag(d) @ I) as a dense (n_out, N) array; with rows = (lo, hi) the rows of the output nodes
         [lo, hi) only, (hi - lo, N), from d at their quadrature points (d given at every point, or at
         theirs).  The rows are the same sums in the same order whether or not the others are built.  Where I's
@@ -785,7 +816,9 @@ class LinePath:
             lo, hi = rows
         sf = self._sum_factors if np.issubdtype(d.dtype, np.floating) else None
         if sf is not None:
-            return self._factor_sum(sf, d, lo, hi)
+            return self._factor_sum(sf, d, lo, hi, cols)
+        if cols is not None:
+            return self._weighted_sum(d, rows)[:, cols[0]:cols[1]]
         layout = self._sum_layout
         if layout is None or not np.issubdtype(d.dtype, np.floating):
             from scipy.sparse import diags
@@ -808,24 +841,51 @@ class LinePath:
         _sparsetools.csr_todense(hi - lo, self.N, indptr[lo:hi + 1] - j0, I.indices[j0:j1], data, out)
         return out
 
-    def _factor_sum(self, sf, d: np.ndarray, lo: int, hi: int) -> np.ndarray:
-        """_weighted_sum from the factors (_sum_factors): the rows [lo, hi) as (hi - lo, N), each (node, piece)
-        block the batched product Rt_S' diag(d_S) Rx_S (the padding's zero rows add nothing).  The CSR sum it
-        replaces adds the same terms point by point: the two agree to round-off, and a row is the same whichever
-        other rows are built."""
+    def _factor_sum(self, sf, d: np.ndarray, lo: int, hi: int, cols=None) -> np.ndarray:
+        """_weighted_sum from the factors (_sum_factors): the rows [lo, hi) as (hi - lo, N), or their columns
+        [c0, c1) = cols only, each (node, piece) block the batched product Rt_S' diag(d_S) Rx_S (the padding's zero
+        rows add nothing).  The CSR sum it replaces adds the same terms point by point: the two agree to round-off,
+        and a row is the same whichever other rows or columns are built."""
         Rt, Rx, at, seg, seg_k, seg_off, kseg, nt, na = sf
-        out = np.zeros((hi - lo, self.N))
+        c0, c1 = (0, self.N) if cols is None else cols
+        out = np.zeros((hi - lo, c1 - c0))
         s0, s1 = int(kseg[lo]), int(kseg[hi])
         if s1 == s0:
             return out
         i0, i1 = int(self._starts[lo]), int(self._starts[hi])
-        P = seg[s0:s1]
         dz = np.zeros(i1 - i0 + 1)                               # d at the rows' points, zero at the padding (last)
         dz[:-1] = d if len(d) == i1 - i0 else d[i0:i1]
-        dP = dz[np.minimum(P - i0, i1 - i0)]                     # the padding (nq) is past i1
-        A = at[P]                                                # the points' stacked rows
-        blocks = np.matmul((Rt[A] * dP[:, :, None]).transpose(0, 2, 1), Rx[A])         # (nseg, nt, na)
-        out[(seg_k[s0:s1] - lo)[:, None], seg_off[s0:s1][:, None] + np.arange(nt * na)] = blocks.reshape(-1, nt * na)
+        w = nt * na
+        tile = self.N % w == 0 and c0 % w == 0 and c1 % w == 0 and not np.any(seg_off[s0:s1] % w)
+        out3 = out.reshape(hi - lo, (c1 - c0) // w, w) if tile else None
+        # the segments a chunk at a time (each is its own product), so the work buffers stay about 1 MB
+        ch = max(1, (1 << 17) // max(seg.shape[1] * max(nt, na), w))
+        for a in range(s0, s1, ch):
+            b = min(s1, a + ch)
+            P = seg[a:b]
+            dP = dz[np.minimum(P - i0, i1 - i0)]                 # the padding (nq) is past i1
+            A = at[P]                                            # the points' stacked rows
+            # the products' operands and result in work buffers (_scratch): the same operations as
+            # matmul((Rt[A] * dP).transpose(0, 2, 1), Rx[A]), without their temporaries
+            RtA = np.take(Rt, A, axis=0, out=_scratch("sum_t", A.shape + (nt,)), mode="clip")      # "clip": no bounds
+            np.multiply(RtA, dP[:, :, None], out=RtA)                                                 # copy (A is in range)
+            RxA = np.take(Rx, A, axis=0, out=_scratch("sum_x", A.shape + (na,)), mode="clip")
+            blocks = np.matmul(RtA.transpose(0, 2, 1), RxA, out=_scratch("sum_b", (b - a, nt, na))).reshape(-1, w)
+            if tile:
+                # pieces tile the nodes in blocks of w: scatter whole blocks, (node, piece) indices only
+                pix = seg_off[a:b] // w - c0 // w; rix = seg_k[a:b] - lo
+                if cols is None:
+                    out3[rix, pix] = blocks
+                else:
+                    keep = (pix >= 0) & (pix < (c1 - c0) // w)
+                    out3[rix[keep], pix[keep]] = blocks[keep]
+                continue
+            rix = (seg_k[a:b] - lo)[:, None]; cix = seg_off[a:b][:, None] + np.arange(w) - c0
+            if cols is None:
+                out[rix, cix] = blocks
+            else:
+                keep = (cix >= 0) & (cix < c1 - c0)
+                out[np.broadcast_to(rix, cix.shape)[keep], cix[keep]] = blocks[keep]
         return out
 
     def apply(self, factor: np.ndarray, rows=None) -> np.ndarray:

@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .spec import Agent
+from .triangle import _scratch, _scratch_owner
 
 
 class PathOp:
@@ -46,30 +47,34 @@ class PathOp:
     def empty(self) -> bool:
         return self.F is None
 
-    def unknown(self, V: np.ndarray) -> np.ndarray:
+    def unknown(self, V: np.ndarray, scratch: bool = False) -> np.ndarray:
         """I V: the unknown read at the quadrature points, (nq, ...) for V (N, ...).  Through the
-        interpolation factors where the path kept them (the same sums, 4 to 6 times faster)."""
-        return self.lp.read_unknown(V)
+        interpolation factors where the path kept them (the same sums, 4 to 6 times faster).  scratch=True
+        writes it into a work buffer (triangle._scratch), for a caller that applies it at once."""
+        return self.lp.read_unknown(V, scratch)
 
     def apply(self, IV: np.ndarray, j: int) -> np.ndarray:
         """op_j V given IV = I V (nq, ...)."""
         Fj = self.F[:, j]
-        return self.lp.R @ (Fj * IV if IV.ndim == 1 else Fj[:, None] * IV)
+        return self.lp.R @ np.multiply(Fj if IV.ndim == 1 else Fj[:, None], IV, out=_scratch("path_apply", IV.shape))
 
     def apply_all(self, IV: np.ndarray) -> np.ndarray:
         """Every op_j on the same vectors: (n_out, m, B) for IV = I V (nq, B)."""
         B = IV.shape[1]
-        return (self.lp.R @ (self.F[:, :, None] * IV[:, None, :]).reshape(-1, self.m * B)).reshape(self.n_out, self.m, B)
+        FV = np.multiply(self.F[:, :, None], IV[:, None, :], out=_scratch("path_apply", (IV.shape[0], self.m, B)))
+        return (self.lp.R @ FV.reshape(-1, self.m * B)).reshape(self.n_out, self.m, B)
 
     def apply_sum(self, IV: np.ndarray) -> np.ndarray:
         """sum_j op_j V[:, j] for IV = I V (nq, m, B): (n_out, B), one product."""
-        return self.lp.R @ (self.F[:, :, None] * IV).sum(axis=1)
+        FV = np.multiply(self.F[:, :, None], IV, out=_scratch("path_apply", np.broadcast_shapes(self.F[:, :, None].shape, IV.shape)))
+        return self.lp.R @ FV.sum(axis=1)
 
-    def rows(self, j: int, lo: int, hi: int) -> np.ndarray:
-        """Rows [lo, hi) of op_j, dense (hi - lo, N): the same sums as LinePath.with_known(rows=)."""
+    def rows(self, j: int, lo: int, hi: int, cols=None) -> np.ndarray:
+        """Rows [lo, hi) of op_j, dense (hi - lo, N) (or their columns [c0, c1) = cols): the same sums as
+        LinePath.with_known(rows=)."""
         if self.F is None:
-            return np.zeros((hi - lo, self.N))
-        return self.lp._weighted_sum(self.F[:, j], rows=(lo, hi))
+            return np.zeros((hi - lo, self.N if cols is None else cols[1] - cols[0]))
+        return self.lp._weighted_sum(self.F[:, j], rows=(lo, hi), cols=cols)
 
     def adjoint_sum(self, W: np.ndarray) -> np.ndarray:
         """sum_j op_j^T W[:, j] for W (n_out, m, B): I^T (sum_j F_j (R^T W)_j), (N, B)."""
@@ -147,7 +152,7 @@ class RowOps:
         for r in range(self.nR):
             gr = gamma[r, :self.N]
             for (ks, op) in self._paths(r):
-                out[:, ks] += op.apply_all(op.unknown(gr))
+                out[:, ks] += op.apply_all(op.unknown(gr, scratch=True))
             for (k, nw, S) in self.inst[r]:
                 out[:, k] += nw[:, None] * (S @ gr)
             for (i, e, E) in self.embed[r]:
@@ -167,22 +172,23 @@ class RowOps:
                 out[r, self.N:] += e * (E.T @ C[:, self.nW + i])
         return out[..., 0] if single else out
 
-    def rows(self, lo: int, hi: int, ranges: List[Tuple[int, int]]):
+    def rows(self, lo: int, hi: int, ranges: List[Tuple[int, int]], into=None):
         """The rows [lo, hi) (a panel's action nodes) of every G_k restricted to the map columns of each row r in
         ranges[r] = (lo_r, hi_r) plus its discrete weights: a list per row of (flow (ncol, hi - lo, hi_r - lo_r),
-        disc (ncol, hi - lo, Nt) or None)."""
+        disc (ncol, hi - lo, Nt) or None).  into: per row (flow, disc) arrays of those shapes, zero, to fill in
+        place of new ones (PanelRows' block)."""
         out = []
         for r in range(self.nR):
             lo_r, hi_r = ranges[r]
-            flow = np.zeros((self.ncol, hi - lo, hi_r - lo_r))
+            flow = np.zeros((self.ncol, hi - lo, hi_r - lo_r)) if into is None else into[r][0]
             for (ks, op) in self._paths(r):
                 for j, k in enumerate(ks):
-                    flow[k] += op.rows(j, lo, hi)[:, lo_r:hi_r]
+                    flow[k] += op.rows(j, lo, hi, (lo_r, hi_r))
             for (k, nw, S) in self.inst[r]:
                 flow[k] += nw[lo:hi, None] * S[lo:hi, lo_r:hi_r].toarray()
             disc = None
             if self.Nm > self.N:
-                disc = np.zeros((self.ncol, hi - lo, self.Nm - self.N))
+                disc = np.zeros((self.ncol, hi - lo, self.Nm - self.N)) if into is None else into[r][1]
                 for (i, e, E) in self.embed[r]:
                     disc[self.nW + i] += e * E[lo:hi]
             out.append((flow, disc))
@@ -259,7 +265,7 @@ class ProjOps:
         out = np.zeros((self.nR, self.Nm, phi.shape[2]))
         for r in range(self.nR):
             for (ks, op) in self.paths[r]:
-                out[r, :self.N] += op.apply_sum(op.unknown(phi[:, ks].reshape(self.N, -1)).reshape(-1, len(ks), phi.shape[2]))
+                out[r, :self.N] += op.apply_sum(op.unknown(phi[:, ks].reshape(self.N, -1), scratch=True).reshape(-1, len(ks), phi.shape[2]))
             for (k, nw, S) in self.inst[r]:
                 out[r, :self.N] += S.T @ (nw[:, None] * phi[:, k])
             for (i, yi, Id) in self.init[r]:
@@ -275,7 +281,7 @@ class ProjOps:
         flow = np.zeros((self.ncol, hi_r - lo_r, hi - lo))
         for (ks, op) in self.paths[r]:
             for j, k in enumerate(ks):
-                flow[k] += op.rows(j, lo_r, hi_r)[:, lo:hi]
+                flow[k] += op.rows(j, lo_r, hi_r, (lo, hi))
         for (k, nw, S) in self.inst[r]:
             flow[k] += S[lo:hi, lo_r:hi_r].toarray().T * nw[lo:hi][None, :]
         for (i, yi, Id) in self.init[r]:
@@ -331,7 +337,7 @@ class RespOps:
         own, ps, op = self.ops[ui]
         Z = np.zeros((self.nP,) + C.shape)
         if op is not None:
-            IC = op.unknown(C.reshape(self.N, -1))
+            IC = op.unknown(C.reshape(self.N, -1), scratch=True)
             for j, p in enumerate(ps):
                 Z[p] += op.apply(IC, j).reshape(C.shape)
         Z[own] += C
@@ -442,7 +448,7 @@ class FocOps:
         if cont is not None:
             js, op = cont
             for i, j in enumerate(js):
-                out += op.apply(op.unknown(b[j].reshape(self.N, -1)), i).reshape(out.shape)
+                out += op.apply(op.unknown(b[j].reshape(self.N, -1), scratch=True), i).reshape(out.shape)
         for (j, w, S) in lags:
             out += w * (S @ b[j].reshape(self.N, -1)).reshape(out.shape)
         for (j, W) in self.per_terminal[ui]:
@@ -501,22 +507,38 @@ class PanelRows:
         self.panel = None; self.block = None; self.colidx = None; self.lo = 0
 
     def _build(self, p: int):
+        """The panel's block (ncol, hi - lo, its columns), the rows written straight into it (RowOps.rows(into=)), in a
+        work buffer shared by every PanelRows of the thread (triangle._scratch) and reused from panel to panel: sub()
+        hands out copies, and a PanelRows whose block another has since overwritten builds it again."""
         lo, hi = self.ranges[p]
         rng = [self.ranges[p - s] if p - s >= 0 else (0, 0) for s in self.shifts]
-        parts = self.ops.rows(lo, hi, rng)
-        cols, blocks = [], []
-        for r, (flow, disc) in enumerate(parts):
+        nd = self.Nm - self.N
+        cols = []
+        for r in range(self.nR):
             lo_r, hi_r = rng[r]
-            cols.append(r * self.Nm + np.arange(lo_r, hi_r)); blocks.append(flow)
-            if disc is not None:
-                cols.append(r * self.Nm + self.N + np.arange(self.Nm - self.N)); blocks.append(disc)
+            cols.append(r * self.Nm + np.arange(lo_r, hi_r))
+            if nd > 0:
+                cols.append(r * self.Nm + self.N + np.arange(nd))
+        width = sum(cc.size for cc in cols); ncol = self.c.ncol
+        size = ncol * (hi - lo) * width
+        block = _scratch("panel_rows", (ncol, hi - lo, width)); block.fill(0.0)
+        _scratch_owner()["panel_rows"] = id(self)
+        into, pos = [], 0
+        for r in range(self.nR):
+            lo_r, hi_r = rng[r]
+            flow = block[:, :, pos:pos + hi_r - lo_r]; pos += hi_r - lo_r
+            disc = None
+            if nd > 0:
+                disc = block[:, :, pos:pos + nd]; pos += nd
+            into.append((flow, disc))
+        self.ops.rows(lo, hi, rng, into=into)
         self.colidx = np.concatenate(cols) if cols else np.zeros(0, dtype=int)
-        self.block = np.concatenate(blocks, axis=2) if blocks else np.zeros((self.c.ncol, hi - lo, 0))
+        self.block = block
         self.panel = p; self.lo = lo
 
     def sub(self, idx: np.ndarray, cols: np.ndarray) -> np.ndarray:
         p = int(self.c.panel_of_node[idx[0]])
-        if self.panel != p:
+        if self.panel != p or _scratch_owner().get("panel_rows") != id(self):
             self._build(p)
         pos = np.searchsorted(self.colidx, cols)
         if pos.size and not ((pos < self.colidx.size).all() and (self.colidx[pos] == cols).all()):

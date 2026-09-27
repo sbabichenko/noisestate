@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Dict, FrozenSet, Tuple
 
 import numpy as np
 
+from .triangle import _scratch
+
 if TYPE_CHECKING:
     from .spectral_compiled import SpectralCompiled
 
@@ -223,7 +225,7 @@ class ClosedLoopRows:
         for (bi, an, r, delay, gker, blocks) in self.rows:
             Cr = c.conv_left_rows(gker, delay, lo, hi)
             for nm, S in blocks.items():
-                add((bi, c.index[nm]), Cr[:, :hi] @ S[:hi, :hi])
+                add((bi, c.index[nm]), _dense_sparse(Cr[:, :hi], S[:hi, :hi]))
             if self.band:
                 f = Cr @ c.row_past(an, r)
                 forcing[bi] = forcing[bi] + f if bi in forcing else f
@@ -251,6 +253,25 @@ class ClosedLoopRows:
                 raise ValueError(f"the closed loop is singular on time panel {p} (t in [{c.g.t[lo]:g}, {c.g.t[hi - 1]:g}]): "
                                  "the feedback of the strategies makes the world indeterminate there") from None
         return Z.reshape(nP * c.N, nc)
+
+
+def _dense_sparse(D: np.ndarray, S) -> np.ndarray:
+    """D @ S for a dense D (m, k) and a CSR S (k, n): what scipy does for it (the product S' D' by csc_matvecs on S's
+    arrays, then transposed: the same sums, and the same F-ordered result), with D' and the product in work buffers
+    instead of two fresh temporaries per call; the result is a new array.  Anything else goes to D @ S."""
+    from scipy.sparse import _sparsetools
+    if getattr(S, "format", None) != "csr" or D.dtype != np.float64 or S.dtype != np.float64 or D.ndim != 2:
+        return D @ S
+    (m, k), n = D.shape, S.shape[1]
+    out = np.empty((m, n), order="F")
+    ch = max(1, (1 << 17) // max(k, n, 1))                 # D's rows a chunk at a time (csc_matvecs sums each alone)
+    for a in range(0, m, ch):
+        b = min(m, a + ch)
+        other = _scratch("dense_sparse_in", (k, b - a)); np.copyto(other, D[a:b].T)
+        res = _scratch("dense_sparse_out", (n, b - a)); res.fill(0.0)
+        _sparsetools.csc_matvecs(n, k, b - a, S.indptr, S.indices, S.data, other.ravel(), res.ravel())
+        out[a:b] = res.T
+    return out
 
 
 def _uncoupled(nP: int, keys: FrozenSet[Tuple[int, int]], _memo: dict = {}) -> Tuple[int, ...]:
@@ -286,7 +307,10 @@ def _panel_solve(within: Dict[Tuple[int, int], np.ndarray], rhs: np.ndarray, nP:
     S = [i for i in range(nP) if i not in C]
     pos = {i: k for k, i in enumerate(S)}; cpos = {i: k for k, i in enumerate(C)}
     nS, nC = len(S) * Np, len(C) * Np
-    MSS = np.zeros((nS, nS)); MSC = np.zeros((nS, nC)); MCS = np.zeros((nC, nS))
+    # the blocks in work buffers (triangle._scratch): a panel's are made and dropped once per closed-loop solve
+    MSS = _scratch("panel_ss", (nS, nS)); MSC = _scratch("panel_sc", (nS, nC)); MCS = _scratch("panel_cs", (nC, nS))
+    for M in (MSS, MSC, MCS):
+        M.fill(0.0)
     for (i, j), X in within.items():
         if i in pos and j in pos:
             MSS[pos[i] * Np:(pos[i] + 1) * Np, pos[j] * Np:(pos[j] + 1) * Np] = X
@@ -297,10 +321,11 @@ def _panel_solve(within: Dict[Tuple[int, int], np.ndarray], rhs: np.ndarray, nP:
     rS = rhs[S].reshape(nS, nc); rC = rhs[list(C)].reshape(nC, nc)
     z = np.empty_like(rhs)
     if nS:
-        A = np.eye(nS) - MSS
+        A = np.subtract(0.0, MSS, out=MSS)                             # I - MSS in place: 0 - MSS, then 1 added on the diagonal
+        A[np.diag_indices(nS)] += 1.0
         b = rS.copy()
         if nC:
-            A -= MSC @ MCS; b += MSC @ rC
+            A -= np.matmul(MSC, MCS, out=_scratch("panel_prod", (nS, nS))); b += MSC @ rC
         zS = np.linalg.solve(A, b)
         z[S] = zS.reshape(len(S), Np, nc)
         if nC:
