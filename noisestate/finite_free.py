@@ -31,7 +31,6 @@ import warnings
 
 import numpy as np
 from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
-from scipy.sparse.linalg import LinearOperator, gmres
 
 from .engine import dense_curvature_form, singular_system_message, symmetrize
 from .spec import Agent
@@ -304,8 +303,6 @@ class FocSystem:
                 for (ix, lu) in blocks:
                     x[ix] = lu_solve(lu, r[ix], check_finite=False)
                 return x
-        A = LinearOperator((n, n), matvec=self.matvec, dtype=float)
-        M = LinearOperator((n, n), matvec=prec, dtype=float)
         b = -self.bvec
         bn = float(np.linalg.norm(b))
         if bn == 0.0:
@@ -316,23 +313,21 @@ class FocSystem:
             xs = np.bincount(self.inv, weights=xs, minlength=n) / np.maximum(np.bincount(self.inv, minlength=n), 1)
         self.matvecs = 0
         restart = min(maxiter, 300)                       # scipy's maxiter counts the restarts
-        if self.tilt is not None:
-            # a risk-averse agent: every product applies the correction, so none is spent twice (_gmres_left).  Warm-
-            # started, the residual is reduced by RISK_KRYLOV_REDUCTION from the warm start's (or to foc_krylov_tol of
-            # the right-hand side, whichever is larger): far from the equilibrium the warm start is far from this
-            # response and 1e-12 of b is precision the next best response discards; near it the warm start's residual
-            # is small and the floor is foc_krylov_tol as before
-            x = np.zeros(n) if xs is None else xs.copy()
-            r = b.copy() if xs is None else b - self.matvec(x)
-            atol = tol * bn if xs is None else max(tol * bn, self.RISK_KRYLOV_REDUCTION * float(np.linalg.norm(r)))
-            x, rnorm, self.iterations = _gmres_left(self.matvec, prec, b, x, r, atol, restart, -(-maxiter // restart))
-            resid = rnorm / bn
-            atol /= 10.0 * bn                           # the check below: 10 times the tolerance, relative to b
-        else:
-            atol = 0.0
-            x, info = gmres(A, b, x0=xs, M=M, rtol=tol, atol=0.0, restart=restart, maxiter=-(-maxiter // restart))
-            resid = float(np.linalg.norm(self.matvec(x) - b)) / bn
-            self.iterations = self.matvecs - 1
+        # _gmres_left is scipy's left-preconditioned GMRES step for step, with each cycle's residual taken from the
+        # products the cycle made rather than a product of its own, and no product to check the answer: that
+        # residual is the check (within 1e-16 of |b| of a true product's)
+        x = np.zeros(n) if xs is None else xs.copy()
+        r = b.copy() if xs is None else b - self.matvec(x)
+        atol = tol * bn
+        if self.tilt is not None and xs is not None:
+            # a risk-averse agent, warm-started: the residual is reduced by RISK_KRYLOV_REDUCTION from the warm
+            # start's (or to foc_krylov_tol of the right-hand side, whichever is larger): far from the equilibrium the
+            # warm start is far from this response and 1e-12 of b is precision the next best response discards; near
+            # it the warm start's residual is small and the floor is foc_krylov_tol as before
+            atol = max(atol, self.RISK_KRYLOV_REDUCTION * float(np.linalg.norm(r)))
+        x, rnorm, self.iterations = _gmres_left(self.matvec, prec, b, x, r, atol, restart, -(-maxiter // restart))
+        resid = rnorm / bn
+        atol /= 10.0 * bn                               # the check below: 10 times the tolerance, relative to b
         self.residual = resid
         if not resid <= 10 * max(tol, atol):
             raise ValueError(singular_system_message(self.agent.name) +
