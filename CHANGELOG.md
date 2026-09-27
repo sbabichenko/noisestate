@@ -2,7 +2,44 @@
 
 ## Unreleased
 
+### Added
+
+- Level rows: `observes: {quote: {level: P, filter: true}}` (or `ns.level(P, filter=True)`) makes the exact path of a
+  state or of another agent's control information the agent filters, not only a quantity it reacts to. The row is the
+  quantity's increments: drift its kernel's rate of change, noise loading its jump at age 0, both set by the
+  equilibrium. This solves Chapter 6's opaque market, whose trader sees the quote but not the order flow and reads a
+  quote off the rule as noise flow. Stationary engine only, without lags, delays or ties. Checked exactly: a state's
+  level gives the equilibrium of the row of its increments written out, and a competitive price level that of the order
+  flow it filters (`tests/test_level_rows.py`).
+- A player privy to a control's owner who sees the control's level on a level row: on the path its map on the level
+  reacts at once (the instant reactions include its map at age 0), while a spike of the control is no news to it, so
+  in the owner's seed worlds and first-order condition its instant reaction is its loss's alone (`seed_composite`).
+  With that, Chapter 6's transparent market is the same whether the trader sees the quote and the order flow or only
+  the quote, being privy (checked to 1e-8), and a market with one privy and one naive trader, both seeing only the
+  quote, solves (the same trader on the path; after a quote spike the privy one sells 2.5 at once, the naive one 0.84).
+
+### Changed
+
+- `deviation_response` follows Chapter 6's blip convention by default: after its spike the deviating player, which
+  knows its seed, continues through its own response to it (D^{i<-i}), whether or not anyone else is privy. Before,
+  a deviator nobody else monitored held its control after the spike (the frozen continuation), so the paths showed
+  its opponents reacting while it did nothing; that path is still `continuation="frozen"`. With players privy to the deviator, `"frozen"` now gives the frozen
+  spike they answer seed by seed (before, it silently gave the blip): the privy players' responses depend on what they
+  expect the deviator to do next. The first-order conditions,
+  and so every equilibrium, are the same under both (the chapter's lemma on blip and frozen continuations). Checked
+  on a lone regulator, whose blip continuation is the full-information feedback on its own displacement.
+
+- `solve(model, continue_from={parameter: value})`: continuation from values where the model solves cold to its own,
+  each point starting from the last, the step halved where one does not converge; the path is `res.continued`.
+- A warning when a player sees another's control level without monitoring it while also seeing what that control's
+  owner observes (a trader seeing the quote and the order flow): such a player is privy, and built naive its reading
+  of a quote off the rule is not pinned down.
+
 ### Fixed
+
+- The monitoring iteration's Volterra solve for a frozen spike's seeds falls back to least squares when a trial point
+  far from the equilibrium makes the discretised operator singular (the iteration keeps its best round), instead of
+  raising.
 
 - `deviation_response` on the stationary engine, all-naive corner: a spike of a control whose level others observe
   (`{level: P}`) now carries the instant reactions it draws, as the solve's own spike responses always did. The market

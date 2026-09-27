@@ -606,7 +606,7 @@ class Result:
         c = self.compiled
         atoms, Q, _ = c.loss[agent]
         terminal = (c.terminal or {}).get(agent)
-        W = self._seed_world(seed, o)
+        W = self._seed_world(seed, o, "blip")                          # the world the privy players expect
         R = self._spike_responses(me)                                   # (n_prim N, nU)
         end = self._check_end()
         rho = float(self.model.horizon.discount)
@@ -651,8 +651,13 @@ class Result:
             self._solver_cache = self._make_solver(self.model)
         return self._solver_cache
 
-    def _seed_world(self, origin: str, o: int) -> np.ndarray:
-        """Hook: the closed loop's kernels (n_prim N,) in `origin`'s deviation world, its control o spiked at 0."""
+    def _seed_world(self, origin: str, o: int, continuation: str = "frozen") -> np.ndarray:
+        """Hook: the closed loop's kernels (n_prim N,) in `origin`'s deviation world, its control o spiked at 0.
+        continuation "frozen": the origin holds its control after the spike, and players privy to it answer that, a
+        string of further seeds each of which they see (with privy players: the frozen responses of the monitoring
+        iteration); "blip": it continues through its own response to its seed, D^{i<-i} (Chapter 6's blip convention),
+        which is what privy players expect of it.  The origin's first-order condition is the
+        same in both (the chapter's Lemma on blip and frozen continuations); the paths differ."""
         raise NotImplementedError(f"foc_residual() is not available on the {self.kind} engine")
 
     def _spike_responses(self, agent) -> np.ndarray:
@@ -1272,28 +1277,37 @@ class StationaryResult(Result):
         K = self.world[c.block(name)] if name in c.index else c.expr_op(c.model.expand({name: 1.0})) @ self.world
         return K if channel is None else K[:, self._shock_ix(channel)]
 
-    def deviation_response(self, origin, quantities, control=None) -> "SeedResponse":
+    def deviation_response(self, origin, quantities, control=None, continuation: str = "blip") -> "SeedResponse":
         """How quantities respond to a unit deviation seed of `origin` (a unit impulse of its control, the first
         unless `control` names one), as functions of the seed's age: `.over(ages)`, one column per quantity.  The
-        players privy to the origin (Chapter 6's monitoring relation) respond through their response kernels, the
-        origin itself resuming play after the blip; naive players filter it.  Without privy players it is the
-        impulse response with the origin's own reaction frozen, the all-naive corner's."""
+        players privy to the origin (Chapter 6's monitoring relation) respond through their response kernels and naive
+        players filter it.  continuation="blip" (Chapter 6's convention): the origin, which knows its seed, then
+        continues through its own response to it, D^{i<-i}, as privy players expect.  continuation="frozen": it holds
+        its control after the spike (the continuation of Chapter 1's first-order condition), which privy players see as
+        a string of further seeds and answer one by one.  The equilibrium is the same either way; the paths differ,
+        and with privy players so do their responses."""
         origin = _nm(origin)
         a = next((x for x in self.model.agents if x.name == origin), None)
         if a is None:
             raise NameNotFound(unknown("agent", origin, [x.name for x in self.model.agents]))
         o = 0 if control is None else a.controls.index(_nm(control))
         c = self.compiled
-        W = self._seed_world(origin, o)
+        if continuation not in ("blip", "frozen"):
+            raise ValueError(f"continuation must be 'blip' or 'frozen', not {continuation!r}")
+        W = self._seed_world(origin, o, continuation)
         names = [quantities] if isinstance(quantities, str) or not hasattr(quantities, "__iter__") else list(quantities)
         names = [_nm(q) for q in names]
         K = np.stack([W[c.block(n)] if n in c.index else c.expr_op(c.model.expand({n: 1.0})) @ W for n in names], axis=1)
         return SeedResponse(c.grid, K, names)
 
-    def _seed_world(self, origin: str, o: int) -> np.ndarray:
+    def _seed_world(self, origin: str, o: int, continuation: str = "frozen") -> np.ndarray:
         S = self._solver(); c = self.compiled
-        if len(self.model.privy(origin)) > 1:
-            return S._monitoring(self.maps)[1][origin][:, o]
+        if len(self.model.privy(origin)) > 1:        # privy players: they answer the blip, or each seed of a frozen spike
+            Rmon, W = S._monitoring(self.maps)
+            return (W[origin] if continuation == "blip" else Rmon[origin])[:, o]
+        if continuation == "blip":                   # the origin, alone privy to its seed, re-optimises after it
+            c.use_maps(self.maps)
+            return S._monitoring(self.maps, origins=[origin])[1][origin][:, o]
         # the spike with the instant reactions it draws (a trader seeing the quote's level trades at once, whether or not
         # it is privy), as the solve's own spike responses have them
         return S._spikes(c, self.maps, next(x for x in self.model.agents if x.name == origin))[1][:, o]
@@ -1449,27 +1463,32 @@ class TriangleResult(Result):
         K = np.repeat(np.asarray(K)[None], len(a.controls), axis=0)       # one copy per control: the projection's shape
         return reconstruction(solver, a, self.world, solver.maps_from_world(a, self.world, K))[0]
 
-    def deviation_response(self, origin, quantities, control=None) -> "SeedResponse2":
+    def deviation_response(self, origin, quantities, control=None, continuation: str = "blip") -> "SeedResponse2":
         """How quantities respond to a unit deviation seed of `origin` (a spike of its control, the first unless
         `control` names one) at time s, seen at time t >= s: `.over(t, s)`, one column per quantity.  As on the
-        stationary engine: the players privy to the origin respond through their response kernels, the origin
-        resuming play after the blip; naive players filter the seed."""
+        stationary engine: privy players respond through their response kernels, naive players filter the seed, and
+        the origin continues through its own response to it (continuation="blip") or holds its control ("frozen")."""
         origin = _nm(origin)
         a = next((x for x in self.model.agents if x.name == origin), None)
         if a is None:
             raise NameNotFound(unknown("agent", origin, [x.name for x in self.model.agents]))
         o = 0 if control is None else a.controls.index(_nm(control))
         c = self.compiled
-        W = self._seed_world(origin, o)
+        if continuation not in ("blip", "frozen"):
+            raise ValueError(f"continuation must be 'blip' or 'frozen', not {continuation!r}")
+        W = self._seed_world(origin, o, continuation)
         names = [quantities] if isinstance(quantities, str) or not hasattr(quantities, "__iter__") else list(quantities)
         names = [_nm(q) for q in names]
         K = np.stack([W[c.block(n)] if n in c.index else c.expr_op(c.model.expand({n: 1.0})) @ W for n in names], axis=1)
         return SeedResponse2(self.grid, K, names)
 
-    def _seed_world(self, origin: str, o: int) -> np.ndarray:
+    def _seed_world(self, origin: str, o: int, continuation: str = "frozen") -> np.ndarray:
         S = self._solver(); c = self.compiled
-        if len(self.model.privy(origin)) > 1:
-            return S._monitoring(self.maps)[1][origin][:, o]
+        if len(self.model.privy(origin)) > 1:        # privy players: they answer the blip, or each seed of a frozen spike
+            Rmon, W = S._monitoring(self.maps)
+            return (W[origin] if continuation == "blip" else Rmon[origin])[:, o]
+        if continuation == "blip":                   # the origin, alone privy to its seed, re-optimises after it
+            return S._monitoring(self.maps, origins=[origin])[1][origin][:, o]
         return S._spikes(c, self.maps, next(x for x in self.model.agents if x.name == origin))[1][:, o]
 
     def _spike_responses(self, agent) -> np.ndarray:

@@ -588,18 +588,20 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         Z0 = np.stack([spike[v] for v in ctrls], axis=1)
         return ctrls, Z0, {v: self._resp_dense(v, spike[v]) for v in ctrls}
 
-    def _monitoring(self, maps):
+    def _monitoring(self, maps, origins=None):
         """({agent: R^mon}, {origin: W}) as on the stationary engine, on the triangle's nodes: the kernels from the
         naive responses by the plain iteration, which stops at 1e-10 or once 10 rounds have not improved on the best
         round, keeping it (it reaches rounding and then only wanders); _finish requires them settled at the
         equilibrium.  The non-origin responders' rows are fixed within a call and built once."""
         key = self._maps_key(maps)
-        if getattr(self, "_monitored", None) is not None and self._monitored[0] == key:
+        if origins is None and getattr(self, "_monitored", None) is not None and self._monitored[0] == key:
             self._kernel_residual = self._monitored[3]
             return self._monitored[1], self._monitored[2]
         c = self.c; N = c.N
         owner = {a.name: a for a in self.model.agents}
-        origins = [a.name for a in self.model.agents if len(self.model.privy(a.name)) > 1]
+        own = origins is None                           # the equilibrium's origins (cached), or ones asked for (the blip
+        if own:                                         # continuation of a deviator only it is privy to: results)
+            origins = [a.name for a in self.model.agents if len(self.model.privy(a.name)) > 1]
         setup = {i: self._seed_setup(maps, i) for i in origins}
         responders = {m for i in origins for m in self.model.privy(i)}
         Rmon = {n: self._spikes(c, maps, owner[n])[1] for n in responders}
@@ -646,8 +648,9 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             ctrls, Z0, C = setup[i]
             X = D[i].reshape(shapes[i][0], -1).T
             W[i] = Z0[:, :shapes[i][0]] + sum(C[v] @ X[k * N:(k + 1) * N] for k, v in enumerate(ctrls))
-        self._kernel_residual = float(change)
-        self._monitored = (key, Rmon, W, self._kernel_residual)
+        if own:
+            self._kernel_residual = float(change)
+            self._monitored = (key, Rmon, W, self._kernel_residual)
         return Rmon, W
 
     def _frozen_responses(self, setup, Dj: np.ndarray, own: int) -> np.ndarray:
@@ -669,7 +672,12 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             M = np.eye(own * N) + np.block([[op.rows(col(o2, u), 0, N) for o2 in range(own)] for u in range(own)])
         out = np.zeros((len(c.prim) * N, own))
         for o in range(own):
-            s = np.linalg.solve(M, -np.concatenate([Dj[o, u] for u in range(own)])).reshape(own, N)
+            rhs = -np.concatenate([Dj[o, u] for u in range(own)])
+            try:
+                s = np.linalg.solve(M, rhs).reshape(own, N)
+            except np.linalg.LinAlgError:              # a trial point far from the equilibrium can make the discretised
+                s = np.linalg.lstsq(M, rhs, rcond=None)[0].reshape(own, N)   # Volterra operator singular; the
+                                                        # iteration keeps its best round (_monitoring) and moves on
             Is = [op.unknown(s[o2]) for o2 in range(own)] if not op.empty else None
             colv = Z0[:, o].copy()
             for kk, v in enumerate(ctrls):

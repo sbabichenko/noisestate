@@ -289,7 +289,14 @@ class EngineBase(MeanLayer):
         passive world the agent's own control is off).  Reads c.row_blocks (the nonzero primary blocks
         only)."""
         c = self.c; rows, inst = [], []
+        levels = (c.levels or {}).get(agent.name, {})
         for r in range(len(agent.signals)):
+            if r in levels:                                          # a level row: the increments of the quantity's kernel,
+                q = levels[r]                                        # its rate of change and its jump at age 0 (the noise)
+                Zq = Z[c.block(q)] if q not in excluded else np.zeros((c.N, Z.shape[1]))
+                rows.append(c.grid.diff() @ Zq)
+                inst.append([(k, 0.0, float(Zq[0, k])) for k in range(c.nW) if Zq[0, k] != 0.0])
+                continue
             blocks, deltas = c.row_blocks(agent.name, r, excluded)
             y = np.zeros((c.N, Z.shape[1]))
             for nm, op in blocks.items():                            # only the primaries the row reads

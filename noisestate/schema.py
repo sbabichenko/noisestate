@@ -82,7 +82,9 @@ def model_schema() -> dict:
     state = {"type": "object", "additionalProperties": False,
              "properties": {"drift": _EXPR, "noise": _EXPR, "initial": {**_NUMBER_OR_EXPR, "description": "finite horizon only; moves the means"}}}
     signal = {"type": "object", "additionalProperties": False,
-              "properties": {"drift": _EXPR, "noise": _EXPR, "delay": {**_NUMBER_OR_EXPR, "description": "observation delay"}}}
+              "properties": {"drift": _EXPR, "noise": _EXPR, "delay": {**_NUMBER_OR_EXPR, "description": "observation delay"},
+                             "level": {"type": "string", "description": "a level row: the exact path of this state or control, "
+                                       "filtered through its increments (drift and noise loading set by the equilibrium)"}}}
     agent = {"type": "object", "additionalProperties": False, "required": ["controls"],
              "properties": {"controls": {"type": "array", "items": {"type": "string"}},
                             "signals": {"type": "object", "additionalProperties": signal},

@@ -39,6 +39,7 @@ class Structure:
     terminal_constant: Dict[str, float] = None       # agent -> the terminal loss's constant
     composite: Dict[str, Dict[str, float]] = None     # control u -> {control v: coef}: a spike of u with the instant reactions it draws
     instant_loads: Dict[str, Dict[str, float]] = None  # observer's control v -> {seen control u: h}: v's contemporaneous loading on u
+    levels: Dict[str, Dict[int, str]] = None          # agent -> {row index: quantity} for its level rows (drift {} and E 0 in rows)
 
     @property
     def nW(self) -> int:
@@ -50,7 +51,7 @@ class CompiledBase(KernelAlgebra):
     fields are adopted as attributes (c.rows, c.loss, c.rep, ...); the kernel algebra (algebra.KernelAlgebra)
     each engine's compiled model implements on top."""
     FIELDS = ("channels", "nW", "prim", "index", "nX", "nU", "A", "state_inputs", "sigma", "const", "x0", "rows", "loss", "rep", "reps",
-              "terminal", "terminal_constant", "composite", "instant_loads")
+              "terminal", "terminal_constant", "composite", "instant_loads", "levels")
 
     def __init__(self, model: Model):
         model.validate()
@@ -81,9 +82,14 @@ def compile_structure(model: Model) -> Structure:
     const = np.array([model.constant(s.drift) for s in model.states], dtype=float)
     x0 = np.array([s.initial or 0.0 for s in model.states], dtype=float)
     rows = {}
+    levels = {}
     for a in model.agents:
         rr = []
-        for r in a.signals:
+        for i, r in enumerate(a.signals):
+            if r.level:                                    # a level row: its kernels come from the quantity's, in the world
+                levels.setdefault(a.name, {})[i] = r.level
+                rr.append((r.name, {}, np.zeros(nW), 0.0))
+                continue
             E = np.zeros(nW)
             for ch, c in r.noise.items():
                 E[channels.index(ch)] = c
@@ -100,7 +106,7 @@ def compile_structure(model: Model) -> Structure:
     return Structure(model=model, channels=channels, prim=prim, index=index, nX=nX, nU=nU, A=A,
                      state_inputs=state_inputs, sigma=sigma, const=const, x0=x0, rows=rows, loss=loss, rep=rep, reps=reps,
                      terminal=terminal, terminal_constant=terminal_constant, composite=_composite(model, loss),
-                     instant_loads=_instant_loadings(model, loss))
+                     instant_loads=_instant_loadings(model, loss), levels=levels)
 
 
 def _instant_loadings(model: Model, loss) -> Dict[str, Dict[str, float]]:

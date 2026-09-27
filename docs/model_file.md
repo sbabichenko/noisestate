@@ -50,6 +50,7 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `agents.<name>.terminal` | list of loss terms | the loss paid at T, on the states at T: a finite horizon or a transition ending at T (the equations form writes `terminal: "q (X - b)^2"`) | none |
 | `agents.<name>.terminal_constant` | number or expression | the terminal loss's constant | 0 |
 | `agents.<name>.instant` | control name or list of them | other agents' controls whose current level this agent sees and reacts to within the instant (the equations form writes `observes: {quote: {level: P}}`); the loading is its loss's `-G^DD^-1 G^DP`; no cycles; the stationary engine and the finite one without a past | none |
+| `agents.<name>.signals.<row>.level` | state or control name | a level row: the exact path of that quantity, filtered through its increments (drift and noise loading set by the equilibrium); the equations form writes `observes: {quote: {level: P, filter: true}}`, which also keeps the instant reaction to a control; the stationary engine, without lags, delays or ties | none |
 | `agents.<name>.monitors` | agent name or list of them | the agents whose deviations this one is privy to (Chapter 6's monitoring relation, transitive); solved on the stationary engine and the finite one without a past | none (all naive) |
 | `states` | map of object |  |  |
 | `states.<name>.drift` | linear expression | a linear expression: {atom: coef} (an atom is name or name@lag; const for a constant), or [[coef, atom], ...] | empty |

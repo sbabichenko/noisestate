@@ -213,3 +213,69 @@ def test_a_deviation_response_starts_with_the_instant_reactions_the_spike_draws(
     (inventory 0 at age 0), though the solve's own spike responses carried the reaction."""
     res = ns.solve(market(0.1, transparent=transparent))
     assert res.deviation_response("mm", ["Q"]).over([0.0])[0, 0] == pytest.approx(2.5, rel=1e-6)
+
+
+def test_the_blip_continuation_is_the_deviators_own_reoptimisation():
+    """After its own spike a lone player knows exactly how far it pushed X, so its blip continuation (Chapter 6's
+    D^{i<-i}) is the full-information regulator on that displacement: D = -X, X = exp(-age) for loss X^2/2 + D^2/2."""
+    m = ns.Model.from_dict({"name": "one", "params": {}, "shocks": ["w0", "w1"], "states": {"X": "D dt + dw0"},
+                            "agents": {"p": {"controls": "D", "observes": {"y": "X dt + dw1"}, "loss": "0.5 X^2 + 0.5 D^2"}},
+                            "horizon": {"window": 12.0}, "numerics": {"nodes": 32}})
+    r = ns.solve(m)
+    a = np.array([0.0, 0.5, 1.0, 2.0, 4.0])
+    v = r.deviation_response("p", ["X", "D"]).over(a)
+    assert np.allclose(v[:, 0], np.exp(-a), atol=1e-6) and np.allclose(v[:, 1], -np.exp(-a), atol=1e-6)
+    frozen = r.deviation_response("p", ["X", "D"], continuation="frozen").over(a)
+    assert np.allclose(frozen[:, 1], 0.0, atol=1e-12) and np.allclose(frozen[:, 0], 1.0, atol=1e-9)   # the spike held
+    with pytest.raises(ValueError, match="continuation"):
+        r.deviation_response("p", ["X"], continuation="resume")
+
+
+@pytest.mark.parametrize("monitored", [False, True])
+def test_the_equilibrium_is_flat_along_frozen_and_blip_deviations(monitored):
+    """Chapter 6's lemma on blip and frozen continuations, on the cost itself: at the equilibrium the deviator's expected
+    cost has zero derivative along a change of its strategy (a map on its passive rows, so something it can do) whether
+    it then holds still (frozen: the others react) or also carries out its own continuation D^{i<-i} (blip); central
+    differences of expected_cost, no first-order operator.  Nobody reacting, the same change is far from flat."""
+    d = example("ch3_two_player").to_dict()
+    d["horizon"]["window"] = 6.0; d.setdefault("numerics", {})["nodes"] = 32
+    if monitored:
+        d["agents"]["player2"]["monitors"] = "player1"
+    res = ns.solve(ns.Model.from_dict(d))
+    S, c, agent = res._solver(), res.compiled, res.model.agents[0]
+    N, own = c.N, c.block("D1")
+    Zp, R0 = S._spikes(c, res.maps, agent)
+    ytil, yinst = S._passive_rows(agent, S._passive_world(agent, res.maps, Zp, R0))
+    Gk = S._row_operator(agent, ytil, yinst)
+    a = c.grid.nodes
+    dc = np.stack([Gk[k] @ np.tile(np.sin(2 * a) * np.exp(-a), len(agent.signals)) for k in range(c.nW)], axis=1)
+
+    def slope(W):
+        delta = np.zeros_like(res.world)
+        for p in range(len(c.prim)):
+            blk = slice(p * N, (p + 1) * N)
+            delta[blk] = c.grid.conv_op(W[blk]) @ dc
+        delta[own] += dc
+        return (S.expected_cost(agent, res.world + 1e-3 * delta) - S.expected_cost(agent, res.world - 1e-3 * delta)) / 2e-3
+
+    frozen = S._monitoring(res.maps)[0]["player1"][:, 0] if monitored else res._seed_world("player1", 0, "frozen")
+    blip = res._seed_world("player1", 0, "blip")
+    scale = abs(slope(np.zeros_like(blip)))
+    assert scale > 0.1
+    assert abs(slope(frozen)) < 1e-8 * scale and abs(slope(blip)) < 1e-8 * scale
+    assert np.abs(blip[own]).max() > 0.3                                  # the continuation is not nothing
+
+
+def test_a_privy_player_answers_what_it_expects_the_deviator_to_do_next():
+    """With player 2 privy to player 1, the continuation is not bookkeeping: frozen (player 1 holds still, a string of
+    further seeds player 2 sees and answers) and blip (player 1 plays on, as player 2 expects) are different paths, and
+    player 2's response differs between them."""
+    d = example("ch3_two_player").to_dict()
+    d["agents"]["player2"]["monitors"] = "player1"
+    res = ns.solve(ns.Model.from_dict(d))
+    a = np.array([0.25, 0.5, 1.0, 2.0])
+    frozen = res.deviation_response("player1", ["D1", "D2", "X"], continuation="frozen").over(a)
+    blip = res.deviation_response("player1", ["D1", "D2", "X"], continuation="blip").over(a)
+    assert np.abs(frozen[:, 0]).max() < 1e-9                     # player 1 holds still after its spike
+    assert np.abs(blip[:, 0]).max() > 0.1                        # or plays on
+    assert np.abs(frozen[:, 1] - blip[:, 1]).max() > 0.05        # and player 2, privy, answers what it sees

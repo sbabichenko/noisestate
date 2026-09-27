@@ -225,12 +225,16 @@ def _signal(sname: str, v, env: dict, where: str):
     """One observed row, "..." or {d: "...", delay: tau}, as a Signal; {level: P} is the instant observation of another
     agent's control P (a Level)."""
     if isinstance(v, dict) and "level" in v:
-        if set(v) != {"level"}:
-            raise ValueError(f"{where}, {sname}: an instant observation is {{level: P}} alone")
+        if not set(v) <= {"level", "filter"}:
+            raise ValueError(f"{where}, {sname}: an observed level is {{level: P}} or {{level: P, filter: true}}")
+        filt = bool(v.get("filter", False))
         q = env.get(str(v["level"]))
-        if not isinstance(q, E.Control):
-            raise ValueError(f"{where}, {sname}: {v['level']!r} is not a control; {{level: ...}} observes another agent's control")
-        return E.Level(q)
+        if filt and not isinstance(q, (E.Control, E.State)):
+            raise ValueError(f"{where}, {sname}: {v['level']!r} is not a state or a control; {{level: ..., filter: true}} observes one")
+        if not filt and not isinstance(q, E.Control):
+            raise ValueError(f"{where}, {sname}: {v['level']!r} is not a control; {{level: ...}} observes another agent's control "
+                             "(a state's level: {level: X, filter: true})")
+        return E.Level(q, filt, name=sname)
     if isinstance(v, dict):
         ex = sorted(set(v) - {"d", "delay"})
         if ex:
@@ -391,9 +395,14 @@ def from_grammar(g: dict) -> dict:
     out["agents"] = {}
     for a, v in (g.get("agents") or {}).items():
         sig = {}
+        filtered = {row["level"] for row in (v.get("signals") or {}).values() if "level" in row}
         for u in _as_list(v.get("instant")):
-            sig[u] = {"level": u}
+            if u not in filtered:                              # a filtered level's row carries its instant reaction too
+                sig[u] = {"level": u}
         for sname, row in (v.get("signals") or {}).items():
+            if "level" in row:
+                sig[sname] = {"level": row["level"], "filter": True}
+                continue
             eq = _differential(row)
             delay = row.get("delay", 0)
             sig[sname] = {"d": eq, "delay": delay} if delay not in (0, 0.0, None) else eq

@@ -1012,15 +1012,35 @@ class Level:
     within the same instant (a trader seeing the quote it trades against).  A signal, by contrast, is reacted to
     predictably: its increments reach the action only after they are observed."""
 
-    def __init__(self, quantity):
-        if not isinstance(quantity, Control):
-            raise ValueError(f"level(): an instant observation is of another agent's control, not {quantity!r}")
-        self.control = quantity
+    def __init__(self, quantity, filter: bool = False, name: Optional[str] = None):
+        self.filter = bool(filter); self.name = name          # the row's name, when given as an item of a list
+        if self.filter:
+            if not isinstance(quantity, (Control, State)):
+                raise ValueError(f"level(filter=True): a level row observes a state or another agent's control, not {quantity!r}")
+        elif not isinstance(quantity, Control):
+            raise ValueError(f"level(): an instant observation is of another agent's control, not {quantity!r} "
+                             "(a state's level is seen as a row: level(X, filter=True))")
+        self.quantity = quantity
+        self.control = quantity if isinstance(quantity, Control) else None
 
 
-def level(quantity) -> Level:
-    """The current level of another agent's control, observed exactly and reacted to at once (see Level)."""
-    return Level(quantity)
+def level(quantity, filter: bool = False) -> Level:
+    """The current level of another agent's control, observed exactly and reacted to at once (see Level).  With
+    filter=True the path is also information: a level row, filtered through its increments (a state's level too)."""
+    return Level(quantity, filter)
+
+
+class LevelSignal(Signal):
+    """The row of a filtered level (level(q, filter=True)): the exact path of q, its increments filtered."""
+
+    def __init__(self, name: str, quantity):
+        self.name = name; self.quantity = quantity; self.delay = 0.0; self.expr = None
+
+    def compile(self) -> dict:
+        return {"level": self.quantity.name}
+
+    def __repr__(self) -> str:
+        return f"LevelSignal({self.name!r}, {self.quantity.name})"
 
 
 class Agent:
@@ -1039,8 +1059,9 @@ class Agent:
 
         def rows(name, o):                      # one row, or a vector of rows name0, name1, ...
             if isinstance(o, Level):
-                self.instant.append(o.control.name)
-                return []
+                if o.control is not None:
+                    self.instant.append(o.control.name)
+                return [LevelSignal(o.name or name, o.quantity)] if o.filter else []
             if isinstance(o, Vec):
                 return [Signal(f"{name}{i}", e) for i, e in enumerate(o)]
             return [o if isinstance(o, Signal) else Signal(name, o)]
@@ -1254,6 +1275,9 @@ class _Walk:
             self.coef(s.initial)
         for a in agents:
             for sg in a.signals:
+                if isinstance(sg, LevelSignal):
+                    self._reach([sg.quantity])
+                    continue
                 self.linear(sg.expr); self.coef(sg.delay)
             self.quad(a.loss)
             if a.terminal is not None:
@@ -1286,7 +1310,7 @@ def _check_quantities(name, states, controls, defs, agents):
             check(f"state {s.name}: its drift", s._drift.quantities.values())
     for a in agents:
         for sg in a.signals:
-            check(f"signal {a.name}.{sg.name}:", sg.expr.quantities.values())
+            check(f"signal {a.name}.{sg.name}:", [sg.quantity] if isinstance(sg, LevelSignal) else sg.expr.quantities.values())
         check(f"agent {a.name}: its loss", a.loss.quantities.values())
     for d in defs.values():
         check(f"definition {d.name}:", d.expr.quantities.values())

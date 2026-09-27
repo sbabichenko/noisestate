@@ -119,7 +119,11 @@ of the same names:
 5. **Into the best response** (`_impulse_responses`).  The FOC of an agent whose deviations are monitored uses
    the monitored spike responses in place of R; the on-path world keeps the ordinary R.
 
-`res.deviation_response(origin, quantities)` reads the seed's world; `res.foc_residual(agent, seed=origin)`
+`res.deviation_response(origin, quantities)` reads the seed's world under the blip convention: the origin continues
+through its own response to its seed, D^{i<-i}, which for an origin nobody else is privy to is the same iteration run
+for that origin alone (`_monitoring(maps, origins=[i])`, outside the equilibrium's cache); `continuation="frozen"`
+holds its control after the spike instead (Chapter 1's first-order condition, and foc_residual's world, which by
+the chapter's lemma on the two continuations is the same condition).  `res.foc_residual(agent, seed=origin)`
 checks the response kernels against the loss by quadrature, independently of `FocOps` (it holds at any maps,
 since step 3 runs inside every evaluation, so it tests the response machinery, not the on-path equilibrium).
 The spectral engine refuses monitoring and instant observations with a past or a continuation.

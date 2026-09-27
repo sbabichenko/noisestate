@@ -3,9 +3,16 @@
 What the grammar and the engines do not do, and what is done only approximately.
 
 Vectors exist in the Python form only (`ns.State("X", 3)`, matrix coefficients), where they expand into scalar
-components; the file form has no vector syntax.  No exact (noise-free) observation of a state that is not itself a
-shock; an instant observation of another agent's control level (`{level: P}`) is a reaction, not information that
-enters the agent's filter, so a market whose trader learns from the quote (Chapter 6's opaque market) is not solved.  Means (targets, constant
+components; the file form has no vector syntax.  An exact observation of a state or of another agent's control
+is a level row (`{level: X, filter: true}`): its increments are the row, their drift the kernel's rate of change and
+their noise loading its jump at age 0, both set by the equilibrium.  Level rows are solved on the stationary engine only,
+without lags, delays or ties, and a quantity that does not jump at age 0 (no noise of its own) is an exact smooth
+observation the engine refuses as singular.  A plain `{level: P}` is the instant reaction alone, not information: add
+`filter: true` for a trader that learns from the quote (Chapter 6's opaque market).  That market does not converge from
+a cold start at a positive inventory weight: solve it by continuation from the cost-free corner,
+`solve(m, continue_from={"gamma": 0})` (a long window may also need `start_policy="coarse"` for the corner itself).
+A trader who sees a control's level and also what moves it (the order flow behind a quote) is privy: noisestate warns
+when such a player is built naive, since its off-path reading is not pinned down.  Means (targets, constant
 drifts, initial states) are solved as constants on the stationary engine, where a random walk
 with no inputs has no stationary mean and is pinned at 0 and an initial state is rejected, and
 as paths on the finite engines (see [method.md](method.md), "Means").  Lead atoms (`X@-0.5`) are accepted only in a

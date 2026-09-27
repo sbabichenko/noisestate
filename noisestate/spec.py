@@ -157,6 +157,9 @@ class SignalRow:
     drift: Dict[str, float] = field(default_factory=dict)
     noise: Dict[str, float] = field(default_factory=dict)   # channel -> loading (E row)
     delay: float = 0.0                                      # observed with this delay
+    level: str = ""                                         # a level row: the path of this quantity, seen exactly and
+                                                            # filtered (its increments are the row: drift the kernel's
+                                                            # rate of change, noise its jump at age 0, both equilibrium)
 
 
 @dataclass
@@ -581,6 +584,7 @@ class Model:
         self._check_ties()
         self._check_monitoring()
         self._check_instant()
+        self._check_seen_levels()
         self._check_channels_used()
         self._check_shock_names()
         self._check_control_terms()
@@ -606,6 +610,39 @@ class Model:
                         raise ValueError(f"monitoring is not transitive: {k} monitors {j}, who monitors {i}, but {k} does not "
                                          f"monitor {i} -- {k} would see {j}'s response to a deviation of {i} without seeing "
                                          f"its origin (Assumption 6.4); add {i} to {k}'s monitors or drop {j}")
+
+    def _check_seen_levels(self) -> None:
+        """Warn when an agent sees the level of another's control (instantly or on a level row) without being privy to
+        its owner, while its other rows share what the owner observes: then it can hold the quote against what moves
+        the quote, and a quote off the owner's rule is a deviation it can see.  Such a player is privy (seeing the
+        price and the order flow is what makes a trader privy, Chapter 6); a naive one sees the price alone.  Built
+        naive anyway, its off-path reading is not pinned down (a quote inconsistent with what it sees has probability
+        zero), and the strategy noisestate splits for it carries a stand-in for the quote built from the shared rows."""
+        owner = {u: a.name for a in self.agents for u in a.controls}
+        agents = {a.name: a for a in self.agents}
+
+        def reads(rows, skip):
+            names, chans = set(), set()
+            for r in rows:
+                if r.level:
+                    continue
+                names |= {n for (n, _) in self.expand(r.drift)} - skip
+                chans |= {ch for ch, v in r.noise.items() if v}
+            return names, chans
+        for a in self.agents:
+            seen = set(a.instant) | {r.level for r in a.signals if r.level and r.level in owner}
+            for u in sorted(seen):
+                o = owner[u]
+                if a.name in self.privy(o):
+                    continue
+                mine = reads(a.signals, set(a.controls) | {u})
+                theirs = reads(agents[o].signals, set(a.controls) | {u})
+                shared = sorted((mine[0] & theirs[0]) | (mine[1] & theirs[1]))
+                if shared:
+                    warnings.warn(f"agent {a.name} sees the level of {o}'s {u} and also {shared}, which {o} observes too, "
+                                  f"without monitoring {o}: it can then tell a {u} off {o}'s rule, so it is privy "
+                                  f"(add monitors: [{o}]); a naive one sees {u} alone (a level row, filter: true) "
+                                  "and not what moves it", UserWarning, stacklevel=3)
 
     def _check_instant(self) -> None:
         """An instant observation (`observes: {quote: {level: P}}`) is of another agent's control, and the instant
@@ -696,6 +733,26 @@ class Model:
             self._check_signals(a)
             self._check_losses(a)
 
+    def _check_level_row(self, a: "Agent", r: "SignalRow") -> None:
+        """A level row (`{level: P, filter: true}`): the exact path of a state or of another agent's control, filtered
+        through its increments.  Their noise loading is the quantity's kernel at age 0 and their drift its rate of change,
+        both set by the equilibrium; the stationary engine solves them, on a model without lags or delays (a lag makes
+        kernels jump inside the window, where the rate of change would need the jumps too)."""
+        where = f"row {a.name}.{r.name}"
+        if r.level not in self.state_names + self.control_names:
+            raise ValueError(f"{where}: {r.level!r} is not a state or a control; a level row observes one of them exactly")
+        if r.level in a.controls:
+            raise ValueError(f"{where}: sees the level of its own control {r.level!r}")
+        if r.delay:
+            raise ValueError(f"{where}: a level row is seen at once (delay 0)")
+        if self.horizon.kind != "stationary":
+            raise ValueError(f"{where}: level rows are solved on the stationary engine only so far (this horizon is {self.horizon.kind})")
+        if self.all_lags() or any(s.delay for b in self.agents for s in b.signals):
+            raise ValueError(f"{where}: level rows need a model without lags or delays so far (a lag makes a kernel jump inside "
+                             "the window, and the row's rate of change would have to carry the jump)")
+        if self.ties:
+            raise ValueError(f"{where}: level rows are not solved with ties yet; drop the ties")
+
     def _check_signals(self, a: "Agent") -> None:
         """The agent has at least one signal row, and each row loads known channels, has a nonzero noise
         loading (exact rows are not supported), a non-negative delay, a causal drift and no constant."""
@@ -703,6 +760,9 @@ class Model:
             raise ValueError(f"agent {a.name} has no signal rows: a strategy reads its rows, so there is "
                              f"nothing to solve for (give it a row, or drop the agent and its controls)")
         for r in a.signals:
+            if r.level:
+                self._check_level_row(a, r)
+                continue
             for ch in r.noise:
                 if ch not in self.shocks:
                     raise ValueError(f"row {a.name}.{r.name}: unknown shock {ch}")
@@ -950,7 +1010,7 @@ class Model:
         "state": {"drift", "noise", "initial"},
         "agent": {"controls", "signals", "loss", "myopic", "constant", "terminal", "terminal_constant", "monitors", "instant",
                   "risk_aversion"},
-        "signal": {"drift", "noise", "delay"},
+        "signal": {"drift", "noise", "delay", "level"},
     }
 
     @staticmethod
@@ -1045,7 +1105,7 @@ class Model:
              "agents": {}, "ties": [list(g) for g in self.ties], "horizon": horizon, "numerics": numerics}
         for a in self.agents:
             d["agents"][a.name] = {"controls": list(a.controls), "myopic": a.myopic,
-                                   "signals": {r.name: {"drift": ex(r.drift), "noise": ex(r.noise), "delay": r.delay} for r in a.signals},
+                                   "signals": {r.name: ({"level": r.level} if r.level else {"drift": ex(r.drift), "noise": ex(r.noise), "delay": r.delay}) for r in a.signals},
                                    "loss": [[float(t[0])] + [atom(x) for x in t[1:]] for t in a.loss]}
             if a.constant:
                 d["agents"][a.name]["constant"] = float(a.constant)
@@ -1341,6 +1401,9 @@ class Model:
         for k, v in (d.get("agents") or {}).items():
             rows = []
             for rk, rv in (v.get("signals") or {}).items():
+                if "level" in rv:
+                    rows.append(SignalRow(name=rk, level=str(rv["level"])))
+                    continue
                 rows.append(SignalRow(name=rk, drift=parse_expr(rv.get("drift"), params),
                                       noise=parse_expr(rv.get("noise"), params),
                                       delay=eval_coef(rv.get("delay", 0.0), params)))

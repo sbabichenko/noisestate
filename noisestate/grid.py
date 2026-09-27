@@ -138,6 +138,25 @@ class AgeGrid:
     def _bary_rows(self, pts: np.ndarray, xs: np.ndarray) -> np.ndarray:
         return bary_rows(pts, xs, self._bw)
 
+    def diff(self) -> np.ndarray:
+        """(N, N) the derivative in age, panel by panel (the barycentric differentiation matrix of each panel's
+        Chebyshev-Lobatto nodes): exact for a kernel that is a polynomial of degree n - 1 on every panel.  A kernel
+        that jumps at a breakpoint has its jump left out (the level rows that use this refuse lagged models)."""
+        if getattr(self, "_diff", None) is None:
+            D = np.zeros((self.N, self.N))
+            w = self._bw
+            for p in range(self.P):
+                sl = slice(p * self.n, (p + 1) * self.n)
+                x = self.nodes[sl]
+                dx = x[:, None] - x[None, :]
+                np.fill_diagonal(dx, 1.0)
+                Dp = (w[None, :] / w[:, None]) / dx
+                np.fill_diagonal(Dp, 0.0)
+                np.fill_diagonal(Dp, -Dp.sum(axis=1))
+                D[sl, sl] = Dp
+            self._diff = D
+        return self._diff
+
     def node_sides(self) -> np.ndarray:
         """+1 for the first node of a panel, -1 for the last, 0 for interior nodes."""
         k = np.arange(self.N) % self.n

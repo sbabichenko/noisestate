@@ -76,6 +76,7 @@ class Compiled(CompiledBase):
         self._elim: Dict[frozenset, tuple] = {}
         self._elim_wzero: Dict[frozenset, bool] = {}
         self.sym = find_cyclic_symmetry(model)
+        self._composite_static = self.composite            # the loss's instant reactions; use_maps adds the level rows
         self._modes = None
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
 
@@ -127,6 +128,43 @@ class Compiled(CompiledBase):
         for atom, c in expr.items():
             M[:, self.block(atom[0])] += c * self.shift(atom[1])
         return M
+
+    def use_maps(self, maps) -> None:
+        """Set the instant reactions to the strategies `maps`: a spike of a quantity seen on a level row draws, besides
+        the loss's reaction (h, compile._composite), the observer's map on the row at age 0 (a jump of the level is
+        an increment the map reads at once).  Without level rows the composite is the loss's alone."""
+        self._level_g0 = []                              # (q, observer's control v, observer, g0): the level rows' part
+        if not self.levels:
+            return
+        comp = {u: dict(v) for u, v in (self._composite_static or {}).items()}
+        owner = {a.name: a for a in self.model.agents}
+        for an, rows in self.levels.items():
+            g = maps.get(an) if maps is not None else None
+            if g is None:
+                continue
+            for r, q in rows.items():
+                if q not in self.model.control_names:
+                    continue                                 # a state is never spiked
+                for ui, v in enumerate(owner[an].controls):
+                    g0 = float(g[ui, r, 0])                  # node 0 is age 0
+                    if g0 != 0.0:
+                        comp.setdefault(q, {q: 1.0})
+                        comp[q][v] = comp[q].get(v, 0.0) + g0
+                        self._level_g0.append((q, v, an, g0))
+        self.composite = comp
+
+    def seed_composite(self, origin: str) -> Dict[str, Dict[str, float]]:
+        """The composite for `origin`'s seed worlds (the monitoring iteration): a player privy to the origin knows its
+        spike for what it is, so its instant reaction is the loss's alone, not the belief update its map on a level row
+        would add (which the on-path composite, use_maps, keeps: on the path it reacts through its map)."""
+        privy = set(self.model.privy(origin))
+        if not any(an in privy for (_, _, an, _) in getattr(self, "_level_g0", [])):
+            return self.composite
+        comp = {u: dict(v) for u, v in (self.composite or {}).items()}
+        for q, v, an, g0 in self._level_g0:
+            if an in privy:
+                comp[q][v] -= g0
+        return comp
 
     # ------------------------------------------------------- closed loop
     def row_blocks(self, agent: str, r: int, excluded: set):
@@ -236,7 +274,7 @@ class Compiled(CompiledBase):
         `excluded` may also be a tuple of agents, every one of them switched off (a deviation's privy set)."""
         if isinstance(excluded, (tuple, list)) and len(excluded) == 1:
             excluded = excluded[0]
-        if self.sym is not None and not self.instant_loads and not isinstance(excluded, (tuple, list)) and self._maps_symmetric(maps):
+        if self.sym is not None and not self.instant_loads and not self.levels and not isinstance(excluded, (tuple, list)) and self._maps_symmetric(maps):
             return self.closed_loop_symmetric(maps, excluded, impulse_controls)
         return self._closed_loop_eliminated(maps, excluded, impulse_controls)
 
@@ -275,6 +313,13 @@ class Compiled(CompiledBase):
                     for nm, op in blocks.items():                       # only the primaries the row reads
                         MU[bl, self.block(nm)] += C @ op
                     self._add_point_columns(B, slice(nxs + bl.start, nxs + bl.stop), deltas, gur, impulse_controls)
+                    q = (self.levels or {}).get(a.name, {}).get(r)
+                    if q is not None:                            # a level row: the map on the quantity's increments,
+                        if q not in excl:                        # g * q' + g q(0+), in the kernel of q
+                            MU[bl, self.block(q)] += C @ self.grid.diff() + np.outer(gur, self.grid.interp([0.0])[0])
+                        elif q in impulse_controls:              # a spike of q: g' after it (the block g(0+) it draws at
+                            col = self.nW + list(impulse_controls).index(q)   # once is in the composite, use_maps)
+                            B[nxs + bl.start:nxs + bl.stop, col] += self.grid.diff() @ gur
         # instant observations: an observer's control moves with the level it sees, contemporaneously (its map covers
         # the rest of its action, see _map_part)
         for v, loads in (self.instant_loads or {}).items():
@@ -456,6 +501,8 @@ class Compiled(CompiledBase):
     def closed_loop_dense(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
                           impulse_controls: Sequence = ()):
         """closed_loop as one dense solve over every primary kernel (the reference for the elimination; tests)."""
+        if self.levels:
+            raise NotImplementedError("closed_loop_dense does not assemble level rows; use closed_loop")
         n = len(self.prim) * self.N
         ncol = self.nW + len(impulse_controls)
         M = np.zeros((n, n))
@@ -599,7 +646,8 @@ class StationarySolver(EngineBase):
             # term, continuation, delayed own read, lead term; contracted as sum_i (sum_j Q_ji M_j) AO_i
             # so the products are N x N x N per atom block instead of N x N x n_prim N per atom
             M = np.zeros((len(atms), N, N))
-            for v, coef in (c.composite or {}).get(u, {u: 1.0}).items():   # the control and the instant reactions it draws
+            comp = c.seed_composite(agent.name) if hasattr(c, "seed_composite") else c.composite   # its own deviations
+            for v, coef in (comp or {}).get(u, {u: 1.0}).items():   # the control and the instant reactions it draws
                 if (v, 0.0) in atms:
                     M[atms.index((v, 0.0))] += coef * np.eye(N)
             if not agent.myopic:
@@ -848,6 +896,7 @@ class StationarySolver(EngineBase):
         only).  A singular system raises the ValueError of singular_system_message."""
         c = self.c; N = c.N
         nR, nU = len(agent.signals), len(agent.controls)
+        c.use_maps(maps)
         Zpass, R0 = self._spikes(c, maps, agent)
         # two uses of the impulse responses, kept apart: the on-path world is the passive world plus the agent's
         # actions as every other player sees them on the path (their filters, R0); the first-order condition and
@@ -856,6 +905,12 @@ class StationarySolver(EngineBase):
         R = self._impulse_responses(agent, maps, R0)
         Zpass = self._passive_world(agent, maps, Zpass, R0)
         ytil, yinst = self._passive_rows(agent, Zpass)
+        if c.levels and agent.name in c.levels:
+            self._silent = getattr(self, "_silent", {})
+            scale = max([1e-300] + [float(np.abs(y[:, :c.nW]).max()) for y in ytil])
+            self._silent[agent.name] = {r for r in c.levels[agent.name]            # relative: the zero start leaves round-off
+                                        if max([0.0] + [abs(w) for (_, _, w) in yinst[r]]) <= 1e-9 * scale
+                                        and float(np.abs(ytil[r][:, :c.nW]).max()) <= 1e-9 * scale}
         Gk = self._row_operator(agent, ytil, yinst)
         Resp0 = self._response_operators(agent, R0)
         Resp = Resp0 if R is R0 else self._response_operators(agent, R)
@@ -918,6 +973,8 @@ class StationarySolver(EngineBase):
         """(Zpass, R): the closed loop with `excluded` (default the agent) switched off, and the responses to a spike
         of each of the agent's controls together with the instant reactions it draws (c.composite: a trader seeing
         the quote trades at once), (n_prim N, nU).  Without instant observations the spikes are the controls' own."""
+        if hasattr(c, "use_maps"):
+            c.use_maps(maps)                                 # level rows: the reactions a spike draws depend on the maps
         comp = c.composite or {}
         extra = [v for u in agent.controls for v in comp.get(u, {u: 1.0}) if v not in agent.controls]
         ctrls = list(agent.controls) + list(dict.fromkeys(extra))
@@ -939,7 +996,8 @@ class StationarySolver(EngineBase):
         draws (c.composite); and per privy control the stacked convolution (n_prim N x N) with its spike's column,
         plus the identity on its own block and on the blocks of the controls reacting to it at once."""
         c = self.c; N = c.N; nP = len(c.prim)
-        comp = c.composite or {}
+        c.use_maps(maps)
+        comp = c.seed_composite(origin) or {}
         owner = {a.name: a for a in self.model.agents}
         P = self.model.privy(origin)
         ctrls = [u for n in P for u in owner[n].controls]
@@ -958,19 +1016,21 @@ class StationarySolver(EngineBase):
             C[v] = Cv
         return ctrls, Z0, C
 
-    def _monitoring(self, maps):
+    def _monitoring(self, maps, origins=None):
         """({agent: R^mon (n_prim N, nU)}, {origin: W (n_prim N, n origin controls)}) for the agents with privy
         others, the response kernels found by the iteration described above, from the naive responses, to 1e-10
         relative or until 10 rounds pass without improving on the best, which is kept (the plain iteration reaches
         rounding and then only wanders).  (Starting from the previous call's kernels carried a trial point's kernels into the next
         evaluation and broke the market of Chapter 6; Anderson on this iteration found other roots.  Neither is used.)"""
         key = self._maps_key(maps)
-        if self._monitored is not None and self._monitored[0] == key:
+        if origins is None and self._monitored is not None and self._monitored[0] == key:
             self._kernel_residual = self._monitored[3]
             return self._monitored[1], self._monitored[2]
         c = self.c; N = c.N
         owner = {a.name: a for a in self.model.agents}
-        origins = [a.name for a in self.model.agents if len(self.model.privy(a.name)) > 1]
+        own = origins is None                           # the equilibrium's origins (cached), or ones asked for (the blip
+        if own:                                         # continuation of a deviator only it is privy to: results)
+            origins = [a.name for a in self.model.agents if len(self.model.privy(a.name)) > 1]
         setup = {i: self._seed_setup(maps, i) for i in origins}
         responders = {m for i in origins for m in self.model.privy(i)}
         Rmon = {n: self._spikes(c, maps, owner[n])[1] for n in responders}      # the naive responses
@@ -1021,8 +1081,9 @@ class StationarySolver(EngineBase):
             W[i] = Z0[:, :shapes[i][0]] + sum(C[v] @ X[k * N:(k + 1) * N] for k, v in enumerate(ctrls))
         # at a trial point of the outer iteration far from the equilibrium the kernels may not settle; the best
         # round is used there and its change kept, and _finish requires them settled at the equilibrium itself
-        self._kernel_residual = float(change)
-        self._monitored = (key, Rmon, W, self._kernel_residual)
+        if own:
+            self._kernel_residual = float(change)
+            self._monitored = (key, Rmon, W, self._kernel_residual)
         return Rmon, W
 
     def _frozen_responses(self, j: str, setup, Dj: np.ndarray, own: int) -> np.ndarray:
@@ -1038,7 +1099,12 @@ class StationarySolver(EngineBase):
         M = np.eye(own * N) + np.block([[conv[u][o2] for o2 in range(own)] for u in range(own)])
         out = np.zeros((len(c.prim) * N, own))
         for o in range(own):
-            s = np.linalg.solve(M, -np.concatenate([Dj[o, u] for u in range(own)])).reshape(own, N)
+            rhs = -np.concatenate([Dj[o, u] for u in range(own)])
+            try:
+                s = np.linalg.solve(M, rhs).reshape(own, N)
+            except np.linalg.LinAlgError:              # a trial point far from the equilibrium can make the discretised
+                s = np.linalg.lstsq(M, rhs, rcond=None)[0].reshape(own, N)   # Volterra operator singular; the
+                                                        # iteration keeps its best round (_monitoring) and moves on
             col = Z0[:, o].copy()
             for k, v in enumerate(ctrls):
                 if k < own:
@@ -1152,6 +1218,8 @@ class StationarySolver(EngineBase):
         for a row observed with a delay."""
         c = self.c; N = c.N; g = c.grid
         keep = np.ones(len(agent.signals) * N, dtype=bool)
+        for r in getattr(self, "_silent", {}).get(agent.name, ()):   # a level row of a quantity that does not move
+            keep[r * N:(r + 1) * N] = False                          # (the zero start): nothing to read, its map is zero
         last = (np.arange(N) % g.n) == g.n - 1
         for r in range(len(agent.signals)):
             d = c.rows[agent.name][r][3]

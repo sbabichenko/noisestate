@@ -134,9 +134,57 @@ def _after_solve(res, refine: bool, stability: bool, diagnostics: bool):
     return res
 
 
+def _solve_by_continuation(model, continue_from, *, start_from=None, start_policy=None, refine=False, stability=False,
+                           **kw) -> Result:
+    """solve(..., continue_from=...): the path from the given parameter values to the model's own, fraction t from 0 to
+    1, the step growing after a converged point (to a quarter) and halved after one that is not (down to 1/1024)."""
+    model = as_model(model)
+    if not isinstance(continue_from, dict) or not continue_from:
+        raise TypeError("continue_from is {parameter: starting value}, e.g. {'gamma': 0.0}")
+    params = dict(model.params)
+    bad = sorted(set(continue_from) - set(params))
+    if bad:
+        from .names import nearest
+        hint = "".join(f"; {b}: did you mean {' or '.join(nearest(b, list(params), 2))}?" for b in bad if nearest(b, list(params), 2))
+        raise ValueError(f"continue_from names {bad}, which are not parameters of the model {sorted(params)}" + hint)
+    a = {k: float(v) for k, v in continue_from.items()}
+    b = {k: float(params[k]) for k in continue_from}
+    at = lambda t: model.with_params(**{k: a[k] + t * (b[k] - a[k]) for k in a})
+    inner = {**kw, "diagnostics": False}              # the checks at the end run on the last point only
+    ok = lambda r: r.status in ("converged", "near tolerance")
+    res = solve(at(0.0), start_from=start_from, start_policy=start_policy, **inner)
+    path = [(0.0, res.status)]
+    if not ok(res):
+        res.continued = path
+        return res
+    t, step, good, prev = 0.0, 0.1, res, None           # prev: (t, maps) of the point before, for the secant start
+    while t < 1.0 - 1e-12:
+        nxt = min(1.0, t + step)
+        start = good.maps
+        if prev is not None:                            # the secant through the last two points, extended to nxt
+            w = (nxt - t) / (t - prev[0])
+            start = {n: good.maps[n] + w * (good.maps[n] - prev[1][n]) for n in good.maps}
+        last = nxt >= 1.0 - 1e-12
+        trial = solve(at(nxt), start_from=start, **(kw if last else inner))
+        if not ok(trial) and prev is not None:          # the secant overshot: the last point itself
+            trial = solve(at(nxt), start_from=good.maps, **(kw if last else inner))
+        path.append((round(nxt, 6), trial.status))
+        if ok(trial):
+            prev, t, good, step = (t, good.maps), nxt, trial, min(0.25, step * 1.5)
+        elif step > 1.0 / 1024:
+            step /= 2.0
+        else:                                           # stalled: the last attempt, not converged, with its path
+            trial.continued = path
+            return trial
+    if refine or stability:
+        good = _after_solve(good, refine, stability, kw.get("diagnostics", True))
+    good.continued = path
+    return good
+
+
 def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None, max_evaluations=None, deadline=None,
           progress=None, diagnostics: bool = True, refine: bool = False, stability: bool = False, verbose: bool = False,
-          past=None, continuation=None, **unknown) -> Result:
+          past=None, continuation=None, continue_from=None, **unknown) -> Result:
     """Solve a model (a Model, a dict, or a path to a YAML file) under `numerics` (a Numerics or
     a dict of its fields, laid over the model's own: engine, nodes, unit, unit_range, breakpoints,
     continuation_nodes, tol, damping, max_newton, variable, settings).  The other options are the solve's:
@@ -150,9 +198,19 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
     "phase", "seconds"} after every evaluation), diagnostics (False skips the checks at the end), refine (re-solve
     on a finer grid and report the change, res.refinement), stability (add res.stability(); it is also
     computed unasked when the window guard fails, where an unstable radius marks a spurious branch), verbose;
+    continue_from ({parameter: value}): reach the model by continuation in those parameters, from the values given
+    (where the model solves from a cold start, a competitive or cost-free corner) to its own, each point starting from
+    the last one's maps, the step halved where a point does not converge; the path is res.continued ([(fraction,
+    status)]).  Markets with level rows or monitored deviations can need it: Chapter 6's opaque market does not
+    converge from a cold start at a positive inventory weight, and solve(m, continue_from={"gamma": 0}) reaches it.
     past and continuation (a transition's, on the
     spectral engine; on a model of kind "transition" each overrides the file's block).  Unknown options are a
     TypeError naming the Numerics or Settings field they belong to.  res.numerics is the resolved Numerics."""
+    if continue_from is not None:
+        return _solve_by_continuation(model, continue_from, numerics=numerics, start_from=start_from, start_policy=start_policy,
+                                      tol=tol, max_evaluations=max_evaluations, deadline=deadline, progress=progress,
+                                      diagnostics=diagnostics, refine=refine, stability=stability, verbose=verbose,
+                                      past=past, continuation=continuation, **unknown)
     if start_from is not None and start_policy is not None:
         #  Why there is no precedence rule: docs/design/api_spec.txt.  The caller needs the choice.
         raise TypeError("solve() takes start_from OR start_policy, not both. start_from is an explicit "
