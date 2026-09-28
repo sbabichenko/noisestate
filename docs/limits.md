@@ -169,14 +169,27 @@ larger window from the previous holds the cost at 0.427295 through *L* = 24, wit
 
 **Time scales and long horizons.**  A finite horizon without lags is one panel: every kernel is a polynomial of
 `numerics.nodes` degree in each direction over [0, T].  A game whose own time scale is much shorter than T is not
-resolved there, and only the resolution row says so: the one-agent regulator of the tests (a filter and a feedback with
-rates of about 3) has its cost 0.13% off at T = 10 and 12 nodes, 190% off at T = 30, and its best-response system is
-singular at T = 200 or with the noise scaled by 1e8 (raising nodes does not help: 24 and 40 fail as 12 does).  Panels
-do: `numerics.breakpoints` every 3 time units brings T = 30 to 3e-6 in 13 s.  The triangle's pieces grow as the square of
-the panels (10 panels at 12 nodes: 7920 unknowns, 1.7 GB), and above `second_order_dense` (4000) the second-order check
-runs Lanczos, one strategy-sized application per product: 409 s of that T = 30 solve's 425 s, and 5.8 GB, were the
-check (710 s before the lowest eigenvalue was sought on the shifted form).  `solve(..., diagnostics=False)` skips it; rescaling time so that the fast rates are of order one is the cheaper
-remedy.
+resolved there: the one-agent regulator of the tests (a filter and a feedback with rates of about 3) has its cost 0.13%
+off at T = 10 and 12 nodes, 190% off at T = 30, and its best-response system singular at T = 200 (raising nodes does not
+help: 24 and 40 fail as 12 does).  `solve()` now handles this itself (`noisestate/time_panels.py`): a model with no
+`numerics.breakpoints`, no lags or delays and no past window or continuation is solved on the one panel first, exactly as
+before, and when that fails the resolution check by more than more nodes fix (a representation error above 5e-4) or is
+singular, it is re-solved on panels cut at both ends and graded towards the middle (widths w, 2w, 4w, ... from 0 and
+from T: the kernels move fast only at small ages, at the start and at the end), w halved until the representation error
+passes.  T = 30 lands on `[0, 1, 3, 7, 23, 27, 29, 30]`: the cost to 5e-10 of the closed form with a representation
+error of 5.6e-7 (10 uniform panels gave 3e-6 and 8.4e-5), 12 s.  `res.numerics.breakpoints` records the grid (a solve
+with it reproduces the result) and `res.message` the path.  A first graded grid that does not cut the error tenfold is
+dropped and the one panel's result returned (a failure grading does not fix is not a time scale: Kyle-Back with a
+random-walk value the trader sees, at T = 1, stays at 0.8 whatever the panels).  The unknowns are bounded by
+`settings.auto_panels_max` (8000; 0 switches the grading off), and a trial at 4 nodes decides first whether grading
+cuts the error at all and more than doubling the nodes does (0.3 to 0.6 s; Chapter 1's game at 4 nodes is left to its
+nodes).  A model whose rates are many orders above 1/T (the regulator with its noise scaled by 1e8, or r = 1e-8) is
+singular on the trial's grid too, and the singular error, which says to rescale, is raised at once.  At T = 100 the
+regulator at 8 nodes grades to 15 panels and the cost to 2e-8 (55 s); at T = 200 the gradings finer than 9 panels are
+themselves singular (reciprocal condition 1e-14 with end panels of 1 against a middle one of 80), and the 9-panel grid is
+returned with the cost 0.8% off and a warning: rescale time there.  Sweeps (`ns.sweep`) and transitions keep their grids as given.  The second-order check of a large grid is the
+dense form up to `second_order_dense` (8000) unknowns, assembled from the sparse row operators: 10 uniform panels at 12
+nodes (7920 unknowns) now take 48 s and 2.9 GB for the whole solve, where Lanczos took 425 s and 5.8 GB.
 
 **A stationary cost that grows with the window.**  The window row asks whether a kernel still moves at L; a random-walk
 state passes it (its kernel is constant), yet a loss term in its level squared accrues the same amount at every age, so
@@ -185,8 +198,18 @@ agent's flow loss that accrues over the last tenth of the window (`res.cost_tail
 reported and never required, since the strategies are right when the term moves nothing the agent chooses.  Chapter 4's
 market maker is the case (its P^2 - 2 P V leaves out V^2): its reported cost is about 2.1 - L.
 
-**Resolution floors.**  The Chapter 5 market's representation error settles at about 1.2e-6 (1.1e-6, 1.9e-6, 1.2e-6 at
-12, 14 and 16 nodes; its costs move by 1e-6 among them), above `resolution_tol` (1e-6): its resolution row fails at every
-grid.  The stationary engine's risk-averse agents (consistent planning) break down where theta times the conditional
-cost's largest eigenvalue reaches 1 and return a result that is not converged with that message; the finite engine raises
-RiskBreakdown instead.
+**Resolution floors.**  The Chapter 5 market's representation error used to settle at about 1.2e-6 (1.1e-6, 1.9e-6, 1.2e-6
+at 12, 14 and 16 nodes), above `resolution_tol`, at ages near the window's edge.  It was not conditioning (the weighted
+row operator's condition number is 502; a QR least squares gives the same 1.136e-6): the window cuts every read past L
+off, so a kernel read with a lag d jumps at L - d (2.3e-6 of the peak on the prices, 7.7e-6 on the orders at
+L - tau = 23.5), and that line lay inside the last geometric panel beyond `unit_range`, an error no node count removes.
+The geometric panels are now cut at L - d for every lag d (one panel more on that market): the error falls with the
+nodes, 3.6e-7, 1.6e-7, 7.0e-8 and 6.9e-9 at 8, 10, 12 and 14, and the shipped 8-node example passes the check (its
+cost moves from 4.5271471 to 4.5271409, the 12- and 14-node values being 4.5271408).
+The stationary engine's risk-averse agents (consistent planning) break down where theta times the conditional
+cost's largest eigenvalue reaches 1.  The continuation in theta follows the finite engine's steps past its 0.5 step (a jump
+from 0.5 to 1 landed the one-agent signal model at theta 1 on a spurious fixed point past the breakdown; the steps reach
+its equilibrium, theta mu_max 0.886), a converged solution past the breakdown raises RiskBreakdown, and a path that stops
+short raises it with `reached` (theta 2 on that model: 1.17, after halved steps, about two minutes).  The date-0 entropic
+cost's lattices are capped at a step of 0.2: at L / 40 .. L / 160 the step, and the gap between the two finest levels,
+grew with the window (6e-4, 2.5e-3, 9.3e-3 at L = 4, 8, 16), a discretisation error, not the operator's.

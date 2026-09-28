@@ -1324,10 +1324,14 @@ class StationarySolver(EngineBase):
                 from .stationary_risk import StationaryTilt
                 th = float(a.risk_aversion) * self._risk_scale
                 tl = StationaryTilt(self, a, res.maps, th)
-                vals = [tl.cond_excess(tl.L / na) for na in self.ENTROPIC_LATTICE]
                 # the lattice's excess converges like h (the kernels' kinks on the diagonal) plus h^2: the polynomial through the
-                # levels in h, read at h = 0
-                hs = [tl.L / na for na in self.ENTROPIC_LATTICE]
+                # levels in h, read at h = 0.  The steps are L / ENTROPIC_LATTICE up to a window of 8 and capped at
+                # ENTROPIC_STEP beyond: steps that grew with the window grew the lattice's error with it (the gap between the two
+                # finest levels 6e-4 at L = 4, 2.5e-3 at 8, 9.3e-3 at 16 on a one-agent signal model, whose extrapolated excess
+                # moved by 1% between L = 8 and 16 on the coarse levels and by 0.1% on the capped ones), while the kernels whose
+                # kinks it resolves live on the model's time scales, not the window's
+                hs = self.entropic_steps(tl.L)
+                vals = [tl.cond_excess(h) for h in hs]
                 ex = float(np.linalg.solve(np.array([[x ** k for k in range(len(hs))] for x in hs]), np.array([v[0] for v in vals]))[0]) \
                     if all(np.isfinite(v[0]) for v in vals) else float("inf")
                 EC0 = float(res.costs[a.name]) / self.c.rho
@@ -1336,38 +1340,113 @@ class StationarySolver(EngineBase):
                                     **self._risk_info.get(a.name, {})}
                 if not np.isfinite(ex):
                     # the date-0 self's conditional entropic cost is infinite at these strategies (theta mu_max >= 1): the first-order
-                    # condition holds but is no optimum, so this is not an equilibrium of the entropic game
+                    # condition holds but is no optimum, so this is not an equilibrium of the entropic game.  A converged solve raises
+                    # RiskBreakdown, as the finite engine does at a solution past its breakdown; a solve that did not converge ends
+                    # at its best iterate, which says nothing about the equilibrium, and is reported not converged
+                    mu = max(v[1] for v in vals)
+                    if res.converged:
+                        from .risk import RiskBreakdown
+                        raise RiskBreakdown(a.name, th, mu / th)
                     res.converged = False
-                    res.message += (f"; {a.name}'s conditional entropic cost is infinite at the solution (theta mu_max = "
-                                    f"{vals[-1][1]:.3g} >= 1): no equilibrium of the entropic game here")
+                    res.message += (f"; {a.name}'s conditional entropic cost is infinite at the last iterate (theta mu_max = "
+                                    f"{mu:.3g} >= 1): no equilibrium of the entropic game there")
 
-    RISK_STEPS = (0.0, 0.5, 1.0)        # the continuation in risk aversion from no start: theta scaled by these in turn
-    ENTROPIC_LATTICE = (40, 80, 160)    # lattice steps (L / these) of the date-0 continuation's entropic cost (res.risk)
+    RISK_STEPS = (0.0, 0.5, 1.0)        # the continuation in risk aversion from no start: theta scaled by these in turn ...
+    RISK_STEP = 0.9                     # ... while theta mu_max at the full theta, estimated at the last step's equilibrium, is
+    RISK_GAIN = 0.6                     # at most this; else each step closes this fraction of the gap to the breakdown,
+    RISK_EDGE = 1e-3                    # 1 - theta mu_max (the finite engine's rule), and a step within this of it short of the
+    RISK_MAX_STEPS = 40                 # model's theta, or past this many steps, ends the path there: RiskBreakdown(reached)
+    RISK_HALVINGS = 3                   # steps whose fixed point is past the breakdown are halved at most this many times in all
+    RISK_STEP_EVALUATIONS = 100         # evaluations of a step between those of RISK_STEPS, unless solve() was bounded
+    ENTROPIC_LATTICE = (40, 80, 160)    # lattice steps (L / these) of the date-0 continuation's entropic cost (res.risk) ...
+    ENTROPIC_STEP = 0.2                 # ... the coarsest capped at this (and the others in proportion): windows above 8
     RISK_LATTICE = 0.02                 # the correction's lattice step (and half of it, Richardson): stationary_risk.py
+
+    @classmethod
+    def entropic_steps(cls, L: float):
+        """The lattice steps of the date-0 entropic cost on a window L: L / ENTROPIC_LATTICE while the coarsest is at most
+        ENTROPIC_STEP, else the same levels refined by the integer factor that brings it there (lattices through L)."""
+        scale = max(1, int(np.ceil(L / (cls.ENTROPIC_STEP * cls.ENTROPIC_LATTICE[0]) - 1e-9)))
+        return [L / (scale * na) for na in cls.ENTROPIC_LATTICE]
 
     def solve(self, start_from=None, **kw):
         """EngineBase.solve; with risk-averse agents and no start, by continuation in risk aversion: the risk-neutral
         equilibrium first (theta scaled by 0, the risk-neutral path), then theta scaled up (RISK_STEPS), each step started
         from the last.  The correction is frozen at the current profile inside a best response (stationary_risk.py), so a
-        start far from the equilibrium is where it is least accurate."""
+        start far from the equilibrium is where it is least accurate.  Past the 0.5 step the path follows the finite engine's
+        rule (RISK_STEP, RISK_GAIN, RISK_EDGE): straight to the model's theta while the breakdown measure theta mu_max there
+        is at most 0.9, else in steps closing 0.6 of the gap; a step whose fixed point lies past the breakdown is halved
+        (RISK_HALVINGS); a path that reaches the breakdown short of the model's theta raises RiskBreakdown with `reached`,
+        and a converged solution past it raises RiskBreakdown (_finish), as on the finite engine."""
         if start_from is not None or not any(a.risk_aversion for a in self.model.agents):
             self._risk_scale = 1.0
             return super().solve(start_from, **kw)
+        from .risk import RiskBreakdown
         diag = kw.pop("diagnostics", True)
+        averse = [a for a in self.model.agents if a.risk_aversion]
         maps, res, done = None, None, []
+        steps = list(self.RISK_STEPS)
+        good, failed, cap = 0.0, 0, 1.0               # the last scale solved, the steps that failed, the longest step allowed
         try:
-            for sc in self.RISK_STEPS:
+            while steps:
+                sc = steps.pop(0)
                 self._risk_scale = sc
-                res = super().solve(maps, diagnostics=diag if sc == self.RISK_STEPS[-1] else False, **kw)
+                last = sc >= 1.0
+                step_kw = kw
+                if not last and sc not in self.RISK_STEPS and kw.get("max_evaluations") is None:
+                    step_kw = {**kw, "max_evaluations": self.RISK_STEP_EVALUATIONS}   # a step of the path only: a stall ends it early
+                try:
+                    res = super().solve(maps, diagnostics=diag if last else False, **step_kw)
+                    if not last and not res.converged and any(not np.isfinite(res.risk.get(a.name, {}).get("entropic", 0.0)) for a in averse):
+                        # a step that did not converge and ended past the breakdown: as a converged one there (below)
+                        worst = max(averse, key=lambda a: res.risk[a.name]["theta_mu_max"])
+                        raise RiskBreakdown(worst.name, res.risk[worst.name]["risk_aversion"],
+                                            res.risk[worst.name]["theta_mu_max"] / res.risk[worst.name]["risk_aversion"])
+                except ValueError as exc:
+                    # a converged fixed point past the breakdown (_finish), or an iterate whose correction's solve fails there (the
+                    # tilt's operator singular): a step too long for the path, which lands on a spurious branch beyond it; the
+                    # step is halved from the last scale solved, and past RISK_HALVINGS the path ends there
+                    if not sc or not (isinstance(exc, RiskBreakdown) or "risk correction" in str(exc)):
+                        raise
+                    if not isinstance(exc, RiskBreakdown):
+                        a0 = averse[0]
+                        exc = RiskBreakdown(a0.name, a0.risk_aversion * sc, float("inf"))
+                    failed += 1
+                    if failed > self.RISK_HALVINGS or (sc - good) < self.RISK_EDGE:
+                        if not good:
+                            raise
+                        raise RiskBreakdown(exc.agent, next(a.risk_aversion for a in averse if a.name == exc.agent), exc.lam_max,
+                                            reached=good * next(a.risk_aversion for a in averse if a.name == exc.agent)) from None
+                    cap = 0.5 * (sc - good)                     # this step halved, and no later step longer
+                    steps = [good + cap]
+                    continue
                 done.append(sc)
-                if not res.converged:
+                if not res.converged or last:
                     break
-                maps = res.maps
+                maps, good = res.maps, sc
+                if sc:
+                    # the next step: the model's theta while the breakdown measure there, estimated at this step's equilibrium
+                    # (theta mu_max scales with theta), is at most RISK_STEP; else a step closing RISK_GAIN of the gap to the
+                    # breakdown.  A step straight to a theta near it can land on a spurious branch past it: the one-agent signal
+                    # model at theta 1 went from 0.5 to 1 onto a fixed point with theta mu_max 8.95 (reported not converged),
+                    # where the steps 0.783, 0.942, 1 reach its equilibrium, theta mu_max 0.886
+                    worst = max(averse, key=lambda a: res.risk[a.name]["theta_mu_max"])
+                    x = res.risk[worst.name]["theta_mu_max"] / sc                  # theta mu_max at the full theta
+                    reached = sc * x
+                    if x <= self.RISK_STEP:
+                        steps = [1.0]
+                    elif 1.0 - reached < self.RISK_EDGE or len(done) > self.RISK_MAX_STEPS:
+                        raise RiskBreakdown(worst.name, worst.risk_aversion, x / worst.risk_aversion, reached=sc * worst.risk_aversion)
+                    else:
+                        steps = [min(1.0, (reached + self.RISK_GAIN * (1.0 - reached)) / x)]
+                    steps = [min(steps[0], sc + cap)]
         finally:
             self._risk_scale = 1.0
-        if done[-1] != self.RISK_STEPS[-1] or not res.converged:
+        if done[-1] < 1.0 or not res.converged:
             res.converged = False
             res.message += f"; the continuation in risk aversion stopped at theta scaled by {done[-1]:g}"
+        elif len(done) > len(self.RISK_STEPS):
+            res.message = f"continuation in risk aversion, theta scaled by {', '.join(f'{s:.3g}' for s in done)}: " + res.message
         return res
 
     def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:

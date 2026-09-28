@@ -520,11 +520,17 @@ class AgeGrid:
         if unit_range is None:
             unit_range = min(L, 8 * unit) if delays else L
         bp = list(np.arange(0.0, unit_range + 1e-12, unit))
+        # the window's edge less each lag is a cut as well: a lagged read at an age above L - d reads past the window,
+        # where the kernels are cut off, so they jump there (1e-5 of the peak on the Chapter 5 market at L = 24), and a
+        # jump inside a geometric panel is an error no number of nodes removes (the representation error's floor of
+        # about 1.2e-6 at 12, 14 and 16 nodes, at ages near L); within unit_range it is a multiple of the unit already
+        stops = sorted({round(L - d, 12) for d in delays if bp[-1] + 1e-12 < L - d < L - 1e-12} | {L})
         w = unit
-        while bp[-1] < L - 1e-12:
-            w *= growth
-            nxt = min(L, bp[-1] + w)
-            if L - nxt < 0.25 * w:
-                nxt = L
-            bp.append(nxt)
+        for stop in stops:
+            while bp[-1] < stop - 1e-12:
+                w *= growth
+                nxt = min(stop, bp[-1] + w)
+                if stop - nxt < 0.25 * w:
+                    nxt = stop
+                bp.append(nxt)
         return bp

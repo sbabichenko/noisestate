@@ -22,12 +22,13 @@ defaults are recorded in `res.numerics`, `res.solver_kw` and the payload's `opti
 | `risk_basis` | 0 | Legendre functions per time panel (and channel) of the Galerkin part of the entropic correction (risk.py); 0: the grid's nodes per side plus 4 |
 | `risk_planning` | precommitment | the spectral finite engine's criterion for risk-averse agents: "precommitment" (J_0 over the whole strategy) or "consistent" (every date's self minimises the entropic cost of its own continuation, the later selves playing the equilibrium map; risk.ConsistentTilt) |
 | `second_order_tol` | 1e-4 | curvature (relative to the largest) below which a negative value is window truncation |
-| `second_order_dense` | 4000 | strategy dimension up to which the form is built densely (always settles, 2.7 s at 1600); Lanczos above |
+| `second_order_dense` | 8000 | strategy dimension up to which the form is built densely (always settles; 2.7 s at 1600, on the finite engine 7 s at 4032 and 45 s at 7920 where Lanczos took 83 s and 409 s); Lanczos above |
 | `second_order_lanczos_tol` | 1e-6 | tolerance of the Lanczos extreme eigenvalues above that dimension |
 | `second_order_lanczos_maxiter` | 300 | Lanczos iterations per extreme eigenvalue |
 | `mean_rcond` | 1e-12 | a mean system whose reciprocal condition estimate is below this is singular |
 | `lead_weight_warn` | 100.0 | warn when a lead's past flows outweigh the current one by more than this (exp(rho tau)) |
 | `resolution_tol` | 1e-6 | representation error above which a result is under-resolved (raise numerics.nodes) |
+| `auto_panels_max` | 8000 | spectral finite engine: unknowns up to which a one-panel horizon that fails the resolution check by more than nodes fix (or is singular) is re-solved on panels graded from both ends (`time_panels.py`); 0: never |
 | `window_tail_tol` | 0.02 | a kernel still moving by more of its peak over the last tenth of the window: window too short |
 | `settled_tol` | 1e-4 | a transition is settled when its maps on [T - L, T] are within this (relative to the map's peak) of the stationary continuation: the closed-loop decay per unit of t (1e-2 on Chapter 3), not the grid's floor |
 | `mean_zero` | 1e-12 | below this a mean is round-off (printed as an unsigned zero, not counted as driven) |

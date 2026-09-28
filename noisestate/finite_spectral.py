@@ -1249,6 +1249,18 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         the operators applied and the FOC system factored within settings.foc_dense_max, solved by GMRES beyond
         (self.foc_free); the dict also carries "krylov", the GMRES iterations (0 when factored)."""
         return finite_free.best_response(self, agent, maps, want_decomp, project)
+    def representation_probe(self, res) -> float:
+        """The resolution row's value without the rest of the diagnostics: the largest representation error of the
+        agents' best responses at res.maps (a tie group's representative stands for its group), one best response
+        each (time_panels.solve_graded asks it of every grid it tries)."""
+        worst = 0.0
+        for a in self.model.agents:
+            if self.c.rep[a.name] != a.name:
+                continue
+            g, out = self.best_response(a, res.maps)
+            worst = max(worst, self._representation_error(a, out["Zfull"], out["action"], g))
+        return worst
+
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
         recon_all = finite_free.reconstruction(self, agent, Zfull, g)
         c = self.c; gr = c.g; worst = 0.0

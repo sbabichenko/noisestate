@@ -46,6 +46,12 @@ and the suite silently returns to the slow figures.  Each gated test, and the on
 | test_unit_range_finite.py::test_unit_range_below_the_window_coarsens_the_grid_within_the_measured_cost | unit_range 0.5 on window 2: the cuts, N 525 for 900, costs to 5e-5 (the default's bit identity and the transition stay fast) | 8 |
 | test_cara_small_eps.py::test_a_small_trading_cost_converges_with_the_retry | risk-averse Kyle-Back at eps 0.05, theta 1.5, 16 nodes: the stall at the best responses' Krylov floor is retried to convergence, CE 0.53980 (the entropic probe stays fast) | 25 |
 | test_cara_small_eps.py::test_the_proximal_retry_crosses_the_frozen_system_s_singularity | risk-averse Kyle-Back at eps 0.05 through theta 1.58, where the frozen best-response system goes singular: the proximal retry reaches 1.7 and 2, the certainty equivalents against extras/kyle_reference.py's five-level limit to 1e-5 | 28 (2 threads) |
+| test_limits.py::test_a_thirty_time_constant_horizon_is_graded | the regulator at T = 30 graded to [0, 1, 3, 7, 23, 27, 29, 30]: the closed form to 1e-9, the resolution and second-order checks passed (T = 10 stays fast) | 16 |
+| test_limits.py::test_a_hundred_time_units_are_graded_at_eight_nodes | T = 100 at 8 nodes graded to 15 panels, the closed form to 1e-7 (2950 times off on the one panel) | 68 |
+| test_limits.py::test_the_chapter_5_market_is_resolved_and_the_error_falls_with_nodes | the shipped Chapter 5 market passes the resolution check at 8 nodes and its error falls threefold by 12 (the L - d cut) | 32 |
+| test_limits.py::test_stationary_risk_aversion_near_the_breakdown_is_reached_in_steps | the stationary signal model at theta 1 reaches its equilibrium in the finite engine's steps (theta mu_max 0.886) | 23 |
+| test_limits.py::test_stationary_risk_aversion_past_the_breakdown_raises | theta 2 raises RiskBreakdown with reached 1.17 (the halved steps; the steps' unit test stays fast) | 110 |
+| test_limits.py::test_the_entropic_lattice_does_not_coarsen_with_the_window | the entropic lattice gap at L = 16 is the L = 8 one (entropic_steps' unit test stays fast) | 35 |
 
 Kept in the fast suite above five seconds, one per feature: the regime change's loss path (12 s), the
 two-firm market's stability and window-edge second-order check (7 s), the transition sweeps (6 s), the

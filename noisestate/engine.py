@@ -30,7 +30,7 @@ def _is_eye(M: np.ndarray) -> bool:
 _FORM_COLUMNS = 256        # dense_curvature_form: the columns a loss form is applied to, and of M made, at once
 
 
-def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx, consume: bool = False) -> np.ndarray:
+def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx, consume: bool = False, sparse: bool = False) -> np.ndarray:
     """The second-order form on the kept strategies `idx`, built explicitly: (len(idx), len(idx)).
 
     M = sum_k T_k' G_(k) T_k with T_k = [Resp_u G_k]_u and G_(k) the column's loss form, associated
@@ -50,7 +50,16 @@ def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx, consum
     every channel's every row is Gk itself (a view), and M is made _FORM_COLUMNS columns at a time, in place.
     consume=True empties the list Resp once its responding rows are copied (a caller's private list), so the
     responses themselves are freed (their other rows are zero: a callable form gets them back a block at a time).
+
+    sparse=True (the spectral finite engine's operators): a response or row operator that is mostly zeros is taken as a
+    sparse matrix in the products (the triangle's row operators read each action node's own time row, 0.4% of their
+    entries on the Chapter 1 regulator at T = 30; the responses are causal, 8%), and an own block that is exactly the
+    identity is not multiplied: H_uv = GR_v's own block + the other rows' part, M = sum_k G_k' (H G_k) as sparse
+    products.  The same sums in another order: the form agrees with the dense products to rounding, and costs a
+    fraction of them (8.0 -> 0.5 s at 4032 unknowns, 54 -> 3 s at 7920).
     """
+    if sparse:
+        return _sparse_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx, consume)
     nz = np.where(np.any(np.stack([np.any(Rv != 0, axis=1) for Rv in Resp]), axis=0))[0]   # primaries' nodes that respond
     Rnz = [np.ascontiguousarray(Rv[nz]) for Rv in Resp]                                    # (nz, N)
     nrow, N = Resp[0].shape
@@ -77,6 +86,8 @@ def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx, consum
     del Rnz
     if callable(Gk):
         Gk = Gk()
+    if isinstance(Gk, list):                                                                # sparse row operators (RowOps.sparse)
+        Gk = np.stack([G.toarray() for G in Gk])
     groups = []                                                                             # per loss form: H and its column groups
     for H, (G, sl) in zip(Hs, forms):
         rowsof = {}                                                                         # rows with a nonzero block -> columns
@@ -111,6 +122,81 @@ def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx, consum
                     del HG
             if vi != ui:
                 Mall[vi * nb:(vi + 1) * nb, ui * nb:(ui + 1) * nb] = Muv.T                  # H_vu = H_uv'
+    return Mall if idx.size == nG else Mall[np.ix_(idx, idx)]
+
+
+_SPARSE_DENSITY = 0.03     # _sparse_curvature_form: an operator block with at most this share of nonzero entries is taken sparse (scipy's sparse-dense product is single threaded: a dense GEMM wins above a few percent)
+
+
+def _sparse_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx, consume: bool) -> np.ndarray:
+    """dense_curvature_form's sparse=True: the same form from sparse products (see there).  Resp_u's primary blocks
+    (N, N each) are split into the identity blocks (nothing to multiply: H_uv gains GR_v's block) and the others,
+    stacked as one CSR matrix when sparse enough; the row operators G_k are CSR per column of the world."""
+    from scipy.sparse import csr_matrix
+    nrow, N = Resp[0].shape
+    nP = nrow // N
+    split = []                                                  # per control: (its identity blocks, the other rows, their operator)
+    for Rv in Resp:
+        eye = [p for p in range(nP) if _is_eye(Rv[p * N:(p + 1) * N])]
+        others = [p for p in range(nP) if p not in eye and np.any(Rv[p * N:(p + 1) * N])]
+        rest = np.concatenate([np.arange(p * N, (p + 1) * N) for p in others] or [np.zeros(0, dtype=int)])
+        # one responding block is a view of the response (no copy of N x N); several are stacked
+        Rr = Rv[others[0] * N:(others[0] + 1) * N] if len(others) == 1 else Rv[rest]
+        if Rr.size and np.count_nonzero(Rr) <= _SPARSE_DENSITY * Rr.size:
+            Rr = csr_matrix(Rr)
+        split.append((eye, rest, Rr))
+    nz = np.unique(np.concatenate([np.concatenate([np.arange(p * N, (p + 1) * N) for p in eye] + [rest]).astype(int)
+                                   for eye, rest, _ in split]))
+    if consume:                                                 # the caller's list emptied: the arrays live in this one only
+        Resp, held = list(Resp), Resp
+        held.clear()
+        del held
+    Hs = []
+    for G, sl in forms:
+        # H_uv = Resp_u' G Resp_v, a block of Resp_v's columns at a time: G applied to them (GR_v's columns), then its own
+        # identity blocks' rows added and the other rows' through Resp_u (GR_v itself, nP N x N, never whole)
+        H = {(ui, vi): np.zeros((N, N)) for ui in range(nU) for vi in range(ui, nU)}
+        for vi in range(nU):
+            Rv = Resp[vi]
+            for c0 in range(0, N, _FORM_COLUMNS):
+                c1 = min(N, c0 + _FORM_COLUMNS)
+                if callable(G):
+                    B = np.zeros((nrow, c1 - c0)); B[nz] = Rv[nz, c0:c1]
+                    X = G(B)
+                else:
+                    X = np.zeros((nrow, c1 - c0)); X[nz] = G[np.ix_(nz, nz)] @ Rv[nz, c0:c1]
+                for ui in range(vi + 1):
+                    eye, rest, Rr = split[ui]
+                    Huv = H[(ui, vi)]
+                    for p in eye:
+                        Huv[:, c0:c1] += X[p * N:(p + 1) * N]
+                    if rest.size:
+                        Huv[:, c0:c1] += Rr.T @ X[rest]
+        Hs.append(H)
+    del Resp, split, Rv, Rr                                     # every reference to the responses: freed before M is made
+    if callable(Gk):
+        Gk = Gk()
+    # the row operators: a list of CSR matrices as they come, or a dense (ncol, N, nb) array taken sparse where it is mostly zeros
+    Gs = list(Gk) if isinstance(Gk, list) else [csr_matrix(Gk[k]) if np.count_nonzero(Gk[k]) <= _SPARSE_DENSITY * Gk[k].size
+                                                 else Gk[k] for k in range(Gk.shape[0])]
+    Gs = [G.tocsc() if not isinstance(G, np.ndarray) else G for G in Gs]         # sliced by columns below
+    del Gk
+    nG = nU * nR * Nm; nb = nR * Nm
+    Mall = np.zeros((nG, nG))
+    for ui in range(nU):
+        for vi in range(ui, nU):
+            Muv = Mall[ui * nb:(ui + 1) * nb, vi * nb:(vi + 1) * nb]
+            for H, (G, sl) in zip(Hs, forms):
+                Huv = H[(ui, vi)]
+                for k in range(sl.start, sl.stop):
+                    Gg = Gs[k]
+                    for c0 in range(0, nb, 4 * _FORM_COLUMNS):         # M's columns a block at a time: no n x n temporaries
+                        c1 = min(nb, c0 + 4 * _FORM_COLUMNS)
+                        Gc = Gg[:, c0:c1]
+                        HG = np.asarray((Gc.T @ Huv.T).T) if not isinstance(Gc, np.ndarray) else Huv @ Gc      # (N, c1 - c0)
+                        Muv[:, c0:c1] += np.asarray(Gg.T @ HG)
+            if vi != ui:
+                Mall[vi * nb:(vi + 1) * nb, ui * nb:(ui + 1) * nb] = Muv.T
     return Mall if idx.size == nG else Mall[np.ix_(idx, idx)]
 
 

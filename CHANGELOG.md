@@ -4,6 +4,18 @@
 
 ### Added
 
+- A finite horizon long against the model's time scales is re-cut automatically (`noisestate/time_panels.py`): a model with
+  no `numerics.breakpoints`, no lags and no past window or continuation is solved on its one panel first, as before, and
+  when that fails the resolution check by more than nodes fix (representation error above 5e-4) or is singular, it is
+  re-solved on panels graded from both ends (w, 2w, 4w, ... from 0 and T), w halved until the check passes, within
+  `settings.auto_panels_max` (8000 unknowns). The one-agent regulator at T = 30 (190% off the closed form on one panel)
+  lands on `[0, 1, 3, 7, 23, 27, 29, 30]` with the cost to 5e-10. `res.numerics.breakpoints` records the grid; a first
+  graded grid that does not cut the error tenfold is dropped and the one panel's result returned.
+- `RowOps.sparse()`; the finite engine's second-order form is assembled from sparse row operators, the responses' identity
+  blocks skipped and M built a column block at a time (`dense_curvature_form(sparse=True)`), and `second_order_dense`
+  is 8000 (was 4000): T = 30 on 10 panels, 12 nodes (7920 unknowns), solve and checks 425 s / 5.8 GB -> 48 s / 2.9 GB,
+  and the check's lowest eigenvalue is exact where Lanczos had it to 1e-6 of the highest only.
+
 - The stationary engine reports a `cost window` row (never required by a policy) when an agent's flow loss still accrues
   more than window_tail_tol of itself over the last tenth of the window (`res.cost_tail`): a loss term in a quantity that
   has not decayed by L. The window check passes a random walk (its kernel does not move), so a myopic agent leaving one
@@ -137,6 +149,17 @@
   of a quote off the rule is not pinned down.
 
 ### Fixed
+
+- The Chapter 5 market's representation-error floor (about 1.2e-6 at 12 to 16 nodes, failing the resolution check at every
+  grid): the kernels jump at L - d (a lagged read past the window is cut off), which lay inside the last geometric panel
+  beyond unit_range. The geometric panels are cut at L - d for every lag; the error falls with the nodes (3.6e-7 at 8,
+  7.0e-8 at 12, 6.9e-9 at 14). Every stationary model with lags and unit_range below the window gets the extra cuts.
+- Stationary risk-averse agents: the continuation in theta jumped from 0.5 to 1 and could land on a spurious fixed point
+  past the breakdown (the one-agent signal model at theta 1, reported not converged); past the 0.5 step it now takes the
+  finite engine's steps, halves a step that lands past the breakdown, raises RiskBreakdown with `reached` where the path
+  ends short of theta, and raises RiskBreakdown for a converged solution past the breakdown (was "not converged").
+- The stationary date-0 entropic cost's lattices were L / 40 .. L / 160, so their error grew with the window (the gap
+  between the finest two 9.3e-3 at L = 16); the step is capped at 0.2 (`ENTROPIC_STEP`), unchanged up to L = 8.
 
 - The monitoring iteration's Volterra solve for a frozen spike's seeds falls back to least squares when a trial point
   far from the equilibrium makes the discretised operator singular (the iteration keeps its best round), instead of

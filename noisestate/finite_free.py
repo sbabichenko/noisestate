@@ -594,9 +594,60 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
     assembled from the operators' dense rows (_dense_form) and diagonalised; beyond, its extreme eigenvalues
     come from Lanczos on the matvec of the applied operators."""
     c = solver.c
+    nU = system.nU
+    idx = np.where(np.tile(solver._identified(agent), nU))[0]
+    atoms, Q, _ = c.loss[agent.name]
+    n = idx.size
+    V = None
+    if n <= solver.SECOND_ORDER_DENSE:
+        Mfull = symmetrize(_dense_form(solver, agent, system, idx))
+        if system.tilt is None and getattr(system, "shift", None) is None:
+            # LAPACK's syevd on the form itself (numpy's eigvalsh copies it: n^2 more at the peak); the directions are
+            # asked of it only for a risk-averse agent's probe, below
+            from scipy.linalg import eigh
+            w = eigh(Mfull, eigvals_only=True, overwrite_a=True, check_finite=False, driver="evd")
+            Mfull = None
+        else:
+            w = np.linalg.eigvalsh(Mfull)
+        lo, hi = float(w[0]), float(w[-1])
+    else:
+        matvec = _form_matvec(solver, agent, system, idx)
+        res = solver._lanczos_extremes(lambda v: matvec(v)[:, 0], n)
+        if "message" in res:
+            return res
+        lo, hi = res["lo"], res["hi"]
+    scale = max(abs(lo), abs(hi), 1e-300)
+    out = {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -solver.SECOND_ORDER_TOL * scale), "converged": True}
+    if system.tilt is not None or getattr(system, "shift", None) is not None:
+        # the entropic cost's curvature along a change d of the strategy is E^Q[C''] + theta Var^Q(C') >= E^Q[C''] =
+        # tr(S B_d) >= tr(B_d) = E[C''], the form above, when the loss Hessian is positive semidefinite (B_d >= 0 and
+        # S = (I - theta K)^-1 >= I): the expected cost's curvature is then a lower bound of the objective's
+        QT = ((c.terminal or {}).get(agent.name) or (None, None, None))[1]
+        psd = all(M is None or np.asarray(M).size == 0 or np.linalg.eigvalsh(0.5 * (M + M.T))[0] >= -1e-12 * max(1.0, np.abs(M).max())
+                  for M in (Q, QT))
+        if not psd:
+            # no bound: the entropic cost itself, by its second differences in the world along the expected cost's lowest
+            # and highest directions (the directions where a minimum is lost first, and the scale)
+            if n <= solver.SECOND_ORDER_DENSE:
+                V = np.linalg.eigh(Mfull)[1]                        # the directions (the eigenvalues above, eigvalsh's)
+            if V is None or getattr(system, "Zfull", None) is None:
+                return {"min": None, "max": None, "ok": None, "converged": False,
+                        "message": f"{agent.name} is risk averse and its loss Hessian is not positive semidefinite: the expected cost's "
+                                   "curvature does not bound the entropic cost's, and the strategy is too large for its probe "
+                                   "(second_order_dense)"}
+            return _entropic_probe(solver, agent, system, idx, V, lo / scale)
+        out["bound"] = "entropic"          # the form is the expected cost's, a lower bound of the entropic cost's curvature
+    return out
+
+
+def _form_matvec(solver, agent: Agent, system: FocSystem, idx: np.ndarray):
+    """The second-order form M = T' G T on the kept strategies idx as a block product, V (n, B) -> M V (n, B): the
+    strategy's world through the row and response operators (FocSystem.world_of), the loss form on it (the atoms'
+    kernels under Q and the sparse mass; a past's initial columns under the point form of the line s = 0; the
+    terminal loss at T) and back through the adjoints."""
+    c = solver.c
     nW, ncol, N, nP = c.nW, c.ncol, c.N, len(c.prim)
     nU, nR, Nm = system.nU, system.nR, system.Nm
-    idx = np.where(np.tile(solver._identified(agent), nU))[0]
     atoms, Q, _ = c.loss[agent.name]
     mass = c.cost_mass_sparse()
     imass = c.time_mass(c.rho)[:c.Nd] if ncol > nW else None
@@ -643,39 +694,7 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
         for ui in range(nU):
             out[ui] = system.rowops.adjoint(system.resp.adjoint(ui, GZ))
         return out.reshape(nU * nR * Nm, -1)[idx]
-    n = idx.size
-    V = None
-    if n <= solver.SECOND_ORDER_DENSE:
-        Mfull = _dense_form(solver, agent, system, idx)
-        w = np.linalg.eigvalsh(symmetrize(Mfull))
-        lo, hi = float(w[0]), float(w[-1])
-    else:
-        res = solver._lanczos_extremes(lambda v: matvec(v)[:, 0], n)
-        if "message" in res:
-            return res
-        lo, hi = res["lo"], res["hi"]
-    scale = max(abs(lo), abs(hi), 1e-300)
-    out = {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -solver.SECOND_ORDER_TOL * scale), "converged": True}
-    if system.tilt is not None or getattr(system, "shift", None) is not None:
-        # the entropic cost's curvature along a change d of the strategy is E^Q[C''] + theta Var^Q(C') >= E^Q[C''] =
-        # tr(S B_d) >= tr(B_d) = E[C''], the form above, when the loss Hessian is positive semidefinite (B_d >= 0 and
-        # S = (I - theta K)^-1 >= I): the expected cost's curvature is then a lower bound of the objective's
-        QT = ((c.terminal or {}).get(agent.name) or (None, None, None))[1]
-        psd = all(M is None or np.asarray(M).size == 0 or np.linalg.eigvalsh(0.5 * (M + M.T))[0] >= -1e-12 * max(1.0, np.abs(M).max())
-                  for M in (Q, QT))
-        if not psd:
-            # no bound: the entropic cost itself, by its second differences in the world along the expected cost's lowest
-            # and highest directions (the directions where a minimum is lost first, and the scale)
-            if n <= solver.SECOND_ORDER_DENSE:
-                V = np.linalg.eigh(symmetrize(Mfull))[1]           # the directions (the eigenvalues above, eigvalsh's)
-            if V is None or getattr(system, "Zfull", None) is None:
-                return {"min": None, "max": None, "ok": None, "converged": False,
-                        "message": f"{agent.name} is risk averse and its loss Hessian is not positive semidefinite: the expected cost's "
-                                   "curvature does not bound the entropic cost's, and the strategy is too large for its probe "
-                                   "(second_order_dense)"}
-            return _entropic_probe(solver, agent, system, idx, V, lo / scale)
-        out["bound"] = "entropic"          # the form is the expected cost's, a lower bound of the entropic cost's curvature
-    return out
+    return matvec
 
 
 def _entropic_probe(solver, agent: Agent, system: FocSystem, idx: np.ndarray, V: np.ndarray, rn_min: float, h: float = 1e-3) -> dict:
@@ -775,7 +794,7 @@ def _dense_form(solver, agent: Agent, system: FocSystem, idx: np.ndarray) -> np.
             Gi = plus(Gi, loss_form(csr_matrix(np.exp(-c.rho * c.T) * (r.T @ r)), terminal[1], AO[system.foc.m_flow:]))
         forms.append((Gi, slice(nW, ncol)))
     # Resp is this function's own (consumed), and the row operators' rows (ncol, N, nR Nm) are made once the responses are gone
-    return dense_curvature_form(Resp, system.rowops.dense, forms, nU, nR, Nm, idx, consume=True)
+    return dense_curvature_form(Resp, system.rowops.sparse, forms, nU, nR, Nm, idx, consume=True, sparse=True)
 
 
 def reconstruction(solver, agent: Agent, Zfull: np.ndarray, g: np.ndarray) -> np.ndarray:

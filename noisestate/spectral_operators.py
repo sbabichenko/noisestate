@@ -247,6 +247,21 @@ class RowOps:
         return out
 
 
+    def sparse(self) -> list:
+        """Every G_k as a CSR matrix (N, nR Nm), a list over the world's columns: dense() one time panel of rows at a
+        time, kept by its nonzero entries (an action node reads the map on its own time row only: 0.4% of dense()'s
+        entries on a seven-panel grid), so the dense array never exists."""
+        from scipy.sparse import csr_matrix, vstack
+        blocks = [[] for _ in range(self.ncol)]
+        for lo, hi in self.c._panel_ranges:
+            out = np.zeros((self.ncol, hi - lo, self.nR * self.Nm))
+            into = [(out[:, :, r * self.Nm:r * self.Nm + self.N],
+                     out[:, :, r * self.Nm + self.N:(r + 1) * self.Nm] if self.Nm > self.N else None) for r in range(self.nR)]
+            self.rows(lo, hi, [(0, self.N)] * self.nR, into=into)
+            for k in range(self.ncol):
+                blocks[k].append(csr_matrix(out[k]))
+        return [vstack(b, format="csr") for b in blocks]
+
     def dense(self, lo: int = 0, scratch: Optional[str] = None) -> np.ndarray:
         """Every G_k as a dense array, (ncol, N, nR Nm): the rows of every panel (the factored FOC system); with lo
         the rows of the action nodes from lo on only (the reduced system under freeze_before), zero before.  scratch:

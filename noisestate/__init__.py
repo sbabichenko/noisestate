@@ -17,7 +17,7 @@ from .accel import ConvergenceError, DiagnosticsError, ResultValidationError
 from .risk import RiskBreakdown
 from ._settings import Settings
 from .results import Result
-from . import engines
+from . import engines, time_panels
 from .sweep import sweep, Sweep, SweepPoint
 from .comparison import compare, ComparisonResult, ScenarioResult
 from .diagnostics import Assessment, Policy, Status
@@ -252,8 +252,20 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
     kw = num.solve_kw()
     if tol is not None:
         kw["tol"] = tol
-    res = S.solve(start_from=start_from, start_policy=engines.default_start(S, start_policy), max_evaluations=max_evaluations, deadline=deadline, progress=progress,
-                  diagnostics=diagnostics, **kw)
+    run = dict(max_evaluations=max_evaluations, deadline=deadline, progress=progress, **kw)
+    if not time_panels.eligible(S):
+        res = S.solve(start_from=start_from, start_policy=engines.default_start(S, start_policy), diagnostics=diagnostics, **run)
+        return _after_solve(res, refine, stability, diagnostics)
+    # one panel on [0, T]: a horizon long against the model's time scales is re-solved on graded panels (time_panels.py)
+    res, err = None, None
+    try:
+        res = S.solve(start_from=start_from, start_policy=engines.default_start(S, start_policy), diagnostics=diagnostics, **run)
+    except ValueError as exc:
+        if not time_panels._singular(exc):
+            raise
+        err = exc
+    res = time_panels.solve_graded(S, num, res, err, run, diagnostics, verbose=verbose,
+                                   build=lambda m, n: engines._build(m, n, verbose=verbose, past=past, continuation=continuation))
     return _after_solve(res, refine, stability, diagnostics)
 
 

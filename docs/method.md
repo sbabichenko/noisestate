@@ -348,10 +348,10 @@ for `(I - theta K_0 Sigma) g = f_0` (Sigma the projector off what the agent has 
 `I - theta K_0` is not for a Kyle insider, whose seen inventory makes `theta lambda_max(K_0)` 2.9 at theta = 1), then
 `theta K_0 Sigma g` read at the engine's age nodes with the tau integral cut exactly at the
 window; two lattices (`RISK_LATTICE`, 0.02, and half) and Richardson's h^2 step (`res.risk[agent]["richardson_gap"]`).
-`solve()` from no start goes theta x 0, 0.5, 1.  `res.risk[agent]["entropic"]` is the date-0 self's entropic cost
+`solve()` from no start goes theta x 0, 0.5, then to 1 while `theta_mu_max` at the full theta, estimated at the last step's equilibrium, is at most 0.9, else in the finite engine's steps closing 0.6 of the gap to the breakdown; a step whose fixed point lies past the breakdown (or whose correction's GMRES fails there) is halved, three times at most in all, and a path that ends short of theta raises `RiskBreakdown` with `reached`; a converged solution past the breakdown raises it too.  `res.risk[agent]["entropic"]` is the date-0 self's entropic cost
 averaged over the past, `E C_0 + (theta / 2) tr(Pi K_0 B K_0 Pi) + (2 theta)^-1 sum(-log(1 - theta mu) - theta mu)` (`Pi` the
 projector on what the agent has seen, `mu` the eigenvalues of `Sigma K_0 Sigma`, `Sigma = I - Pi`, `B = Sigma (I - theta
-Sigma K_0 Sigma)^-1 Sigma`), `E C_0` the flow cost over rho, on three lattices (`ENTROPIC_LATTICE`, L / 40, 80, 160) and
+Sigma K_0 Sigma)^-1 Sigma`), `E C_0` the flow cost over rho, on three lattices (`ENTROPIC_LATTICE`, L / 40, 80, 160, refined by an integer factor when the coarsest would exceed `ENTROPIC_STEP` 0.2) and
 the polynomial in h through them (the excess converges like h: the kernels' kinks on the diagonal; about 1e-2 relative
 on a fast-decaying kernel, 1e-4 on the signal model of the tests); `theta_mu_max` is the conditional breakdown measure.  The
 unconditional `theta^-1 log E e^{theta C_0}` can be infinite when the conditional one is not (a Kyle insider's inventory
