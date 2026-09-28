@@ -119,9 +119,7 @@ class FocSystem:
         corner group's columns summed and its equations summed.  A risk-averse agent's correction is not in it
         (solve() handles it by preconditioned GMRES) unless with_tilt, which adds it column by column (the
         tests' check of that solve)."""
-        from scipy.sparse import csr_matrix
         N, ncol, nU, nR, Nm, nG = self.N, self.ncol, self.nU, self.nR, self.Nm, self.nG
-        Rm = csr_matrix((np.ones(self.kept.size), (self.inv, np.arange(self.kept.size))), shape=(self.n, self.kept.size))
         c = self.c
         if c.past is not None and c.P_lo > 0:
             # freeze_before: the kept unknowns lie on the panels from t_lo on, where the free maps act, the world
@@ -143,7 +141,7 @@ class FocSystem:
                 for vi in range(nU):
                     FR = Fu @ Resp[vi]
                     A[off[ui]:off[ui + 1], off[vi]:off[vi + 1]] = sum(Hr[k] @ (FR @ Gr[k][vi]) for k in range(ncol))
-            return np.asarray(Rm @ A @ Rm.T)
+            return self._tie(A)
         # the dense operators in work buffers (made and dropped once per best response): the rows, the projection, each
         # control's response and one control's FOC operator at a time
         Gk = self.rowops.dense(scratch="foc_rows"); H = self.projops.dense(scratch="foc_proj")
@@ -155,7 +153,19 @@ class FocSystem:
             for vi in range(nU):
                 FR = Fu @ Resp[vi]
                 Amat[rows_u, vi * nR * Nm:(vi + 1) * nR * Nm] += sum(H[:, k * N:(k + 1) * N] @ (FR @ Gk[k]) for k in range(ncol))
-        return np.asarray(Rm @ Amat[np.ix_(self.kept, self.kept)] @ Rm.T)
+        if self.kept.size == nG:                        # every unknown kept: no copy of Amat
+            return self._tie(Amat)
+        return self._tie(Amat[np.ix_(self.kept, self.kept)])
+
+    def _tie(self, A: np.ndarray) -> np.ndarray:
+        """Rm A Rm' (a corner group's columns and equations summed); with no ties (Rm the identity) the two sparse
+        products are the identity's, 0 + 1 a entry by entry: A + 0.0 in place, the same to the bit."""
+        if self.n == self.kept.size and np.array_equal(self.inv, np.arange(self.n)):
+            A += 0.0
+            return A
+        from scipy.sparse import csr_matrix
+        Rm = csr_matrix((np.ones(self.kept.size), (self.inv, np.arange(self.kept.size))), shape=(self.n, self.kept.size))
+        return np.asarray(Rm @ A @ Rm.T)
 
     def _tilt_matrix(self) -> np.ndarray:
         """(nG, nG): the risk-averse correction's part of Amat, sum_u H (Delta_u (sum_v Resp_v G gamma_v)), applied to

@@ -629,6 +629,34 @@ def _scratch_owner() -> dict:
     return _SCRATCH.__dict__.setdefault("owner", {})
 
 
+_ROW_HASH = np.random.default_rng(20260928).integers(1, 2**63, size=64, dtype=np.uint64) | np.uint64(1)
+
+
+def _distinct_rows(X: np.ndarray):
+    """(first, inv) of X's distinct rows by their bytes, as np.unique on the rows' void view gives them (first: each
+    group's first row, inv: each row's group; the groups numbered in any order): the rows sorted (stably) by a hash of
+    their 64-bit words, the groups the runs of one hash, checked equal word for word (a collision falls back to
+    np.unique).  The void sort compares 128-byte keys by memcmp; this sorts integers."""
+    m, w = X.shape
+    K = X.view(np.uint64)
+    if m == 0 or w > _ROW_HASH.size:
+        key = X.view(np.dtype((np.void, X.shape[1] * X.itemsize))).ravel()
+        _, first, inv = np.unique(key, return_index=True, return_inverse=True)
+        return first, inv.ravel()
+    h = (K * _ROW_HASH[:w]).sum(axis=1, dtype=np.uint64)     # wraps modulo 2^64
+    o = np.argsort(h, kind="stable")
+    hs = h[o]
+    brk = np.empty(m, dtype=bool); brk[:1] = True
+    np.not_equal(hs[1:], hs[:-1], out=brk[1:])
+    Ks = K[o]; same = ~brk[1:]
+    if np.any(Ks[1:][same] != Ks[:-1][same]):                  # two different rows of one hash
+        key = X.view(np.dtype((np.void, X.shape[1] * X.itemsize))).ravel()
+        _, first, inv = np.unique(key, return_index=True, return_inverse=True)
+        return first, inv.ravel()
+    inv = np.empty(m, dtype=np.intp); inv[o] = np.cumsum(brk) - 1
+    return o[brk], inv
+
+
 class Factors:
     """An interpolation at many points (interp_factors') held with each piece's repeated points once: a path's
     quadrature points repeat (every output node of one time row integrates over the same whole panels below its own),
@@ -647,8 +675,7 @@ class Factors:
         mask = np.ones(nq + 1, dtype=bool)
         for pc, sel, Rt, Rx in factors:
             X = np.ascontiguousarray(np.concatenate([Rt, Rx], axis=1))
-            key = X.view(np.dtype((np.void, X.shape[1] * X.itemsize))).ravel()
-            _, first, inv = np.unique(key, return_index=True, return_inverse=True)
+            first, inv = _distinct_rows(X)
             order = np.argsort(first)                            # distinct rows in order of first appearance
             rank = np.empty_like(order); rank[order] = np.arange(order.size)
             keep = first[order]

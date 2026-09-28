@@ -313,6 +313,22 @@ def _panel_solve(within: Dict[Tuple[int, int], np.ndarray], rhs: np.ndarray, nP:
     S = [i for i in range(nP) if i not in C]
     pos = {i: k for k, i in enumerate(S)}; cpos = {i: k for k, i in enumerate(C)}
     nS, nC = len(S) * Np, len(C) * Np
+    if nS and not any(j in pos for (i, j) in within):
+        # nothing reads S within the panel (no block (S, S) or (C, S)): I - M_SS - M_SC M_CS is the identity, whose
+        # solve returns the right side itself, z_S = rhs_S + M_SC rhs_C, and z_C = rhs_C (+ 0.0: the zero product added)
+        rS = rhs[S].reshape(nS, nc)
+        b = rS.copy()
+        if nC:
+            rC = rhs[list(C)].reshape(nC, nc)
+            MSC = _scratch("panel_sc", (nS, nC)); MSC.fill(0.0)
+            for (i, j), X in within.items():
+                MSC[pos[i] * Np:(pos[i] + 1) * Np, cpos[j] * Np:(cpos[j] + 1) * Np] = X
+            b += MSC @ rC
+        z = np.empty_like(rhs)
+        z[S] = b.reshape(len(S), Np, nc)
+        if nC:
+            z[list(C)] = (rC + 0.0).reshape(len(C), Np, nc)
+        return z
     # the blocks in work buffers (triangle._scratch): a panel's are made and dropped once per closed-loop solve
     MSS = _scratch("panel_ss", (nS, nS)); MSC = _scratch("panel_sc", (nS, nC)); MCS = _scratch("panel_cs", (nC, nS))
     for M in (MSS, MSC, MCS):

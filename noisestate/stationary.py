@@ -47,6 +47,17 @@ def _lu_solve(lu, b: np.ndarray) -> np.ndarray:
     return x
 
 
+_LOWER: Dict[int, np.ndarray] = {}
+
+
+def _strict_lower(m: int) -> np.ndarray:
+    """The (m, m) mask of the strict lower triangle, made once per size."""
+    M = _LOWER.get(m)
+    if M is None:
+        M = _LOWER[m] = np.tri(m, m, -1, dtype=bool)
+    return M
+
+
 class Compiled(CompiledBase):
     """Grid, index maps and constant operators for a stationary model."""
     LEAD_WEIGHT_WARN = tunable("lead_weight_warn")     # warn when a lead's past flows outweigh the current one by more than this (settings)
@@ -84,6 +95,9 @@ class Compiled(CompiledBase):
                                   f"after t enter the first-order condition weighted by up to exp(rho tau) = {np.exp(self.rho * tau):.1e} "
                                   "relative to the current flow, which dominates the best-response system (README, Limits)", stacklevel=2)
         self._elim: Dict[frozenset, tuple] = {}
+        self._row_ops: Dict[tuple, tuple] = {}             # (agent, row, excluded) -> row_blocks (map-independent)
+        self._row_ops_bytes = 0
+        self._state_forcing: Dict[tuple, tuple] = {}       # (excluded, impulse controls) -> (B_X, G B_X) of the closed loop
         self._elim_wzero: Dict[frozenset, bool] = {}
         self.sym = find_cyclic_symmetry(model)
         self._composite_static = self.composite            # the loss's instant reactions; use_maps adds the level rows
@@ -167,13 +181,20 @@ class Compiled(CompiledBase):
         """The composite for `origin`'s seed worlds (the monitoring iteration): a player privy to the origin knows its
         spike for what it is, so its instant reaction is the loss's alone, not the belief update its map on a level row
         would add (which the on-path composite, use_maps, keeps: on the path it reacts through its map)."""
+        lg0 = getattr(self, "_level_g0", [])
+        memo = self.__dict__.setdefault("_seed_comp", {})     # per origin, while use_maps has not been called again
+        hit = memo.get(origin)
+        if hit is not None and hit[0] is self.composite and hit[1] is lg0:
+            return hit[2]
         privy = set(self.model.privy(origin))
-        if not any(an in privy for (_, _, an, _) in getattr(self, "_level_g0", [])):
-            return self.composite
-        comp = {u: dict(v) for u, v in (self.composite or {}).items()}
-        for q, v, an, g0 in self._level_g0:
-            if an in privy:
-                comp[q][v] -= g0
+        if not any(an in privy for (_, _, an, _) in lg0):
+            comp = self.composite
+        else:
+            comp = {u: dict(v) for u, v in (self.composite or {}).items()}
+            for q, v, an, g0 in lg0:
+                if an in privy:
+                    comp[q][v] -= g0
+        memo[origin] = (self.composite, lg0, comp)
         return comp
 
     # ------------------------------------------------------- closed loop
@@ -182,7 +203,20 @@ class Compiled(CompiledBase):
         kernels it reads, {primary: operator}, and the instantaneous entries per source: channel
         names for Brownian noise, control names for observed-control impulses.  Controls in
         `excluded` (the agent whose reaction is switched off) contribute impulses through their own
-        impulse channel instead of through a kernel."""
+        impulse channel instead of through a kernel.  Map-independent, so cached per (agent, row, excluded
+        controls); the operators are shared and must not be written to."""
+        key = (agent, r, frozenset(excluded))
+        hit = self._row_ops.get(key)
+        if hit is None:
+            hit = self._row_blocks(agent, r, excluded)
+            size = sum(op.nbytes for op in hit[0].values())
+            if self.N <= 96 and self._row_ops_bytes + size <= (2 << 20):    # small grids only (the monitored markets
+                self._row_ops[key] = hit                        # call it thousands of times): on a large grid the copies
+                self._row_ops_bytes += size                     # cost more (memory, the allocator) than they save
+        blocks, deltas = hit
+        return blocks, {k: list(v) for k, v in deltas.items()}
+
+    def _row_blocks(self, agent: str, r: int, excluded: set):
         name, drift, E, delay = self.rows[agent][r]
         S = self.shift(delay)
         blocks: Dict[str, np.ndarray] = {}
@@ -303,16 +337,26 @@ class Compiled(CompiledBase):
         B = np.zeros((n, ncol))
         if nX:
             lu, W, P0X, perm = self._state_elimination(excl)
-            for k in range(self.nW):
-                B[:nxs, k] += P0X @ self.sigma[:, k]
-            for j, u in enumerate(impulse_controls):
-                col = self.nW + j
-                for i, (nm, lag), c in self.state_inputs:
-                    if nm != u:
-                        continue
-                    v = np.zeros(nX); v[i] = c
-                    B[:nxs, col] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
-            GB = _lu_solve(lu, B[:nxs])
+            # the state rows of the forcing and their elimination G B_X are map-independent: once per (excluded,
+            # impulse controls) (the monitored markets solve the closed loop thousands of times)
+            skey = (excl, tuple(impulse_controls))
+            hit = self._state_forcing.get(skey)
+            if hit is None:
+                Bx = np.zeros((nxs, ncol))
+                for k in range(self.nW):
+                    Bx[:, k] += P0X @ self.sigma[:, k]
+                for j, u in enumerate(impulse_controls):
+                    col = self.nW + j
+                    for i, (nm, lag), c in self.state_inputs:
+                        if nm != u:
+                            continue
+                        v = np.zeros(nX); v[i] = c
+                        Bx[:, col] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
+                hit = (Bx, _lu_solve(lu, Bx))
+                if len(self._state_forcing) < 64:
+                    self._state_forcing[skey] = hit
+            B[:nxs] = hit[0]
+            GB = hit[1]
         # control rows: the strategies
         MU = np.zeros((nU * N, n))
         for a in self.model.agents:
@@ -343,7 +387,8 @@ class Compiled(CompiledBase):
                 continue
             bl = slice(self.block(v).start - nxs, self.block(v).stop - nxs)
             for u, h in loads.items():
-                MU[bl, self.block(u)] += h * np.eye(N)
+                blk = MU[bl, self.block(u)]
+                blk[np.arange(N), np.arange(N)] += h                    # h I
         Z = np.zeros((n, ncol))
         if nX:
             MUX, MUU = MU[:, :nxs], MU[:, nxs:]
@@ -605,15 +650,25 @@ class StationarySolver(EngineBase):
         zero ones are zero and are skipped (a channel the agent's rows never carry, a row that reads
         nothing regular).  Rows are grouped by observation delay so one batched kernel call serves all
         rows of a delay."""
-        sup = np.stack([np.any(y != 0, axis=0) for y in rows]) if rows else np.zeros((0, self.c.nW), dtype=bool)
-        groups = {}
-        for r in range(len(rows)):
-            groups.setdefault(float(self.c.rows[agent.name][r][3]), []).append(r)
+        sup = np.stack([y.any(axis=0) for y in rows]) if rows else np.zeros((0, self.c.nW), dtype=bool)
+        memo = self.__dict__.setdefault("_row_groups", {})         # map-independent: once per (agent, number of rows)
+        key = (agent.name, len(rows))
+        groups = memo.get(key)
+        if groups is None:
+            groups = {}
+            for r in range(len(rows)):
+                groups.setdefault(float(self.c.rows[agent.name][r][3]), []).append(r)
+            memo[key] = groups
         return sup, groups
 
     def _row_operator(self, agent: Agent, rows, inst):
         """Per channel, the operator (N x nR N) mapping stacked row maps gamma to the action kernel:
         c_k = sum_r (Conv[y_rk] + E_rk S_delta) gamma_r."""
+        return self._row_operator_parts(agent, rows, inst)[0]
+
+    def _row_operator_parts(self, agent: Agent, rows, inst):
+        """(Gk, pre): _row_operator's result and, per (row, channel) block that also has instantaneous entries, a copy
+        of its regular part before they are added, {(r, k): (N, N)} (_foc_system reads the regular blocks from them)."""
         c = self.c; N, nW = c.N, c.nW; nR = len(rows)
         Gk = np.zeros((nW, N, nR * N))
         sup, groups = self._row_support(agent, rows)
@@ -623,10 +678,18 @@ class StationarySolver(EngineBase):
                 ops = c.conv_rows(np.stack([rows[r][:, k] for r, k in pairs], axis=1), d)     # one call per delay
                 for i, (r, k) in enumerate(pairs):
                     Gk[k, :, r * N:(r + 1) * N] = ops[i]
+        pre = {}
         for r in range(nR):
             for (k, age, w) in inst[r]:
-                Gk[k, :, r * N:(r + 1) * N] += w * c.instant(age, c.rows[agent.name][r][3])
-        return Gk
+                S = c.instant(age, c.rows[agent.name][r][3])
+                blk = Gk[k, :, r * N:(r + 1) * N]
+                if (r, k) not in pre:
+                    pre[(r, k)] = blk.copy()
+                if self._shift_is_eye(S):
+                    blk[np.arange(N), np.arange(N)] += w                # w I
+                else:
+                    blk += w * S
+        return Gk, pre
 
     def _response_operators(self, agent: Agent, R: np.ndarray):
         """Per control, the operator (n_prim N x N) giving the primary kernels' response to that
@@ -642,6 +705,34 @@ class StationarySolver(EngineBase):
             out.append(Cu)
         return out
 
+    def _foc_static(self, agent: Agent):
+        """The map-independent pieces of _foc_operators, built once per agent: per atom its block (primary index,
+        N x N shift) and whether the shift is the identity; Q' contiguous; per control the atoms its continuation
+        enters (the others' quantities), its own delayed reads and the leads."""
+        st = self._atom_blocks.get(agent.name)
+        if st is None:
+            c = self.c
+            atms, Q, q = c.loss[agent.name]
+            # an atom operator is one N x N block, the shift into the atom's own primary: the position is the
+            # atom's, so ask for the block rather than build the full-width operator and scan its zeros for it
+            AO = [c.atom_block(at) for at in atms]
+            eye = [_is_eye(blk) for p, blk in AO]
+            idx = {at: j for j, at in enumerate(atms)}
+            per_u = []
+            for u in agent.controls:
+                cont = np.array([j for j, (name, lag) in enumerate(atms) if name not in agent.controls], dtype=np.intp)
+                lead = [(j, name, lag) for j, (name, lag) in enumerate(atms) if name not in agent.controls and lag < 0]
+                own_lag = [(j, lag) for j, (name, lag) in enumerate(atms) if name == u and lag > 0]
+                per_u.append((cont, lead, own_lag))
+            # the identity atoms alone on their primary's block: their block of the operator is 0 + MQ_i, written at
+            # once (a zero MQ_i writes the zeros the block holds); the other atoms are added one by one in order
+            ps = [p for p, _ in AO]
+            sole = [i for i in range(len(atms)) if eye[i] and ps.count(ps[i]) == 1]
+            rest = np.array([i for i in range(len(atms)) if i not in sole], dtype=np.intp)
+            sole = (np.array(sole, dtype=np.intp), np.array([ps[i] for i in sole], dtype=np.intp))
+            st = self._atom_blocks[agent.name] = (AO, eye, idx, np.ascontiguousarray(Q.T), per_u, sole, rest)
+        return st
+
     def _foc_operators(self, agent: Agent, R: np.ndarray, atoms: bool = False):
         """Per control, the operator (N x n_prim N) mapping the primary kernels of one channel to the
         first-order-condition kernel: instantaneous derivative, discounted continuation through the
@@ -650,43 +741,43 @@ class StationarySolver(EngineBase):
         With atoms=True returns (Fu, Ms), Ms the per-control operators M (n_atoms, N, N) on the loss
         atoms' kernels that Fu contracts with Q (the mean part applies them to the targets q)."""
         c = self.c; N = c.N; n_prim = len(c.prim) * N
-        atms, Q, q = c.loss[agent.name]
-        # an atom operator is one N x N block, the shift into the atom's own primary: the position is the
-        # atom's, so ask for the block rather than build the full-width operator and scan its zeros for it
-        if agent.name not in self._atom_blocks:            # map-independent: built once per agent
-            blocks = [[c.atom_block(at)] for at in atms]
-            self._atom_blocks[agent.name] = (blocks, [[_is_eye(blk) for p, blk in bl] for bl in blocks])
-        AO_blocks, AO_eye = self._atom_blocks[agent.name]       # AO_eye: an undelayed atom reads through the identity
+        atms = c.loss[agent.name][0]; na = len(atms)
+        AO, AO_eye, aidx, QT, per_u, (sole, sole_p), rest = self._foc_static(agent)   # AO_eye: an undelayed atom reads through the identity
+        comp = c.seed_composite(agent.name) if hasattr(c, "seed_composite") else c.composite   # its own deviations
         Fu, Ms = [], []
         for ui, u in enumerate(agent.controls):
             # op = sum_j M_j (Q zeta)_j with M_j the operator on atom j: identity for the instantaneous
             # term, continuation, delayed own read, lead term; contracted as sum_i (sum_j Q_ji M_j) AO_i
             # so the products are N x N x N per atom block instead of N x N x n_prim N per atom
-            M = np.zeros((len(atms), N, N)); diag = np.diag_indices(N)
-            comp = c.seed_composite(agent.name) if hasattr(c, "seed_composite") else c.composite   # its own deviations
+            cont, lead, own_lag = per_u[ui]
+            M = np.zeros((na, N, N)); Mf = M.reshape(na, N * N)
             for v, coef in (comp or {}).get(u, {u: 1.0}).items():   # the control and the instant reactions it draws
-                if (v, 0.0) in atms:
-                    M[atms.index((v, 0.0))][diag] += coef              # + coef I
+                j = aidx.get((v, 0.0))
+                if j is not None:
+                    Mf[j, ::N + 1] += coef                          # + coef I
             if not agent.myopic:
-                # impulse responses of every atom: its block against its own primary's rows of R
-                Rj = np.stack([sum(A @ R[p * N:(p + 1) * N, ui] for p, A in AO_blocks[j]) for j in range(len(atms))], axis=1)
+                # impulse responses of every atom: its block against its own primary's rows of R (an identity
+                # block reads the rows themselves; + 0.0 as the sum from 0 the products were added to)
+                Rj = np.empty((N, na))
+                for j, (p, A) in enumerate(AO):
+                    Rj[:, j] = R[p * N:(p + 1) * N, ui] if AO_eye[j] else A @ R[p * N:(p + 1) * N, ui]
+                Rj += 0.0
                 CR = c.continuation(Rj)
-                for j, (name, lag) in enumerate(atms):
-                    if name in agent.controls:
-                        if name == u and lag > 0:          # delayed read of the control itself
-                            M[j] += np.exp(-c.rho * lag) * c.own_lag_read(lag)
-                        continue                            # own reactions: envelope
-                    M[j] += CR[j]
-                    if lag < 0:
-                        M[j] += self._lead_term(agent, R[:, ui], name, lag)
-            MQ = np.dot(np.ascontiguousarray(Q.T), M.reshape(len(atms), -1))     # MQ[i] = sum_j Q[j, i] M_j (tensordot's product)
+                for j, lag in own_lag:                              # delayed read of the control itself
+                    M[j] += np.exp(-c.rho * lag) * c.own_lag_read(lag)
+                if len(cont):                                       # own reactions: envelope (no continuation)
+                    M[cont] += CR[cont]
+                for j, name, lag in lead:
+                    M[j] += self._lead_term(agent, R[:, ui], name, lag)
+            MQ = np.dot(QT, Mf)                                     # MQ[i] = sum_j Q[j, i] M_j (tensordot's product)
             nz = MQ.any(axis=1)
-            MQ = MQ.reshape(len(atms), N, N)
+            MQ = MQ.reshape(na, N, N)
             op = np.zeros((N, n_prim))
-            for i in range(len(atms)):
-                if nz[i]:
-                    for (p, blk), eye in zip(AO_blocks[i], AO_eye[i]):
-                        op[:, p * N:(p + 1) * N] += MQ[i] if eye else MQ[i] @ blk
+            if sole.size:
+                op.reshape(N, -1, N)[:, sole_p, :] = (MQ[sole] + 0.0).transpose(1, 0, 2)
+            for i in rest[nz[rest]]:
+                p, blk = AO[i]
+                op[:, p * N:(p + 1) * N] += MQ[i] if AO_eye[i] else MQ[i] @ blk
             Fu.append(op); Ms.append(M)
         return (Fu, Ms) if atoms else Fu
 
@@ -833,7 +924,7 @@ class StationarySolver(EngineBase):
         products over those blocks are skipped (c.causal_chunks; the stationary Compiled declares them)."""
         return self.c.causal_chunks()
 
-    def _foc_system(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu):
+    def _foc_system(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu, Gk=None, Gpre=None):
         """The first-order-condition system Amat gamma = -bvec on the passive rows,
         Amat[u, v] = sum_k H_k (Fu_u Resp_v) G_k, bvec[u] = sum_k H_k (Fu_u Zpass)_k, with G_k the row
         operator and H_k the projection operator of channel k.  Both split into a regular part (the
@@ -841,7 +932,10 @@ class StationarySolver(EngineBase):
         zero) and the instantaneous entries (scaled shifts on one row block); the regular parts are
         assembled over the nonzero rows and channels only, with the projection's columns ordered
         (node, channel) so the product Fu Resp G comes out in the right layout without a transpose, and
-        the instantaneous terms are added block by block.  Identical to the dense assembly to round-off."""
+        the instantaneous terms are added block by block.  Identical to the dense assembly to round-off.
+        Gk, when given, is _row_operator's result on the same rows and Gpre its blocks' regular parts where it added
+        instantaneous entries (_row_operator_parts): the convolution operators this would build again (the same call
+        on the same kernels) are read from them instead; Gpre is emptied once read."""
         c = self.c; N = c.N; nR, nU = len(rows), len(Fu)
         sup, groups = self._row_support(agent, rows)
         delay = [c.rows[agent.name][r][3] for r in range(nR)]
@@ -856,11 +950,19 @@ class StationarySolver(EngineBase):
                 continue
             Y = np.stack([rows[Rn[ri]][:, k] for ri, k in pairs], axis=1)
             Hp = c.projection_rows(Y, d).reshape(N, len(pairs), N)             # (a, pair, j)
-            Gp = c.conv_rows(Y, d)                                              # (pair, a, j)
+            if Gk is None:
+                Gp = c.conv_rows(Y, d)                                          # (pair, a, j)
             for i, (ri, k) in enumerate(pairs):
                 Hs[ri, :, :, kpos[k]] = Hp[:, i, :]
-                Gs[:, kpos[k], ri, :] = Gp[i]
-            del Y, Hp, Gp                                                       # two (N pairs N) arrays: not held through the assembly
+                if Gk is None:
+                    Gs[:, kpos[k], ri, :] = Gp[i]
+                else:                                                           # the row operator's block: the same product
+                    r = int(Rn[ri])
+                    Gs[:, kpos[k], ri, :] = Gpre[(r, k)] if (r, k) in Gpre else Gk[k][:, r * N:(r + 1) * N]
+            del Y, Hp                                                           # (N pairs N) arrays: not held through the assembly
+            Gp = None
+        if Gpre:
+            Gpre.clear()                                                        # read into Gs: not held through the assembly
         Hs = Hs.reshape(nRn * N, N * nKn); Gs = Gs.reshape(N, nKn * nRn * N)
         chunks = self._causal_chunks() if nKn else []
         Hc = [np.ascontiguousarray(Hs.reshape(nRn, N, N * nKn)[:, lo:hi, lo * nKn:]).reshape(nRn * (hi - lo), (N - lo) * nKn)
@@ -871,7 +973,8 @@ class StationarySolver(EngineBase):
         for r in range(nR):
             for (k, age, w) in inst[r]:
                 G, H = c.instant(age, delay[r]), c.instant_adjoint(age, delay[r])
-                ent.append((r, k, w * G, w * H, (w if self._shift_is_eye(G) else None), (w if self._shift_is_eye(H) else None)))
+                eg, eh = self._shift_is_eye(G), self._shift_is_eye(H)
+                ent.append((r, k, None if eg else w * G, None if eh else w * H, (w if eg else None), (w if eh else None)))
         rmul = lambda X, S, w: X * w if w is not None else X @ S            # X @ S with S = w I
         lmul = lambda S, w, X: w * X if w is not None else S @ X            # S @ X with S = w I
         nG = nU * nR * N
@@ -940,12 +1043,15 @@ class StationarySolver(EngineBase):
             self._silent[agent.name] = {r for r in c.levels[agent.name]            # relative: the zero start leaves round-off
                                         if max([0.0] + [abs(w) for (_, _, w) in yinst[r]]) <= 1e-9 * scale
                                         and float(np.abs(ytil[r][:, :c.nW]).max()) <= 1e-9 * scale}
-        Gk = self._row_operator(agent, ytil, yinst)
+        if type(self)._row_operator is StationarySolver._row_operator:
+            Gk, Gpre = self._row_operator_parts(agent, ytil, yinst)
+        else:                                                   # an overridden row operator: _foc_system builds its own
+            Gk, Gpre = self._row_operator(agent, ytil, yinst), None
         Resp0 = self._response_operators(agent, R0)
         Resp = Resp0 if R is R0 else self._response_operators(agent, R)
         Fu = self._foc_operators(agent, R)
         # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp0_v Gk gamma_v)) = 0 for all controls
-        Amat, bvec = self._foc_system(agent, ytil, yinst, Zpass, Resp0, Fu)
+        Amat, bvec = self._foc_system(agent, ytil, yinst, Zpass, Resp0, Fu, None if Gpre is None else Gk, Gpre)
         gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
         del Amat, bvec                                          # (nU nR N)^2: not kept through the diagnostics
         cact = np.stack([(Gk @ gamma[ui].reshape(-1)).T for ui in range(nU)])
@@ -1140,10 +1246,10 @@ class StationarySolver(EngineBase):
         ctrls, Z0, C = setup
         conv = [[c.grid.conv_op(Dj[o2, u]) for o2 in range(own)] for u in range(own)]      # conv[u][o'] g = D^{u<-j,o'} * g
         M = conv[0][0].copy() if own == 1 else np.block([[conv[u][o2] for o2 in range(own)] for u in range(own)])
-        M[np.diag_indices(own * N)] += 1.0                                          # I + the blocks (0 + x off the diagonal)
+        M.flat[::own * N + 1] += 1.0                                          # I + the blocks (0 + x off the diagonal)
         out = np.zeros((len(c.prim) * N, own))
         for o in range(own):
-            rhs = -np.concatenate([Dj[o, u] for u in range(own)])
+            rhs = -(Dj[o, 0] if own == 1 else np.concatenate([Dj[o, u] for u in range(own)]))
             try:
                 s = np.linalg.solve(M, rhs).reshape(own, N)
             except np.linalg.LinAlgError:              # a trial point far from the equilibrium can make the discretised
@@ -1217,12 +1323,13 @@ class StationarySolver(EngineBase):
         for i0 in range(0, n, 256):
             i1 = min(n, i0 + 256)
             Gram[i0:i1, :i0] = Gram[:i0, i0:i1].T
-            D = np.triu(Gram[i0:i1, i0:i1])
-            Gram[i0:i1, i0:i1] = D + D.T - np.diag(np.diagonal(D))
+            # the diagonal block: its strict lower triangle (zero) from the upper, which is triu(D) + triu(D)' - diag(D)
+            # to the bit (x + 0 - 0 above, 0 + x below, 2d - d on the diagonal; the Gram, summed from zeros, holds no -0)
+            np.copyto(Gram[i0:i1, i0:i1], Gram[i0:i1, i0:i1].T, where=_strict_lower(i1 - i0))
         rhs = Bk.reshape(nW * N, nR * N).T @ (actions * W[None, :, None]).transpose(2, 1, 0).reshape(nW * N, nU)   # column ui: sum_k Bk' W actions[ui, :, k]
         if not keep.all():
             Gram = Gram[np.ix_(keep, keep)]; rhs = rhs[keep]
-        Gram[np.diag_indices(Gram.shape[0])] += self.settings.stationary_map_ridge * np.trace(Gram) / Gram.shape[0]   # the ridge
+        Gram.flat[::Gram.shape[0] + 1] += self.settings.stationary_map_ridge * np.trace(Gram) / Gram.shape[0]   # the ridge
         g = np.zeros((nU, nR * N))
         g[:, keep] = np.linalg.solve(Gram, rhs).T                              # one factorisation for every control
         return g.reshape(nU, nR, N)
@@ -1268,15 +1375,23 @@ class StationarySolver(EngineBase):
         row reads something within the window: all ages for an undelayed row, ages below L - delay
         for a row observed with a delay."""
         c = self.c; N = c.N; g = c.grid
-        keep = np.ones(len(agent.signals) * N, dtype=bool)
+        memo = self.__dict__.setdefault("_delayed_masks", {})     # map-independent: once per agent
+        hit = memo.get(agent.name)
+        if hit is None:
+            base = np.ones(len(agent.signals) * N, dtype=bool); delayed = set()
+            last = (np.arange(N) % g.n) == g.n - 1
+            for r in range(len(agent.signals)):
+                d = c.rows[agent.name][r][3]
+                if d > 0:      # ages below L - d, and the lower copy of the node at L - d (the action at age L reads it)
+                    edge = g.L - d
+                    base[r * N:(r + 1) * N] = (g.nodes < edge - 1e-12) | (last & (np.abs(g.nodes - edge) <= 1e-12))
+                    delayed.add(r)
+            hit = memo[agent.name] = (base, delayed)
+        base, delayed = hit
+        keep = base.copy()
         for r in getattr(self, "_silent", {}).get(agent.name, ()):   # a level row of a quantity that does not move
-            keep[r * N:(r + 1) * N] = False                          # (the zero start): nothing to read, its map is zero
-        last = (np.arange(N) % g.n) == g.n - 1
-        for r in range(len(agent.signals)):
-            d = c.rows[agent.name][r][3]
-            if d > 0:          # ages below L - d, and the lower copy of the node at L - d (the action at age L reads it)
-                edge = g.L - d
-                keep[r * N:(r + 1) * N] = (g.nodes < edge - 1e-12) | (last & (np.abs(g.nodes - edge) <= 1e-12))
+            if r not in delayed:                                     # (the zero start): nothing to read, its map is zero
+                keep[r * N:(r + 1) * N] = False                      # (a delayed row's mask is its delay's)
         return keep
 
     # ------------------------------------------------------ best response
