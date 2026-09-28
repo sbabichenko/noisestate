@@ -40,6 +40,7 @@ class Structure:
     composite: Dict[str, Dict[str, float]] = None     # control u -> {control v: coef}: a spike of u with the instant reactions it draws
     instant_loads: Dict[str, Dict[str, float]] = None  # observer's control v -> {seen control u: h}: v's contemporaneous loading on u
     levels: Dict[str, Dict[int, str]] = None          # agent -> {row index: quantity} for its level rows (drift {} and E 0 in rows)
+    integrals: Dict[str, Tuple[List[Atom], np.ndarray]] = None   # agent -> (atoms, L (n_atoms, nW)): int e^{-rho t} z' L dW
 
     @property
     def nW(self) -> int:
@@ -51,7 +52,7 @@ class CompiledBase(KernelAlgebra):
     fields are adopted as attributes (c.rows, c.loss, c.rep, ...); the kernel algebra (algebra.KernelAlgebra)
     each engine's compiled model implements on top."""
     FIELDS = ("channels", "nW", "prim", "index", "nX", "nU", "A", "state_inputs", "sigma", "const", "x0", "rows", "loss", "rep", "reps",
-              "terminal", "terminal_constant", "composite", "instant_loads", "levels")
+              "terminal", "terminal_constant", "composite", "instant_loads", "levels", "integrals")
 
     def __init__(self, model: Model):
         model.validate()
@@ -98,6 +99,21 @@ def compile_structure(model: Model) -> Structure:
     loss = {a.name: _quadratic(model, a.loss) for a in model.agents}
     terminal = {a.name: _quadratic(model, a.terminal) for a in model.agents if a.terminal}
     terminal_constant = {a.name: float(a.terminal_constant) for a in model.agents if a.terminal_constant}
+    integrals = {}
+    for a in model.agents:
+        if not a.integrals:
+            continue
+        iatoms: List[Atom] = []
+        entries = []
+        for coef, qty, shock in a.integrals:
+            for k, cc in model.expand({str(qty): 1.0}).items():
+                if k not in iatoms:
+                    iatoms.append(k)
+                entries.append((iatoms.index(k), channels.index(str(shock)), float(coef) * cc))
+        L = np.zeros((len(iatoms), nW))
+        for i, j, v in entries:
+            L[i, j] += v
+        integrals[a.name] = (iatoms, L)
     rep = {a.name: a.name for a in model.agents}
     for group in model.ties:
         for n in group:
@@ -106,7 +122,7 @@ def compile_structure(model: Model) -> Structure:
     return Structure(model=model, channels=channels, prim=prim, index=index, nX=nX, nU=nU, A=A,
                      state_inputs=state_inputs, sigma=sigma, const=const, x0=x0, rows=rows, loss=loss, rep=rep, reps=reps,
                      terminal=terminal, terminal_constant=terminal_constant, composite=_composite(model, loss),
-                     instant_loads=_instant_loadings(model, loss), levels=levels)
+                     instant_loads=_instant_loadings(model, loss), levels=levels, integrals=integrals)
 
 
 def _instant_loadings(model: Model, loss) -> Dict[str, Dict[str, float]]:

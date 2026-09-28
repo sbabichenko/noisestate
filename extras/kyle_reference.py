@@ -26,8 +26,10 @@ from scipy.optimize import minimize
 
 
 class Kyle:
-    def __init__(self, n=50, T=1.0, eps=0.2, sigma_V=1.0, sigma_Z=1.0, Sigma0=0.0, theta=0.0, cost="wealth", insiders=1):
+    def __init__(self, n=50, T=1.0, eps=0.2, sigma_V=1.0, sigma_Z=1.0, Sigma0=0.0, theta=0.0, cost="wealth", insiders=1, rho=0.0):
         self.n, self.T, self.dt = n, float(T), float(T) / n
+        self.rho = float(rho)
+        self.w = np.exp(-self.rho * self.dt * np.arange(n))            # the discount e^{-rho t_k} of step k
         self.k = int(insiders)                             # identical insiders (a symmetric equilibrium)
         self.rmap = None                                   # the rivals' map (A, c) on what they see: their flow and V_0
         self.eps, self.sV, self.sZ, self.S0, self.theta, self.cost = float(eps), float(sigma_V), float(sigma_Z), float(Sigma0), float(theta), cost
@@ -96,10 +98,18 @@ class Kyle:
         return Lam @ self.flow(D)
 
     def form(self, D, Lam):
-        """M (m x m, symmetric) with C = g' M g."""
+        """M (m x m, symmetric) with C = g' M g.  Every step's cost is discounted by w_k = e^{-rho t_k}.  cost "dw": the
+        fundamental-valued flow plus the inventory's stochastic integral, sum_k w_k [dt D_k (P_k - V_k) + eps dt D_k^2 -
+        Q_{k+1} (V_{k+1} - V_k)], Q_{k+1} = dt sum_{j<=k} D_j (the position after step k's order, adapted to V's step k
+        increment: the Ito sum); at rho = 0 it is the "wealth" cost path by path (summation by parts)."""
         P = self.prices(D, Lam)
         ref = np.repeat(self.V[self.n][None, :], self.n, axis=0) if self.cost == "wealth" else self.V[:self.n]
-        A = self.dt * (D.T @ (P - ref) + self.eps * D.T @ D)
+        wD = self.w[:, None] * D
+        A = self.dt * (wD.T @ (P - ref) + self.eps * wD.T @ D)
+        if self.cost == "dw":
+            Qn = self.dt * np.cumsum(D, axis=0)                 # Q_{k+1}
+            dV = self.V[1:] - self.V[:-1]
+            A = A - (self.w[:, None] * Qn).T @ dV
         return 0.5 * (A + A.T), P, ref
 
     def objective(self, M):
@@ -122,7 +132,11 @@ class Kyle:
         dt = self.dt
         # dJ = tr(W dM), dM = dt sym(dD'(P - ref) + D' Lt dt dD + 2 eps sym(D' dD)), Lt = Lam (I + (k-1) dt B A) (rivals react)
         Lt = Lam if (self.k == 1 or self.rmap is None) else Lam @ self.rivals(D)[1]
-        G = dt * ((P - ref) @ W + dt * Lt.T @ D @ W + 2.0 * self.eps * D @ W)
+        w = self.w[:, None]
+        G = dt * (w * (P - ref) @ W + dt * Lt.T @ (w * D) @ W + 2.0 * self.eps * (w * D) @ W)
+        if self.cost == "dw":
+            dV = self.V[1:] - self.V[:-1]
+            G = G - dt * np.cumsum(((w * dV) @ W)[::-1], axis=0)[::-1]      # - dt sum_{k >= j} w_k dV_k W
         return J, G
 
     def best_response(self, D, Lam, maxiter=2000):
@@ -189,8 +203,8 @@ class Kyle:
         return out
 
 
-def check_gradient(n=8, theta=0.7, cost="wealth", Sigma0=0.0, seed=0, insiders=1):
-    g = Kyle(n=n, theta=theta, cost=cost, Sigma0=Sigma0, insiders=insiders)
+def check_gradient(n=8, theta=0.7, cost="wealth", Sigma0=0.0, seed=0, insiders=1, rho=0.0):
+    g = Kyle(n=n, theta=theta, cost=cost, Sigma0=Sigma0, insiders=insiders, rho=rho)
     rng = np.random.default_rng(seed)
     D = rng.standard_normal((n, g.m)) * 0.3 * g.mask
     if insiders > 1:

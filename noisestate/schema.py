@@ -98,7 +98,10 @@ def model_schema() -> dict:
                                          "description": "the agents whose deviations this agent is privy to (Chapter 6)"},
                             "constant": {**_NUMBER_OR_EXPR, "description": "the loss's constant: part of the cost, moves no strategy"},
                             "terminal": {"type": "array", "items": _LOSS_TERM, "description": "the loss at T, on the states (finite horizon)"},
-                            "terminal_constant": {**_NUMBER_OR_EXPR, "description": "the terminal loss's constant"}}}
+                            "terminal_constant": {**_NUMBER_OR_EXPR, "description": "the terminal loss's constant"},
+                            "integrals": {"type": "array", "items": {"type": "array", "minItems": 3, "maxItems": 3},
+                                          "description": "stochastic-integral terms [coef, quantity, shock] of the realised cost: coef "
+                                          "int e^{-rho t} quantity dW_shock (mean zero; priced by a risk-averse agent)"}}}
     return {"$schema": DRAFT, "$id": "https://noisestate/schema/model", "title": "noisestate model file",
             "type": "object", "additionalProperties": False,
             "properties": {

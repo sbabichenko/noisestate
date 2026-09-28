@@ -141,11 +141,14 @@ def test_a_moving_value_makes_the_wealth_riskier_than_the_flow():
     assert np.all(w.evaluate("D1", "wV", t, s) < f.evaluate("D1", "wV", t, s))
 
 
-def test_the_stationary_market_is_still_refused():
+def test_the_undiscounted_stationary_market_is_refused():
+    """The stationary engine solves a risk-averse insider under consistent planning (tests/test_cara_ext.py), which needs a
+    discount: without one the continuation's entropic cost is not defined."""
     d = ns.load(ns.example("ch4_kyle_back")).to_equations()
     d["agents"]["trader1"]["risk_aversion"] = 0.5
+    d["params"]["rho"] = 0.0
     st = ns.Model.from_dict(d)
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(NotImplementedError, match="discount"):
         ns.solve(st)
 
 

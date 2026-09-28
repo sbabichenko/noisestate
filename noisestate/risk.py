@@ -198,18 +198,17 @@ class RiskGeometry:
         # shocks beside the paths, its kernels functions of time on the line s = 0 (c.diag, on the time nodes tm).  They
         # join the basis as unit vectors (exact), read on the one-time representation from the time nodes panel by panel
         self.n0 = int(c.ncol - nW)
-        if self.n0:
-            if c.g.L is not None or len(c.diag) != self.n_rows:
-                raise NotImplementedError("risk-averse agents with initial shocks are solved without a window (a past of initial "
-                                          "shocks only, on a finite horizon)")
-            nt = g.nt
-            Btm = np.zeros((len(self.x1), c.Nt))
-            for p in range(P):
-                Btm[p * n1:(p + 1) * n1, p * nt:(p + 1) * nt] = bary_rows(self.x1[p * n1:(p + 1) * n1], c.tm[p * nt:(p + 1) * nt],
-                                                                          bary_weights(nt))
-            self.Btm = Btm                                                          # (n1 P, Nt): time nodes -> one-time nodes
-            self.wg_plain = wg                                                      # Gauss weights without the discount
-            self.diag = np.asarray(c.diag)
+        if self.n0 and (c.g.L is not None or len(c.diag) != self.n_rows):
+            raise NotImplementedError("risk-averse agents with initial shocks are solved without a window (a past of initial "
+                                      "shocks only, on a finite horizon)")
+        nt = g.nt
+        Btm = np.zeros((len(self.x1), c.Nt))
+        for p in range(P):
+            Btm[p * n1:(p + 1) * n1, p * nt:(p + 1) * nt] = bary_rows(self.x1[p * n1:(p + 1) * n1], c.tm[p * nt:(p + 1) * nt],
+                                                                      bary_weights(nt))
+        self.Btm = Btm                                                              # (n1 P, Nt): time nodes -> one-time nodes
+        self.wg_plain = wg                                                          # Gauss weights without the discount
+        self.diag = np.asarray(c.diag)
 
     def _row_nodes(self, B, rows, w):
         """(n_rows P n1, npts) CSR: entry (r, n; i) = w_i B[i, n] for the points i of row r."""
@@ -287,7 +286,7 @@ class Tilt:
     then the correction Delta = theta K S f, linear in the world the FOC kernel f is taken in."""
 
     def __init__(self, geo: RiskGeometry, foc, agent, theta: float, Zprof: np.ndarray, R: Optional[np.ndarray], chunk: int = 64,
-                 spectrum_only: bool = False, clip: bool = False):
+                 spectrum_only: bool = False, clip: bool = False, linear: bool = False):
         c = geo.c; self.geo = geo; self.c = c; self.foc = foc; self.agent = agent
         self.theta = th = float(theta)
         N, nW, P = geo.N, geo.nW, geo.P
@@ -308,6 +307,22 @@ class Tilt:
             zp = foc.atoms_of(Zprof[:, :nW].reshape(nP, N, nW))                 # (m + mt, N, nW)
         self.zf = zf = zp[:m]; self.zT = zT = zp[m:]
         ma = m + self.mt
+        # the stochastic-integral terms int e^{-rho tau} z_x(tau)' L dW(tau) (c.integrals): their atoms' kernels zx and L
+        integ = (getattr(c, "integrals", None) or {}).get(agent.name)
+        self.mx = 0
+        if integ:
+            xatoms, self.Lx = integ[0], np.asarray(integ[1], dtype=float)
+            self.mx = len(xatoms)
+            Zr = Zprof.reshape(nP, N, c.ncol)
+            zxfull = np.stack([c.atom_sparse(at) @ Zr[c.index[at[0]]] for at in xatoms])       # (mx, N, ncol)
+            self.zx = zx = np.ascontiguousarray(zxfull[:, :, :nW])
+            self.R_x = None if R is None else [np.stack([c.atom_sparse(at) @ R[c.block(at[0]), ui] for at in xatoms])
+                                               for ui in range(len(agent.controls))]           # (mx, N) per control
+            Zxpts = geo.IE @ zx.transpose(1, 0, 2).reshape(N, -1)
+            Ex = (geo.BE @ Zxpts).reshape(len(geo.x1), P, geo.nb, self.mx, nW).transpose(0, 3, 1, 2, 4).reshape(len(geo.x1), self.mx, -1)
+            if n0:
+                Ex = np.concatenate([Ex, np.einsum("xt,jti->xji", geo.Btm, zxfull[:, geo.diag, nW:])], axis=2)
+            self.Ex = Ex
         # E at the one-time nodes (n1 P, m + mt, nV), the channel innermost in the basis index
         Zpts = geo.IE @ zp.transpose(1, 0, 2).reshape(N, -1)                    # (npts, ma nW)
         # the basis index a = (p, d, k): the Legendre function phi_{p d} placed on channel k, so E_{j a}(tau) = int zeta_j(tau, v)_k phi_{p d}(v) dv
@@ -325,11 +340,19 @@ class Tilt:
                 ET = np.concatenate([ET[:, :self.nVb], self.z0T], axis=1)       # the initial shocks' columns at T by the corner read
             KG += np.exp(-geo.rho * geo.T) * (ET.T @ self.QT @ ET)
             self.ET = ET
+        if self.mx:
+            # <phi_a, K_x phi_b> = int e^{-rho v} [Ex_a(v)' L phi_b(v) + Ex_b(v)' L phi_a(v)] dv (phi_b = 0 on the initial shocks)
+            nVt = E.shape[2]
+            Exg = (geo.Bg @ self.Ex.reshape(len(geo.x1), -1)).reshape(geo.tg.size, self.mx, nVt)
+            Phg = np.zeros((geo.tg.size, nW, nVt))
+            Phg[:, :, :self.nVb] = self._phi_at(geo.tg)
+            X = np.einsum("q,qja,jk,qkb->ab", geo.wg, Exg, self.Lx, Phg, optimize=True)
+            KG += X + X.T
         KG = 0.5 * (KG + KG.T)
         # the initial shocks' rows of K on the basis, [Psi_xi, K_xixi] = <e_xi, K Phi> (n0, nV): the Galerkin form's rows
         self.Cxi = KG[self.nVb:] if n0 else None
         lam, V = np.linalg.eigh(KG)
-        self.lam = lam
+        self.lam, self.eigvec = lam, V
         self.lam_max = float(lam[-1]) if lam.size else 0.0
         self.clipped = False
         if th * self.lam_max >= 1.0:
@@ -341,7 +364,7 @@ class Tilt:
             self.theta = th = CLIP / self.lam_max
             self.clipped = True
         self.Sg = (V / (1.0 - th * lam)[None, :]) @ V.T                        # (I - theta K_G)^-1
-        if spectrum_only and not n0:
+        if spectrum_only and not n0 and not linear:
             return
         # Psi = K Phi at the one-time nodes u, (n1 P, nW, nV)
         # Psi(u)_k = sum_i w_i sum_j zeta_j(tau_i, u)_k (Q E)_j(tau_i), (Q E)(tau_i) = sum_n BPsi[i, n] (Q E)(x1_n): contract the
@@ -355,10 +378,25 @@ class Tilt:
             for k in range(nW):
                 Tpsi[:, k, j, :] = (geo.SPsi @ diags(Zq[:, j, k]) @ geo.BPsi).toarray()
         Psi = np.einsum("ukjn,nja->uka", Tpsi, QE, optimize=True)
+        self.Tpsi = Tpsi                                                           # K's flow part on a function of time (linear_part)
         if self.mt:
             QET = self.QT @ self.ET                                                # (mt, nV)
             ZT = (geo.IPsiT @ zT.transpose(1, 0, 2).reshape(N, -1)).reshape(-1, self.mt, nW)
             Psi = Psi + np.exp(-geo.rho * geo.T) * np.einsum("ujk,ja->uka", ZT, QET)
+            self.ZTx = ZT                                                          # the terminal atoms' kernel at (T, T - u), u = x1
+        if self.mx:
+            # (K_x phi_b)(u) = int_u^T zeta_x(tau, u)' e^{-rho tau} L phi_b(tau) dtau + e^{-rho u} L' Ex_b(u)
+            nVt = E.shape[2]
+            LPh = np.zeros((n1P, self.mx, nVt))
+            LPh[:, :, :self.nVb] = np.einsum("jk,nka->nja", self.Lx, self._phi_at(geo.x1))
+            Zqx = (geo.IPsi @ self.zx.transpose(1, 0, 2).reshape(N, -1)).reshape(-1, self.mx, nW)
+            Tx = np.empty((n1P, nW, self.mx, n1P))
+            for j in range(self.mx):
+                for k in range(nW):
+                    Tx[:, k, j, :] = (geo.SPsi @ diags(Zqx[:, j, k]) @ geo.BPsi).toarray()
+            self.Tpsix = Tx
+            Psi = Psi + np.einsum("ukjn,nja->uka", Tx, LPh, optimize=True)
+            Psi = Psi + np.exp(-geo.rho * geo.x1)[:, None, None] * np.einsum("jk,uja->uka", self.Lx, self.Ex)
         self.Psi = Psi
         self.Psi_node = (geo.Bnode @ Psi.reshape(len(geo.x1), -1)).reshape(N, nW, -1)
         self.PsiT = np.ascontiguousarray(Psi.transpose(2, 0, 1).reshape(Psi.shape[2], -1))    # (nV, n1 P nW)
@@ -376,6 +414,19 @@ class Tilt:
         if lc.rows is not None:
             cont_I = lc.read_unknown(zf.transpose(1, 0, 2).reshape(N, -1)) * (lc.w * np.exp(-geo.rho * lc.r))[:, None]
             self.cont_It = np.ascontiguousarray(cont_I.reshape(-1, m, nW).transpose(0, 2, 1))             # (nq, nW, m)
+        if self.mx:
+            zxa = self.zx.transpose(1, 0, 2).reshape(N, -1)
+            self.proj_Jx = lp.read(zxa).reshape(-1, self.mx, nW) if lp.rows is not None else None
+            if lr.rows is not None:
+                rI = lr.read_unknown(zxa) * (lr.w * np.exp(-geo.rho * lr.r))[:, None]
+                self.resp_Itx = np.ascontiguousarray(rI.reshape(-1, self.mx, nW).transpose(0, 2, 1))
+            if lc.rows is not None:
+                cI = lc.read_unknown(zxa) * (lc.w * np.exp(-geo.rho * lc.r))[:, None]
+                self.cont_Itx = np.ascontiguousarray(cI.reshape(-1, self.mx, nW).transpose(0, 2, 1))
+            # the FOC kernel's world-independent future part: a spike at s moves z_x at t by R_x(t, s), which loads on dW(t):
+            # f_s(t) gains e^{-rho (t - s)} L' R_x(t, s) (it enters the right-hand side once, delta_const)
+            g0 = geo.g
+            self.fUc = None if self.R_x is None else [np.exp(-geo.rho * (g0.t - g0.s))[:, None] * (Rx.T @ self.Lx) for Rx in self.R_x]
         if self.mt:
             self.zT_at = (geo.IZT @ zT.transpose(1, 0, 2).reshape(N, -1)).reshape(N, self.mt, nW) * np.exp(-geo.rho * geo.T)
         # the spike responses of the continuation (the envelope), per control: read at (r, r - s_k) with the weight
@@ -397,6 +448,15 @@ class Tilt:
                 item["RT"] = RT * np.exp(-geo.rho * (geo.T - g.s))[:, None]
             self.per_control.append(item)
 
+    def _phi_at(self, v: np.ndarray) -> np.ndarray:
+        """(len(v), nW, nVb): the paths' basis functions (phi_{p d} on channel k, index (p, d, k)) at the times v."""
+        geo = self.geo; nW = geo.nW
+        Bv = geo.basis(v)                                                         # (len(v), P, nb)
+        out = np.zeros((v.size, nW, geo.P, geo.nb, nW))
+        for k in range(nW):
+            out[:, k, :, :, k] = Bv
+        return out.reshape(v.size, nW, -1)
+
     # ------------------------------------------------------------------ the correction
     def delta(self, ui: int, Zw: np.ndarray, a: Optional[np.ndarray] = None, phi: Optional[np.ndarray] = None) -> np.ndarray:
         """Delta (N, nW[, B]) of control ui for the world Zw (nP, N, nW[, B]) the FOC kernel is taken in.  The caller that
@@ -414,7 +474,18 @@ class Tilt:
             out[:, :, sl] = self._delta(ui, Zw[:, :, :, sl], None if a is None else a[..., sl], None if phi is None else phi[..., sl])
         return out[:, :, 0] if single else out
 
-    def _delta(self, ui: int, Zw: np.ndarray, a: Optional[np.ndarray] = None, phi: Optional[np.ndarray] = None) -> np.ndarray:
+    def delta_const(self, ui: int) -> np.ndarray:
+        """The correction's world-independent part (N, ncol): theta K S applied to the FOC kernel's future part that the
+        stochastic-integral terms give a spike whatever the strategy (fUc); zero without them.  It enters the right-hand side
+        of the best response once (the rest of the correction is linear in the world)."""
+        geo = self.geo
+        if not self.mx or self.fUc is None:
+            return np.zeros((geo.N, geo.nW + self.n0))
+        Z0 = np.zeros((len(self.c.prim), geo.N, self.c.ncol, 1))
+        return self._delta(ui, Z0, extra=self.fUc[ui])[:, :, 0]
+
+    def _delta(self, ui: int, Zw: np.ndarray, a: Optional[np.ndarray] = None, phi: Optional[np.ndarray] = None,
+               extra: Optional[np.ndarray] = None) -> np.ndarray:
         geo = self.geo; foc = self.foc; th = self.theta
         N, nW = geo.N, geo.nW
         m, mt = self.m, self.mt
@@ -430,6 +501,8 @@ class Tilt:
             fxi = phi[geo.diag, nW:]                                              # (rows, n0, B)
             phi = np.ascontiguousarray(phi[:, :nW]); bQ = np.ascontiguousarray(bQ[:, :, :nW])
         fU = self._future(ui, bQ, B)                                              # (N, nW, B): f_t(v), v > t, at (v, t)
+        if extra is not None:
+            fU = fU + extra[:, :, None]
         lp, lr, lc = geo.lp_proj, geo.lp_resp, geo.lp_cont
         ma = m + mt
 
@@ -455,6 +528,21 @@ class Tilt:
         if mt:
             AT = (geo.IRT @ AU[:, m:].reshape(N, -1)).reshape(N, mt, B)            # A_T f_t(T) at t = t_k
             Kf += np.einsum("njk,jl,nlb->nkb", self.zT_at, self.QT, AT, optimize=True)
+        if self.mx:
+            # K_x f_t (u) = int_u^T zeta_x(tau, u)' e^{-rho tau} L f_t(tau) dtau + e^{-rho u} L' (A_x f_t)(u), at the nodes (t, u)
+            mx = self.mx
+            if lr.rows is not None:
+                Lphi = np.einsum("jk,nkb->njb", self.Lx, phi)
+                J = lr.read(Lphi.reshape(N, -1)).reshape(-1, mx, B)
+                Kf += (lr.R @ _bmm(self.resp_Itx, J).reshape(-1, nW * B)).reshape(N, nW, B)
+            if lc.rows is not None:
+                LfU = np.einsum("jk,nkb->njb", self.Lx, fU)
+                J = lc.read(LfU.reshape(N, -1)).reshape(-1, mx, B)
+                Kf += (lc.R @ _bmm(self.cont_Itx, J).reshape(-1, nW * B)).reshape(N, nW, B)
+            if lp.rows is not None:
+                ALx = (lp.R @ (lp.w[:, None, None] * _bmm(self.proj_Jx, lp.read_unknown(phi.reshape(N, -1)).reshape(-1, nW, B))
+                               ).reshape(-1, mx * B)).reshape(N, mx, B)
+                Kf += np.exp(-geo.rho * geo.g.s)[:, None, None] * np.einsum("jk,njb->nkb", self.Lx, ALx)
         # Phi' K f_t per time row, then c_t = theta (I - theta K_G)^-1 Phi' K f_t
         fp = (geo.Ipast @ phi.reshape(N, -1)).reshape(-1, nW, B)
         ff = (geo.Ifut @ fU.reshape(N, -1)).reshape(-1, nW, B)
@@ -499,6 +587,64 @@ class Tilt:
         # the part of the kernel on the node's own shock time (v = t) is the past's (phi): fU is the limit v -> t+
         return out
 
+    # ------------------------------------------------------------------ the linear part (means)
+    def linear_part(self, ax: np.ndarray, aT: Optional[np.ndarray] = None, theta: Optional[float] = None):
+        """The linear part k of the realised cost and S k, S = (I - theta K)^-1, for B mean paths at once.  With the atoms'
+        mean paths mbar, C = c0 + <k, W> + 1/2 <W, K W> where k = A' G (Q mbar + q) (the cross term of the fluctuations
+        and the means): k(u) = int_u^T zeta(tau, u)' e^{-rho tau} a(tau) dtau + e^{-rho T} zeta_T(T, u)' a_T, a = Q mbar + q
+        on the flow atoms, a_T = Q_T mbar_T + q_T on the terminal ones; on an initial shock xi, k_xi = int zeta^0(tau)' e^{-rho
+        tau} a(tau) dtau + the terminal part.  ax (n1 P, m, B) is a at the one-time nodes, aT (mt, B).  S k by Sloan's
+        iterate on the Galerkin basis: c = (I - theta K_G)^-1 Phi_aug' k, S k = k + theta K Phi_aug c (Psi c on the paths,
+        C_xi c on the initial shocks); Phi_aug' k = int E(tau)' e^{-rho tau} a(tau) dtau + e^{-rho T} E_T' a_T, E = A Phi_aug the
+        exposures K_G is built from.  Returns (k (n1 P, nW, B), k_xi (n0, B), Sk, Sk_xi): the risk-averse mean condition
+        gains theta <f_t, S k>, and the entropic cost theta / 2 <k, S k>."""
+        geo = self.geo; th = self.theta if theta is None else float(theta)
+        m, mt = self.m, self.mt
+        n1P = len(geo.x1)
+        B = ax.shape[2]
+        k = np.einsum("ukjn,njb->ukb", self.Tpsi, ax, optimize=True)                    # (n1 P, nW, B)
+        axg = (geo.Bg @ ax.reshape(n1P, -1)).reshape(geo.tg.size, m, B)
+        Eg = (geo.Bg @ self.E[:, :m].reshape(n1P, -1)).reshape(geo.tg.size, m, -1)
+        Pk = np.einsum("q,qja,qjb->ab", geo.wg, Eg, axg, optimize=True)                 # (nV, B): Phi_aug' k
+        if mt and aT is not None:
+            k = k + np.exp(-geo.rho * geo.T) * np.einsum("ujk,jb->ukb", self.ZTx, aT)
+            Pk = Pk + np.exp(-geo.rho * geo.T) * (self.ET.T @ aT)
+        V = self.eigvec
+        Sg = (V / (1.0 - th * self.lam)[None, :]) @ V.T
+        c = Sg @ Pk
+        Sk = k + th * np.einsum("uka,ab->ukb", self.Psi, c, optimize=True)
+        if self.n0:
+            kxi = Pk[self.nVb:]
+            Skxi = kxi + th * (self.Cxi @ c)
+        else:
+            kxi = Skxi = np.zeros((0, B))
+        return k, kxi, Sk, Skxi
+
+    def quad_linear(self, k, kxi, Sk, Skxi) -> np.ndarray:
+        """<k, S k> per column: the time integral on the Gauss points plus the initial shocks' coordinates."""
+        geo = self.geo; n1P = len(geo.x1)
+        kg = (geo.Bg @ k.reshape(n1P, -1)).reshape(geo.tg.size, -1, k.shape[2])
+        Sg = (geo.Bg @ Sk.reshape(n1P, -1)).reshape(geo.tg.size, -1, k.shape[2])
+        return np.einsum("q,qkb,qkb->b", geo.wg_plain, kg, Sg) + np.einsum("ib,ib->b", kxi, Skxi)
+
+    def pairing(self, ui: int, Zw: np.ndarray):
+        """The FOC kernel f_t of control ui in the world Zw (nP, N, ncol) as a functional per time row: (G (rows, n1 P nW),
+        fxi (rows, n0)) with <f_t, h> = G[r] . h(x1) + fxi[r] . h_xi for a function h of the shocks held at the one-time
+        nodes (its past part through the node kernel, its future part fU, as the correction reads them)."""
+        geo = self.geo; foc = self.foc; N, nW = geo.N, geo.nW
+        a = foc.atoms_of(Zw[..., None])
+        bQ = np.tensordot(foc.Q, a, axes=1)
+        phi = foc.on_qzeta(ui, bQ)
+        fxi = None
+        if self.n0:
+            fxi = phi[geo.diag, nW:, 0]
+            phi = np.ascontiguousarray(phi[:, :nW]); bQ = np.ascontiguousarray(bQ[:, :, :nW])
+        fU = self._future(ui, bQ, 1)
+        fp = (geo.Ipast @ phi.reshape(N, -1)).reshape(-1, nW)
+        ff = (geo.Ifut @ fU.reshape(N, -1)).reshape(-1, nW)
+        G = (geo.Mpast @ fp + geo.Mfut @ ff).reshape(geo.n_rows, -1)
+        return G, fxi
+
     # ------------------------------------------------------------------ the entropic cost
     def trace_K2(self) -> float:
         """tr K^2 = ||K||_HS^2 = 2 int_{u < v} |K(u, v)|_F^2, exactly (not through the basis): K(u, v) = int_v^T zeta(tau, u)' G
@@ -516,6 +662,9 @@ class Tilt:
             zT = self.zT.transpose(1, 0, 2).reshape(N, -1)
             a = (geo.IZT @ zT).reshape(N, self.mt, nW); b = (geo.IRT @ zT).reshape(N, self.mt, nW)
             KN += np.exp(-geo.rho * geo.T) * np.einsum("njc,jl,nld->ncd", a, self.QT, b, optimize=True)
+        if self.mx:
+            # K_x(u, v) = e^{-rho v} zeta_x(v, u)' L at the node (v, u)
+            KN += np.exp(-geo.rho * geo.g.t)[:, None, None] * np.einsum("jnc,jd->ncd", self.zx, self.Lx)
         M = geo.g.mass_sparse(rho=0.0)
         F = KN.reshape(N, -1)
         out = float(2.0 * np.sum(F * (M @ F)))

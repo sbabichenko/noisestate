@@ -1050,7 +1050,7 @@ class Agent:
     ...), a dict {name: differential}, or Signals (for a name and a delay) in any of these."""
 
     def __init__(self, name: str, controls: Sequence[Control], observes=None, loss=None, myopic: bool = False,
-                 terminal=None, monitors=(), risk_aversion=0):
+                 terminal=None, monitors=(), risk_aversion=0, integrals=None):
         if not isinstance(name, str) or not name.isidentifier():
             raise ValueError(f"an agent name must be an identifier, not {name!r}")
         if observes is None:
@@ -1094,6 +1094,9 @@ class Agent:
         self.risk_aversion = risk_aversion
         # the agents whose deviations this one is privy to (Chapter 6), as Agents or names
         self.monitors = [m if isinstance(m, str) else m.name for m in ([monitors] if isinstance(monitors, (str, Agent)) else monitors)]
+        # stochastic-integral terms of the realised cost, [[coef, quantity, shock], ...]: coef int e^{-rho t} quantity dW_shock
+        # (mean zero: they move nothing in a risk-neutral solve; a risk-averse agent prices them)
+        self.integrals = [list(t) for t in (integrals or [])]
         # the loss paid at T, on the states: terminal=q * (X - b)**2
         try:
             self.terminal = None if terminal is None else Quad.of(terminal)
@@ -1117,6 +1120,8 @@ class Agent:
                 block["terminal_constant"] = _coef_str(tconst)
         if self.myopic:
             block["myopic"] = True
+        if self.integrals:
+            block["integrals"] = [[t[0] if _is_number(t[0]) else str(t[0])] + [str(x) for x in t[1:]] for t in self.integrals]
         if not (_is_number(self.risk_aversion) and self.risk_aversion == 0):
             block["risk_aversion"] = _coef_str(self.risk_aversion)
         if self.monitors:

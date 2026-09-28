@@ -193,6 +193,71 @@ Hessian it bounds the entropic cost's curvature from below (`J'' = E^Q[C''] + th
 `physical + wedge + risk`.  `res.strategy()` is refused for a risk-averse agent: its action weighs the
 risk-adjusted noise-state, whose future part the result does not carry.
 
+### Means: the linear part of the cost
+
+With a target, a constant drift or an initial state the realised cost has a linear part, `C = c0 + <k, W> + 1/2 <W, K W>`,
+`k = A' G (Q mbar + q)` (the cross term of the fluctuations and the atoms' mean paths `mbar`; its terminal part
+likewise).  `k` is deterministic, so the kernels' condition is unchanged, and the maps with means are the maps without
+them, to the bit.  The mean condition of row t gains the tilt of the linear part: the tilted law's mean given `F_t` has
+the extra `theta Sigma_t k`, and on the kernels' own condition `Sigma_t` drops out again,
+`theta <(I - theta K Sigma_t)^-1 f_t, Sigma_t k> = theta <S f_t, k> = theta <f_t, S k>`.  `k` is linear in the means, so the
+mean system stays one linear solve: `S k` for every unit mean path at once (one Galerkin solve, Sloan's iterate
+`S k = k + theta K Phi c`, `c = (I - theta K_G)^-1 Phi' k`, `Phi' k` from the same exposures as `K_G`), paired with `f_t` per
+time row (`risk.Tilt.linear_part`, `pairing`).  The entropic cost gains `theta / 2 <k, S k>`
+(`res.risk[agent]["linear_part"]`).  Checked against `extras/leqg_reference.py` (`MeanGame`: affine strategies, x0 = 1,
+drift 0.5, target 0.3; `tests/refs/leqg_ch1_means.json`): costs to 1e-7 and the mean paths to 1e-6 at theta = 0.5 and 1
+(tests/test_cara_ext.py).  Risk-averse agents with means on a windowed strip, or with integrals and means together,
+are refused.
+
+### Stochastic-integral terms (`integrals`)
+
+`integrals: [[coef, quantity, shock], ...]` adds `coef int e^{-rho t} quantity dW_shock` to the agent's realised cost (an
+Ito integral: the quantity is known before the shock).  It has mean zero, so a risk-neutral solve ignores it, to the
+bit.  A risk-averse agent prices it: `K` gains `K_x = A_x' e^{-rho} L + e^{-rho} L' A_x` (`L` the coefficients on the
+atoms and shocks; the kernel `e^{-rho v} z_x(v, u)' L` for `u < v`, no trace), in `K_G`, `K Phi`, the line integrals and
+`tr K^2`, and the FOC kernel gains a world-independent future part, `e^{-rho (v - t)} L' R_x(v, t)` for `v > t` (the spike
+moves the quantity, which loads on the later shocks), whose correction enters the right-hand side once
+(`Tilt.delta_const`).  The quantity may not be the agent's own current control.  With it, a Kyle insider's wealth on a
+moving value is written without a terminal time: `-D V + D P + eps D^2` plus `integrals: [[-sigma_V, Q, wV]]`, `Q: D dt`,
+which at rho = 0 is `int D P dt - Q_T V_T` path by path.  Checked against `extras/leqg_reference.py` (`Game(xdw)`,
+`tests/refs/leqg_ch1_xdw.json`): costs to 1e-7 and D1 to 3e-5 at theta = 0.5 and 1.
+
+### The stationary engine: consistent planning
+
+On the stationary engine each date's self minimises the entropic cost of its own discounted continuation,
+`J_t = theta^-1 log E[exp(theta C_t) | F_t]`, `C_t = int_t^inf e^{-rho (s - t)} c_s ds` (plus the integrals), the later selves
+playing the stationary strategy.  (Minimising `J_0` over the whole strategy, the finite engine's precommitment, has no
+stationary solution: its effective risk aversion at t is `theta e^{-rho t}`.)  The tilt argument at one date gives
+`P_0 S f_0 = 0`, `S = (I - theta K_0)^-1` on the shocks born in `(-L, inf)`, `K_0` the kernel of `C_0` and `f_0` the FOC
+kernel of a spike at date 0 over the past and the future shocks.  Unlike the risk-neutral condition, `f_0` is taken with
+the agent's own later reactions ON: the later selves minimise their own `J_t`, not `J_0`, so a date-0 deviation's
+effect through them does not vanish to first order (no envelope).  At theta = 0 the two agree at an equilibrium (checked:
+`P (phi^on - phi^off)` is 2e-10 at Chapter 4's risk-neutral equilibrium), and theta = 0 takes the risk-neutral path.
+The responses with the own reactions on are the closed loop's with the agent switched off (the only way it carries a
+control's spike to the others' rows) plus the agent's reaction kernels from the fixed point `c = G Y (R0 + Resp c)`.
+
+`noisestate/stationary_risk.py` adds to the risk-neutral best response, frozen at the current profile, the shift
+`(S f_0^on - f_0^off)` on the past: `(phi^on - phi^off) + theta K_0 S f_0^on`.  At a fixed point the profile is the
+best response, so the equilibrium solves the condition exactly; off it the shift is an explicit term that the
+Anderson mixing iterates away.  `S f_0` is a Nystrom solve on a uniform lattice through the ages 0 and L (the kernels'
+cuts at half weight: the trapezoid rule), `A` and `A'` by FFT convolutions (`K_0` is shift-and-discount covariant), GMRES
+for `(I - theta K_0 Sigma) g = f_0` (Sigma the projector off what the agent has seen, on the lattice's past: the same g as
+`S f_0` where the condition holds, and well conditioned whenever the conditional entropic cost is finite, which
+`I - theta K_0` is not for a Kyle insider, whose seen inventory makes `theta lambda_max(K_0)` 2.9 at theta = 1), then
+`theta K_0 Sigma g` read at the engine's age nodes with the tau integral cut exactly at the
+window; two lattices (`RISK_LATTICE`, 0.02, and half) and Richardson's h^2 step (`res.risk[agent]["richardson_gap"]`).
+`solve()` from no start goes theta x 0, 0.5, 1.  `res.risk[agent]["entropic"]` is the date-0 self's entropic cost
+averaged over the past, `E C_0 + (theta / 2) tr(Pi K_0 B K_0 Pi) + (2 theta)^-1 sum(-log(1 - theta mu) - theta mu)` (`Pi` the
+projector on what the agent has seen, `mu` the eigenvalues of `Sigma K_0 Sigma`, `Sigma = I - Pi`, `B = Sigma (I - theta
+Sigma K_0 Sigma)^-1 Sigma`), `E C_0` the flow cost over rho, on three lattices (`ENTROPIC_LATTICE`, L / 40, 80, 160) and
+the polynomial in h through them (the excess converges like h: the kernels' kinks on the diagonal; about 1e-2 relative
+on a fast-decaying kernel, 1e-4 on the signal model of the tests); `theta_mu_max` is the conditional breakdown measure.  The
+unconditional `theta^-1 log E e^{theta C_0}` can be infinite when the conditional one is not (a Kyle insider's inventory
+times the value's later moves), so it is not what is reported.  Refused: no discount, monitoring, instant
+observations, level rows, lagged atoms in a risk-averse agent's loss or integrals, means.  Checked against
+`extras/stationary_cara_reference.py`, a discrete one-agent stationary game solved by brute force under consistent
+planning (tests/test_cara_ext.py).
+
 ## Grids and caches
 
 On panels of equal width the convolution and correlation tensors are block-Toeplitz in the panel
