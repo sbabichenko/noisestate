@@ -44,6 +44,7 @@ and the suite silently returns to the slow figures.  Each gated test, and the on
 | test_transition_api.py::test_excess_cost_sequences_over_the_march_windows | the excess-cost sequences at 12 nodes over T = 3, 6, 15 and the march's gap-factor tail (the 6-node mechanics stay fast) | 30 |
 | test_transition_result.py::test_same_model_loss_path_is_the_stationary_flow | the loss path of a same-model transition is the flow to 1e-9 at 16 nodes (the regime change's path stays fast) | 9 |
 | test_unit_range_finite.py::test_unit_range_below_the_window_coarsens_the_grid_within_the_measured_cost | unit_range 0.5 on window 2: the cuts, N 525 for 900, costs to 5e-5 (the default's bit identity and the transition stay fast) | 8 |
+| test_cara_small_eps.py::test_a_small_trading_cost_converges_with_the_retry | risk-averse Kyle-Back at eps 0.05, theta 1.5, 16 nodes: the stall at the best responses' Krylov floor is retried to convergence, CE 0.53980 (the entropic probe stays fast) | 25 |
 
 Kept in the fast suite above five seconds, one per feature: the regime change's loss path (12 s), the
 two-firm market's stability and window-edge second-order check (7 s), the transition sweeps (6 s), the

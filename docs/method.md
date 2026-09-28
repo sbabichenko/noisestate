@@ -188,7 +188,25 @@ third order.  The result carries `res.risk[agent]` (theta, the entropic and the 
 
 The second-order check is the expected cost's form, as for a risk-neutral agent.  With a positive semidefinite loss
 Hessian it bounds the entropic cost's curvature from below (`J'' = E^Q[C''] + theta Var^Q(C') >= tr(S B) >= tr B
-= E[C'']`), and the record says so (`"bound": "entropic"`).  Without one the check is not run and says why.
+= E[C'']`), and the record says so (`"bound": "entropic"`).  Without one (Kyle's `D P`) nothing bounds it, and the
+entropic cost itself is probed (`"bound": "probe"`, finite_free._entropic_probe): its second difference in the world of the
+best response along the world of the expected cost's lowest eigenvector (where a minimum is lost first) and, for the
+scale, its highest; `"min"` is their ratio and `"expected_min"` the expected cost's own.  One direction: the probe can
+find a loss of the minimum, not prove there is none (on Kyle-Back at eps = 0.05 the expected cost's discrete form is
+indefinite, -6e-3 at 16 nodes and -4e-3 at 24, while the entropic cost is convex along that direction at theta 1.5).
+
+A risk-averse solve that stalls, or whose best response fails, is retried once from the same start with the best
+responses' Krylov solves tightened from 1e-4 of the warm start's residual to 1e-6 (`RISK_KRYLOV_RETRY`): near a fixed
+point the looser stop leaves a noise floor in the fixed-point map that Anderson and the Newton polish read as a stall
+(Kyle-Back with a prior at eps = 0.05, theta = 1.5, 16 nodes: residual 2e-5; the retry converges, 311 evaluations in all).
+A warm-started risk-averse GMRES now runs its restart cycles up to `foc_krylov_maxiter` steps (a cycle can stop early on
+the preconditioned residual; two cycles left theta = 1.75 at 6.6e-7 and reported a singular system that is not: its
+smallest singular value is 1.4e-4 of the largest and every eigenvalue has a positive real part).  If the retry fails too,
+the message carries the entropic probe at the best iterate (or at the start, when a best response raised) and says
+whether the risk-averse best response has lost its minimum there.  On Kyle-Back at eps = 0.05 it has not: beyond theta
+about 1.55 the best-response iteration itself becomes unstable (`res.stability()`: a real eigenvalue of the best-response
+map's Jacobian of -4.4, -9.1, -20 at theta 1.25, 1.4, 1.5, the same at 16 and 20 nodes, against a radius of 0.7 up to
+theta 4 at eps = 0.2), and a start from the theta = 1.5 equilibrium does not reach theta = 1.6.
 `res.foc[agent][control]` gains `"risk"`, the correction, so that `foc` (the kernel whose projection vanishes) is
 `physical + wedge + risk`.  `res.strategy()` is refused for a risk-averse agent: its action weighs the
 risk-adjusted noise-state, whose future part the result does not carry.

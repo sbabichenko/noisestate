@@ -346,8 +346,15 @@ class FocSystem:
             # start's (or to foc_krylov_tol of the right-hand side, whichever is larger): far from the equilibrium the
             # warm start is far from this response and 1e-12 of b is precision the next best response discards; near
             # it the warm start's residual is small and the floor is foc_krylov_tol as before
-            atol = max(atol, self.RISK_KRYLOV_REDUCTION * float(np.linalg.norm(r)))
-        x, rnorm, self.iterations = _gmres_left(self.matvec, prec, b, x, r, atol, restart, -(-maxiter // restart))
+            red = getattr(self.solver, "_risk_krylov_reduction", None) or self.RISK_KRYLOV_REDUCTION
+            atol = max(atol, red * float(np.linalg.norm(r)))
+        if self.tilt is not None:
+            # a risk-averse agent: a cycle often stops early on the preconditioned residual (the risk-neutral LU leaves the
+            # true one larger), and two cycles (maxiter / restart) left a warm-started solve short of its target near
+            # the fixed point (Kyle-Back, eps 0.05, theta 1.75: 6.6e-7 after 9 steps); cycles until maxiter steps instead
+            x, rnorm, self.iterations = _gmres_left(self.matvec, prec, b, x, r, atol, restart, maxiter, max_steps=maxiter)
+        else:
+            x, rnorm, self.iterations = _gmres_left(self.matvec, prec, b, x, r, atol, restart, -(-maxiter // restart))
         resid = rnorm / bn
         atol /= 10.0 * bn                               # the check below: 10 times the tolerance, relative to b
         self.residual = resid
@@ -357,7 +364,8 @@ class FocSystem:
         return self.expand(x).reshape(self.nU, self.nR, self.Nm), self.iterations
 
 
-def _gmres_left(matvec, psolve, b: np.ndarray, x: np.ndarray, r: np.ndarray, atol: float, restart: int, maxiter: int):
+def _gmres_left(matvec, psolve, b: np.ndarray, x: np.ndarray, r: np.ndarray, atol: float, restart: int, maxiter: int,
+                max_steps: Optional[int] = None):
     """scipy.sparse.linalg.gmres (1.18) with the preconditioner psolve on the left: the same Arnoldi steps (modified
     Gram-Schmidt, Givens rotations), the same inner tolerance and its control, so the same iterates, from x with its
     residual r = b - A x given.  One difference: scipy checks each cycle's solution with a product of its own, b - A x;
@@ -424,7 +432,7 @@ def _gmres_left(matvec, psolve, b: np.ndarray, x: np.ndarray, r: np.ndarray, ato
         x += y @ v[:col + 1, :]
         r = r - y @ av[:col + 1, :]
         rnorm = float(np.linalg.norm(r))
-        if rnorm <= atol or breakdown:
+        if rnorm <= atol or breakdown or (max_steps is not None and steps >= max_steps):
             break
         elif presid <= ptol:
             ptol_max_factor = max(eps, 0.25 * ptol_max_factor)
@@ -484,6 +492,7 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
     if c.cont is not None:                       # the action on the buffer (the frozen map's) is in the world, not in gamma
         cact = np.stack([Zfull[c.block(u)] for u in agent.controls])
     out = {"gamma": gamma, "action": cact, "Zfull": Zfull, "krylov": iters}
+    system.Zfull = Zfull                          # the world a risk-averse agent's second-order probe differentiates J in
     if want_decomp:
         if R is not R0:
             system.resp = RespOps(solver, agent, R)          # the second-order form is about deviations
@@ -574,6 +583,7 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
             out[ui] = system.rowops.adjoint(system.resp.adjoint(ui, GZ))
         return out.reshape(nU * nR * Nm, -1)[idx]
     n = idx.size
+    V = None
     if n <= solver.SECOND_ORDER_DENSE:
         Mfull = _dense_form(solver, agent, system, idx)
         w = np.linalg.eigvalsh(symmetrize(Mfull))
@@ -585,7 +595,7 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
         lo, hi = res["lo"], res["hi"]
     scale = max(abs(lo), abs(hi), 1e-300)
     out = {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -solver.SECOND_ORDER_TOL * scale), "converged": True}
-    if system.tilt is not None:
+    if system.tilt is not None or getattr(system, "shift", None) is not None:
         # the entropic cost's curvature along a change d of the strategy is E^Q[C''] + theta Var^Q(C') >= E^Q[C''] =
         # tr(S B_d) >= tr(B_d) = E[C''], the form above, when the loss Hessian is positive semidefinite (B_d >= 0 and
         # S = (I - theta K)^-1 >= I): the expected cost's curvature is then a lower bound of the objective's
@@ -593,11 +603,54 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
         psd = all(M is None or np.asarray(M).size == 0 or np.linalg.eigvalsh(0.5 * (M + M.T))[0] >= -1e-12 * max(1.0, np.abs(M).max())
                   for M in (Q, QT))
         if not psd:
-            return {"min": None, "max": None, "ok": None, "converged": False,
-                    "message": f"{agent.name} is risk averse and its loss Hessian is not positive semidefinite: the expected cost's "
-                               "curvature does not bound the entropic cost's, whose second-order condition is not checked"}
+            # no bound: the entropic cost itself, by its second differences in the world along the expected cost's lowest
+            # and highest directions (the directions where a minimum is lost first, and the scale)
+            if n <= solver.SECOND_ORDER_DENSE:
+                V = np.linalg.eigh(symmetrize(Mfull))[1]           # the directions (the eigenvalues above, eigvalsh's)
+            if V is None or getattr(system, "Zfull", None) is None:
+                return {"min": None, "max": None, "ok": None, "converged": False,
+                        "message": f"{agent.name} is risk averse and its loss Hessian is not positive semidefinite: the expected cost's "
+                                   "curvature does not bound the entropic cost's, and the strategy is too large for its probe "
+                                   "(second_order_dense)"}
+            return _entropic_probe(solver, agent, system, idx, V, lo / scale)
         out["bound"] = "entropic"          # the form is the expected cost's, a lower bound of the entropic cost's curvature
     return out
+
+
+def _entropic_probe(solver, agent: Agent, system: FocSystem, idx: np.ndarray, V: np.ndarray, rn_min: float, h: float = 1e-3) -> dict:
+    """The second-order check of a risk-averse agent whose loss Hessian is indefinite (Kyle's D P): the expected cost's form
+    bounds nothing there, so the entropic cost J itself is probed, its second difference (J(Z + h dZ) - 2 J(Z) + J(Z - h dZ)) /
+    h^2 in the world Z of the best response along dZ = the world of the form's lowest eigenvector (where a minimum is lost
+    first) and, for the scale, of its highest.  "min" is the lowest one's curvature over the highest's (the expected cost's
+    relative minimum is "expected_min"); a negative one means the entropic cost has no minimum in the agent's own strategy
+    there: its risk-averse best response is a saddle.  A check along one direction: it can find a loss of the minimum, not
+    prove its absence."""
+    from .risk import RiskBreakdown
+    c = solver.c; nP, N, ncol = len(c.prim), c.N, c.ncol
+    Z = np.asarray(system.Zfull).reshape(nP, N, ncol)
+
+    def J(Zx):
+        W = Zx.reshape(nP * N, ncol)
+        return solver.risk_report(agent, W, solver.expected_cost(agent, W))["entropic"]
+    curv = []
+    try:
+        J0 = J(Z)
+        for v in (V[:, 0], V[:, -1]):
+            full = np.zeros(system.nG); full[idx] = v
+            dZ = system.world_of(full.reshape(system.nU, system.nR, system.Nm))
+            dZ = dZ / max(1e-300, float(np.abs(dZ).max()))
+            curv.append((J(Z + h * dZ) - 2.0 * J0 + J(Z - h * dZ)) / h ** 2)
+    except RiskBreakdown as exc:
+        return {"min": None, "max": None, "ok": False, "converged": True, "expected_min": rn_min,
+                "message": f"{agent.name}'s entropic cost is infinite next to its best response (theta lambda_max "
+                           f"{exc.theta * exc.lam_max:.3f}): no minimum there"}
+    top = max(abs(curv[1]), 1e-300)
+    rel = curv[0] / top
+    return {"min": rel, "max": curv[1] / top, "ok": bool(rel >= -solver.SECOND_ORDER_TOL), "converged": True,
+            "expected_min": rn_min, "bound": "probe",
+            **({} if rel >= -solver.SECOND_ORDER_TOL else
+               {"message": f"{agent.name}'s entropic cost is concave along the expected cost's lowest direction (curvature {rel:.1e} of "
+                           f"the highest; the expected cost's own {rn_min:.1e}): its risk-averse best response is a saddle"})}
 
 
 def _dense_form(solver, agent: Agent, system: FocSystem, idx: np.ndarray) -> np.ndarray:

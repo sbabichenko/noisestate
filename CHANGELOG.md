@@ -4,6 +4,15 @@
 
 ### Added
 
+- Risk-averse solves at small trading costs: a stalled solve, or one whose best response fails, is retried once from the
+  same start with the best responses' Krylov solves tightened to 1e-6 (`RISK_KRYLOV_RETRY`); a warm-started risk-averse
+  GMRES runs its restart cycles up to `foc_krylov_maxiter` steps instead of two cycles (which reported a regular system
+  singular). Kyle-Back with a prior at eps 0.05, theta 1.5 now converges (CE 0.53980, as with 20 nodes). If the retry
+  fails too, the message carries a second-order probe of the entropic cost, and the second-order check of a risk-averse
+  agent with an indefinite loss Hessian is that probe (`"bound": "probe"`) instead of "not checked". Beyond theta about
+  1.55 at eps 0.05 the best-response iteration is unstable (Jacobian eigenvalue -20 at theta 1.5, resolution-independent)
+  while the entropic cost stays convex along the probed direction: no loss of the minimum was found.
+
 - Consistent planning for risk-averse agents on the finite engine, `settings.risk_planning = "consistent"` (the default
   stays precommitment, J_0 over the whole strategy): every date's self minimises the entropic cost of its own
   continuation, discounted from its date, the later selves playing the equilibrium map. The condition is

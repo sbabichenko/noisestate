@@ -1077,8 +1077,11 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         averse = [a for a in self.model.agents if a.risk_aversion]
         self._risk_scale = 1.0
         if not averse or start_from is not None or start_policy != "zero":
-            return super().solve(start_from=start_from, start_policy=start_policy, max_evaluations=max_evaluations,
-                                 deadline=deadline, diagnostics=diagnostics, **kw)
+            if not averse:
+                return super().solve(start_from=start_from, start_policy=start_policy, max_evaluations=max_evaluations,
+                                     deadline=deadline, diagnostics=diagnostics, **kw)
+            return self._risk_solve(averse, dict(start_from=start_from, start_policy=start_policy, max_evaluations=max_evaluations,
+                                                 deadline=deadline, diagnostics=diagnostics, **kw))
         import time
         from .risk import RiskBreakdown
 
@@ -1105,8 +1108,11 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                     w = (scale - scales[-2]) / (scales[-2] - prev[0])
                     start = {n: maps[n] + w * (maps[n] - prev[1][n]) for n in maps}
                 try:
-                    res = super().solve(start_from=start, max_evaluations=left, deadline=dl, diagnostics=diagnostics if last else False, **step_kw)
-                    if (not res.converged and prev is not None and (max_evaluations is None or evals + res.evaluations < max_evaluations)
+                    if last:        # the model's theta: a stall or a failing best response is retried with tighter ones (_risk_solve)
+                        res = self._risk_solve(averse, dict(start_from=start, max_evaluations=left, deadline=dl, diagnostics=diagnostics, **step_kw))
+                    else:
+                        res = super().solve(start_from=start, max_evaluations=left, deadline=dl, diagnostics=False, **step_kw)
+                    if (not last and not res.converged and prev is not None and (max_evaluations is None or evals + res.evaluations < max_evaluations)
                             and (deadline is None or time.time() - t0 < deadline)):
                         evals += res.evaluations
                         left = None if max_evaluations is None else max(1, max_evaluations - evals)
@@ -1137,6 +1143,83 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             res.converged = False
             res.message += f"; stopped at risk aversion scaled by {scales[-1]:.3g} of the model's (that step did not converge)"
         return res
+
+    RISK_KRYLOV_RETRY = 1e-6     # the risk-averse best responses' Krylov reduction on a retry after a stall or a failing best response (_risk_solve)
+
+    def _risk_solve(self, averse, args: dict):
+        """EngineBase.solve(**args) for a model with risk-averse agents, retried once from the same start with the best
+        responses' Krylov solves tightened from FocSystem.RISK_KRYLOV_REDUCTION (1e-4 of the warm start's residual) to
+        RISK_KRYLOV_RETRY when it stalls or a best response fails: near a fixed point the looser stop leaves a noise floor in
+        the fixed-point map that Anderson and the Newton polish read as a stall (Kyle-Back at eps 0.05, theta 1.5, 16 nodes:
+        residual 2e-5; with the retry it converges).  If the retry fails too, the entropic cost's curvature is probed
+        (_risk_curvature) at the best iterate, or at the start when a best response raised, and the message says whether
+        the risk-averse best response has lost its minimum there."""
+        from .risk import RiskBreakdown
+        first, failed = None, None
+        try:
+            first = super().solve(**args)
+            if first.converged:
+                return first
+        except RiskBreakdown:
+            raise
+        except ValueError as exc:
+            failed = exc
+        self._risk_krylov_reduction = self.RISK_KRYLOV_RETRY
+        try:
+            try:
+                res = super().solve(**args)
+            except RiskBreakdown:
+                raise
+            except ValueError as exc:
+                start = args.get("start_from")
+                if start is None:
+                    start = self.zero_maps()
+                elif self.init_kind(start) == "actions":
+                    start = self.maps_from_actions(start)
+                why = str(failed if failed is not None else exc)
+                raise ValueError(f"{why}; retried with the best responses' Krylov reduction {self.RISK_KRYLOV_RETRY:g}: {str(exc)[:200]}; "
+                                 f"at the start: {self._risk_curvature(start, averse)}") from None
+        finally:
+            self._risk_krylov_reduction = None
+        before = (f"the first attempt raised: {str(failed)[:200]}" if failed is not None else first.message)
+        if first is not None:
+            res.evaluations += first.evaluations
+        res.message = f"retried with the best responses' Krylov reduction {self.RISK_KRYLOV_RETRY:g} after: {before}; " + res.message
+        if not res.converged:
+            res.message += "; " + self._risk_curvature(res.maps, averse)
+        return res
+
+    def _risk_curvature(self, maps, averse) -> str:
+        """The second-order probe of each risk-averse agent's entropic cost at `maps` (a best iterate that did not converge,
+        or the start a best response failed from), the others' maps held: finite_free._entropic_probe along the lowest and
+        highest directions of the expected cost's form (the risk-neutral second-order form of the agent's best response),
+        in the closed loop of `maps`.  A negative curvature means the entropic cost has no minimum along that direction: the
+        risk-averse best response is a saddle there and no fixed point settles.  Otherwise the probe finds no loss of the
+        minimum (it checks one direction: it cannot prove there is none)."""
+        c = self.c; out = []
+        for a in averse:
+            Zpass, R0 = self._spikes(c, maps, a)
+            R = self._impulse_responses(a, maps, R0)
+            Zpass = self._passive_world(a, maps, Zpass, R0)
+            ytil, yinst = self._passive_rows(a, Zpass)
+            system = finite_free.FocSystem(self, a, finite_free.RowOps(self, a, ytil, yinst), finite_free.ProjOps(self, a, ytil, yinst),
+                                           finite_free.RespOps(self, a, R), finite_free.FocOps(self, a, R), Zpass, None)
+            system.Zfull = self._profile_world(maps)
+            idx = np.where(np.tile(self._identified(a), len(a.controls)))[0]
+            if idx.size > self.SECOND_ORDER_DENSE:
+                out.append(f"{a.name}: the strategy is too large for the second-order probe"); continue
+            w, V = np.linalg.eigh(finite_free.symmetrize(finite_free._dense_form(self, a, system, idx)))
+            pr = finite_free._entropic_probe(self, a, system, idx, V, float(w[0] / max(abs(w[0]), abs(w[-1]), 1e-300)))
+            if pr.get("ok") is False:
+                out.append(pr.get("message") or f"{a.name}'s entropic cost is concave along the expected cost's lowest direction "
+                           f"(curvature {pr['min']:.1e} of the highest)")
+                out[-1] += "; no risk-averse equilibrium settles near this iterate (lower risk_aversion)"
+            else:
+                out.append(f"{a.name}'s entropic cost is convex along the expected cost's lowest direction (curvature {pr['min']:.1e} of "
+                           f"the highest; the expected cost's own {pr['expected_min']:.1e}): the probe finds no loss of the minimum; the "
+                           "best-response iteration itself can be unstable there (res.stability() of the last equilibrium on the way: "
+                           "a radius far above 1), so approach this theta in smaller steps, or raise numerics.nodes")
+        return "; ".join(out)
 
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):
         """The agent's best response to `maps` (EngineBase.best_response's contract): finite_free.best_response,
