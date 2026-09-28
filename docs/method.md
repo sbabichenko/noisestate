@@ -107,14 +107,26 @@ means are nonzero.
 An agent with `risk_aversion: theta > 0` minimises the entropic cost `J = theta^-1 log E exp(theta C)` of its
 realised cost C (the loss integrated, discounted, plus the terminal loss, as `res.costs` integrates it), instead of
 `E C`; `theta = 0` is the risk-neutral model and takes exactly the risk-neutral path.  The spectral finite engine
-solves it on a finite horizon without a past, a continuation, monitoring or means (the others refuse it with a
-NotImplementedError); the code is `noisestate/risk.py`.
+solves it on a finite horizon, with no past or a past of initial shocks only (no window), and without a
+continuation, monitoring, instant observations or means (the others refuse it with a NotImplementedError); the code
+is `noisestate/risk.py`.
+
+C must be the agent's realised cost, not merely one with the right mean.  A risk-neutral objective is unchanged by a
+term of mean zero; the entropic one is not.  Chapter 4's loss `-D (V - P) + eps D^2` values the insider's flow at the
+fundamental: with a moving V it differs from minus the insider's wealth (liquidating at V_T) by `int Q dV`, the
+inventory risk a risk-averse trader prices.  Write the wealth: `loss: D P + eps D^2`, `terminal: -Q V`, `Q: D dt`
+(tests/test_cara_kyle.py).  With V drawn once at 0- the two are the same random variable.  A market maker's wealth
+also holds the noise trades' profit and loss, a stochastic integral `int (P - V) sigma_Z dW_Z`, which no loss term
+can write yet.
 
 Chapter 1's appendix (thm:risk_sensitive_appendix) gives the first-order condition: the risk-neutral one evaluated
 at the risk-adjusted noise-state `W^theta = (I - theta Sigma_t K)^-1 (W_hat + theta Sigma_t k)`, with `Sigma_t` the agent's
 conditional covariance of every shock (the filter's posterior for the past ones, the prior for the future ones), `K`
 the quadratic kernel of C over the whole horizon, `C = c0 + 1/2 <W, K W>`, and `k` its linear part (zero without
-means).  `W^theta` is the point at which the derivative is evaluated: the average of the linear marginal cost over
+means).  The theorem is stated for the tracking case, but the argument needs only that the profile is linear: any
+quadratic loss in the atoms, cross terms between controls and states included (Kyle's `D V`, `D P`), gives C of that
+form, with K indefinite when Q is.  Only a positive eigenvalue can break down, so a K <= 0 (a Kyle insider with a
+fixed value: its wealth is never negative along a path) has no breakdown at any theta.  `W^theta` is the point at which the derivative is evaluated: the average of the linear marginal cost over
 the outcomes weighted by `exp(theta C) / E exp(theta C)`.  It is not a belief; the agent's filter and its
 information are the risk-neutral ones.  Certainty equivalence fails, so the first-order condition keeps the part
 of its kernel on the future shocks, which the risk-neutral engine drops because those shocks have mean zero.
@@ -160,6 +172,12 @@ theta (or that has not reached it in 40 steps) raises `RiskBreakdown` with `reac
 on Chapter 1's game at 8 nodes; 2.9 itself solves at 12 nodes, with `theta lambda_max` = 0.985).  So does a solution
 whose own spectrum is past the breakdown.  An iterate beyond the breakdown inside a
 solve is answered at `theta_eff = 0.9 / lambda_max`, a safeguard that a converged equilibrium never uses.
+
+Initial shocks (a past of shocks drawn at 0-, `horizon.past` without a window) are coordinates of the shocks beside
+the paths, their kernels functions of time on the line s = 0.  They join the Galerkin basis as unit vectors, so
+their block is exact: `K f_t` gains `k(u) f_xi(t)` on the paths (`k = K e_xi`) and `<k, f_t> + K_xixi f_xi(t)` on the
+shocks, the correction gains its part on them (read on the line s = 0 like the FOC kernel's), and `tr K^2` gains
+`2 sum ||k_i||^2 + ||K_xixi||^2`.
 
 The entropic cost is `J = E C + (2 theta)^-1 sum_i (-log(1 - theta lambda_i) - theta lambda_i)` over the eigenvalues
 of K.  The Ritz values of `K_G` give the large ones.  The ones the basis misses (on each channel lambda_i decays

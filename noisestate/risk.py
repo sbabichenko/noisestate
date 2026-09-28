@@ -194,6 +194,22 @@ class RiskGeometry:
         self.IZT = g.interp_sparse(np.full(N, T), T - g.s, side_t=-np.ones(N))
         self.IRT = g.interp_sparse(np.full(N, T), T - g.t, side_t=-np.ones(N))
         self._lag_reads: Dict[float, object] = {}
+        # the initial shocks of a past (n0 of them, the world's columns after the channels): each is one coordinate of the
+        # shocks beside the paths, its kernels functions of time on the line s = 0 (c.diag, on the time nodes tm).  They
+        # join the basis as unit vectors (exact), read on the one-time representation from the time nodes panel by panel
+        self.n0 = int(c.ncol - nW)
+        if self.n0:
+            if c.g.L is not None or len(c.diag) != self.n_rows:
+                raise NotImplementedError("risk-averse agents with initial shocks are solved without a window (a past of initial "
+                                          "shocks only, on a finite horizon)")
+            nt = g.nt
+            Btm = np.zeros((len(self.x1), c.Nt))
+            for p in range(P):
+                Btm[p * n1:(p + 1) * n1, p * nt:(p + 1) * nt] = bary_rows(self.x1[p * n1:(p + 1) * n1], c.tm[p * nt:(p + 1) * nt],
+                                                                          bary_weights(nt))
+            self.Btm = Btm                                                          # (n1 P, Nt): time nodes -> one-time nodes
+            self.wg_plain = wg                                                      # Gauss weights without the discount
+            self.diag = np.asarray(c.diag)
 
     def _row_nodes(self, B, rows, w):
         """(n_rows P n1, npts) CSR: entry (r, n; i) = w_i B[i, n] for the points i of row r."""
@@ -280,20 +296,38 @@ class Tilt:
         Q = np.asarray(foc.Q, dtype=float)
         self.Qf, self.QT = Q[:m, :m], Q[m:, m:]
         nP = len(c.prim)
-        zp = foc.atoms_of(Zprof[:, :nW].reshape(nP, N, nW))                   # (m + mt, N, nW)
+        n0 = self.n0 = geo.n0
+        if n0:
+            zfull = foc.atoms_of(Zprof.reshape(nP, N, c.ncol))                  # (m + mt, N, ncol)
+            zp = np.ascontiguousarray(zfull[:, :, :nW])
+            # the atoms' kernels on the initial shocks: functions of time on the line s = 0, at the one-time nodes
+            z0 = zfull[:, geo.diag, nW:]                                        # (ma, Nt, n0)
+            self.Z0x = np.einsum("xt,jti->xji", geo.Btm, z0)                    # (n1 P, ma, n0)
+            self.z0T = (c.terminal_point @ zfull[m:, :, nW:].transpose(1, 0, 2).reshape(N, -1)).reshape(self.mt, n0) if self.mt else None
+        else:
+            zp = foc.atoms_of(Zprof[:, :nW].reshape(nP, N, nW))                 # (m + mt, N, nW)
         self.zf = zf = zp[:m]; self.zT = zT = zp[m:]
         ma = m + self.mt
         # E at the one-time nodes (n1 P, m + mt, nV), the channel innermost in the basis index
         Zpts = geo.IE @ zp.transpose(1, 0, 2).reshape(N, -1)                    # (npts, ma nW)
         # the basis index a = (p, d, k): the Legendre function phi_{p d} placed on channel k, so E_{j a}(tau) = int zeta_j(tau, v)_k phi_{p d}(v) dv
         E = (geo.BE @ Zpts).reshape(len(geo.x1), P, geo.nb, ma, nW).transpose(0, 3, 1, 2, 4).reshape(len(geo.x1), ma, -1)
+        self.nVb = E.shape[2]                                                   # the paths' basis functions; the initial shocks follow
+        if n0:
+            # the initial shocks as unit vectors of the basis: their exposure is the atoms' kernel itself, zeta^0(tau)
+            E = np.concatenate([E, self.Z0x], axis=2)
         self.E = E
         Eg = (geo.Bg @ E[:, :m].reshape(len(geo.x1), -1)).reshape(geo.tg.size, m, -1)
         KG = np.einsum("q,qja,jl,qlb->ab", geo.wg, Eg, self.Qf, Eg, optimize=True)
         if self.mt:
             ET = E[geo.iT, m:]                                                  # (mt, nV): the terminal atoms at T
+            if n0:
+                ET = np.concatenate([ET[:, :self.nVb], self.z0T], axis=1)       # the initial shocks' columns at T by the corner read
             KG += np.exp(-geo.rho * geo.T) * (ET.T @ self.QT @ ET)
+            self.ET = ET
         KG = 0.5 * (KG + KG.T)
+        # the initial shocks' rows of K on the basis, [Psi_xi, K_xixi] = <e_xi, K Phi> (n0, nV): the Galerkin form's rows
+        self.Cxi = KG[self.nVb:] if n0 else None
         lam, V = np.linalg.eigh(KG)
         self.lam = lam
         self.lam_max = float(lam[-1]) if lam.size else 0.0
@@ -307,7 +341,7 @@ class Tilt:
             self.theta = th = CLIP / self.lam_max
             self.clipped = True
         self.Sg = (V / (1.0 - th * lam)[None, :]) @ V.T                        # (I - theta K_G)^-1
-        if spectrum_only:
+        if spectrum_only and not n0:
             return
         # Psi = K Phi at the one-time nodes u, (n1 P, nW, nV)
         # Psi(u)_k = sum_i w_i sum_j zeta_j(tau_i, u)_k (Q E)_j(tau_i), (Q E)(tau_i) = sum_n BPsi[i, n] (Q E)(x1_n): contract the
@@ -322,12 +356,14 @@ class Tilt:
                 Tpsi[:, k, j, :] = (geo.SPsi @ diags(Zq[:, j, k]) @ geo.BPsi).toarray()
         Psi = np.einsum("ukjn,nja->uka", Tpsi, QE, optimize=True)
         if self.mt:
-            QET = self.QT @ E[geo.iT, m:]                                         # (mt, nV)
+            QET = self.QT @ self.ET                                                # (mt, nV)
             ZT = (geo.IPsiT @ zT.transpose(1, 0, 2).reshape(N, -1)).reshape(-1, self.mt, nW)
             Psi = Psi + np.exp(-geo.rho * geo.T) * np.einsum("ujk,ja->uka", ZT, QET)
         self.Psi = Psi
         self.Psi_node = (geo.Bnode @ Psi.reshape(len(geo.x1), -1)).reshape(N, nW, -1)
         self.PsiT = np.ascontiguousarray(Psi.transpose(2, 0, 1).reshape(Psi.shape[2], -1))    # (nV, n1 P nW)
+        if spectrum_only:                                   # with initial shocks tr K^2 needs k = K e_xi, Psi's last columns
+            return
         # the fixed reads of zeta along the paths (flow atoms; the projection path reads the terminal atoms too)
         zall = zp.transpose(1, 0, 2).reshape(N, -1)
         lp, lr, lc = geo.lp_proj, geo.lp_resp, geo.lp_cont
@@ -372,7 +408,7 @@ class Tilt:
             a = None if a is None else a[..., None]
             phi = None if phi is None else phi[..., None]
         B = Zw.shape[3]
-        out = np.empty((self.geo.N, self.geo.nW, B))
+        out = np.empty((self.geo.N, self.geo.nW + self.n0, B))
         for b0 in range(0, B, self.chunk):
             sl = slice(b0, b0 + self.chunk)
             out[:, :, sl] = self._delta(ui, Zw[:, :, :, sl], None if a is None else a[..., sl], None if phi is None else phi[..., sl])
@@ -383,11 +419,16 @@ class Tilt:
         N, nW = geo.N, geo.nW
         m, mt = self.m, self.mt
         B = Zw.shape[3]
+        n0 = self.n0
         if a is None:
-            a = foc.atoms_of(Zw)                                                  # (ma, N, nW, B)
+            a = foc.atoms_of(Zw)                                                  # (ma, N, ncol, B)
         bQ = np.tensordot(foc.Q, a, axes=1)                                       # Q zeta
         if phi is None:
-            phi = foc.on_qzeta(ui, bQ)                                            # (N, nW, B): foc.foc(ui, a)
+            phi = foc.on_qzeta(ui, bQ)                                            # (N, ncol, B): foc.foc(ui, a)
+        if n0:
+            # the FOC kernel on the initial shocks, f_xi(t) on the line s = 0 per time row, and the paths' part
+            fxi = phi[geo.diag, nW:]                                              # (rows, n0, B)
+            phi = np.ascontiguousarray(phi[:, :nW]); bQ = np.ascontiguousarray(bQ[:, :, :nW])
         fU = self._future(ui, bQ, B)                                              # (N, nW, B): f_t(v), v > t, at (v, t)
         lp, lr, lc = geo.lp_proj, geo.lp_resp, geo.lp_cont
         ma = m + mt
@@ -421,8 +462,17 @@ class Tilt:
         n1P = len(geo.x1)
         g = (geo.Mpast @ fp.reshape(fp.shape[0], -1) + geo.Mfut @ ff.reshape(ff.shape[0], -1)).reshape(geo.n_rows, n1P * nW, B)
         F = np.matmul(self.PsiT, g)                                                # (rows, nV, B)
+        if n0:
+            # the initial shocks' coordinates: K f_t gains k(u) f_xi(t) on the paths (k = K e_xi, the last columns of Psi) and
+            # has the part <k, f_t> + K_xixi f_xi(t) on them (F's last rows once C_xi' f_xi joins it); Phi' K f_t gains
+            # C_xi' f_xi(t) (the basis's initial rows being the unit vectors)
+            F = F + np.einsum("ia,rib->rab", self.Cxi, fxi)
+            Kf = Kf + np.einsum("nki,nib->nkb", self.Psi_node[:, :, self.nVb:], fxi[geo.node_row])
         Cc = th * np.matmul(self.Sg, F)                                          # (rows, nV, B)
         D = th * Kf + th * np.matmul(self.Psi_node, Cc[geo.node_row])
+        if n0:
+            Dxi = th * F[:, self.nVb:] + th * np.einsum("ia,rab->rib", self.Cxi, Cc)   # (rows, n0, B): the correction on the initial shocks
+            return np.concatenate([D, Dxi[geo.node_row]], axis=1)                # carried along each time row, read on s = 0
         return D
 
     def _future(self, ui: int, bQ: np.ndarray, B: int) -> np.ndarray:
@@ -468,7 +518,14 @@ class Tilt:
             KN += np.exp(-geo.rho * geo.T) * np.einsum("njc,jl,nld->ncd", a, self.QT, b, optimize=True)
         M = geo.g.mass_sparse(rho=0.0)
         F = KN.reshape(N, -1)
-        return float(2.0 * np.sum(F * (M @ F)))
+        out = float(2.0 * np.sum(F * (M @ F)))
+        if self.n0:
+            # the initial shocks' blocks: 2 sum_i ||k_i||^2 (k_i = K e_xi on the paths, both off-diagonal blocks) + ||K_xixi||_F^2
+            if not hasattr(self, "Psi"):
+                raise RuntimeError("trace_K2 with initial shocks needs the full Tilt (not spectrum_only)")
+            kg = (geo.Bg @ self.Psi[:, :, self.nVb:].reshape(len(geo.x1), -1))            # (Gauss points, nW n0)
+            out += 2.0 * float(geo.wg_plain @ np.sum(kg * kg, axis=1)) + float(np.sum(self.Cxi[:, self.nVb:] ** 2))
+        return out
 
     def entropic_excess(self) -> float:
         """J - E C = (2 theta)^-1 sum over K's eigenvalues of (-log(1 - theta lambda) - theta lambda): the Ritz values of the

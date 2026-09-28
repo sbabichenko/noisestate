@@ -32,7 +32,7 @@ __all__ = ["SpectralCompiled", "ClosedLoopRows", "SpectralFiniteSolver"]
 
 class SpectralFiniteSolver(SpectralMeans, EngineBase):
     MONITORING = True                   # monitored deviations and instant observations, without a past (see __init__)
-    RISK_SENSITIVE = True               # risk-averse agents (the entropic objective, risk.py), without a past, monitoring or means (see __init__)
+    RISK_SENSITIVE = True               # risk-averse agents (the entropic objective, risk.py): no past or initial shocks only, no monitoring or means (see __init__)
     RESULT = TriangleResult
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
     MAP_RIDGE = tunable("map_ridge")      # ridge of the per-time-row map projection, relative to the row's own Gram (settings)
@@ -60,9 +60,9 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             raise NotImplementedError("monitored deviations and instant observations are solved on a finite horizon "
                                       "without a past or a continuation; a transition with them is not built yet")
         averse = [a.name for a in model.agents if a.risk_aversion]
-        if averse and (past is not None or continuation not in (None, "end")):
-            raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) are solved on a finite horizon without a past or a "
-                                      "continuation; a transition with them is not built yet")
+        if averse and ((past is not None and past.window) or continuation not in (None, "end")):
+            raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) are solved on a finite horizon, with no past or a past of "
+                                      "initial shocks only (no window), and no continuation; a transition with them is not built yet")
         if averse and any(a.monitors or a.instant for a in model.agents):
             raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) with monitored deviations or instant observations "
                                       "are not solved yet")

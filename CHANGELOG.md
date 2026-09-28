@@ -4,6 +4,15 @@
 
 ### Added
 
+- Risk-averse agents with a past of initial shocks (a value drawn at 0-, `horizon.past` without a window): the shocks
+  join the correction's Galerkin basis as unit vectors (exact on their block). Kyle-Back with a CARA insider now solves
+  (tests/test_cara_kyle.py): against a brute-force discrete reference (extras/kyle_reference.py, Richardson over
+  n = 40 to 120) the entropic and expected costs agree to 3.4e-8 at 12 nodes for theta 0 to 4, the kernels to 1e-5;
+  two identical insiders to 1.5e-7 (costs) at 20 nodes. The entropic cost is stationary in the insider's own map (slope
+  1e-9 against 1e-3 at the risk-neutral equilibrium). Cross terms (D V, D P) needed nothing new: the risk-adjusted
+  condition holds for any quadratic loss under a linear profile. docs/method.md says why the loss must be the
+  realised cost (wealth), not the fundamental-valued flow.
+
 - Risk-averse (CARA) agents are solved on the spectral finite engine. An agent with `risk_aversion: theta` minimises
   the entropic cost theta^-1 log E exp(theta C) of its realised cost. The first-order condition is the risk-neutral
   one evaluated at the risk-adjusted noise-state (Ch1 appendix, thm:risk_sensitive_appendix): the point at which the

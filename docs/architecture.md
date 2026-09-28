@@ -136,8 +136,8 @@ The spectral engine refuses monitoring and instant observations with a past or a
 Both engines solve ordinary games, ties, delays and lags, means, vectors and Chapter 6 (the spectral engine
 without a past or a continuation).  Terminal losses are the finite horizon's (with or without a past).
 Transitions are the spectral engine's.  Instant observations with ties are refused (ties iterate on the raw maps,
-which hold such an equilibrium but do not reach it).  `risk_aversion` > 0 (the entropic objective) is the spectral finite engine's, on a finite horizon without a
-past, a continuation, monitoring or means (`RISK_SENSITIVE`; [method.md](method.md#risk-averse-agents)); the stationary engine refuses it.  A refusal is a NotImplementedError
+which hold such an equilibrium but do not reach it).  `risk_aversion` > 0 (the entropic objective) is the spectral finite engine's, on a finite horizon with no past or a
+past of initial shocks only, without a continuation, monitoring, instant observations or means (`RISK_SENSITIVE`; [method.md](method.md#risk-averse-agents)); the stationary engine refuses it.  A refusal is a NotImplementedError
 that names the engine and what it lacks.
 
 ## Where the engines share the base

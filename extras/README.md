@@ -13,5 +13,9 @@ Material tied to the dissertation's own solvers, kept out of the wheel:
   tracking game, independent of the package: linear maps on each player's signal history, the exact log-det entropic
   cost with its analytic gradient, L-BFGS best responses.  `python extras/leqg_reference.py table tests/refs/leqg_ch1.json`
   writes the table `tests/test_cara_finite.py` checks the engine against (n = 50 to 400 steps, about twenty minutes).
+* `kyle_reference.py`: the same for a finite-horizon Kyle-Back market with CARA insiders (one, or K identical ones whose
+  rivals react to a deviation through their maps) and a competitive market maker (the projection of the insiders'
+  current strategy), the insider's realised cost minus its wealth.  `python extras/kyle_reference.py table
+  tests/refs/leqg_kyle_prior.json [2]` writes the tables `tests/test_cara_kyle.py` checks (n = 40 to 120, under a minute).
 * `patches/`: the fix for that C++ solver.
 * `tools/`: comparison scripts against the Chapter 1 solvers.
