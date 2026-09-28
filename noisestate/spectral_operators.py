@@ -27,7 +27,10 @@ class PathOp:
     op_j = R diag(w F_j) I with F = J K the knowns read at the quadrature points, as applications on
     vectors (columns of a world, a block of them) and as dense rows of a panel of output nodes; extra
     scales every point (the continuation's discount).  A path with no points (lp.rows None) is the zero
-    operator (empty)."""
+    operator (empty).  Where the path holds I as Factors, R diag(w F_j) is folded onto I's distinct points
+    (a CSR matrix per j on LinePath.distinct_layout, data w F_j): unknown() then gives the unknown at the
+    distinct points and the applications are those sparse products, the same products and sums as R (w F_j * I V)
+    without taking every point's value."""
 
     def __init__(self, lp, K: np.ndarray, extra: Optional[np.ndarray] = None):
         self.lp = lp
@@ -35,37 +38,59 @@ class PathOp:
         K = K if K.ndim == 2 else K[:, None]
         self.m = K.shape[1]
         self.n_out, self.N = lp.n_out, lp.N
+        self._ops = None
         if lp.rows is None:
             self.F = None
         else:
             F = lp.read(K) if lp.Jf is not None else lp.J @ K
             if extra is not None:
                 F = F * extra[:, None]
-            self.F = lp.w[:, None] * F                          # (nq, m): the weights included
+            self.FT = np.ascontiguousarray((lp.w[:, None] * F).T)        # (m, nq): each op's weights contiguous
+            self.F = self.FT.T                                          # (nq, m): the weights included
+            layout = lp.distinct_layout()
+            if layout is not None:
+                from scipy.sparse import csr_matrix
+                idx, indptr, ncol = layout
+                self._ops = [csr_matrix((self.FT[j], idx, indptr), shape=(self.n_out, ncol), copy=False) for j in range(self.m)]
 
     @property
     def empty(self) -> bool:
         return self.F is None
 
     def unknown(self, V: np.ndarray, scratch: bool = False) -> np.ndarray:
-        """I V: the unknown read at the quadrature points, (nq, ...) for V (N, ...).  Through the
-        interpolation factors where the path kept them (the same sums, 4 to 6 times faster).  scratch=True
-        writes it into a work buffer (triangle._scratch), for a caller that applies it at once."""
+        """The unknown V (N, ...) read for the applications: at the distinct points (LinePath.read_distinct) where the
+        operators are folded onto them, else I V at every quadrature point (nq, ...).  Through the interpolation
+        factors (the same sums as the sparse I, 4 to 6 times faster).  scratch=True writes it into a work buffer
+        (triangle._scratch), for a caller that applies it at once."""
+        if self._ops is not None:
+            return self.lp.read_distinct(V, scratch)
         return self.lp.read_unknown(V, scratch)
 
     def apply(self, IV: np.ndarray, j: int) -> np.ndarray:
-        """op_j V given IV = I V (nq, ...)."""
+        """op_j V given IV = unknown(V)."""
+        if self._ops is not None:
+            return self._ops[j] @ IV
         Fj = self.F[:, j]
         return self.lp.R @ np.multiply(Fj if IV.ndim == 1 else Fj[:, None], IV, out=_scratch("path_apply", IV.shape))
 
     def apply_all(self, IV: np.ndarray) -> np.ndarray:
-        """Every op_j on the same vectors: (n_out, m, B) for IV = I V (nq, B)."""
+        """Every op_j on the same vectors: (n_out, m, B) for IV = unknown(V), V (N, B)."""
         B = IV.shape[1]
+        if self._ops is not None:
+            out = np.empty((self.n_out, self.m, B))
+            for j, op in enumerate(self._ops):
+                out[:, j] = op @ IV
+            return out
         FV = np.multiply(self.F[:, :, None], IV[:, None, :], out=_scratch("path_apply", (IV.shape[0], self.m, B)))
         return (self.lp.R @ FV.reshape(-1, self.m * B)).reshape(self.n_out, self.m, B)
 
     def apply_sum(self, IV: np.ndarray) -> np.ndarray:
-        """sum_j op_j V[:, j] for IV = I V (nq, m, B): (n_out, B), one product."""
+        """sum_j op_j V[:, j] for IV = unknown(V), V (N, m, B): (n_out, B)."""
+        if self._ops is not None:
+            out = self._ops[0] @ IV[:, 0]
+            for j in range(1, self.m):
+                out += self._ops[j] @ IV[:, j]
+            return out
         FV = np.multiply(self.F[:, :, None], IV, out=_scratch("path_apply", np.broadcast_shapes(self.F[:, :, None].shape, IV.shape)))
         return self.lp.R @ FV.sum(axis=1)
 
@@ -74,7 +99,7 @@ class PathOp:
         LinePath.with_known(rows=)."""
         if self.F is None:
             return np.zeros((hi - lo, self.N if cols is None else cols[1] - cols[0]))
-        return self.lp._weighted_sum(self.F[:, j], rows=(lo, hi), cols=cols)
+        return self.lp._weighted_sum(self.FT[j], rows=(lo, hi), cols=cols)
 
     def adjoint_sum(self, W: np.ndarray) -> np.ndarray:
         """sum_j op_j^T W[:, j] for W (n_out, m, B): I^T (sum_j F_j (R^T W)_j), (N, B)."""
@@ -85,6 +110,32 @@ class PathOp:
         Fj = self.F[:, j]
         RW = W[self.lp.rows]
         return self.lp.I.T @ (Fj * RW if RW.ndim == 1 else Fj[:, None] * RW)
+
+
+def _entries(S, r0: int, r1: int, c0: int, c1: int):
+    """The nonzero entries of the block S[r0:r1, c0:c1] of a sparse read or shift, (rows - r0, cols - c0, values), from
+    S's canonical CSR (duplicates summed as toarray sums them; made once and kept on the matrix, which the compiled
+    model caches): a block's dense copy is mostly zeros, and adding it adds nothing but its entries."""
+    hit = getattr(S, "_ns_canonical", None)
+    if hit is None:
+        C = S.tocsr(copy=True); C.sum_duplicates()
+        hit = S._ns_canonical = (None, C.indptr, C.indices, C.data)
+    _, indptr, indices, data = hit
+    a, b = int(indptr[r0]), int(indptr[r1])
+    rows = np.repeat(np.arange(r0, r1), np.diff(indptr[r0:r1 + 1]))
+    cols = indices[a:b]
+    keep = (cols >= c0) & (cols < c1)
+    return rows[keep] - r0, cols[keep] - c0, data[a:b][keep]
+
+
+def _zeros(shape, scratch: Optional[str] = None) -> np.ndarray:
+    """np.zeros(shape), or with a name the zeroed work buffer of that name (triangle._scratch): the dense operators the
+    factored first-order-condition system is assembled from are made and dropped once per best response, at sizes
+    glibc maps and faults in afresh on every call."""
+    if scratch is None:
+        return np.zeros(shape)
+    out = _scratch(scratch, shape); out.fill(0.0)
+    return out
 
 
 def _nonzero_cols(Y: np.ndarray) -> List[int]:
@@ -185,7 +236,8 @@ class RowOps:
                 for j, k in enumerate(ks):
                     flow[k] += op.rows(j, lo, hi, (lo_r, hi_r))
             for (k, nw, S) in self.inst[r]:
-                flow[k] += nw[lo:hi, None] * S[lo:hi, lo_r:hi_r].toarray()
+                ri, ci, v = _entries(S, lo, hi, lo_r, hi_r)                 # nw[lo:hi, None] * S[lo:hi, lo_r:hi_r], its entries
+                flow[k][ri, ci] += nw[lo + ri] * v
             disc = None
             if self.Nm > self.N:
                 disc = np.zeros((self.ncol, hi - lo, self.Nm - self.N)) if into is None else into[r][1]
@@ -195,14 +247,14 @@ class RowOps:
         return out
 
 
-    def dense(self, lo: int = 0) -> np.ndarray:
+    def dense(self, lo: int = 0, scratch: Optional[str] = None) -> np.ndarray:
         """Every G_k as a dense array, (ncol, N, nR Nm): the rows of every panel (the factored FOC system); with lo
-        the rows of the action nodes from lo on only (the reduced system under freeze_before), zero before."""
-        out = np.zeros((self.ncol, self.N, self.nR * self.Nm))
-        for r, (flow, disc) in enumerate(self.rows(lo, self.N, [(lo, self.N)] * self.nR)):
-            out[:, lo:, r * self.Nm + lo:r * self.Nm + self.N] = flow
-            if disc is not None:
-                out[:, lo:, r * self.Nm + self.N:(r + 1) * self.Nm] = disc
+        the rows of the action nodes from lo on only (the reduced system under freeze_before), zero before.  scratch:
+        the name of a work buffer to build it in (_zeros), for a caller that drops it before the next build."""
+        out = _zeros((self.ncol, self.N, self.nR * self.Nm), scratch)
+        into = [(out[:, lo:, r * self.Nm + lo:r * self.Nm + self.N],                  # the rows written in place
+                 out[:, lo:, r * self.Nm + self.N:(r + 1) * self.Nm] if self.Nm > self.N else None) for r in range(self.nR)]
+        self.rows(lo, self.N, [(lo, self.N)] * self.nR, into=into)
         return out
 
 
@@ -283,9 +335,11 @@ class ProjOps:
             for j, k in enumerate(ks):
                 flow[k] += op.rows(j, lo_r, hi_r, (lo, hi))
         for (k, nw, S) in self.inst[r]:
-            flow[k] += S[lo:hi, lo_r:hi_r].toarray().T * nw[lo:hi][None, :]
+            ri, ci, v = _entries(S, lo, hi, lo_r, hi_r)                     # S[lo:hi, lo_r:hi_r]' * nw[lo:hi], its entries
+            flow[k][ci, ri] += v * nw[lo + ri]
         for (i, yi, Id) in self.init[r]:
-            flow[self.nW + i] += yi[lo_r:hi_r, None] * Id[lo_r:hi_r, lo:hi].toarray()
+            ri, ci, v = _entries(Id, lo_r, hi_r, lo, hi)                     # yi[lo_r:hi_r, None] * Id[lo_r:hi_r, lo:hi]
+            flow[self.nW + i][ri, ci] += yi[lo_r + ri] * v
         disc = None
         if self.Nm > self.N:
             disc = np.zeros((self.ncol, self.Nm - self.N, hi - lo))
@@ -294,12 +348,12 @@ class ProjOps:
         return flow, disc
 
 
-    def dense(self, lo: int = 0) -> np.ndarray:
+    def dense(self, lo: int = 0, scratch: Optional[str] = None) -> np.ndarray:
         """H as a dense array (nR Nm, ncol N), columns (channel, node): every row's map nodes against every
         action node (the factored FOC system); with lo the map nodes and action nodes from lo on only (the
-        reduced system under freeze_before), zero before."""
+        reduced system under freeze_before), zero before.  scratch: a work buffer's name (_zeros)."""
         N, Nm, ncol = self.N, self.Nm, self.ncol
-        out = np.zeros((self.nR * Nm, ncol * N))
+        out = _zeros((self.nR * Nm, ncol * N), scratch)
         for r in range(self.nR):
             flow, disc = self.rows(r, lo, N, lo, N)
             for k in range(ncol):
@@ -345,12 +399,12 @@ class RespOps:
             Z[p] += coef * C
         return Z
 
-    def dense(self, ui: int, lo: int = 0) -> np.ndarray:
+    def dense(self, ui: int, lo: int = 0, scratch: Optional[str] = None) -> np.ndarray:
         """Resp_u as a dense array (nP N, N): the rows of the response path per responding primary, the own
         block the identity (the factored FOC system); with lo the world's nodes from lo on only (the reduced
-        system under freeze_before), zero before."""
+        system under freeze_before), zero before.  scratch: a work buffer's name (_zeros)."""
         own, ps, op = self.ops[ui]
-        Z = np.zeros((self.nP, self.N, self.N))
+        Z = _zeros((self.nP, self.N, self.N), scratch)
         if op is not None:
             for j, p in enumerate(ps):
                 Z[p, lo:] += op.rows(j, lo, self.N)
@@ -458,11 +512,11 @@ class FocOps:
     def apply(self, ui: int, Z: np.ndarray) -> np.ndarray:
         return self.foc(ui, self.atoms_of(Z))
 
-    def dense(self, ui: int, lo: int = 0) -> np.ndarray:
+    def dense(self, ui: int, lo: int = 0, scratch: Optional[str] = None) -> np.ndarray:
         """Fu_u as a dense array (N, nP N): the per-atom operators M_j as dense rows (the identity, the rows of the
         continuation path, the lag reads), contracted with Q and the atoms' reads, sum_i (sum_j Q[j, i] M_j) A_i
         (the factored FOC system); with lo the rows of the action nodes from lo on only (the reduced system under
-        freeze_before), zero before."""
+        freeze_before), zero before.  scratch: a work buffer's name (_zeros)."""
         N = self.N
         j0, cont, lags = self.per_control[ui]
         M = np.zeros((len(self.atoms), N - lo, N))
@@ -479,7 +533,7 @@ class FocOps:
         for (j, W) in self.per_terminal[ui]:
             M[j] += W.toarray()[lo:]
         MQ = np.tensordot(self.Q.T, M, axes=1)                              # MQ[i] = sum_j Q[j, i] M_j
-        out = np.zeros((N, self.nP * N))
+        out = _zeros((N, self.nP * N), scratch)
         for i, (p, A) in enumerate(self.AO):
             if np.any(MQ[i]):
                 out[lo:, p * N:(p + 1) * N] += (A.T @ MQ[i].T).T

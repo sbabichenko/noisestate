@@ -27,10 +27,8 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-import warnings
-
 import numpy as np
-from scipy.linalg import LinAlgWarning, get_lapack_funcs, lu_factor, lu_solve
+from scipy.linalg import get_lapack_funcs, lu_solve
 
 from .engine import dense_curvature_form, singular_system_message, symmetrize
 from .spec import Agent
@@ -132,7 +130,7 @@ class FocSystem:
             # the whole strip's products never exist
             lo = c._panel_ranges[c.P_lo][0]
             act = slice(lo, N); world = np.concatenate([p * N + np.arange(lo, N) for p in range(self.nP)])
-            Gk = self.rowops.dense(lo); H = self.projops.dense(lo)
+            Gk = self.rowops.dense(lo, scratch="foc_rows"); H = self.projops.dense(lo, scratch="foc_proj")
             Resp = [self.resp.dense(vi, lo)[world][:, act] for vi in range(nU)]
             blk = nR * Nm
             kp = [self.kept[(self.kept >= ui * blk) & (self.kept < (ui + 1) * blk)] - ui * blk for ui in range(nU)]
@@ -140,17 +138,19 @@ class FocSystem:
             A = np.zeros((self.kept.size, self.kept.size))
             Gr = [[Gk[k][act][:, kp[vi]] for vi in range(nU)] for k in range(ncol)]
             for ui in range(nU):
-                Fu = self.foc.dense(ui, lo)[act][:, world]
+                Fu = self.foc.dense(ui, lo, scratch="foc_foc")[act][:, world]
                 Hr = [H[kp[ui]][:, k * N + lo:(k + 1) * N] for k in range(ncol)]
                 for vi in range(nU):
                     FR = Fu @ Resp[vi]
                     A[off[ui]:off[ui + 1], off[vi]:off[vi + 1]] = sum(Hr[k] @ (FR @ Gr[k][vi]) for k in range(ncol))
             return np.asarray(Rm @ A @ Rm.T)
-        Gk = self.rowops.dense(); H = self.projops.dense()
-        Resp = [self.resp.dense(vi) for vi in range(nU)]
+        # the dense operators in work buffers (made and dropped once per best response): the rows, the projection, each
+        # control's response and one control's FOC operator at a time
+        Gk = self.rowops.dense(scratch="foc_rows"); H = self.projops.dense(scratch="foc_proj")
+        Resp = [self.resp.dense(vi, scratch=f"foc_resp{vi}") for vi in range(nU)]
         Amat = self._tilt_matrix() if (with_tilt and self.tilt is not None) else np.zeros((nG, nG))
         for ui in range(nU):
-            Fu = self.foc.dense(ui)
+            Fu = self.foc.dense(ui, scratch="foc_foc")
             rows_u = slice(ui * nR * Nm, (ui + 1) * nR * Nm)
             for vi in range(nU):
                 FR = Fu @ Resp[vi]
@@ -177,7 +177,7 @@ class FocSystem:
         Ql = self._lag_forms()
         shifts = [c.panel_shift(c.rows[self.agent.name][r][3]) if c.rows[self.agent.name][r][3] > 0 else 0 for r in range(nR)]
         panel = PanelRows(self.solver, self.rowops, shifts)
-        gecon, = get_lapack_funcs(("gecon",), (np.zeros((1, 1)),))
+        getrf, gecon = get_lapack_funcs(("getrf", "gecon"), (np.zeros((1, 1)),))
         hrows: Dict[tuple, tuple] = {}                          # (panel, row) -> the projection's rows of the row's map panel
         kept_pos = np.full(self.nG, -1, dtype=int); kept_pos[self.kept] = np.arange(self.kept.size)
         blocks = []
@@ -205,11 +205,15 @@ class FocSystem:
             if sel.size == 0:
                 continue
             uniq, loc = np.unique(self.inv[kp[sel]], return_inverse=True)
-            Rm = np.zeros((sel.size, uniq.size)); Rm[np.arange(sel.size), loc] = 1.0
-            B = Rm.T @ P[np.ix_(sel, sel)] @ Rm
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", LinAlgWarning)
-                lu = lu_factor(B, check_finite=False)
+            B = P[np.ix_(sel, sel)]
+            if uniq.size < sel.size:                            # corner ties: their columns and equations summed
+                Rm = np.zeros((sel.size, uniq.size)); Rm[np.arange(sel.size), loc] = 1.0
+                B = Rm.T @ B @ Rm
+            # LAPACK's getrf, what lu_factor calls (an exactly zero pivot is caught by the condition test below)
+            lu_, piv, info = getrf(B)
+            if info < 0:
+                raise ValueError(f"getrf: illegal value in argument {-info}")
+            lu = (lu_, piv)
             rcond = float(gecon(lu[0], np.linalg.norm(B, 1))[0])
             if not rcond > self.solver.FOC_RCOND:
                 # the dense path's condition test on the whole system, here on its time-row blocks (the causes named are the
@@ -266,7 +270,7 @@ class FocSystem:
             Dl = D[idx]
             for k in range(self.ncol):
                 S += Hsub[k] @ (Dl[:, None] * Gsub[k])
-            P += np.kron(M, S)
+            P += M[0, 0] * S if M.shape == (1, 1) else np.kron(M, S)          # one control: the kron is the scaling
         return P
 
     def _lag_read(self, l: float) -> np.ndarray:
@@ -297,11 +301,16 @@ class FocSystem:
             prec = lambda r: lu_solve(lu, np.asarray(r, dtype=float).ravel(), check_finite=False)       # noqa: E731
         else:
             blocks = self.preconditioner()
+            # LAPACK's getrs on each block's factors: what lu_solve calls, without its checks and wrappers (a few
+            # microseconds a block, and a GMRES iteration solves every time row's block)
+            getrs, = get_lapack_funcs(("getrs",), (np.zeros((1, 1)),))
 
             def prec(r):
                 r = np.asarray(r, dtype=float).ravel(); x = r.copy()
-                for (ix, lu) in blocks:
-                    x[ix] = lu_solve(lu, r[ix], check_finite=False)
+                for (ix, (lu, piv)) in blocks:
+                    x[ix], info = getrs(lu, piv, r[ix])
+                    if info != 0:
+                        raise ValueError(f"getrs: illegal value in argument {-info}")
                 return x
         b = -self.bvec
         bn = float(np.linalg.norm(b))
@@ -584,7 +593,6 @@ def _dense_form(solver, agent: Agent, system: FocSystem, idx: np.ndarray) -> np.
     nU, nR, Nm = system.nU, system.nR, system.Nm
     atoms, Q, _ = c.loss[agent.name]
     AO = system.foc.AO
-    Gk = system.rowops.dense()                                                                  # (ncol, N, nR Nm)
     Resp = [system.resp.dense(ui) for ui in range(nU)]                                          # (nP N, N)
 
     def block_mass(mass):
@@ -634,7 +642,8 @@ def _dense_form(solver, agent: Agent, system: FocSystem, idx: np.ndarray) -> np.
             r = c.terminal_point.toarray()
             Gi = plus(Gi, loss_form(csr_matrix(np.exp(-c.rho * c.T) * (r.T @ r)), terminal[1], AO[system.foc.m_flow:]))
         forms.append((Gi, slice(nW, ncol)))
-    return dense_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx)
+    # Resp is this function's own (consumed), and the row operators' rows (ncol, N, nR Nm) are made once the responses are gone
+    return dense_curvature_form(Resp, system.rowops.dense, forms, nU, nR, Nm, idx, consume=True)
 
 
 def reconstruction(solver, agent: Agent, Zfull: np.ndarray, g: np.ndarray) -> np.ndarray:

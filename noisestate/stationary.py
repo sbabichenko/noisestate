@@ -35,6 +35,16 @@ from ._settings import Settings, tunable
 from .spec import Agent, Atom, Model
 
 
+def _lu_solve(lu, b: np.ndarray) -> np.ndarray:
+    """scipy.linalg.lu_solve(lu, b), its finiteness check included, straight on LAPACK's getrs: the same routine without
+    the wrapper's layers, which cost more than the solve at the closed loop's sizes (thousands of calls in a
+    monitored market's solve)."""
+    b = np.asarray_chkfinite(b)
+    getrs, = sla.get_lapack_funcs(("getrs",), (lu[0], b))
+    x, info = getrs(lu[0], lu[1], b)
+    if info != 0:
+        raise ValueError(f"illegal value in {-info}th argument of internal getrs")
+    return x
 
 
 class Compiled(CompiledBase):
@@ -302,7 +312,7 @@ class Compiled(CompiledBase):
                         continue
                     v = np.zeros(nX); v[i] = c
                     B[:nxs, col] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
-            GB = lu_solve(lu, B[:nxs])
+            GB = _lu_solve(lu, B[:nxs])
         # control rows: the strategies
         MU = np.zeros((nU * N, n))
         for a in self.model.agents:
@@ -426,7 +436,7 @@ class Compiled(CompiledBase):
                 if nm == u:
                     v = np.zeros(nX); v[i] = c
                     B[:nxs, self.nW + j] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
-        GB = lu_solve(lu, B[:nxs])
+        GB = _lu_solve(lu, B[:nxs])
         corb, cols, csl, fcols, perms, cperms = st["corb"], st["cols"], st["csl"], st["fcols"], st["perms"], st["cperms"]
         # representative rows of the reduced operator (states eliminated): R = MUU + MUX W
         rep_controls = [o[0] for o in corb] + [u for u in self.model.control_names if all(u not in o for o in corb)]
@@ -475,7 +485,7 @@ class Compiled(CompiledBase):
                         bk[j * N:(j + 1) * N] += (omega ** (-sh * k)) * rhs_u[csl[j][sh]] / np.sqrt(m)
                 if k == 0 and nf:
                     bk[r * N:] = rhs_u[fcols]
-                zk = lu_solve(blocks[k], bk)
+                zk = _lu_solve(blocks[k], bk)
                 weight = 1.0 if (k == 0 or 2 * k == m) else 2.0                  # the pair (k, m - k) or a self-conjugate mode
                 for j in range(r):
                     for sh in range(m):
@@ -857,9 +867,11 @@ class StationarySolver(EngineBase):
               for lo, hi in chunks]                                             # rows of ages in the chunk, columns of nodes not younger
         # instantaneous entries: (row, channel, weighted shift on the row operator, on the projection); a shift that is the
         # identity (an undelayed row's own noise) is applied as the scaling by its weight, which is what the product gives
-        ent = [(r, k, w * c.instant(age, delay[r]), w * c.instant_adjoint(age, delay[r])) for r in range(nR) for (k, age, w) in inst[r]]
-        ent = [(r, k, Sg, Sh, (w if _is_eye(c.instant(age, delay[r])) else None), (w if _is_eye(c.instant_adjoint(age, delay[r])) else None))
-               for (r, k, Sg, Sh), (r_, k_, age, w) in zip(ent, [(r, k, age, w) for r in range(nR) for (k, age, w) in inst[r]])]
+        ent = []
+        for r in range(nR):
+            for (k, age, w) in inst[r]:
+                G, H = c.instant(age, delay[r]), c.instant_adjoint(age, delay[r])
+                ent.append((r, k, w * G, w * H, (w if self._shift_is_eye(G) else None), (w if self._shift_is_eye(H) else None)))
         rmul = lambda X, S, w: X * w if w is not None else X @ S            # X @ S with S = w I
         lmul = lambda S, w, X: w * X if w is not None else S @ X            # S @ X with S = w I
         nG = nU * nR * N
@@ -889,6 +901,14 @@ class StationarySolver(EngineBase):
                         if k2 == k:
                             A6[ui, r, :, vi, r2] += lmul(Sh, wh, rmul(FR, Sg2, wg2))                       # H_inst FR G_inst
         return Amat, bvec
+
+    def _shift_is_eye(self, S: np.ndarray) -> bool:
+        """_is_eye of one of the compiled model's cached shifts (the same array every call), remembered per array."""
+        memo = self.__dict__.setdefault("_eye_memo", {})
+        hit = memo.get(id(S))
+        if hit is None or hit[0] is not S:
+            hit = memo[id(S)] = (S, _is_eye(S))
+        return hit[1]
 
     def best_response(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):
         """The agent's best response to `maps`: (raw map, {"gamma", "action", "Zfull", ...}).  The
@@ -1119,7 +1139,8 @@ class StationarySolver(EngineBase):
         c = self.c; N = c.N
         ctrls, Z0, C = setup
         conv = [[c.grid.conv_op(Dj[o2, u]) for o2 in range(own)] for u in range(own)]      # conv[u][o'] g = D^{u<-j,o'} * g
-        M = np.eye(own * N) + np.block([[conv[u][o2] for o2 in range(own)] for u in range(own)])
+        M = conv[0][0].copy() if own == 1 else np.block([[conv[u][o2] for o2 in range(own)] for u in range(own)])
+        M[np.diag_indices(own * N)] += 1.0                                          # I + the blocks (0 + x off the diagonal)
         out = np.zeros((len(c.prim) * N, own))
         for o in range(own):
             rhs = -np.concatenate([Dj[o, u] for u in range(own)])
@@ -1190,11 +1211,18 @@ class StationarySolver(EngineBase):
         for lo, hi in chunks:
             X = (B4[:, lo:hi, :, :hi] * sw[None, lo:hi, None, None]).reshape(nW * (hi - lo), nR * hi)
             G4[:, :hi, :, :hi] += dsyrk(1.0, X, trans=1).reshape(nR, hi, nR, hi)     # upper triangle (local order = global order)
-        Gram = np.triu(Gram); Gram = Gram + Gram.T - np.diag(np.diagonal(Gram))
+        # the lower triangle from the upper (dsyrk leaves it zero), a block of rows at a time: the entries of
+        # triu(G) + triu(G)' - diag(G), without its three full temporaries (a diagonal block by that expression)
+        n = Gram.shape[0]
+        for i0 in range(0, n, 256):
+            i1 = min(n, i0 + 256)
+            Gram[i0:i1, :i0] = Gram[:i0, i0:i1].T
+            D = np.triu(Gram[i0:i1, i0:i1])
+            Gram[i0:i1, i0:i1] = D + D.T - np.diag(np.diagonal(D))
         rhs = Bk.reshape(nW * N, nR * N).T @ (actions * W[None, :, None]).transpose(2, 1, 0).reshape(nW * N, nU)   # column ui: sum_k Bk' W actions[ui, :, k]
         if not keep.all():
             Gram = Gram[np.ix_(keep, keep)]; rhs = rhs[keep]
-        Gram += self.settings.stationary_map_ridge * np.trace(Gram) / Gram.shape[0] * np.eye(Gram.shape[0])
+        Gram[np.diag_indices(Gram.shape[0])] += self.settings.stationary_map_ridge * np.trace(Gram) / Gram.shape[0]   # the ridge
         g = np.zeros((nU, nR * N))
         g[:, keep] = np.linalg.solve(Gram, rhs).T                              # one factorisation for every control
         return g.reshape(nU, nR, N)

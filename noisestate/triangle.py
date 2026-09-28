@@ -524,7 +524,7 @@ class TriangleGrid:
         st_I = np.where(at_bp(pt), side_t[lp.rows], +1) if side_t.ndim == 1 else side_t
         side_d = np.asarray(side_d)
         sd_I = side_d[lp.rows] if side_d.ndim >= 1 else side_d                 # per node (N,) or (N, 3) with the piece s-range
-        lp.If = self.interp_factors(pt, pa, side_t=st_I, side_a=side_a, side_d=sd_I)
+        lp.If = Factors(self.interp_factors(pt, pa, side_t=st_I, side_a=side_a, side_d=sd_I), len(lp.rows))
         if known_fn is not None and known_grid is not None:
             ages = np.broadcast_to(np.asarray(known_fn(lp.rows, lp.r), dtype=float), lp.r.shape)
             lp.J = known_grid.interp(ages)                              # dense (nq, N_past): the known past kernel
@@ -534,7 +534,7 @@ class TriangleGrid:
             st_J = np.where(at_bp(kt), side_t[lp.rows], +1) if side_t.ndim == 1 else +1
             # the known kernel is read through its factors; a known read on the diagonal (an impulse response
             # at (r, r) from a node at t = 0) is the new-shock side: the node's side_d is the unknown's
-            lp.Jf = self.interp_factors(kt, ka, side_t=st_J)
+            lp.Jf = Factors(self.interp_factors(kt, ka, side_t=st_J), len(lp.rows))
         lp.out_t = out_t; lp.out_a = out_a
         lp.R = csr_matrix((np.ones(len(lp.rows)), (lp.rows, np.arange(len(lp.rows)))), shape=(n_out, len(lp.rows)))
         return lp
@@ -629,6 +629,67 @@ def _scratch_owner() -> dict:
     return _SCRATCH.__dict__.setdefault("owner", {})
 
 
+class Factors:
+    """An interpolation at many points (interp_factors') held with each piece's repeated points once: a path's
+    quadrature points repeat (every output node of one time row integrates over the same whole panels below its own),
+    and a point's interpolation row is the outer product of its time and age rows, so the same rows to the bit are the
+    same read.  entries [(piece, point indices sel, Rt, Rx, start)] with Rt, Rx the rows of the piece's distinct points
+    (in order of first appearance); at (nq + 1,) each point's distinct row counted over the pieces in order, start the
+    entry's first (a point in no piece, and the padding point nq, get the row n past the last: zero where it is read).
+    With pieces of one shape the rows are stacked once, a zero row last (stacked(); the entries are views of them),
+    and the age rows are also kept as columns (age_columns(), made on first use), the layout of LinePath._distinct's
+    one sum over every point.  Iterating gives interp_factors' list back, (piece, sel, Rt, Rx) with every point's own
+    rows (built on demand, for the expanded I)."""
+
+    def __init__(self, factors, nq: int):
+        parts, n = [], 0
+        self.at = np.empty(nq + 1, dtype=np.intp)
+        mask = np.ones(nq + 1, dtype=bool)
+        for pc, sel, Rt, Rx in factors:
+            X = np.ascontiguousarray(np.concatenate([Rt, Rx], axis=1))
+            key = X.view(np.dtype((np.void, X.shape[1] * X.itemsize))).ravel()
+            _, first, inv = np.unique(key, return_index=True, return_inverse=True)
+            order = np.argsort(first)                            # distinct rows in order of first appearance
+            rank = np.empty_like(order); rank[order] = np.arange(order.size)
+            keep = first[order]
+            if keep.size < len(sel):
+                Rt, Rx = Rt[keep], Rx[keep]
+            parts.append((pc, sel, Rt, Rx, n))
+            self.at[sel] = n + rank[inv.ravel()]; mask[sel] = False
+            n += keep.size
+        self.at[mask] = n
+        self.n = n
+        shapes = {(pc.nt, pc.na) for pc, *_ in parts}
+        self._stacked = None
+        if len(shapes) == 1:
+            nt, na = shapes.pop()
+            Rt_all = np.concatenate([p[2] for p in parts] + [np.zeros((1, nt))])
+            Rx_all = np.concatenate([p[3] for p in parts] + [np.zeros((1, na))])
+            self.entries = [(pc, sel, Rt_all[s:s + len(Rt)], Rx_all[s:s + len(Rt)], s) for pc, sel, Rt, _, s in parts]
+            self._stacked = (Rt_all, Rx_all)
+        else:
+            self.entries = [(pc, sel, np.ascontiguousarray(Rt), np.ascontiguousarray(Rx), s) for pc, sel, Rt, Rx, s in parts]
+
+    def stacked(self):
+        """(Rt_all (n + 1, nt), Rx_all (n + 1, na)): every entry's rows stacked, a zero row last, for pieces of one
+        shape; None otherwise."""
+        return self._stacked
+
+    def age_columns(self) -> np.ndarray:
+        """The distinct points' age rows as columns, (na, n), made once (pieces of one shape)."""
+        if "_age_columns" not in self.__dict__:
+            self._age_columns = np.ascontiguousarray(self._stacked[1][:self.n].T)
+        return self._age_columns
+
+    def __iter__(self):
+        for pc, sel, Rt, Rx, s in self.entries:
+            loc = self.at[sel] - s
+            yield pc, sel, Rt[loc], Rx[loc]
+
+    def __len__(self):
+        return len(self.entries)
+
+
 class LinePath:
     """Cached quadrature of a family of line integrals; see TriangleGrid.path."""
 
@@ -695,21 +756,81 @@ class LinePath:
         """M @ kernels (nq, m) for kernels (N, m) and M the interpolation `factors` describe: read piece by piece
         as the dense products Rt (K_piece) Rx', associating over the piece's time nodes first.  The interpolation
         row of a point is the outer product Rt Rx', so this is the sparse product's sums in another order and
-        agrees with it to round-off, at a fraction of the cost (dense blocks, no index indirection).  scratch=True
-        returns a work buffer (_scratch), for a caller that uses the result before any other read."""
-        K = kernels if kernels.ndim == 2 else kernels[:, None]
-        m = K.shape[1]
-        if scratch:
-            F = _scratch("read", (len(self.rows), m)); F.fill(0.0)
-        else:
-            F = np.zeros((len(self.rows), m))
-        for pc, sel, Rt, Rx in factors:
-            KB = K[pc.offset:pc.offset + pc.n].reshape(pc.nt, pc.na * m)
-            A = np.matmul(Rt, KB, out=_scratch("through", (len(sel), pc.na * m))).reshape(len(sel), pc.na, m)
-            # the sum over the piece's age nodes per point: a batched (1 x na) (na x m) product for several
-            # columns (a third faster at m = 3), the einsum for one (twice as fast as the product there)
-            F[sel] = (Rx[:, None, :] @ A)[:, 0, :] if m > 1 else np.einsum("qjc,qj->qc", A, Rx)
+        agrees with it to round-off, at a fraction of the cost (dense blocks, no index indirection).  A point that
+        repeats within a piece is read once (Factors; a path's own factors are held that way, a list of
+        interp_factors' is converted once and kept beside it) and taken for every point.  scratch=True returns a
+        work buffer (_scratch), for a caller that uses the result before any other read."""
+        nq = len(self.rows)
+        if not isinstance(factors, Factors):                             # a list of interp_factors' (risk._Interp): kept
+            hit = self.__dict__.get("_factors")                          # beside it, made once
+            if hit is None or hit[0] is not factors:
+                hit = self._factors = (factors, Factors(factors, nq))
+            factors = hit[1]
+        U = LinePath._distinct(factors, kernels if kernels.ndim == 2 else kernels[:, None])     # self may be a risk._Interp
+        F = np.take(U, factors.at[:nq], axis=0, out=_scratch("read", (nq, U.shape[1])) if scratch else None)
         return F if kernels.ndim == 2 else F[:, 0]
+
+    @staticmethod
+    def _distinct(factors: "Factors", K: np.ndarray) -> np.ndarray:
+        """The kernels K (N, m) at the distinct points of `factors`, (n + 1, m) with a zero row last, in a work buffer
+        ("read_distinct": dead at the next read).  Per piece the product (K_piece' Rt') over its time nodes, written
+        into one (na, m, n) buffer with the points along the contiguous axis; then the sum over the age nodes for every
+        point at once (na vector products of the points' length), the same terms as Rx (Rt K_piece) per point in
+        another order (pieces of different shapes: per piece, per point)."""
+        m = K.shape[1]; n = factors.n
+        U = _scratch("read_distinct", (n + 1, m)); U[n] = 0.0
+        if factors.stacked() is not None and factors.entries:
+            na = factors.entries[0][0].na
+            RxT = factors.age_columns()
+            budget = max(1, (1 << 19) // (na * m))                 # points a sum takes at once: the buffer about 4 MB
+            e, E = 0, len(factors.entries)
+            while e < E:                                          # consecutive pieces while they fit (at least one)
+                s0 = factors.entries[e][4]; f = e + 1
+                while f < E and factors.entries[f][4] + len(factors.entries[f][2]) - s0 <= budget:
+                    f += 1
+                s1 = factors.entries[f - 1][4] + len(factors.entries[f - 1][2])
+                AT = _scratch("through", (na * m, s1 - s0))
+                for pc, sel, Rt, Rx, start in factors.entries[e:f]:
+                    KB = K[pc.offset:pc.offset + pc.n].reshape(pc.nt, na * m)
+                    np.matmul(KB.T, Rt.T, out=AT[:, start - s0:start - s0 + len(Rt)])
+                U[s0:s1] = np.einsum("jq,jcq->cq", RxT[:, s0:s1], AT.reshape(na, m, s1 - s0),
+                                     out=_scratch("through_sum", (m, s1 - s0))).T
+                e = f
+            return U
+        for pc, sel, Rt, Rx, start in factors.entries:
+            KB = K[pc.offset:pc.offset + pc.n].reshape(pc.nt, pc.na * m)
+            A = np.matmul(Rt, KB, out=_scratch("through", (len(Rt), pc.na * m))).reshape(len(Rt), pc.na, m)
+            Us = U[start:start + len(Rt)]
+            if m > 1:
+                np.matmul(Rx[:, None, :], A, out=Us[:, None, :])
+            else:
+                np.einsum("qjc,qj->qc", A, Rx, out=Us)
+        return U
+
+    def read_distinct(self, V: np.ndarray, scratch: bool = False) -> np.ndarray:
+        """The unknown V (N, ...) at I's distinct points, (n + 1, ...) with a zero row last (Factors), for the operators
+        folded onto them (distinct_layout); into a work buffer with scratch=True (dead at the next read)."""
+        U = self._distinct(self.If, V.reshape(V.shape[0], -1)).reshape((self.If.n + 1,) + V.shape[1:])
+        return U if scratch else U.copy()
+
+    def distinct_layout(self):
+        """(indices, indptr, n + 1): the CSR layout of R diag(d) I's point reads folded onto I's distinct points, a
+        row per output node with its points in order, each at its distinct point's column (the zero row's for a point
+        in no piece): R diag(d) (I V) is then the CSR matrix of data d on this layout times read_distinct(V), the same
+        products summed in the same order.  None when I is not held as Factors."""
+        if not isinstance(self.If, Factors) or self.rows is None:
+            return None
+        if "_layout" not in self.__dict__:
+            nq = len(self.rows)
+            dt = np.int32 if max(nq, self.If.n + 1) < 2**31 - 1 else np.int64
+            self._layout = (self.If.at[:nq].astype(dt), self.R.indptr.astype(dt), self.If.n + 1)
+        return self._layout
+
+    def read_known(self, kernel: np.ndarray) -> np.ndarray:
+        """The known kernel at every quadrature point, as with_known reads it (None on a path without points)."""
+        if self.rows is None:
+            return None
+        return self.read(kernel) if self.Jf is not None else self.J @ kernel
 
     def read(self, kernels: np.ndarray) -> np.ndarray:
         """J @ kernels: the known kernels at the quadrature points, through J's factors."""
@@ -761,28 +882,21 @@ class LinePath:
         factors, pieces of different shapes, points not grouped by output node).  Every point's interpolation row is
         Rt Rx' over its piece's nodes, so the block of output node k on the nodes of one piece is Rt_S' diag(d_S)
         Rx_S over k's points S in that piece: one small product per (node, piece) segment.  Returns (Rt, Rx: the
-        factors' rows stacked, a zero row last; each point's row in them (nq + 1, the padding's the zero row); the
+        distinct rows stacked, a zero row last (Factors.stacked); each point's row in them (nq + 1, the padding's the zero row); the
         segments' points (nseg, longest) padded with nq; each segment's output node and piece offset; the first
         segment of every node; nt, na)."""
         if self.If is None or self.rows is None or not np.all(np.diff(self.rows) >= 0):
             return None
-        shapes = {(pc.nt, pc.na) for pc, _, _, _ in self.If}
-        if len(shapes) != 1:
+        stk = self.If.stacked() if isinstance(self.If, Factors) else None
+        if stk is None:
             return None
-        nt, na = shapes.pop()
+        Rt, Rx = stk
+        nt, na = Rt.shape[1], Rx.shape[1]
         nq = len(self.rows)
-        # the factors' rows stacked (a zero row last), and the factors rewritten as views of them: one copy of the rows
-        # (the list is the path's and its swapped twin's, so both see the views)
-        sizes = [len(sel) for _, sel, _, _ in self.If]
-        Rt = np.concatenate([f[2] for f in self.If] + [np.zeros((1, nt))])
-        Rx = np.concatenate([f[3] for f in self.If] + [np.zeros((1, na))])
-        at = np.full(nq + 1, Rt.shape[0] - 1, dtype=np.int64)      # each point's stacked row (outside any piece: the zero row)
+        at = self.If.at                                          # each point's stacked row (outside any piece: the zero row)
         off = np.full(nq, -1, dtype=np.int64)
-        start = 0
-        for f, (pc, sel, _, _) in enumerate(list(self.If)):
-            self.If[f] = (pc, sel, Rt[start:start + sizes[f]], Rx[start:start + sizes[f]])
-            at[sel] = np.arange(start, start + sizes[f]); off[sel] = pc.offset
-            start += sizes[f]
+        for pc, sel, _, _, _ in self.If.entries:
+            off[sel] = pc.offset
         pts = np.flatnonzero(off >= 0)                           # a point outside the domain is in no piece
         pts = pts[np.lexsort((off[pts], self.rows[pts]))]        # by node, then piece, stably: point order within
         k, o = self.rows[pts], off[pts]
@@ -911,15 +1025,19 @@ class LinePath:
         prod = (self.w * g)[:, None] * K if K.ndim == 2 else self.w * g * K
         return self.R @ prod
 
-    def with_known(self, kernel: np.ndarray, extra: Optional[np.ndarray] = None, rows=None) -> np.ndarray:
+    def with_known(self, kernel: np.ndarray, extra: Optional[np.ndarray] = None, rows=None, known=None) -> np.ndarray:
         """Operator whose weight is the known kernel read along the path (times `extra` per point); with
-        rows = (lo, hi) the rows of those output nodes only, (hi - lo, N), the known read at their points."""
+        rows = (lo, hi) the rows of those output nodes only, (hi - lo, N), the known read at their points.  known:
+        read_known(kernel), for a caller asking for several row ranges of one kernel."""
         if self.rows is None:
             n = self.n_out if rows is None else rows[1] - rows[0]
             return np.zeros((n, self.N))
         if rows is not None:
             i0, i1 = self.points(rows)
-            f = self.read(kernel)[i0:i1] if self.Jf is not None else self.J[i0:i1] @ kernel
+            if known is not None:
+                f = known[i0:i1]
+            else:
+                f = self.read(kernel)[i0:i1] if self.Jf is not None else self.J[i0:i1] @ kernel
             if extra is not None:
                 f = f * extra[i0:i1]
             return self.apply(f, rows)

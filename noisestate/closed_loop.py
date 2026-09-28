@@ -110,12 +110,15 @@ class ClosedLoopSources:
             cache[key] = out; self._state_rows_bytes = used + size
         return out
 
-    def conv_left_rows(self, gker: np.ndarray, delay: float, lo: int, hi: int) -> np.ndarray:
-        """Rows [lo, hi) of conv_left(gker, delay)."""
+    def conv_left_path(self, delay: float):
         g = self.g
-        lp = self._path(("conv_left", delay), r_lo=g.s + delay, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
-                        known_fn=lambda k, r: (np.full_like(r, g.t[k] - delay), g.t[k] - r))
-        return lp.with_known(gker, rows=(lo, hi))
+        return self._path(("conv_left", delay), r_lo=g.s + delay, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
+                          known_fn=lambda k, r: (np.full_like(r, g.t[k] - delay), g.t[k] - r))
+
+    def conv_left_rows(self, gker: np.ndarray, delay: float, lo: int, hi: int, known=None) -> np.ndarray:
+        """Rows [lo, hi) of conv_left(gker, delay); known: the map kernel read along the path
+        (conv_left_path(delay).read_known(gker)), for the rows of several panels."""
+        return self.conv_left_path(delay).with_known(gker, rows=(lo, hi), known=known)
 
 
 class ClosedLoopRows:
@@ -166,6 +169,7 @@ class ClosedLoopRows:
             B[:] = c._state_columns(excluded, excl, imp).reshape(nP, N, nc)
             self.inp = c.state_inputs_sparse(excl)
         self.rows = []                                  # (control's primary index, agent, row, delay, map kernel, sparse blocks)
+        self.known = {}                                 # row -> its map kernel read along the conv_left path (panel)
         for a in c.model.agents:
             if actions is not None:
                 for ui, u in enumerate(a.controls):
@@ -222,8 +226,10 @@ class ClosedLoopRows:
                 X = np.zeros((hi - lo, hi)); X[:, lo:hi] = h * np.eye(hi - lo)
                 add((c.index[v], c.index[u]), X)
         forcing: Dict[int, np.ndarray] = {}
-        for (bi, an, r, delay, gker, blocks) in self.rows:
-            Cr = c.conv_left_rows(gker, delay, lo, hi)
+        for i, (bi, an, r, delay, gker, blocks) in enumerate(self.rows):
+            if i not in self.known:                     # the map kernel along its path, read once for every panel
+                self.known[i] = c.conv_left_path(delay).read_known(gker)
+            Cr = c.conv_left_rows(gker, delay, lo, hi, known=self.known[i])
             for nm, S in blocks.items():
                 add((bi, c.index[nm]), _dense_sparse(Cr[:, :hi], S[:hi, :hi]))
             if self.band:

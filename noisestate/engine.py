@@ -27,7 +27,10 @@ def _is_eye(M: np.ndarray) -> bool:
     return M.ndim == 2 and M.shape[1] == n and np.count_nonzero(M) == n and bool(np.all(np.diagonal(M) == 1.0))
 
 
-def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx) -> np.ndarray:
+_FORM_COLUMNS = 256        # dense_curvature_form: the columns a loss form is applied to, and of M made, at once
+
+
+def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx, consume: bool = False) -> np.ndarray:
     """The second-order form on the kept strategies `idx`, built explicitly: (len(idx), len(idx)).
 
     M = sum_k T_k' G_(k) T_k with T_k = [Resp_u G_k]_u and G_(k) the column's loss form, associated
@@ -40,14 +43,42 @@ def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx) -> np.
     lines each: Engine._second_order from its own structures, finite_free._dense_form from the
     matrix-free operators' dense rows.  Only the assembly is shared -- how Resp, Gk and forms are
     obtained is exactly what differs between them, and stays where it is.
+
+    Memory: the inner forms H_uv (N x N each) are made first, from the responses' responding rows only, and
+    everything of the responses is dropped before the row operators are asked for (Gk may be a function
+    returning them); a callable loss form is applied _FORM_COLUMNS columns at a time, a column group that is
+    every channel's every row is Gk itself (a view), and M is made _FORM_COLUMNS columns at a time, in place.
+    consume=True empties the list Resp once its responding rows are copied (a caller's private list), so the
+    responses themselves are freed (their other rows are zero: a callable form gets them back a block at a time).
     """
     nz = np.where(np.any(np.stack([np.any(Rv != 0, axis=1) for Rv in Resp]), axis=0))[0]   # primaries' nodes that respond
     Rnz = [np.ascontiguousarray(Rv[nz]) for Rv in Resp]                                    # (nz, N)
-    groups = []                                                                             # per loss form: G Resp_v and its column groups
+    nrow, N = Resp[0].shape
+    if consume:
+        Resp.clear()
+    Hs = []                                                                                 # per loss form: {(u, v): H_uv}
     for G, sl in forms:
         # a loss form is a dense (nP N, nP N) array or the function applying it to a block (nP N, B): through the
         # responding nodes either way, G[nz, nz] Resp_v[nz] = (G Resp_v)[nz] (Resp_v is zero off nz)
-        GR = [G(Rv)[nz] for Rv in Resp] if callable(G) else [G[np.ix_(nz, nz)] @ Rv for Rv in Rnz]
+        if callable(G):
+            GR = []
+            for Rz in Rnz:
+                X = np.empty((nz.size, N))
+                for c0 in range(0, N, _FORM_COLUMNS):
+                    c1 = min(N, c0 + _FORM_COLUMNS)
+                    B = np.zeros((nrow, c1 - c0)); B[nz] = Rz[:, c0:c1]                     # Resp_v's columns [c0, c1)
+                    X[:, c0:c1] = G(B)[nz]
+                GR.append(X)
+            del X, B
+        else:
+            GR = [G[np.ix_(nz, nz)] @ Rz for Rz in Rnz]
+        Hs.append({(ui, vi): Rnz[ui].T @ GR[vi] for ui in range(nU) for vi in range(ui, nU)})   # (N, N) each
+        del GR
+    del Rnz
+    if callable(Gk):
+        Gk = Gk()
+    groups = []                                                                             # per loss form: H and its column groups
+    for H, (G, sl) in zip(Hs, forms):
         rowsof = {}                                                                         # rows with a nonzero block -> columns
         for k in range(sl.start, sl.stop):
             rows_k = tuple(r for r in range(nR) if np.any(Gk[k][:, r * Nm:(r + 1) * Nm]))
@@ -55,22 +86,31 @@ def dense_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx) -> np.
                 rowsof.setdefault(rows_k, []).append(k)
         parts = []
         for rows_k, ks in rowsof.items():
+            if rows_k == tuple(range(nR)) and ks == list(range(ks[0], ks[-1] + 1)):
+                parts.append((None, Gk[ks[0]:ks[-1] + 1]))                                  # every column: Gk's own rows
+                continue
             cols = np.concatenate([np.arange(r * Nm, (r + 1) * Nm) for r in rows_k])
             parts.append((cols, np.ascontiguousarray(Gk[ks][:, :, cols])))                 # (n_k, N, |cols|)
-        groups.append((GR, parts))
-    nG = nU * nR * Nm
+        groups.append((H, parts))
+    nG = nU * nR * Nm; nb = nR * Nm
     Mall = np.zeros((nG, nG))
     for ui in range(nU):
         for vi in range(ui, nU):
-            Muv = np.zeros((nR * Nm, nR * Nm))
-            for GR, parts in groups:
-                Huv = Rnz[ui].T @ GR[vi]                                                    # (N, N)
+            Muv = Mall[ui * nb:(ui + 1) * nb, vi * nb:(vi + 1) * nb]                          # summed in place
+            for H, parts in groups:
+                Huv = H[(ui, vi)]
                 for cols, Gg in parts:
-                    HG = Huv @ Gg                                                           # every column of the group
-                    Muv[np.ix_(cols, cols)] += Gg.reshape(-1, cols.size).T @ HG.reshape(-1, cols.size)
-            Mall[ui * nR * Nm:(ui + 1) * nR * Nm, vi * nR * Nm:(vi + 1) * nR * Nm] = Muv
+                    if cols is None:                    # a block of M's columns at a time: HG (n_k, N, B), not (n_k, N, nb)
+                        for c0 in range(0, nb, _FORM_COLUMNS):
+                            c1 = min(nb, c0 + _FORM_COLUMNS)
+                            HG = Huv @ Gg[:, :, c0:c1]
+                            Muv[:, c0:c1] += Gg.reshape(-1, nb).T @ HG.reshape(-1, c1 - c0)
+                    else:
+                        HG = Huv @ Gg                                                       # every column of the group
+                        Muv[np.ix_(cols, cols)] += Gg.reshape(-1, cols.size).T @ HG.reshape(-1, cols.size)
+                    del HG
             if vi != ui:
-                Mall[vi * nR * Nm:(vi + 1) * nR * Nm, ui * nR * Nm:(ui + 1) * nR * Nm] = Muv.T   # H_vu = H_uv'
+                Mall[vi * nb:(vi + 1) * nb, ui * nb:(ui + 1) * nb] = Muv.T                  # H_vu = H_uv'
     return Mall if idx.size == nG else Mall[np.ix_(idx, idx)]
 
 
@@ -597,7 +637,8 @@ class EngineBase(MeanLayer):
                  + [a for a in self.model.agents if self.c.rep[a.name] != a.name])
         for a in order:
             g, out = self.best_response(a, res.maps, want_decomp=True)
-            res.foc[a.name] = out["decomp"]
+            self._loss_forms.clear()              # its second-order check is done: the (n_prim N)^2 form is not kept
+            res.foc[a.name] = out["decomp"]       # through the next agents' best responses (a tie's followers share it)
             if out["second_order"] is not None:
                 res.second_order[a.name] = out["second_order"]
             res.representation_error[a.name] = self._representation_error(a, out["Zfull"], out["action"], g)
