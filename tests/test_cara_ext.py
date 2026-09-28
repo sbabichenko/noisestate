@@ -134,9 +134,6 @@ def test_integral_grammar_is_checked():
     d["agents"]["player1"]["integrals"] = [[1.0, "X", "wQ"]]
     with pytest.raises(ValueError, match="not a shock"):
         ns.Model.from_dict(d)
-    d["agents"]["player1"]["integrals"] = [[1.0, "D1", "w0"]]
-    with pytest.raises(ValueError, match="own current control"):
-        ns.Model.from_dict(d)
     m = ch1(0.5, means=True).to_dict()
     m["agents"]["player1"]["integrals"] = [[1.0, "X", "w0"]]
     with pytest.raises(NotImplementedError, match="without means"):

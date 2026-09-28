@@ -87,9 +87,11 @@ finite engine without a past or a continuation (a transition refuses them); inst
 and are refused with ties.  The general rectangular system is solved through response kernels rather than
 Proposition 6.10's gains, which agree in the linear-quadratic case; `res.foc_residual` checks the kernels.
 `risk_aversion` (the entropic objective) is solved by the spectral finite engine (precommitment: J_0 over the whole
-strategy) with no past or a past of initial shocks only, and without a continuation, monitoring or instant
-observations (a privy player's response to a known deviation needs the linear part's tilt with the seed in place of
-the means, not built); means are solved (without a window, and not together with `integrals`).  The stationary engine
+strategy) with no past or a past of initial shocks only, and without a continuation; monitored deviations and instant
+observations are solved (a risk-averse privy player's response gains the seed's tilt, not with initial shocks); means
+are solved (without a window, and not together with `integrals`).  With an integral whose quantity is the agent's own
+current control (or a control that reacts to it at once) the finite engine converges algebraically, about N^-2.4 (the
+spike's point mass on the shock of its instant): 4e-6 on J at 16 nodes on Chapter 1's game.  The stationary engine
 solves it under consistent planning (each date's self on its own discounted continuation) with a discount, and
 without monitoring, instant observations, level rows, lagged atoms in the risk-averse agent's loss or integrals, or
 means; its correction is frozen at the profile inside a best response (the fixed point is exact; the lattice's error
@@ -98,8 +100,8 @@ value shock stalls short of 1 inside the window (0.61 at age 7.9 with L = 8, 0.7
 pricing-error variance and the date-0 entropic cost grow with the window, while the strategies, lambda and the
 expected rates agree to 1% between L = 8 and 16.  The random cost is the loss as written: a loss equal to the realised cost only in
 expectation (Chapter 4's fundamental-valued flow with a moving value) is a different risk-averse game; stochastic
-integrals are written with `integrals` (not the agent's own current control, so a market maker's noise-trade profit
-and loss, `int (P - V) sigma_Z dW_Z` with P its own control, is still refused).  Near the breakdown (theta lambda_max close to 1) the correction is amplified by
+integrals are written with `integrals` (on the finite engine the quantity may be the agent's own current control, so a
+market maker's noise-trade profit and loss `int (P - V) sigma_Z dW_Z` is written; the stationary engine refuses that).  Near the breakdown (theta lambda_max close to 1) the correction is amplified by
 1 / (1 - theta lambda_max) and a solve needs more nodes and more continuation steps: on Chapter 1's game at theta = 2.5
 (theta lambda_max = 0.94) 12 nodes put the entropic cost 1.4e-5 from 20 nodes, and the solve takes 150 evaluations.  The Chapter 4 example is the stationary variant, where V is a
 random walk on the window and the agents keep receiving V shocks.

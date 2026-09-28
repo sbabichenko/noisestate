@@ -32,7 +32,7 @@ __all__ = ["SpectralCompiled", "ClosedLoopRows", "SpectralFiniteSolver"]
 
 class SpectralFiniteSolver(SpectralMeans, EngineBase):
     MONITORING = True                   # monitored deviations and instant observations, without a past (see __init__)
-    RISK_SENSITIVE = True               # risk-averse agents (the entropic objective, risk.py): no past or initial shocks only, no monitoring (see __init__)
+    RISK_SENSITIVE = True               # risk-averse agents (the entropic objective, risk.py): no past or initial shocks only (see __init__)
     RESULT = TriangleResult
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
     MAP_RIDGE = tunable("map_ridge")      # ridge of the per-time-row map projection, relative to the row's own Gram (settings)
@@ -63,9 +63,6 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         if averse and ((past is not None and past.window) or continuation not in (None, "end")):
             raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) are solved on a finite horizon, with no past or a past of "
                                       "initial shocks only (no window), and no continuation; a transition with them is not built yet")
-        if averse and any(a.monitors or a.instant for a in model.agents):
-            raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) with monitored deviations or instant observations "
-                                      "are not solved yet")
         continuation = self._continuation_of(model, past, continuation,
                                              model.numerics.continuation_nodes if hz.kind == "transition" else None)
         opts = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
@@ -627,8 +624,26 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         Rmon = {n: self._spikes(c, maps, owner[n])[1] for n in responders}
         shapes = {i: (len(owner[i].controls), len(setup[i][0]), N) for i in origins}
 
+        comp = c.composite or {}
+        seed_consts = {}                                # (responder, control) -> {origin: (N, nO)}: the seed spike's own terms
+
         def foc(n):
-            return [finite_free.FocOps(self, owner[n], Rmon[n]).dense(ui) for ui in range(len(owner[n].controls))]
+            ops = finite_free.FocOps(self, owner[n], Rmon[n])
+            out = [ops.dense(ui) for ui in range(len(owner[n].controls))]
+            tilt = self._tilt(owner[n], maps, ops, Rmon[n]) if owner[n].risk_aversion else None
+            if tilt is not None:
+                # a risk-averse responder: f^xi_t(s) + theta <S f_t, K e_xi(s)> = 0, the second term linear in the seed
+                # world through its atoms (risk.Tilt.seed_operator) plus the seed spike's own point mass (seed_constant);
+                # the derivation is in docs/method.md
+                Zp = self._profile_world(maps).reshape(len(c.prim), N, c.ncol)
+                out = [out[ui] + tilt.seed_operator(ui, Zp) for ui in range(len(out))]
+                for ui in range(len(out)):
+                    seed_consts[(n, ui)] = {i: np.stack([tilt.seed_constant(ui, Zp, comp.get(u, {u: 1.0})) for u in owner[i].controls],
+                                                        axis=1) for i in origins if n in self.model.privy(i)}
+            else:
+                for ui in range(len(out)):
+                    seed_consts.pop((n, ui), None)
+            return out
         Fu = {n: foc(n) for n in responders if n not in origins}                    # fixed within the call
         eqs = {i: [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))] for i in origins}
         fixed = {}
@@ -652,6 +667,8 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                     for k, blk in enumerate(blocks):
                         A[rows, k * N:(k + 1) * N] = blk
                     B[rows] = -rhs
+                    if (n, ui) in seed_consts:
+                        B[rows] -= seed_consts[(n, ui)][i]
                 X = np.linalg.solve(A, B)                                           # one factorisation, every origin control
                 Di = X.T.reshape(shapes[i])
                 change = max(change, float(np.abs(Di - D[i]).max() / max(1e-300, np.abs(Di).max())) if i in D else np.inf)

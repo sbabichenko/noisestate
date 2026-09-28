@@ -21,7 +21,15 @@ Material tied to the dissertation's own solvers, kept out of the wheel:
   `integrals`; at rho = 0 it equals cost "wealth" path by path.
 * `leqg_reference.py` also has `MeanGame` (affine strategies: an initial state, a drift and a target; `python
   extras/leqg_reference.py means tests/refs/leqg_ch1_means.json`) and `Game(xdw=...)` (the integral xdw int X sigma dW0
-  in the costs; `... xdw tests/refs/leqg_ch1_xdw.json`), each a few minutes.
+  in the costs; `... xdw tests/refs/leqg_ch1_xdw.json`), each a few minutes.  `Game(udw=...)` puts a player's own control
+  against the shock of its instant, udw int D_i sigma dW0 (a market maker's quote against the noise trades;
+  `... udw OUT.json`; tests/refs/leqg_ch1_udw.json holds n = 40 to 200).
+* `leqg_reference.py` `MonitorGame`: Chapter 6's privy response under the entropic objective by brute force.  Player 1
+  regulates its own state, player 2 tracks it and is privy to player 1's deviations; after a known seed the privy players
+  (player 1's own blip continuation included) choose their response columns to minimise their exact precommitment
+  objective of the seed world, log det plus the linear part (one linear solve: the objective is quadratic in the columns),
+  the on-path maps held.  `udw` adds each player's own control against its state's shock.  `python
+  extras/leqg_reference.py monitor tests/refs/leqg_monitor.json`, about two minutes.
 * `stationary_cara_reference.py`: a discrete stationary one-agent game under consistent planning (every date's self
   minimises the entropic cost of its own discounted continuation given the later selves' map; the date-0 best response
   in closed form, the fixed point by Newton-Krylov), with the agent seeing the state's shocks or a noisy signal of the

@@ -4,6 +4,20 @@
 
 ### Added
 
+- Risk-averse agents with monitored deviations and instant observations on the finite engine (Chapter 6). A risk-averse
+  privy player's response to a deviation it knows solves `f^xi_t(s) + theta <S f_t, K e_xi(s)> = 0`: the seed enters its
+  cost as a known linear part and the conditional covariance drops out, so no prior on the seed is needed. The term needs
+  `S f_t` over the whole horizon; it is linear in the seed world's kernels and enters the monitoring solve's matrix
+  (`risk.Tilt.seed_operator`), and the seed spike's own point mass adds a constant (`seed_constant`). The deviator's own
+  blip continuation gets it too, so a risk-averse market maker against a risk-neutral trader is covered. Checked against
+  `extras/leqg_reference.py` `MonitorGame`, a brute-force discrete game whose privy players minimise their exact
+  seed-world entropic objective over their response columns (tests/refs/leqg_monitor.json): responses to 5e-5 and
+  entropic costs to 1e-6 at 14 nodes; without the term the responses are off by 0.1 to 1 (tests/test_cara_monitoring.py).
+- An integral's quantity may be the agent's own current control on the finite engine (a market maker's noise-trade profit
+  and loss, `int (P - V) sigma_Z dW_Z`): the spike's point mass on the shock of its own instant is carried by the
+  correction (`risk.Tilt.Ldelta`). Checked against `extras/leqg_reference.py` `Game(udw)` (tests/refs/leqg_ch1_udw.json):
+  J to 4e-6 and D1 to 7e-6 at 16 nodes (algebraic convergence, N^-2.4). The stationary engine refuses it.
+
 - Risk-averse agents on the stationary engine, under consistent planning: every date's self minimises the entropic
   cost of its own discounted continuation, the later selves playing the stationary strategy
   (`noisestate/stationary_risk.py`). The condition is `P_0 S f_0 = 0` on the shocks born in (-L, inf), with f_0 taken

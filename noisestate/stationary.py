@@ -656,6 +656,8 @@ class StationarySolver(EngineBase):
                 why.append("no lagged or leading atoms in a risk-averse agent's loss")
             if any(l != 0 for a in averse for (n, l) in (self.c.integrals or {}).get(a.name, ([], None))[0]):
                 why.append("no lagged atoms in its integrals")
+            if any(n in a.controls for a in averse for (n, l) in (self.c.integrals or {}).get(a.name, ([], None))[0]):
+                why.append("no current control of its own in its integrals (its spike would load on the shock of its own instant)")
             if self._mean_driven():
                 why.append("no means")
             if why:

@@ -19,9 +19,10 @@ from scipy.optimize import minimize
 
 
 class Game:
-    def __init__(self, n=100, T=1.0, p=(3.0, 3.0), r=(0.1, 0.1), sigma=1.0, theta=(0.0, 0.0), xdw=(0.0, 0.0)):
+    def __init__(self, n=100, T=1.0, p=(3.0, 3.0), r=(0.1, 0.1), sigma=1.0, theta=(0.0, 0.0), xdw=(0.0, 0.0), udw=(0.0, 0.0)):
         self.n, self.T, self.dt = n, T, T / n
         self.xdw = np.array(xdw, float)                  # player i's cost gains xdw_i sum_k X_k sigma sqrt(dt) g0_k (Ito: int xdw X sigma dW0)
+        self.udw = np.array(udw, float)                  # ... and udw_i sum_k D_{i,k} sigma sqrt(dt) g0_k (its own control: int udw D_i sigma dW0)
         self.p, self.r, self.sigma, self.theta = np.array(p, float), np.array(r, float), float(sigma), np.array(theta, float)
         self.m = 3 * n                                   # shock coordinates: (step, channel) with channel 0 state, 1 and 2 signals
         self.tril = np.tril_indices(n, -1)
@@ -45,9 +46,9 @@ class Game:
 
     def cost_form(self, X, D, i):
         M = self.dt * (X.T @ X + self.r[i] * D[i].T @ D[i])
-        if self.xdw[i]:
+        if self.xdw[i] or self.udw[i]:
             S = np.zeros((self.n, self.m)); S[np.arange(self.n), 3 * np.arange(self.n)] = self.sigma * np.sqrt(self.dt)
-            A = self.xdw[i] * X.T @ S
+            A = self.xdw[i] * X.T @ S + self.udw[i] * D[i].T @ S
             M = M + 0.5 * (A + A.T)
         return M
 
@@ -72,6 +73,8 @@ class Game:
         if self.xdw[i]:
             Xb += self.xdw[i] * self.sigma * np.sqrt(dt) * W[3 * np.arange(n)]      # the integral: d tr(W sym(dX' S)) = dX_k . W s_k
         Db = np.zeros_like(D); Db[i] = 2.0 * dt * self.r[i] * D[i] @ W
+        if self.udw[i]:
+            Db[i] += self.udw[i] * self.sigma * np.sqrt(dt) * W[3 * np.arange(n)]
         Yb = np.zeros_like(Y)
         for k in range(n - 1, -1, -1):
             if k + 1 < n:
@@ -121,9 +124,9 @@ class Game:
         return self.objective(self.cost_form(X, D, i), i)[0]
 
 
-def check_gradient(n=12, theta=0.5, seed=0, xdw=(0.0, 0.0)):
+def check_gradient(n=12, theta=0.5, seed=0, xdw=(0.0, 0.0), udw=(0.0, 0.0)):
     """The reverse pass against central differences, at a random pair of maps."""
-    g = Game(n=n, theta=(theta, theta), xdw=xdw)
+    g = Game(n=n, theta=(theta, theta), xdw=xdw, udw=udw)
     rng = np.random.default_rng(seed)
     G = [np.tril(rng.standard_normal((n, n)), -1) * 0.3 for _ in range(2)]
     J, grad = g.value_and_grad(G, 0)
@@ -370,6 +373,26 @@ def table_xdw(ns_=(50, 100, 150, 200, 300), thetas=(0.0, 0.5, 1.0), xdw=0.5, ver
     return {"xdw": xdw, "cases": out}
 
 
+def table_udw(ns_=(50, 100, 150, 200, 300), thetas=(0.0, 0.5, 1.0), udw=0.5, verbose=True):
+    """tests/refs/leqg_ch1_udw.json: the symmetric game with udw int D_i sigma dW0 (a player's OWN control against the shock of
+    its own instant, as a market maker's P int (P - V) sigma_Z dW_Z) in both players' costs, at every n and theta (continued in
+    theta), and the Richardson limit of the entropic and expected costs and the responses."""
+    out = {}
+    for n in ns_:
+        G = None
+        for th in thetas:
+            g = Game(n=n, theta=(th, th), udw=(udw, udw))
+            G, change = g.symmetric_equilibrium(G0=G, tol=1e-10)
+            rec = record(g, [G, G]); rec["change"] = change
+            out.setdefault(f"{th:g}", {"levels": []})["levels"].append(rec)
+            if verbose:
+                print(n, th, rec["entropic"], rec["expected"], rec["D1"], f"grad {max(rec['grad']):.1e}", flush=True)
+    for th, case in out.items():
+        lv = case["levels"]; nn = [r["n"] for r in lv]
+        case["limit"] = {k: [richardson([r[k][i] for r in lv], nn) for i in range(len(lv[0][k]))] for k in ("entropic", "expected", "D1", "D2")}
+    return {"udw": udw, "cases": out}
+
+
 MEAN_CASES = {"x0 drift target": dict(x0=1.0, drift=0.5, xstar=0.3)}
 
 
@@ -395,6 +418,262 @@ def table_means(ns_=(50, 100, 150, 200, 300), thetas=(0.0, 0.5, 1.0, 2.0), case=
     return {"case": case, "params": kw, "levels": levels, "limit": lim}
 
 
+
+# ================================================================================================ monitored deviations
+class MonitorGame:
+    """Chapter 6's privy response under the entropic objective, by brute force: player 1 regulates its own state from a
+    signal, player 2 tracks player 1's state with its own from a signal of the gap, and player 2 is privy to player 1's
+    deviations (player 1 is unaffected by player 2, so its map is a one-agent problem and no response of player 2 enters
+    player 1's own best response):
+
+      X1_{k+1} = X1_k + D1_k dt + sqrt(dt) g0_k,    y1_k = sqrt(p1) X1_k dt + sqrt(dt) g1_k
+      X2_{k+1} = X2_k + D2_k dt + s2 sqrt(dt) g2_k, y2_k = sqrt(p2) (X2_k - X1_k) dt + sqrt(dt) g3_k
+      C1 = sum_k (X1_k^2 + r1 D1_k^2) dt,  C2 = sum_k ((X2_k - X1_k)^2 + r2 D2_k^2) dt,  J_i = theta_i^-1 log E e^{theta_i C_i}
+
+    The on-path maps (Gamma^i strictly lower triangular on each player's own signal history) are the entropic best
+    responses (L-BFGS on the exact log-det, gradient by a reverse pass, checked by finite differences).  A seed is a
+    known unit displacement of X1 by player 1 at step s0 (D1_{s0} += 1 / dt); both privy players (player 1 to its own
+    seed: its blip continuation; player 2) answer it through response columns d_i[k], k > s0, while their maps go on
+    reading the on-path part of their signals (a privy filter does not move).  With the seed a known constant, C_i =
+    c0 + l'g + g'M_i g, M_i the on-path form, and each player's precommitment objective over its column is
+    J_i = c0 - (2 theta)^-1 log det(I - 2 theta M_i) + (theta / 2) l'(I - 2 theta M_i)^-1 l, quadratic in the columns:
+    the two first-order conditions (a Nash in the columns) are one linear solve (seed_response).  Nothing in it uses the
+    engine's derivation: no conditional law, no tilt formula, only the exact objective of the seed world."""
+
+    def __init__(self, n=60, T=1.0, p=(3.0, 3.0), r=(0.1, 0.1), s2=1.0, theta=(0.0, 0.0), udw=(0.0, 0.0)):
+        self.n, self.T, self.dt = n, T, T / n
+        self.p, self.r, self.s2, self.theta = np.array(p, float), np.array(r, float), float(s2), np.array(theta, float)
+        self.udw = np.array(udw, float)     # player i's cost gains udw_i sum_k D_{i,k} (its own state's shock increment at k):
+        self.m = 4 * n                      # udw_1 int D1 dW0 and udw_2 int D2 s2 dW2, its own control against the shock of its instant
+        self.S = []
+        for i, (ch, sc) in enumerate(((0, 1.0), (2, self.s2))):
+            S = np.zeros((n, self.m)); S[np.arange(n), 4 * np.arange(n) + ch] = sc * np.sqrt(self.dt)
+            self.S.append(S)
+        self.tril = np.tril_indices(n, -1)
+
+    def forward(self, G):
+        n, dt, m = self.n, self.dt, self.m
+        sd = np.sqrt(dt)
+        X = np.zeros((2, n, m)); Y = np.zeros((2, n, m)); D = np.zeros((2, n, m))
+        for k in range(n):
+            if k:
+                X[:, k] = X[:, k - 1] + dt * D[:, k - 1]
+                X[0, k, 4 * (k - 1)] += sd
+                X[1, k, 4 * (k - 1) + 2] += self.s2 * sd
+            for i in range(2):
+                D[i, k] = G[i][k, :k] @ Y[i, :k] if k else 0.0
+            Y[0, k] = np.sqrt(self.p[0]) * dt * X[0, k]; Y[0, k, 4 * k + 1] += sd
+            Y[1, k] = np.sqrt(self.p[1]) * dt * (X[1, k] - X[0, k]); Y[1, k, 4 * k + 3] += sd
+        return X, Y, D
+
+    def _atoms(self, X, D, i):
+        """The rows whose squares make C_i: [(rows, weight)]."""
+        return [(X[0], 1.0), (D[0], self.r[0])] if i == 0 else [(X[1] - X[0], 1.0), (D[1], self.r[1])]
+
+    def cost_form(self, X, D, i):
+        M = self.dt * sum(w * a.T @ a for a, w in self._atoms(X, D, i))
+        if self.udw[i]:
+            A = self.udw[i] * D[i][:, :self.m].T @ self.S[i]
+            M = M + 0.5 * (A + A.T)
+        return M
+
+    def W(self, M, i):
+        th = self.theta[i]
+        return np.eye(self.m) if th == 0.0 else np.linalg.inv(np.eye(self.m) - 2.0 * th * M)
+
+    def objective(self, M, i):
+        th = self.theta[i]
+        if th == 0.0:
+            return float(np.trace(M))
+        sign, logdet = np.linalg.slogdet(np.eye(self.m) - 2.0 * th * M)
+        return float(-logdet / (2.0 * th)) if sign > 0 else np.inf
+
+    def value_and_grad(self, G, i):
+        n, dt = self.n, self.dt
+        X, Y, D = self.forward(G)
+        M = self.cost_form(X, D, i)
+        J = self.objective(M, i)
+        if not np.isfinite(J):
+            return J, np.zeros(len(self.tril[0]))
+        W = self.W(M, i)
+        Xb = np.zeros_like(X); Db = np.zeros_like(D)
+        if i == 0:
+            Xb[0] = 2.0 * dt * X[0] @ W; Db[0] = 2.0 * dt * self.r[0] * D[0] @ W
+        else:
+            E = 2.0 * dt * (X[1] - X[0]) @ W
+            Xb[1] += E; Xb[0] -= E; Db[1] = 2.0 * dt * self.r[1] * D[1] @ W
+        if self.udw[i]:
+            Db[i] += self.udw[i] * self.S[i] @ W
+        Yb = np.zeros_like(Y)
+        c1, c2 = np.sqrt(self.p[0]) * dt, np.sqrt(self.p[1]) * dt
+        for k in range(n - 1, -1, -1):
+            if k + 1 < n:
+                Db[:, k] += dt * Xb[:, k + 1]
+                for j in range(2):
+                    Yb[j, k] = G[j][k + 1:, k] @ Db[j, k + 1:]
+            Xb[0, k] += c1 * Yb[0, k] - c2 * Yb[1, k]
+            Xb[1, k] += c2 * Yb[1, k]
+            if k + 1 < n:
+                Xb[:, k] += Xb[:, k + 1]
+        return J, (Db[i] @ Y[i].T)[self.tril]
+
+    def pack(self, Gi):
+        return Gi[self.tril]
+
+    def unpack(self, v):
+        Gi = np.zeros((self.n, self.n)); Gi[self.tril] = v; return Gi
+
+    def best_response(self, G, i, maxiter=3000):
+        def f(v):
+            H = list(G); H[i] = self.unpack(v)
+            J, g = self.value_and_grad(H, i)
+            return (J, g) if np.isfinite(J) else (1e30, np.zeros_like(v))
+        res = minimize(f, self.pack(G[i]), jac=True, method="L-BFGS-B",
+                       options={"maxiter": maxiter, "maxcor": 30, "gtol": 1e-13, "ftol": 1e-16})
+        return self.unpack(res.x), res
+
+    def equilibrium(self, G0=None, steps=(0.0, 0.25, 0.5, 0.75, 1.0)):
+        """Player 1's best response (it faces no one), then player 2's to it, each by continuation in its theta (the zero
+        map's entropic cost is infinite past a small theta).  Returns the maps and the largest gradient left."""
+        G = [np.zeros((self.n, self.n)), np.zeros((self.n, self.n))] if G0 is None else [G0[0].copy(), G0[1].copy()]
+        theta = self.theta.copy()
+        try:
+            for i in range(2):
+                for f in (steps if theta[i] > 0 else (0.0,)):
+                    self.theta[i] = f * theta[i]
+                    G[i], _ = self.best_response(G, i)
+        finally:
+            self.theta = theta
+        return G, max(float(np.abs(self.value_and_grad(G, i)[1]).max()) for i in range(2))
+
+    def seed_world(self, s0):
+        """The seed world's constant columns as linear maps of p = (xi, d1[s0 + 1:], d2[s0 + 1:]): rows (n, len(p)) of X1, X2,
+        D1, D2 (the privy maps read only the on-path part of their signals, so the seed moves nothing else)."""
+        n, dt = self.n, self.dt
+        nd = n - s0 - 1
+        npar = 1 + 2 * nd
+        X = np.zeros((2, n, npar)); D = np.zeros((2, n, npar))
+        D[0, s0, 0] = 1.0 / dt
+        for k in range(s0 + 1, n):
+            D[0, k, 1 + (k - s0 - 1)] = 1.0
+            D[1, k, 1 + nd + (k - s0 - 1)] = 1.0
+        for k in range(1, n):
+            X[:, k] = X[:, k - 1] + dt * D[:, k - 1]
+        return X, D
+
+    def seed_objective_form(self, G, s0, i, onpath=None):
+        """J_i of the seed world = p' H p + (terms free of p): H = A + (theta / 2) B' W B, A the constant's square, B the
+        cross term's coefficient (l = B p)."""
+        X, Y, D = self.forward(G) if onpath is None else onpath
+        Xc, Dc = self.seed_world(s0)
+        M = self.cost_form(X, D, i)
+        dt = self.dt
+        g_atoms = self._atoms(X, D, i); c_atoms = self._atoms(Xc, Dc, i)
+        A = dt * sum(w * ac.T @ ac for (ac, w) in c_atoms)
+        B = 2.0 * dt * sum(w * ag.T @ ac for (ag, w), (ac, _) in zip(g_atoms, c_atoms))
+        if self.udw[i]:
+            B = B + self.udw[i] * self.S[i].T @ Dc[i]           # the seed's part of the integral's quantity against the shocks
+        th = self.theta[i]
+        H = A if th == 0.0 else A + 0.5 * th * B.T @ self.W(M, i) @ B
+        return 0.5 * (H + H.T)
+
+    def seed_response(self, G, s0):
+        """The privy players' response columns (d1, d2) to a unit seed at s0, and the seed world's rows."""
+        n = self.n; nd = n - s0 - 1
+        on = self.forward(G)
+        H = [self.seed_objective_form(G, s0, i, on) for i in range(2)]
+        b = [np.arange(1, 1 + nd), np.arange(1 + nd, 1 + 2 * nd)]
+        A = np.zeros((2 * nd, 2 * nd)); rhs = np.zeros(2 * nd)
+        for i in range(2):
+            A[i * nd:(i + 1) * nd, :] = H[i][b[i]][:, 1:]
+            rhs[i * nd:(i + 1) * nd] = -H[i][b[i], 0]
+        d = np.linalg.solve(A, rhs)
+        p = np.concatenate([[1.0], d])
+        Xc, Dc = self.seed_world(s0)
+        return {"d1": d[:nd], "d2": d[nd:], "X1": Xc[0] @ p, "X2": Xc[1] @ p, "D1": Dc[0] @ p, "D2": Dc[1] @ p, "H": H, "p": p}
+
+
+def check_gradient_monitor(n=10, theta=0.5, seed=2, udw=(0.0, 0.0)):
+    """MonitorGame's reverse pass against central differences, both players, at random maps."""
+    g = MonitorGame(n=n, theta=(theta, theta), udw=udw)
+    rng = np.random.default_rng(seed)
+    G = [np.tril(rng.standard_normal((n, n)), -1) * 0.3 for _ in range(2)]
+    worst = 0.0
+    for i in range(2):
+        J, grad = g.value_and_grad(G, i)
+        num = np.zeros_like(grad); h = 1e-6
+        for q in range(len(grad)):
+            for s in (+1, -1):
+                H = list(G); v = g.pack(G[i]); v[q] += s * h; H[i] = g.unpack(v)
+                num[q] += s * g.value_and_grad(H, i)[0] / (2 * h)
+        worst = max(worst, float(np.abs(grad - num).max() / max(1e-12, np.abs(num).max())))
+    return worst
+
+
+def check_seed_objective(n=12, theta=0.7, s0=4, seed=3, udw=(0.0, 0.0)):
+    """The seed world's exact J_i (log det plus the linear part, from the full quadratic form over (g, 1)) against the quadratic
+    form seed_objective_form, at a random p: the difference must be a constant in p (checked on two points)."""
+    g = MonitorGame(n=n, theta=(theta, theta), udw=udw)
+    rng = np.random.default_rng(seed)
+    G = [np.tril(rng.standard_normal((n, n)), -1) * 0.2 for _ in range(2)]
+    X, Y, D = g.forward(G)
+    Xc, Dc = g.seed_world(s0)
+    out = 0.0
+    for i in range(2):
+        H = g.seed_objective_form(G, s0, i)
+        vals = []
+        for _ in range(2):
+            p = rng.standard_normal(Xc.shape[2])
+            Xa = np.concatenate([X, (Xc @ p)[:, :, None]], axis=2); Da = np.concatenate([D, (Dc @ p)[:, :, None]], axis=2)
+            F = g.dt * sum(w * a.T @ a for a, w in g._atoms(Xa, Da, i))
+            if g.udw[i]:                                          # the integral: udw D_i' S_i, D_i with its constant column
+                Sx = np.concatenate([g.S[i], np.zeros((g.n, 1))], axis=1)
+                A = g.udw[i] * Da[i].T @ Sx
+                F = F + 0.5 * (A + A.T)
+            M, l, c0 = F[:-1, :-1], 2.0 * F[:-1, -1], F[-1, -1]
+            A = np.eye(g.m) - 2.0 * theta * M
+            J = c0 - np.linalg.slogdet(A)[1] / (2.0 * theta) + 0.5 * theta * l @ np.linalg.solve(A, l)
+            vals.append(J - p @ H @ p)
+        out = max(out, abs(vals[0] - vals[1]))
+    return out
+
+
+def record_monitor(g, G, s=0.2, times=(0.3, 0.5, 0.8)):
+    """The response at `times` to a unit seed of player 1 at s: X1, D1 (its blip continuation), X2, D2 (the privy
+    player's), the rows at step round(t n); and both players' entropic costs."""
+    s0 = int(round(s * g.n))
+    out = g.seed_response(G, s0)
+    ks = [int(round(t * g.n)) for t in times]
+    rec = {"n": g.n, "s": s, "times": list(times)}
+    for k in ("X1", "D1", "X2", "D2"):
+        rec[k] = [float(out[k][kk]) for kk in ks]
+    X, Y, D = g.forward(G)
+    rec["entropic"] = [g.objective(g.cost_form(X, D, i), i) for i in range(2)]
+    return rec
+
+
+MONITOR_CASES = {"neutral": dict(theta=(0.0, 0.0)), "both 1": dict(theta=(1.0, 1.0)), "responder 1": dict(theta=(0.0, 1.0)),
+                 "deviator 1.5": dict(theta=(1.5, 0.0)),
+                 "both 1, own integrals": dict(theta=(1.0, 1.0), udw=(0.5, 0.5))}
+
+
+def table_monitor(ns_=(40, 60, 80, 100, 120), verbose=True):
+    """tests/refs/leqg_monitor.json: every case of MONITOR_CASES at every n, and the Richardson limit of every number."""
+    out = {}
+    for name, kw in MONITOR_CASES.items():
+        lv = []
+        for n in ns_:
+            g = MonitorGame(n=n, **kw)
+            G, grad = g.equilibrium()
+            rec = record_monitor(g, G); rec["grad"] = grad
+            lv.append(rec)
+            if verbose:
+                print(name, n, rec["entropic"], rec["D2"], rec["D1"], f"grad {grad:.1e}", flush=True)
+        nn = [r["n"] for r in lv]
+        lim = {k: [richardson([r[k][i] for r in lv], nn) for i in range(len(lv[0][k]))] for k in ("X1", "D1", "X2", "D2", "entropic")}
+        out[name] = {"params": {k: list(v) for k, v in kw.items()}, "levels": lv, "limit": lim}
+    return out
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 2 and sys.argv[1] == "xdw":          # python extras/leqg_reference.py xdw OUT.json
@@ -404,6 +683,14 @@ if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "means":        # python extras/leqg_reference.py means OUT.json
         import json
         json.dump(table_means(), open(sys.argv[2], "w"), indent=1)
+        sys.exit(0)
+    if len(sys.argv) > 2 and sys.argv[1] == "udw":          # python extras/leqg_reference.py udw OUT.json
+        import json
+        json.dump(table_udw(), open(sys.argv[2], "w"), indent=1)
+        sys.exit(0)
+    if len(sys.argv) > 2 and sys.argv[1] == "monitor":      # python extras/leqg_reference.py monitor OUT.json
+        import json
+        json.dump(table_monitor(), open(sys.argv[2], "w"), indent=1)
         sys.exit(0)
     if len(sys.argv) > 2 and sys.argv[1] == "table":
         import json

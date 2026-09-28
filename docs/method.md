@@ -108,16 +108,16 @@ An agent with `risk_aversion: theta > 0` minimises the entropic cost `J = theta^
 realised cost C (the loss integrated, discounted, plus the terminal loss, as `res.costs` integrates it), instead of
 `E C`; `theta = 0` is the risk-neutral model and takes exactly the risk-neutral path.  The spectral finite engine
 solves it on a finite horizon, with no past or a past of initial shocks only (no window), and without a
-continuation, monitoring, instant observations or means (the others refuse it with a NotImplementedError); the code
-is `noisestate/risk.py`.
+continuation (the others refuse it with a NotImplementedError); monitored deviations, instant observations and means
+are solved; the code is `noisestate/risk.py`.
 
 C must be the agent's realised cost, not merely one with the right mean.  A risk-neutral objective is unchanged by a
 term of mean zero; the entropic one is not.  Chapter 4's loss `-D (V - P) + eps D^2` values the insider's flow at the
 fundamental: with a moving V it differs from minus the insider's wealth (liquidating at V_T) by `int Q dV`, the
 inventory risk a risk-averse trader prices.  Write the wealth: `loss: D P + eps D^2`, `terminal: -Q V`, `Q: D dt`
 (tests/test_cara_kyle.py).  With V drawn once at 0- the two are the same random variable.  A market maker's wealth
-also holds the noise trades' profit and loss, a stochastic integral `int (P - V) sigma_Z dW_Z`, which no loss term
-can write yet.
+also holds the noise trades' profit and loss, a stochastic integral `int (P - V) sigma_Z dW_Z`, written with
+`integrals` (below).
 
 Chapter 1's appendix (thm:risk_sensitive_appendix) gives the first-order condition: the risk-neutral one evaluated
 at the risk-adjusted noise-state `W^theta = (I - theta Sigma_t K)^-1 (W_hat + theta Sigma_t k)`, with `Sigma_t` the agent's
@@ -217,10 +217,53 @@ bit.  A risk-averse agent prices it: `K` gains `K_x = A_x' e^{-rho} L + e^{-rho}
 atoms and shocks; the kernel `e^{-rho v} z_x(v, u)' L` for `u < v`, no trace), in `K_G`, `K Phi`, the line integrals and
 `tr K^2`, and the FOC kernel gains a world-independent future part, `e^{-rho (v - t)} L' R_x(v, t)` for `v > t` (the spike
 moves the quantity, which loads on the later shocks), whose correction enters the right-hand side once
-(`Tilt.delta_const`).  The quantity may not be the agent's own current control.  With it, a Kyle insider's wealth on a
+(`Tilt.delta_const`).
+
+The quantity may be the agent's own current control (a market maker's quote against the noise trades), or a control
+that reacts to it at once.  A spike at t then moves the integral by `L' dW(t)`, the increment right after the
+decision: `f_t` gains a point mass `Ldelta delta_t` on the shock of its own instant (`Tilt.Ldelta`, from the composite
+spike).  It is never paired with a seen row (the increment comes after the decision, `Sigma_t delta_t = delta_t`) and
+its risk-neutral value is zero; its correction `theta K S (Ldelta delta_t)` is regular and world-independent: `K f_t`
+gains `K(., t) Ldelta` at the nodes and `Phi' K f_t` gains `Psi(t)' Ldelta` (`delta_const`).  Checked against
+`extras/leqg_reference.py` (`Game(udw)`: `udw sum D_i,k sigma sqrt(dt) g0_k`, `tests/refs/leqg_ch1_udw.json`): at 16 nodes
+J to 4e-6 and D1 to 7e-6 at theta = 1, converging like N^-2.4; without the point mass D1 is off by 0.04.  The stationary
+engine refuses such an integral.
+
+With integrals, a Kyle insider's wealth on a
 moving value is written without a terminal time: `-D V + D P + eps D^2` plus `integrals: [[-sigma_V, Q, wV]]`, `Q: D dt`,
 which at rho = 0 is `int D P dt - Q_T V_T` path by path.  Checked against `extras/leqg_reference.py` (`Game(xdw)`,
 `tests/refs/leqg_ch1_xdw.json`): costs to 1e-7 and D1 to 3e-5 at theta = 0.5 and 1.
+
+### Monitored deviations (Chapter 6)
+
+A privy player n answers a deviation of origin i it knows: a seed xi at s, zero-variance under the equilibrium law and a
+known input from s on.  Its response kernels are fixed by its first-order condition in the seed world, which the
+risk-neutral engine writes as `f^xi_t(s) = 0` (the FOC kernel's column on the seed).  The seed world is affine in
+`(W, xi)`, so a risk-averse responder's realised cost is `C = c0 + xi <k_s, W> + 1/2 <W, K W>` with the on-path K and the
+cross term `k_s = K e_xi(s)`: the seed world's atoms against the profile's,
+`k_s(u) = int zeta(tau, u)' G zeta^seed(tau, s) dtau` (+ the terminal loss, + `e^{-rho u} L' x^seed(u, s)` from the
+integrals).  Conditioning on F_t, which contains xi, the tilted mean of the shocks is `(I - theta Sigma_t K)^-1 (W_hat +
+theta xi Sigma_t k_s)`: the seed enters as a known linear part, like a mean.  The on-path condition makes
+`(I - theta K Sigma_t)^-1 f_t` Sigma_t-invariant, so Sigma_t drops out once more and the response condition is
+
+    f^xi_t(s) + theta <S f_t, K e_xi(s)> = 0,      t >= s,
+
+with no conditional covariance and no prior on the seed.  The deviator's own blip continuation is such a response, so a
+risk-averse market maker needs it even against a risk-neutral trader.  The term needs `S f_t` over the whole horizon
+(its future part, which the on-path correction never forms): with `Phi' (S f_t - f_t) = c_t`, the on-path correction's
+Galerkin coefficients, `<S f_t - f_t, k_s> ~ c_t' Phi' k_s` to second order in the basis (the product of two projection
+errors), so `theta <S f_t, k_s> = theta [int_s^T a_t' G zeta^seed dtau + terminal + int_s^T e^{-rho u} h_t' L' x^seed du]`
+with `a_t = A f_t + E c_t`, `h_t = f_t + Phi c_t`: line integrals along each node's response and continuation paths, exact
+in the seed world's kernels and linear in the unknown response kernels (`risk.Tilt.seed_operator`, an N x (n_prim N)
+operator added to the responder's rows of the monitoring solve).  The seed spike itself is a point mass that no kernel
+on the triangle holds; against the responder's atoms and integrals it adds a constant, `theta e^{-rho s} [(Q a_t(s))_v +
+(L (S f_t)(s))_v]` for the controls v the spike moves at its instant (`seed_constant`; the atom part vanishes for a
+quantity the responder has seen by s).  The same condition is the precommitment objective with xi a known constant,
+minimised over the seed-contingent plan, which is how the reference checks it: `extras/leqg_reference.py`
+`MonitorGame` (player 2 tracks player 1's state and is privy to its deviations; the privy players' response columns
+minimise their exact seed-world objective, log det plus the linear part; `tests/refs/leqg_monitor.json`).  At 14 nodes
+the responses agree to 5e-5 and the entropic costs to 1e-6 (theta 1, theta 1.5); without the term the responses are
+off by 0.1 to 1 (tests/test_cara_monitoring.py).
 
 ### The stationary engine: consistent planning
 

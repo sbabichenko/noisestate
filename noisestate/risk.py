@@ -310,6 +310,7 @@ class Tilt:
         # the stochastic-integral terms int e^{-rho tau} z_x(tau)' L dW(tau) (c.integrals): their atoms' kernels zx and L
         integ = (getattr(c, "integrals", None) or {}).get(agent.name)
         self.mx = 0
+        self.Ldelta = [None] * len(agent.controls)
         if integ:
             xatoms, self.Lx = integ[0], np.asarray(integ[1], dtype=float)
             self.mx = len(xatoms)
@@ -323,6 +324,19 @@ class Tilt:
             if n0:
                 Ex = np.concatenate([Ex, np.einsum("xt,jti->xji", geo.Btm, zxfull[:, geo.diag, nW:])], axis=2)
             self.Ex = Ex
+            # a quantity that a spike of the control moves at its own instant (the control itself, or a control reacting to
+            # it at once, c.composite): the spike moves the integral by L' dW(t), the increment after the decision, so f_t
+            # gains the point mass Ldelta delta_t on the shock of its own instant (never on a seen row; its correction is
+            # theta K S Ldelta delta_t, world-independent: delta_const)
+            comp = c.composite or {}
+            for ui, u in enumerate(agent.controls):
+                spread = comp.get(u, {u: 1.0})
+                v = np.zeros(nW)
+                for j, (nm, lag) in enumerate(xatoms):
+                    if float(lag) == 0.0 and nm in spread:
+                        v += float(spread[nm]) * self.Lx[j]
+                if np.any(v):
+                    self.Ldelta[ui] = v
         # E at the one-time nodes (n1 P, m + mt, nV), the channel innermost in the basis index
         Zpts = geo.IE @ zp.transpose(1, 0, 2).reshape(N, -1)                    # (npts, ma nW)
         # the basis index a = (p, d, k): the Legendre function phi_{p d} placed on channel k, so E_{j a}(tau) = int zeta_j(tau, v)_k phi_{p d}(v) dv
@@ -479,13 +493,141 @@ class Tilt:
         stochastic-integral terms give a spike whatever the strategy (fUc); zero without them.  It enters the right-hand side
         of the best response once (the rest of the correction is linear in the world)."""
         geo = self.geo
-        if not self.mx or self.fUc is None:
+        extra = self.fUc[ui] if (self.mx and self.fUc is not None) else None
+        own = self.Ldelta[ui] if self.mx else None
+        if extra is None and own is None:
             return np.zeros((geo.N, geo.nW + self.n0))
         Z0 = np.zeros((len(self.c.prim), geo.N, self.c.ncol, 1))
-        return self._delta(ui, Z0, extra=self.fUc[ui])[:, :, 0]
+        if extra is None:
+            extra = np.zeros((geo.N, geo.nW))
+        return self._delta(ui, Z0, extra=extra, own=own)[:, :, 0]
+
+    def seed_operator(self, ui: int, Zw: np.ndarray) -> np.ndarray:
+        """The risk-averse term of a privy player's response condition (Chapter 6's monitoring), as a dense (N, n_prim N)
+        operator on the seed world: for a seed-world column w (the primaries' kernels at the nodes (tau, s), the response
+        at tau to a unit seed at s), its value at the node (t, s) is theta <S f_t, K e_xi(s)>, f_t the FOC kernel of control
+        ui in the profile world Zw (n_prim, N, ncol) over all the shocks and K e_xi(s) the cross term of the agent's cost
+        between the shocks and the seed (the seed world's atoms against the profile's).  The response condition is then
+        f^xi_t(s) + theta <S f_t, K e_xi(s)> = 0 (docs/method.md, "Monitored deviations").
+
+        theta <S f_t, k> = theta <f_t, k> + theta <Delta_t, k>, Delta_t = theta K S f_t over the whole horizon, whose
+        Galerkin coefficients are the on-path correction's c_t: <Delta_t, k> ~ c_t' Phi' k, an error of second order in the
+        basis (the product of Delta_t's and k's projection errors).  So with a_t = A f_t + E c_t (E = A Phi) and h_t = f_t +
+        Phi c_t the term is theta [int_s^T a_t(tau)' G zeta^seed(tau, s) dtau + the terminal loss's + int_s^T e^{-rho u}
+        h_t(u)' L' x^seed(u, s) du]: line integrals along the node's response path (tau in [s, t], A f_t below its time)
+        and continuation path (tau in [t, T]), exact in the seed world's kernels, which are linear in the unknowns."""
+        geo = self.geo; foc = self.foc; c = self.c; th = self.theta
+        N, nW, m, mt = geo.N, geo.nW, self.m, self.mt
+        AL, AU, Cc, phi, fU, own = self._seed_parts(ui, Zw)
+        n1P = len(geo.x1)
+        EC = np.einsum("xja,ra->rxj", self.E, Cc, optimize=True)                  # (rows, n1 P, ma): E(tau) c_t per time row
+        nP = len(c.prim)
+        out = np.zeros((N, nP * N))
+        integ = (getattr(c, "integrals", None) or {}).get(self.agent.name)
+        xops = [(c.index[at[0]], c.atom_sparse(at)) for at in integ[0]] if (integ and self.mx) else []
+        for path, known_a, known_h in ((geo.lp_resp, AL, phi), (geo.lp_cont, AU, fU)):
+            if path.rows is None:
+                continue
+            r = path.r; rows = geo.node_row[path.rows]
+            B = geo._bary(r, np.clip(geo.g.panel_of(r), 0, geo.P - 1)).toarray()       # (nq, n1 P)
+            a = path.read(known_a)[:, :m]
+            if own is not None and path is geo.lp_cont:                                 # A (own delta_t)(tau) = zeta(tau, t) own
+                a += path.read(self.zf.transpose(1, 0, 2).reshape(N, -1)).reshape(-1, m, nW) @ own
+            for ri in np.unique(rows):                                                # + E(r) c_t, the rows' own c_t
+                sel = rows == ri
+                a[sel] += B[sel] @ EC[ri][:, :m]
+            wq = path.w * np.exp(-geo.rho * r)
+            Qa = a @ self.Qf.T                                                        # (Q a)_j at the points (Q symmetric)
+            for j in range(m):
+                if not np.any(Qa[:, j]):
+                    continue
+                p, A = foc.AO[j]
+                Tj = path.apply_weights(wq * Qa[:, j])                                # (N, N): R diag(d) I, I the seed's read
+                out[:, p * N:(p + 1) * N] += (A.T @ Tj.T).T
+            if xops:
+                h = path.read(known_h)                                                # f_t at the points
+                Ph = self._phi_at(r)                                                  # (nq, nW, nVb)
+                for ri in np.unique(rows):
+                    sel = rows == ri
+                    h[sel] += Ph[sel] @ Cc[ri][:self.nVb]
+                Lh = h @ self.Lx.T                                                    # (nq, mx)
+                for j, (p, A) in enumerate(xops):
+                    if not np.any(Lh[:, j]):
+                        continue
+                    Tj = path.apply_weights(wq * Lh[:, j])
+                    out[:, p * N:(p + 1) * N] += (A.T @ Tj.T).T
+        if xops and own is not None:
+            # <own delta_t, e^{-rho u} L' x^seed(u, s)> = e^{-rho t} (L own) . x^seed(t, s), the seed's quantities at the node
+            from scipy.sparse import diags
+            w = np.exp(-geo.rho * geo.g.t)
+            for j, (p, A) in enumerate(xops):
+                cj = float(self.Lx[j] @ own)
+                if cj:
+                    out[:, p * N:(p + 1) * N] += (diags(cj * w) @ A).toarray()
+        if mt:
+            # e^{-rho T} a_t(T)' Q_T zeta^seed_T(T, s): a_t(T) at (T, T - t_k), the seed's at (T, T - s_k)
+            aT = (geo.IRT @ AU[:, m:]) + Cc[geo.node_row] @ self.ET.T                 # (N, mt)
+            if own is not None:
+                aT = aT + (geo.IRT @ self.zT.transpose(1, 0, 2).reshape(N, -1)).reshape(N, mt, nW) @ own
+            QaT = np.exp(-geo.rho * geo.T) * (aT @ self.QT.T)
+            from scipy.sparse import diags
+            for jt in range(mt):
+                if not np.any(QaT[:, jt]):
+                    continue
+                p, A = foc.AO[m + jt]
+                out[:, p * N:(p + 1) * N] += ((diags(QaT[:, jt]) @ geo.IZT) @ A).toarray()
+        return th * out
+
+    def _seed_parts(self, ui: int, Zw: np.ndarray):
+        """(AL, AU, Cc, phi, fU, own) of control ui in the profile world Zw, the pieces of f_t over the whole horizon the
+        seed terms read (cached per control: one profile per Tilt)."""
+        cache = self.__dict__.setdefault("_seed_cache", {})
+        if ui not in cache:
+            if self.n0:
+                raise NotImplementedError("the monitoring term of a risk-averse responder with initial shocks")
+            nW = self.geo.nW
+            extra = self.fUc[ui] if (self.mx and self.fUc is not None) else None
+            own = self.Ldelta[ui] if self.mx else None
+            Z = np.asarray(Zw)[:, :, :nW, None]
+            AL, AU, Cc, phi, fU = self._delta(ui, Z, extra=extra, parts=True, own=own)
+            Dp = self._delta(ui, Z, extra=extra, own=own)[..., 0]                       # theta K S f_t on the past nodes
+            cache[ui] = (AL[..., 0], AU[..., 0], Cc[..., 0], phi[..., 0], fU[..., 0], own, Dp)
+        return cache[ui][:6]
+
+    def seed_constant(self, ui: int, Zw: np.ndarray, spread: Dict[str, float]) -> np.ndarray:
+        """(N,): the part of theta <S f_t, K e_xi(s)> that the seed's own spike carries at its instant, whatever the responses:
+        the seed is a point mass of the origin's control at s (and of the controls that react to it at once, `spread`, its
+        composite {control: coef}), which no kernel on the triangle holds.  Against the agent's atoms it gives the cross term
+        e^{-rho s} zeta(s, u)' Q e_v on the shocks before s, and against its integrals e^{-rho s} L' e_v on the shock at s; so
+        at the node (t, s) theta e^{-rho s} [sum_v spread_v ((Q a_t(s))_v + (L (S f_t)(s))_v)], a_t = A S f_t below t (AL + E c_t)
+        and S f_t at the node itself.  The atom part vanishes for a quantity the agent has seen by s (P_t S f_t = 0): it counts
+        for another player's instant reaction."""
+        geo = self.geo; c = self.c; th = self.theta; m = self.m
+        AL, AU, Cc, phi, fU, own = self._seed_parts(ui, Zw)
+        Dp = self._seed_cache[ui][6]
+        N, nW = geo.N, geo.nW
+        out = np.zeros(N)
+        atoms = self.foc.atoms[:m]
+        cf = np.zeros(m)
+        for j, (nm, lag) in enumerate(atoms):
+            if float(lag) == 0.0 and nm in spread:
+                cf[j] = float(spread[nm])
+        if np.any(cf):
+            Es = (geo.Bnode @ self.E[:, :m].reshape(len(geo.x1), -1)).reshape(N, m, -1)      # E(s_k)
+            a = AL[:, :m] + np.einsum("nja,na->nj", Es, Cc[geo.node_row])
+            out += (a @ self.Qf.T) @ cf
+        if self.mx:
+            integ = (getattr(c, "integrals", None) or {}).get(self.agent.name)
+            lv = np.zeros(nW)
+            for j, (nm, lag) in enumerate(integ[0]):
+                if float(lag) == 0.0 and nm in spread:
+                    lv += float(spread[nm]) * self.Lx[j]
+            if np.any(lv):
+                out += (phi + Dp) @ lv
+        return th * np.exp(-geo.rho * geo.g.s) * out
 
     def _delta(self, ui: int, Zw: np.ndarray, a: Optional[np.ndarray] = None, phi: Optional[np.ndarray] = None,
-               extra: Optional[np.ndarray] = None) -> np.ndarray:
+               extra: Optional[np.ndarray] = None, parts: bool = False, own: Optional[np.ndarray] = None):
         geo = self.geo; foc = self.foc; th = self.theta
         N, nW = geo.N, geo.nW
         m, mt = self.m, self.mt
@@ -556,12 +698,29 @@ class Tilt:
             # C_xi' f_xi(t) (the basis's initial rows being the unit vectors)
             F = F + np.einsum("ia,rib->rab", self.Cxi, fxi)
             Kf = Kf + np.einsum("nki,nib->nkb", self.Psi_node[:, :, self.nVb:], fxi[geo.node_row])
+        if own is not None:
+            # the point mass own delta_t of f_t (an integral's quantity the spike moves at its instant): K f_t gains K(., t) own
+            # at the nodes (t, u), Phi' K f_t gains Psi(t)' own per time row
+            Kf = Kf + np.einsum("nkd,d->nk", self.K_nodes(), own)[:, :, None]
+            F = F + np.einsum("rda,d->ra", self._psi_rows(), own)[:, :, None]
         Cc = th * np.matmul(self.Sg, F)                                          # (rows, nV, B)
+        if parts:                       # seed_operator: A f_t below and above t, the Galerkin coefficients, f_t itself
+            return AL, AU, Cc, phi, fU
         D = th * Kf + th * np.matmul(self.Psi_node, Cc[geo.node_row])
         if n0:
             Dxi = th * F[:, self.nVb:] + th * np.einsum("ia,rab->rib", self.Cxi, Cc)   # (rows, n0, B): the correction on the initial shocks
             return np.concatenate([D, Dxi[geo.node_row]], axis=1)                # carried along each time row, read on s = 0
         return D
+
+    def _psi_rows(self) -> np.ndarray:
+        """Psi = K Phi at every time row's time, (rows, nW, nV), each read from its own panel."""
+        if getattr(self, "_PsiR", None) is None:
+            geo = self.geo; g = geo.g
+            rows = sorted(self.c.trow_by_pit.items())
+            t = np.array([float(g.t[idx[0]]) for (p, it), idx in rows]); pan = np.array([p for (p, it), idx in rows])
+            B = geo._bary(t, pan)
+            self._PsiR = (B @ self.Psi.reshape(len(geo.x1), -1)).reshape(t.size, geo.nW, -1)
+        return self._PsiR
 
     def _future(self, ui: int, bQ: np.ndarray, B: int) -> np.ndarray:
         """fU (N, nW, B): the FOC kernel of a spike at t = s_k on the shock at v = t_k > t (the node's time), the part
@@ -646,10 +805,11 @@ class Tilt:
         return G, fxi
 
     # ------------------------------------------------------------------ the entropic cost
-    def trace_K2(self) -> float:
-        """tr K^2 = ||K||_HS^2 = 2 int_{u < v} |K(u, v)|_F^2, exactly (not through the basis): K(u, v) = int_v^T zeta(tau, u)' G
-        zeta(tau, v) dtau (+ the terminal loss) is a kernel on the triangle (the node (v, u) = (t_k, s_k), read along the
-        continuation path), squared under the triangle's Gram."""
+    def K_nodes(self) -> np.ndarray:
+        """K's own kernel at the nodes, (N, nW, nW): K(u, v) at the node (v, u) = (t_k, s_k), u <= v, int_v^T zeta(tau, u)' G
+        zeta(tau, v) dtau (+ the terminal loss, + the integrals' e^{-rho v} zeta_x(v, u)' L), read along the continuation path."""
+        if getattr(self, "_KN", None) is not None:
+            return self._KN
         geo = self.geo; N, nW = geo.N, geo.nW; m = self.m
         lc = geo.lp_cont
         KN = np.zeros((N, nW, nW))
@@ -665,6 +825,15 @@ class Tilt:
         if self.mx:
             # K_x(u, v) = e^{-rho v} zeta_x(v, u)' L at the node (v, u)
             KN += np.exp(-geo.rho * geo.g.t)[:, None, None] * np.einsum("jnc,jd->ncd", self.zx, self.Lx)
+        self._KN = KN
+        return KN
+
+    def trace_K2(self) -> float:
+        """tr K^2 = ||K||_HS^2 = 2 int_{u < v} |K(u, v)|_F^2, exactly (not through the basis): K(u, v) = int_v^T zeta(tau, u)' G
+        zeta(tau, v) dtau (+ the terminal loss) is a kernel on the triangle (the node (v, u) = (t_k, s_k), read along the
+        continuation path), squared under the triangle's Gram."""
+        geo = self.geo; N = geo.N
+        KN = self.K_nodes()
         M = geo.g.mass_sparse(rho=0.0)
         F = KN.reshape(N, -1)
         out = float(2.0 * np.sum(F * (M @ F)))
@@ -688,3 +857,4 @@ class Tilt:
         ritz = float(np.sum(-np.log1p(-x) - x) / (2.0 * th))
         tail = max(0.0, self.trace_K2() - float(np.sum(self.lam ** 2)))
         return ritz + 0.25 * th * tail
+

@@ -804,8 +804,10 @@ class Model:
                                          "states at T (a control at one instant costs nothing)")
 
     def _check_integrals(self, a: "Agent") -> None:
-        """Each stochastic-integral term is [coef, quantity, shock]: a shock of the model, a quantity that reads no constant, no
-        lead and not the agent's own current control (whose spike would load on the shock of its own instant)."""
+        """Each stochastic-integral term is [coef, quantity, shock]: a shock of the model and a quantity that reads no constant and
+        no lead.  The quantity may be the agent's own current control (a market maker's noise-trade P&L): its spike then loads
+        on the shock of its own instant, which the finite engine's risk-averse agents carry (risk.Tilt.Ldelta) and the
+        stationary engine refuses."""
         for term in a.integrals:
             if len(term) != 3:
                 raise ValueError(f"agent {a.name}: integral term {term} must be [coef, quantity, shock]")
@@ -816,8 +818,6 @@ class Model:
             for (n, lag) in self.expand({str(term[1]): 1.0}):
                 if lag < 0:
                     raise ValueError(f"agent {a.name}: integral term {term} reads {n} at a lead")
-                if n in a.controls and lag == 0:
-                    raise ValueError(f"agent {a.name}: integral term {term} reads its own current control {n}; not supported")
 
     def _check_losses(self, a: "Agent") -> None:
         """Each loss term of the agent is [coef, a] or [coef, a, b], reads no constant, and a lead appears only
