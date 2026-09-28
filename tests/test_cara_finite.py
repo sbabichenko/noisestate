@@ -193,12 +193,14 @@ def test_the_report_refuses_a_profile_past_the_breakdown():
 
 def test_unsupported_combinations_are_refused():
     d = ch1((0.5, 0.5)).to_dict()
-    d["agents"]["player1"]["loss"].append([-2.0, "X"])                  # a target: (X - 1)^2 less its constant
+    d["agents"]["player1"]["loss"].append([-2.0, "X"])                  # a target: (X - 1)^2 less its constant: solved now
+    d["agents"]["player1"]["integrals"] = [[1.0, "X", "w0"]]             # ... but not together with integrals
     with pytest.raises(NotImplementedError, match="without means"):
         ns.solve(ns.Model.from_dict(d))
     st = ns.load(ns.example("ch3_two_player")).to_dict()
     st["agents"][next(iter(st["agents"]))]["risk_aversion"] = 0.5
-    with pytest.raises(NotImplementedError, match="spectral finite engine does"):
+    st["horizon"]["discount"] = 0.0
+    with pytest.raises(NotImplementedError, match="consistent planning.*discount"):
         ns.solve(ns.Model.from_dict(st))
     with pytest.raises(NotImplementedError, match="strategy"):
         ns.solve(ch1((0.5, 0.0), nodes=8)).strategy("D1")

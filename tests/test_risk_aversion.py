@@ -54,11 +54,12 @@ def test_negative_or_infinite_is_rejected(bad):
         ns.Model.from_dict(_file(bad))
 
 
-def test_the_stationary_engine_refuses_a_risk_averse_agent():
-    """The spectral finite engine solves them (tests/test_cara_finite.py); the stationary engine refuses, naming who does."""
+def test_the_stationary_engine_refuses_a_risk_averse_agent_without_a_discount():
+    """The stationary engine solves them under consistent planning with a discount (tests/test_cara_ext.py); undiscounted, it
+    refuses and says what it needs."""
     d = ns.load(ns.example("ch3_two_player")).to_dict()
     d["agents"][next(iter(d["agents"]))]["risk_aversion"] = 0.5
-    with pytest.raises(NotImplementedError, match="risk-averse.*spectral finite engine does"):
+    with pytest.raises(NotImplementedError, match="risk-averse.*stationary engine.*discount"):
         ns.solve(ns.Model.from_dict(d))
 
 

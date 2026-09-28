@@ -615,6 +615,7 @@ class Compiled(CompiledBase):
 class StationarySolver(EngineBase):
     RESULT = StationaryResult
     MONITORING = True                   # monitored deviations (Chapter 6): _impulse_responses below
+    RISK_SENSITIVE = True               # risk-averse agents under consistent planning (stationary_risk.py), see __init__
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.6, 60       # with Anderson memory 15 (0.3 was needed at memory 6 for Kyle-Back)
     #  The second-order verdict does not depend on the discount, so this engine can check a
     #  discounted model.  The dissertation writes the discounted stationary objective (Chapter
@@ -642,6 +643,24 @@ class StationarySolver(EngineBase):
         self._spike_cache = (None, {})                  # (maps key, {(agent, excluded): (Zpass, R)}) of the last maps (_spikes)
         self._atom_blocks: Dict[str, tuple] = {}        # agent -> the loss atoms' blocks and which are the identity
         self._kernel_residual = 0.0                     # the inner solve's residual at the last maps
+        self._risk_scale = 1.0                          # the continuation's step in risk aversion (solve): theta times this
+        self._risk_info: Dict[str, dict] = {}           # agent -> the last correction's diagnostics
+        averse = [a for a in model.agents if a.risk_aversion]
+        if averse:
+            why = []
+            if not self.c.rho > 0:
+                why.append("a discount (horizon.discount > 0)")
+            if any(len(model.privy(a.name)) > 1 for a in model.agents) or any(a.instant for a in model.agents) or self.c.levels:
+                why.append("no monitoring, instant observations or level rows")
+            if any(l != 0 for a in averse for term in a.loss for at in term[1:] for (n, l) in model.expand({at: 1.0})):
+                why.append("no lagged or leading atoms in a risk-averse agent's loss")
+            if any(l != 0 for a in averse for (n, l) in (self.c.integrals or {}).get(a.name, ([], None))[0]):
+                why.append("no lagged atoms in its integrals")
+            if self._mean_driven():
+                why.append("no means")
+            if why:
+                raise NotImplementedError(f"risk-averse agents ({', '.join(a.name for a in averse)}) on the stationary engine (consistent "
+                                          "planning, stationary_risk.py) need " + "; ".join(why))
 
     # -------------------------------------------- overridable model pieces
     # ------------------------------------------- the best response (the kernel algebra of the age grid)
@@ -708,7 +727,8 @@ class StationarySolver(EngineBase):
     def _foc_static(self, agent: Agent):
         """The map-independent pieces of _foc_operators, built once per agent: per atom its block (primary index,
         N x N shift) and whether the shift is the identity; Q' contiguous; per control the atoms its continuation
-        enters (the others' quantities), its own delayed reads and the leads."""
+        enters (the others' quantities), its own delayed reads, the leads and its own controls' atoms (whose continuation
+        only envelope=False adds)."""
         st = self._atom_blocks.get(agent.name)
         if st is None:
             c = self.c
@@ -723,7 +743,8 @@ class StationarySolver(EngineBase):
                 cont = np.array([j for j, (name, lag) in enumerate(atms) if name not in agent.controls], dtype=np.intp)
                 lead = [(j, name, lag) for j, (name, lag) in enumerate(atms) if name not in agent.controls and lag < 0]
                 own_lag = [(j, lag) for j, (name, lag) in enumerate(atms) if name == u and lag > 0]
-                per_u.append((cont, lead, own_lag))
+                own = np.array([j for j, (name, lag) in enumerate(atms) if name in agent.controls], dtype=np.intp)
+                per_u.append((cont, lead, own_lag, own))
             # the identity atoms alone on their primary's block: their block of the operator is 0 + MQ_i, written at
             # once (a zero MQ_i writes the zeros the block holds); the other atoms are added one by one in order
             ps = [p for p, _ in AO]
@@ -733,7 +754,7 @@ class StationarySolver(EngineBase):
             st = self._atom_blocks[agent.name] = (AO, eye, idx, np.ascontiguousarray(Q.T), per_u, sole, rest)
         return st
 
-    def _foc_operators(self, agent: Agent, R: np.ndarray, atoms: bool = False):
+    def _foc_operators(self, agent: Agent, R: np.ndarray, atoms: bool = False, envelope: bool = True):
         """Per control, the operator (N x n_prim N) mapping the primary kernels of one channel to the
         first-order-condition kernel: instantaneous derivative, discounted continuation through the
         impulse responses R, delayed reads of own lagged controls, and the past-date term of a lead.
@@ -749,7 +770,7 @@ class StationarySolver(EngineBase):
             # op = sum_j M_j (Q zeta)_j with M_j the operator on atom j: identity for the instantaneous
             # term, continuation, delayed own read, lead term; contracted as sum_i (sum_j Q_ji M_j) AO_i
             # so the products are N x N x N per atom block instead of N x N x n_prim N per atom
-            cont, lead, own_lag = per_u[ui]
+            cont, lead, own_lag, own = per_u[ui]
             M = np.zeros((na, N, N)); Mf = M.reshape(na, N * N)
             for v, coef in (comp or {}).get(u, {u: 1.0}).items():   # the control and the instant reactions it draws
                 j = aidx.get((v, 0.0))
@@ -765,8 +786,10 @@ class StationarySolver(EngineBase):
                 CR = c.continuation(Rj)
                 for j, lag in own_lag:                              # delayed read of the control itself
                     M[j] += np.exp(-c.rho * lag) * c.own_lag_read(lag)
-                if len(cont):                                       # own reactions: envelope (no continuation)
+                if len(cont):                                       # the others' quantities' continuation
                     M[cont] += CR[cont]
+                if not envelope and len(own):                       # the own later reactions (R with the own map on:
+                    M[own] += CR[own]                               # stationary_risk); by default the envelope drops them
                 for j, name, lag in lead:
                     M[j] += self._lead_term(agent, R[:, ui], name, lag)
             MQ = np.dot(QT, Mf)                                     # MQ[i] = sum_j Q[j, i] M_j (tensordot's product)
@@ -803,6 +826,11 @@ class StationarySolver(EngineBase):
             phi = np.stack([Fu[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
             phi_phys = np.stack([Fphys[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
             dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
+            if out.get("risk_shift") is not None:
+                # a risk-averse agent: the kernel whose projection vanishes is S f^on (stationary_risk.py), the risk-neutral
+                # one plus the frozen shift; physical + wedge + risk = foc
+                dec[u]["risk"] = out["risk_shift"][ui]
+                dec[u]["foc"] = phi + out["risk_shift"][ui]
         out["decomp"] = dec
 
     def _second_order(self, agent: Agent, Resp, Gk, keep, maps=None) -> Optional[dict]:
@@ -924,7 +952,7 @@ class StationarySolver(EngineBase):
         products over those blocks are skipped (c.causal_chunks; the stationary Compiled declares them)."""
         return self.c.causal_chunks()
 
-    def _foc_system(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu, Gk=None, Gpre=None):
+    def _foc_system(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu, shift=None, Gk=None, Gpre=None):
         """The first-order-condition system Amat gamma = -bvec on the passive rows,
         Amat[u, v] = sum_k H_k (Fu_u Resp_v) G_k, bvec[u] = sum_k H_k (Fu_u Zpass)_k, with G_k the row
         operator and H_k the projection operator of channel k.  Both split into a regular part (the
@@ -982,6 +1010,8 @@ class StationarySolver(EngineBase):
         A6 = Amat.reshape(nU, nR, N, nU, nR, N); B3 = bvec.reshape(nU, nR, N)
         for ui in range(nU):
             phi = Fu[ui] @ Zpass                                                # (N, nW): the FOC of the passive world
+            if shift is not None:
+                phi = phi + shift[ui]                                           # a risk-averse agent's frozen correction
             if nKn:
                 B3[ui][Rn] += (Hs @ phi[:, Kn].reshape(-1)).reshape(nRn, N)
             for (r, k, Sg, Sh, wg, wh) in ent:
@@ -1051,7 +1081,14 @@ class StationarySolver(EngineBase):
         Resp = Resp0 if R is R0 else self._response_operators(agent, R)
         Fu = self._foc_operators(agent, R)
         # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp0_v Gk gamma_v)) = 0 for all controls
-        Amat, bvec = self._foc_system(agent, ytil, yinst, Zpass, Resp0, Fu, None if Gpre is None else Gk, Gpre)
+        shift = None
+        th = float(agent.risk_aversion) * self._risk_scale
+        if th:
+            from .stationary_risk import StationaryTilt
+            tl = StationaryTilt(self, agent, maps, th)
+            shift = tl.shift()
+            self._risk_info[agent.name] = {"richardson_gap": tl.richardson_gap, "gmres_residual": max(r for (_, r) in tl.gmres)}
+        Amat, bvec = self._foc_system(agent, ytil, yinst, Zpass, Resp0, Fu, shift, None if Gpre is None else Gk, Gpre)
         gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
         del Amat, bvec                                          # (nU nR N)^2: not kept through the diagnostics
         cact = np.stack([(Gk @ gamma[ui].reshape(-1)).T for ui in range(nU)])
@@ -1059,6 +1096,8 @@ class StationarySolver(EngineBase):
         for ui in range(nU):
             Zfull += Resp0[ui] @ cact[ui]
         out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
+        if shift is not None:
+            out["risk_shift"] = shift
         if want_decomp:
             self._decompose(agent, out, Fu, Resp, Gk, maps)
         return (self._project(agent, Zfull, self._map_part(agent, Zfull, cact)) if project else None), out
@@ -1276,6 +1315,58 @@ class StationarySolver(EngineBase):
                 res.converged = False
                 res.message += f"; the monitored response kernels did not settle at the equilibrium (residual {self._kernel_residual:.1e})"
         super()._finish(res)
+        for a in self.model.agents:
+            if a.risk_aversion and self._risk_scale:
+                # the entropic cost of the date-0 continuation C_0 = int_0^inf e^{-rho t} c_t dt (+ the integrals), unconditional:
+                # E C_0 = the flow cost / rho, plus K_0's spectral excess (stationary_risk.StationaryTilt.excess)
+                from .stationary_risk import StationaryTilt
+                th = float(a.risk_aversion) * self._risk_scale
+                tl = StationaryTilt(self, a, res.maps, th)
+                vals = [tl.cond_excess(tl.L / na) for na in self.ENTROPIC_LATTICE]
+                # the lattice's excess converges like h (the kernels' kinks on the diagonal) plus h^2: the polynomial through the
+                # levels in h, read at h = 0
+                hs = [tl.L / na for na in self.ENTROPIC_LATTICE]
+                ex = float(np.linalg.solve(np.array([[x ** k for k in range(len(hs))] for x in hs]), np.array([v[0] for v in vals]))[0]) \
+                    if all(np.isfinite(v[0]) for v in vals) else float("inf")
+                EC0 = float(res.costs[a.name]) / self.c.rho
+                res.risk[a.name] = {"risk_aversion": th, "expected": EC0, "entropic": EC0 + ex, "theta_mu_max": vals[-1][1],
+                                    "entropic_lattice_gap": abs(vals[-1][0] - vals[-2][0]), "flow_expected": float(res.costs[a.name]),
+                                    **self._risk_info.get(a.name, {})}
+                if not np.isfinite(ex):
+                    # the date-0 self's conditional entropic cost is infinite at these strategies (theta mu_max >= 1): the first-order
+                    # condition holds but is no optimum, so this is not an equilibrium of the entropic game
+                    res.converged = False
+                    res.message += (f"; {a.name}'s conditional entropic cost is infinite at the solution (theta mu_max = "
+                                    f"{vals[-1][1]:.3g} >= 1): no equilibrium of the entropic game here")
+
+    RISK_STEPS = (0.0, 0.5, 1.0)        # the continuation in risk aversion from no start: theta scaled by these in turn
+    ENTROPIC_LATTICE = (40, 80, 160)    # lattice steps (L / these) of the date-0 continuation's entropic cost (res.risk)
+    RISK_LATTICE = 0.02                 # the correction's lattice step (and half of it, Richardson): stationary_risk.py
+
+    def solve(self, start_from=None, **kw):
+        """EngineBase.solve; with risk-averse agents and no start, by continuation in risk aversion: the risk-neutral
+        equilibrium first (theta scaled by 0, the risk-neutral path), then theta scaled up (RISK_STEPS), each step started
+        from the last.  The correction is frozen at the current profile inside a best response (stationary_risk.py), so a
+        start far from the equilibrium is where it is least accurate."""
+        if start_from is not None or not any(a.risk_aversion for a in self.model.agents):
+            self._risk_scale = 1.0
+            return super().solve(start_from, **kw)
+        diag = kw.pop("diagnostics", True)
+        maps, res, done = None, None, []
+        try:
+            for sc in self.RISK_STEPS:
+                self._risk_scale = sc
+                res = super().solve(maps, diagnostics=diag if sc == self.RISK_STEPS[-1] else False, **kw)
+                done.append(sc)
+                if not res.converged:
+                    break
+                maps = res.maps
+        finally:
+            self._risk_scale = 1.0
+        if done[-1] != self.RISK_STEPS[-1] or not res.converged:
+            res.converged = False
+            res.message += f"; the continuation in risk aversion stopped at theta scaled by {done[-1]:g}"
+        return res
 
     def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
         """With a monitoring relation, the agent's impulse responses with the players privy to its deviations

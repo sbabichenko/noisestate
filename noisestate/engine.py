@@ -227,9 +227,9 @@ class EngineBase(MeanLayer):
         averse = [a.name for a in model.agents if a.risk_aversion]
         if averse and not self.RISK_SENSITIVE:
             raise NotImplementedError(f"{type(self).__name__} does not solve risk-averse agents ({', '.join(averse)} with "
-                                      "risk_aversion > 0); the spectral finite engine does, on a finite horizon without a past, "
-                                      "monitoring or means (Ch1 appendix thm:risk_sensitive_appendix); risk_aversion 0 is the "
-                                      "risk-neutral model")
+                                      "risk_aversion > 0); the spectral finite engine does (a finite horizon with no past or initial "
+                                      "shocks only, without monitoring), and the stationary engine under consistent planning (Ch1 appendix "
+                                      "thm:risk_sensitive_appendix); risk_aversion 0 is the risk-neutral model")
         if any(a.monitors for a in model.agents) and not self.MONITORING:
             raise NotImplementedError(f"{type(self).__name__} does not solve monitored deviations (Chapter 6: an agent's "
                                       "monitors); a model without `monitors` is the all-naive corner, what it solves")

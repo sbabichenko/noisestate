@@ -175,6 +175,7 @@ class Agent:
     monitors: List[str] = field(default_factory=list)   # the agents whose deviations this one is privy to (Chapter 6's j |> i)
     instant: List[str] = field(default_factory=list)    # other agents' controls whose current level this one sees and reacts to at once
     risk_aversion: float = 0.0        # theta >= 0: minimise theta^-1 log E exp(theta C), C the realised cost (CARA); 0 is E C
+    integrals: List[list] = field(default_factory=list)  # [[coef, a, shock]]: coef int e^{-rho t} a dW_shock in the realised cost (mean zero)
 
 
 @dataclass
@@ -802,10 +803,27 @@ class Model:
                         raise ValueError(f"agent {a.name}: terminal term {term} reads the control {n}; a terminal loss is on the "
                                          "states at T (a control at one instant costs nothing)")
 
+    def _check_integrals(self, a: "Agent") -> None:
+        """Each stochastic-integral term is [coef, quantity, shock]: a shock of the model, a quantity that reads no constant, no
+        lead and not the agent's own current control (whose spike would load on the shock of its own instant)."""
+        for term in a.integrals:
+            if len(term) != 3:
+                raise ValueError(f"agent {a.name}: integral term {term} must be [coef, quantity, shock]")
+            if str(term[2]) not in self.shocks:
+                raise ValueError(f"agent {a.name}: integral term {term}: {term[2]!r} is not a shock ({', '.join(self.shocks)})")
+            if parse_atom(str(term[1]), self.params)[0] == CONST:
+                raise ValueError(f"agent {a.name}: integral term {term} reads the constant")
+            for (n, lag) in self.expand({str(term[1]): 1.0}):
+                if lag < 0:
+                    raise ValueError(f"agent {a.name}: integral term {term} reads {n} at a lead")
+                if n in a.controls and lag == 0:
+                    raise ValueError(f"agent {a.name}: integral term {term} reads its own current control {n}; not supported")
+
     def _check_losses(self, a: "Agent") -> None:
         """Each loss term of the agent is [coef, a] or [coef, a, b], reads no constant, and a lead appears only
         in a cross term with the agent's own current control."""
         self._check_terminal(a)
+        self._check_integrals(a)
         for term in a.loss:
             if len(term) not in (2, 3):
                 raise ValueError(f"agent {a.name}: loss term {term} must be [coef, a] or [coef, a, b]")
@@ -1009,7 +1027,7 @@ class Model:
                      "variable", "settings"},
         "state": {"drift", "noise", "initial"},
         "agent": {"controls", "signals", "loss", "myopic", "constant", "terminal", "terminal_constant", "monitors", "instant",
-                  "risk_aversion"},
+                  "risk_aversion", "integrals"},
         "signal": {"drift", "noise", "delay", "level"},
     }
 
@@ -1113,6 +1131,8 @@ class Model:
                 d["agents"][a.name]["terminal"] = [[float(t[0])] + [atom(x) for x in t[1:]] for t in a.terminal]
             if a.terminal_constant:
                 d["agents"][a.name]["terminal_constant"] = float(a.terminal_constant)
+            if a.integrals:
+                d["agents"][a.name]["integrals"] = [[float(t[0]), atom(t[1]), str(t[2])] for t in a.integrals]
             if a.monitors:
                 d["agents"][a.name]["monitors"] = list(a.monitors)
             if a.instant:
@@ -1416,7 +1436,8 @@ class Model:
                                 terminal_constant=eval_coef(v.get("terminal_constant", 0.0), params),
                                 monitors=[str(x) for x in ([v["monitors"]] if isinstance(v.get("monitors"), str) else (v.get("monitors") or []))],
                                 instant=[str(x) for x in ([v["instant"]] if isinstance(v.get("instant"), str) else (v.get("instant") or []))],
-                                risk_aversion=eval_coef(v.get("risk_aversion", 0.0), params)))
+                                risk_aversion=eval_coef(v.get("risk_aversion", 0.0), params),
+                                integrals=[[eval_coef(t[0], params)] + [str(x) for x in t[1:]] for t in (v.get("integrals") or [])]))
         from types import MappingProxyType
         m = cls._of_fields(name=d.get("name", "model"), shocks=list(d.get("shocks") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],

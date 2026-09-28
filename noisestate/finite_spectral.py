@@ -32,7 +32,7 @@ __all__ = ["SpectralCompiled", "ClosedLoopRows", "SpectralFiniteSolver"]
 
 class SpectralFiniteSolver(SpectralMeans, EngineBase):
     MONITORING = True                   # monitored deviations and instant observations, without a past (see __init__)
-    RISK_SENSITIVE = True               # risk-averse agents (the entropic objective, risk.py), without a past, monitoring or means (see __init__)
+    RISK_SENSITIVE = True               # risk-averse agents (the entropic objective, risk.py): no past or initial shocks only, no monitoring (see __init__)
     RESULT = TriangleResult
     TOL, DAMPING, MAX_NEWTON = 1e-8, 0.5, 8
     MAP_RIDGE = tunable("map_ridge")      # ridge of the per-time-row map projection, relative to the row's own Gram (settings)
@@ -60,9 +60,9 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             raise NotImplementedError("monitored deviations and instant observations are solved on a finite horizon "
                                       "without a past or a continuation; a transition with them is not built yet")
         averse = [a.name for a in model.agents if a.risk_aversion]
-        if averse and (past is not None or continuation not in (None, "end")):
-            raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) are solved on a finite horizon without a past or a "
-                                      "continuation; a transition with them is not built yet")
+        if averse and ((past is not None and past.window) or continuation not in (None, "end")):
+            raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) are solved on a finite horizon, with no past or a past of "
+                                      "initial shocks only (no window), and no continuation; a transition with them is not built yet")
         if averse and any(a.monitors or a.instant for a in model.agents):
             raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) with monitored deviations or instant observations "
                                       "are not solved yet")
@@ -85,10 +85,10 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         self._fixed_actions: Dict[str, np.ndarray] = {}        # agent -> its action kernels (nU, N, ncol) on the fixed panels, zero elsewhere
         self._profile = (None, None)                           # (maps key, their closed loop): the world a risk-averse agent's K is taken in
         self._risk_scale = 1.0                                 # the continuation's step in risk aversion (solve): theta times this
-        if averse and self._mean_driven():
-            raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) are solved without means (no target, constant drift or "
-                                      "initial state): with them the entropic first-order condition gains the tilt of the linear part "
-                                      "of the cost, which is not built yet")
+        self._zbar = None                                      # the primaries' means of the last solve_means (the entropic cost's linear part)
+        if any(a.risk_aversion and a.integrals for a in model.agents) and self._mean_driven():
+            raise NotImplementedError("risk-averse agents with stochastic-integral terms (integrals) are solved without means: the "
+                                      "integrals' mean part (int xbar' L dW) joins the cost's linear part, which is not built yet")
 
     @staticmethod
     def _continuation_of(model: Model, past, continuation, nodes: Optional[int] = None):
@@ -163,7 +163,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 # the equilibrium's own spectrum (risk_report raises RiskBreakdown past it): an iterate beyond the
                 # breakdown was answered at a smaller theta (risk.Tilt, clip), so a fixed point that still needs that is
                 # no equilibrium of the entropic game
-                res.risk[a.name] = self.risk_report(a, res.world, res.costs[a.name])
+                res.risk[a.name] = self.risk_report(a, res.world, res.costs[a.name], zbar=self._zbar, maps=res.maps)
         if self.c.cont is not None:
             for a in self.model.agents:
                 res.cost_parts[a.name]["continuation"] = self.continuation_cost(a, res.world)
@@ -877,7 +877,74 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         foc = finite_free.FocOps(self, agent, np.zeros((len(c.prim) * c.N, len(agent.controls))))
         return Tilt(geometry(c, self.settings), foc, agent, 0.0, world, None, spectrum_only=True)
 
-    def risk_report(self, agent: Agent, world: np.ndarray, expected: float) -> dict:
+    def solve_means(self, maps: Dict[str, np.ndarray]) -> np.ndarray:
+        zbar = super().solve_means(maps)
+        self._zbar = zbar
+        return zbar
+
+    def _risk_mean_paths(self, agent: Agent, foc):
+        """The affine map from the primaries' means zbar (nP Nt,) to a = Q mbar + q of the agent's flow atoms at the risk
+        geometry's one-time nodes and a_T = Q_T mbar_T + q_T of its terminal atoms: (Ax (n1 P, m, nP Nt + 1), AT (mt, nP Nt + 1)),
+        the last column the constant part (the targets q and the past's means read before zero)."""
+        from .risk import geometry
+        c = self.c; Nt, nP = c.Nt, len(c.prim)
+        geo = geometry(c, self.settings)
+        m = foc.m_flow; mt = len(foc.atoms) - m
+        Qf = np.asarray(foc.Q, dtype=float)[:m, :m]; qf = np.asarray(foc.q, dtype=float)[:m]
+        flow_atoms = list(foc.atoms[:m])
+        cols = np.concatenate([np.eye(nP * Nt), np.zeros((nP * Nt, 1))], axis=1)       # unit means, then zbar = 0
+        base = self._mean_atoms(np.zeros(nP * Nt), flow_atoms)                            # (m, Nt): the constant part
+        M = np.stack([self._mean_atoms(cols[:, j], flow_atoms) - base for j in range(nP * Nt)], axis=2)   # (m, Nt, nP Nt)
+        M = np.concatenate([M, base[:, :, None]], axis=2)
+        mx = np.einsum("xt,jtb->xjb", geo.Btm, M)                                         # (n1 P, m, nP Nt + 1)
+        Ax = np.einsum("jl,xlb->xjb", Qf, mx)
+        Ax[:, :, -1] += qf[None, :]
+        AT = None
+        if mt:
+            atoms, QT, qT = c.terminal[agent.name]
+            read = c.g.interp_sparse(np.array([float(c.T)]), np.zeros(1), side_t=-1) @ c.mean_embed
+            XT = np.zeros((mt, nP * Nt + 1))
+            for i, (nm, lag) in enumerate(atoms):
+                XT[i, c.index[nm] * Nt:(c.index[nm] + 1) * Nt] = np.asarray(read).ravel()
+            AT = np.asarray(QT, dtype=float) @ XT
+            AT[:, -1] += np.asarray(qT, dtype=float)
+        return Ax, AT
+
+    def _mean_conditions(self, agent: Agent, maps: Dict[str, np.ndarray], line: Optional[bool] = None):
+        """SpectralMeans._mean_conditions; a risk-averse agent's mean condition gains the tilt of the cost's linear part,
+        theta <f_t, S k> (derivation: the tilted law of the shocks given F_t has the mean (I - theta Sigma_t K)^-1 (W_hat +
+        theta Sigma_t k), and on the kernels' own condition Sigma_t drops out of theta <(I - theta K Sigma_t)^-1 f_t, Sigma_t k>
+        = theta <S f_t, k> = theta <f_t, S k>).  k is linear in the means (k = A' G (Q mbar + q)), so the system stays one
+        linear solve: row t gains theta <f_t, S k(e_j)> in column j and theta <f_t, S k(0)> on the right."""
+        Mu, bu = super()._mean_conditions(agent, maps, line=line)
+        th = self._theta(agent)
+        if not th:
+            return Mu, bu
+        if self._on_line(line):
+            raise NotImplementedError("risk-averse agents with means are solved on the line s = 0 (no window)")
+        from .risk import Tilt, geometry
+        c = self.c; Nt, nP, N = c.Nt, len(c.prim), c.N
+        R = self._spikes(c, maps, agent)[1]
+        R = self._impulse_responses(agent, maps, R)
+        foc = finite_free.FocOps(self, agent, R)
+        world = self._profile_world(maps)
+        tilt = Tilt(geometry(c, self.settings), foc, agent, th, world, R)
+        if tilt.geo.n_rows != Nt:
+            raise NotImplementedError("risk-averse agents with means: the time rows and the mean nodes differ")
+        Ax, AT = self._risk_mean_paths(agent, foc)
+        k, kxi, Sk, Skxi = tilt.linear_part(Ax, AT)
+        Z = world.reshape(nP, N, c.ncol)
+        for ui in range(len(agent.controls)):
+            G, fxi = tilt.pairing(ui, Z)
+            corr = G @ Sk.reshape(-1, Sk.shape[2])                                      # (Nt, nP Nt + 1)
+            if fxi is not None:
+                corr = corr + fxi @ Skxi
+            row = slice(ui * Nt, (ui + 1) * Nt)
+            Mu[row] += th * corr[:, :-1]
+            bu[row] -= th * corr[:, -1]
+        return Mu, bu
+
+    def risk_report(self, agent: Agent, world: np.ndarray, expected: float, zbar: Optional[np.ndarray] = None, maps=None) -> dict:
         """A risk-averse agent's entropic cost in the closed loop `world` (n_prim N, ncol) whose expected cost is `expected`:
         {"risk_aversion", "entropic" (theta^-1 log E exp(theta C)), "expected", "lambda_max" (the largest eigenvalue of the
         cost kernel K), "theta_lambda_max"}; the discounted cost over [0, T] as res.costs has it.  Raises RiskBreakdown
@@ -888,8 +955,23 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         if th * t.lam_max >= 1.0:
             raise RiskBreakdown(agent.name, th, t.lam_max)
         t.theta = th
-        return {"risk_aversion": th, "entropic": float(expected) + t.entropic_excess(), "expected": float(expected),
-                "lambda_max": t.lam_max, "theta_lambda_max": th * t.lam_max}
+        out = {"risk_aversion": th, "entropic": float(expected) + t.entropic_excess(), "expected": float(expected),
+               "lambda_max": t.lam_max, "theta_lambda_max": th * t.lam_max}
+        if zbar is not None and self._mean_driven():
+            # the linear part: J gains theta / 2 <k, S k> (log E e^{theta (k'W + W'KW / 2)} = -1/2 log det(I - theta K) +
+            # theta^2 / 2 k' S k)
+            from .risk import Tilt, geometry
+            c = self.c
+            foc = finite_free.FocOps(self, agent, np.zeros((len(c.prim) * c.N, len(agent.controls))))
+            tl = Tilt(geometry(c, self.settings), foc, agent, 0.0, world, None, spectrum_only=True, linear=True)
+            Ax, AT = self._risk_mean_paths(agent, foc)
+            x = np.concatenate([zbar, [1.0]])
+            ax = (Ax @ x)[:, :, None]; aT = None if AT is None else (AT @ x)[:, None]
+            parts = tl.linear_part(ax, aT, theta=th)
+            lin = 0.5 * th * float(tl.quad_linear(*parts)[0])
+            out["entropic"] += lin
+            out["linear_part"] = lin
+        return out
 
     RISK_STEP = 0.9          # a start at which every theta lambda_max is at most this is solved from directly (solve)
     RISK_GAIN = 0.6          # else a continuation step closes this fraction of the gap to the breakdown, 1 - theta lambda_max

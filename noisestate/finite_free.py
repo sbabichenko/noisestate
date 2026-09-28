@@ -69,7 +69,7 @@ class FocSystem:
         b = np.zeros((self.nU, self.nR, self.Nm))
         for ui in range(self.nU):
             phi = foc.foc(ui, a)
-            d = None if tilt is None else tilt.delta(ui, Zp, a, phi)       # before the past's part joins phi (in place)
+            d = None if tilt is None else tilt.delta(ui, Zp, a, phi) + tilt.delta_const(ui)   # before the past's part joins phi (in place)
             if phi_past is not None:
                 phi[:, :c.nW] += phi_past[ui]
             if tilt is not None:
@@ -502,7 +502,7 @@ def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None
         if system.tilt is not None:
             # a risk-averse agent: the kernel whose projection vanishes is S f, the risk-neutral one plus the
             # correction (risk.py); physical + wedge + risk = foc
-            risk = system.tilt.delta(ui, Zfull)
+            risk = system.tilt.delta(ui, Zfull) + system.tilt.delta_const(ui)
             dec[u]["risk"] = risk
             dec[u]["foc"] = phi + risk
     out["decomp"] = dec

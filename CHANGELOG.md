@@ -4,6 +4,36 @@
 
 ### Added
 
+- Risk-averse agents on the stationary engine, under consistent planning: every date's self minimises the entropic
+  cost of its own discounted continuation, the later selves playing the stationary strategy
+  (`noisestate/stationary_risk.py`). The condition is `P_0 S f_0 = 0` on the shocks born in (-L, inf), with f_0 taken
+  with the agent's own later reactions on (no envelope for this criterion). The best response adds a shift frozen at the
+  current profile (a lattice Nystrom solve with FFT convolutions, GMRES on `(I - theta K_0 Sigma)`, Sigma the projector
+  off what the agent has seen, and Richardson over two lattices). `res.risk[agent]` carries the date-0 self's
+  conditional entropic cost averaged over the past and `theta_mu_max`; a solution whose conditional entropic cost is
+  infinite is reported not converged. Checked against `extras/stationary_cara_reference.py`, a discrete stationary
+  one-agent game solved by brute force under consistent planning (tests/test_cara_ext.py), and the lattice operators
+  against direct quadrature on Chapter 4's wealth model.
+- `integrals: [[coef, quantity, shock]]`: stochastic-integral terms `coef int e^{-rho t} quantity dW` in an agent's
+  realised cost (mean zero: a risk-neutral solve is unchanged to the bit; a risk-averse agent prices them). Chapter 4's
+  insider on wealth without a terminal time: `-D V + D P + eps D^2` plus `[[-sigma_V, Q, wV]]`. Checked against
+  `extras/leqg_reference.py` (`Game(xdw)`, tests/refs/leqg_ch1_xdw.json): costs to 1e-7, D1 to 3e-5; and the
+  discounted finite Kyle insider on wealth against `extras/kyle_reference.py` (cost "dw", rho 0.5,
+  tests/refs/leqg_kyle_dw_rho.json): J to 2e-6.
+- Risk-averse agents with means (targets, constant drifts, initial states) on the finite engine: the mean condition
+  gains `theta <f_t, S k>` (k the cost's linear part), the entropic cost `theta / 2 <k, S k>`; the maps are unchanged.
+  Checked against `extras/leqg_reference.py` (`MeanGame`, tests/refs/leqg_ch1_means.json): costs to 1e-7, mean paths
+  to 1e-6.
+
+- Risk-averse agents with a past of initial shocks (a value drawn at 0-, `horizon.past` without a window): the shocks
+  join the correction's Galerkin basis as unit vectors (exact on their block). Kyle-Back with a CARA insider now solves
+  (tests/test_cara_kyle.py): against a brute-force discrete reference (extras/kyle_reference.py, Richardson over
+  n = 40 to 120) the entropic and expected costs agree to 3.4e-8 at 12 nodes for theta 0 to 4, the kernels to 1e-5;
+  two identical insiders to 1.5e-7 (costs) at 20 nodes. The entropic cost is stationary in the insider's own map (slope
+  1e-9 against 1e-3 at the risk-neutral equilibrium). Cross terms (D V, D P) needed nothing new: the risk-adjusted
+  condition holds for any quadratic loss under a linear profile. docs/method.md says why the loss must be the
+  realised cost (wealth), not the fundamental-valued flow.
+
 - Risk-averse (CARA) agents are solved on the spectral finite engine. An agent with `risk_aversion: theta` minimises
   the entropic cost theta^-1 log E exp(theta C) of its realised cost. The first-order condition is the risk-neutral
   one evaluated at the risk-adjusted noise-state (Ch1 appendix, thm:risk_sensitive_appendix): the point at which the
