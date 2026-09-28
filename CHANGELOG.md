@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Changed
+
+- A model with instant observations (Chapter 6's markets) iterates on sequential best responses
+  (Gauss-Seidel, `settings.best_responses`, default "auto"; "sequential" and "simultaneous" force either): the agents
+  answer in the model's order, each against the profile the agents before it have answered, the origins of monitored
+  deviations together (one coupled monitoring solve). The fixed points are the same equilibria; results move within the
+  solve's tolerance. Chapter 6's markets, whose simultaneous map has complex eigenvalues beyond the unit circle, gain:
+  the two-trader market at gamma = 0 from zero 507 -> 54 evaluations (its Jacobian's radius 1.12 -> 0.75), and the
+  opaque market now converges from a cold start at gamma = 0.1 (59 evaluations, the continuation's point to 2e-10).
+  Other models keep the simultaneous map (bit-identical).
+- A model with instant observations keeps at least `settings.anderson_m_instant` (25) Anderson secant pairs: the
+  transparent market (a ring of eigenvalues about 1.5-1.7 in modulus, some 55 Krylov directions deep) stalled at 15
+  (310 evaluations with the Newton polish, 101 now).
+- `solve(continue_from=...)` solves the points before the model's own to 1e-6 (`CONTINUATION_TOL`, or the solve's tol
+  if looser): they only start the next point.
+- Together, on Chapter 6's benchmark markets (median of 3): transparent 0.756 -> 0.301 s (24 nodes) and 0.707 -> 0.413 s
+  (32), opaque by continuation 0.657 -> 0.435 s, two traders by continuation 2.446 -> 0.631 s, and from zero at gamma = 0
+  1.583 -> 0.236 s; kernels, maps and costs move by at most 7e-9 relative on the stationary engine (tol 1e-10) and 2e-7
+  on the finite (tol 1e-8). Models without instant observations are bit-identical unless solved by continuation
+  (whose last point now starts from a 1e-6 path: it moves within its tolerance).
+
 ### Added
 
 - A finite horizon long against the model's time scales is re-cut automatically (`noisestate/time_panels.py`): a model with

@@ -34,7 +34,16 @@ strategy is recovered by projecting the resulting action kernel on the agent's
 closed-loop rows, and the equilibrium is the fixed point of the best-response map
 (all engines iterate on the action kernels with Tikhonov-regularised Anderson
 acceleration, the outer solver of the Chapter 5 market solver, and derive the raw
-maps by projection; a Newton-Krylov polish runs if Anderson stalls, about 15 to 25 evaluations of
+maps by projection.  Every agent answers the same profile (Jacobi), except in a model with instant observations
+(`settings.best_responses`, "auto"), where one evaluation is a sweep: the agents answer in
+the model's order, each against the profile the agents before it have already answered (Gauss-Seidel; the
+origins of monitored deviations answer together, their monitored responses being one coupled solve).  The fixed
+points are the same; on Chapter 6's markets the sweep's Jacobian is the better conditioned one (radius 0.75
+against 1.12 at the two-trader market's gamma = 0, where the simultaneous map took 507 evaluations from zero and
+the sweep takes 54).  A model with instant observations keeps at least
+`settings.anderson_m_instant` (25) secant pairs: its best-response Jacobian has a ring of complex eigenvalues
+beyond the unit circle, about 55 Krylov directions deep on the transparent market, where 15 stalled.
+A Newton-Krylov polish runs if Anderson stalls, about 15 to 25 evaluations of
 the map per Newton step: at most 15 fresh Krylov vectors in its inner LGMRES iteration, plus the up
 to 10 directions carried from earlier steps, multiplied afresh each step, and the line search.
 `solve(variable="maps")` iterates on the raw maps instead, which is what happens with ties in any

@@ -135,6 +135,9 @@ def _after_solve(res, refine: bool, stability: bool, diagnostics: bool):
     return res
 
 
+CONTINUATION_TOL = 1e-6        # solve(continue_from=...): the tolerance of the points before the model's own
+
+
 def _solve_by_continuation(model, continue_from, *, start_from=None, start_policy=None, refine=False, stability=False,
                            **kw) -> Result:
     """solve(..., continue_from=...): the path from the given parameter values to the model's own, fraction t from 0 to
@@ -151,7 +154,17 @@ def _solve_by_continuation(model, continue_from, *, start_from=None, start_polic
     a = {k: float(v) for k, v in continue_from.items()}
     b = {k: float(params[k]) for k in continue_from}
     at = lambda t: model.with_params(**{k: a[k] + t * (b[k] - a[k]) for k in a})
-    inner = {**kw, "diagnostics": False}              # the checks at the end run on the last point only
+    # the checks at the end run on the last point only, and the points before it are solved to CONTINUATION_TOL (or the
+    # solve's own tol if looser): they only start the next point, whose secant start is off by the step's curvature
+    # anyway (1e-3 of the residual on Chapter 6's market), and the last 4 of 7 decades were half of every point's
+    # evaluations (on simultaneous best responses the two-trader market's path took 760 -> 625 evaluations, the opaque
+    # market's 500 -> 294)
+    own_tol = kw.get("tol")
+    if own_tol is None:                                 # a tol given in the numerics, or the model's
+        own_tol = Numerics.of(kw.get("numerics")).tol if kw.get("numerics") is not None else None
+    if own_tol is None:
+        own_tol = model.numerics.tol
+    inner = {**kw, "diagnostics": False, "tol": max(float(own_tol or 0.0), CONTINUATION_TOL)}
     ok = lambda r: r.status in ("converged", "near tolerance")
     res = solve(at(0.0), start_from=start_from, start_policy=start_policy, **inner)
     path = [(0.0, res.status)]
@@ -202,8 +215,10 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
     continue_from ({parameter: value}): reach the model by continuation in those parameters, from the values given
     (where the model solves from a cold start, a competitive or cost-free corner) to its own, each point starting from
     the last one's maps, the step halved where a point does not converge; the path is res.continued ([(fraction,
-    status)]).  Markets with level rows or monitored deviations can need it: Chapter 6's opaque market does not
-    converge from a cold start at a positive inventory weight, and solve(m, continue_from={"gamma": 0}) reaches it.
+    status)]); the points before the model's own are solved to CONTINUATION_TOL (1e-6) or the solve's tol if looser.
+    Markets with level rows or monitored deviations can need it: Chapter 6's market with a privy and a naive trader does
+    not converge from a cold start at a positive inventory weight (nor did the opaque market before the sequential best
+    responses, settings.best_responses), and solve(m, continue_from={"gamma": 0}) reaches it.
     past and continuation (a transition's, on the
     spectral engine; on a model of kind "transition" each overrides the file's block).  Unknown options are a
     TypeError naming the Numerics or Settings field they belong to.  res.numerics is the resolved Numerics."""

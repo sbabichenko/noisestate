@@ -13,6 +13,8 @@ defaults are recorded in `res.numerics`, `res.solver_kw` and the payload's `opti
 | `anderson_iters` | 150 | Anderson iterations before the Newton-Krylov polish takes over |
 | `anderson_reg` | 1e-8 | Tikhonov regularisation of the Anderson secant system, relative to its trace |
 | `newton_inner_m` | 15 | fresh Krylov vectors (evaluations of the map) per Newton step of the polish |
+| `anderson_m_instant` | 25 | Anderson memory (at least) for a model with instant observations: its best-response map has a ring of complex eigenvalues beyond the unit circle (0.24 +- 1.64i on the transparent market), where 15 secant pairs stalled (310 evaluations with the polish, 101 at 25; Kyle-Back and Ch5 are slower at 25) |
+| `best_responses` | auto | the fixed-point map on action kernels: "sequential" (Gauss-Seidel: the agents answer in the model's order, each against the profile the agents before it have answered; the origins of monitored deviations answer together; ties answer simultaneously), "simultaneous" (Jacobi, every agent against the same profile), or "auto": sequential for a model with instant observations (Chapter 6's markets), simultaneous otherwise (monitoring alone gains nothing: Kyle-Back with a privy market maker 59 -> 63 evaluations). The fixed points are the same equilibria; results move within the solve's tolerance. Sequential took Chapter 6's two-trader market from 507 evaluations to 54 from zero (its Jacobian's radius 1.12 -> 0.75); elsewhere it gains less (Ch1 delayed 13 -> 9 evaluations, Ch3's transition 20 -> 15, Kyle-Back 47 -> 50), moves every result within the tolerance and leaves a symmetric pair of untied agents symmetric only to it, so it is not the default there |
 | `foc_rcond` | 1e-10 | a best-response system whose reciprocal condition estimate is below this is singular |
 | `stationary_map_ridge` | 1e-14 | ridge of the stationary map projection's Gram, relative to its mean diagonal |
 | `map_ridge` | 1e-13 | ridge of the finite engines' per-time-row (per-cell) map projection, relative to the row's own Gram |
@@ -42,7 +44,8 @@ defaults are recorded in `res.numerics`, `res.solver_kw` and the payload's `opti
 
 ## Groups
 
-The outer fixed point (`anderson_m`, `anderson_iters`, `anderson_reg`, `newton_inner_m`); the best response
+The outer fixed point (`anderson_m`, `anderson_iters`, `anderson_reg`, `newton_inner_m`, `anderson_m_instant`,
+`best_responses`); the best response
 (`foc_rcond`, `stationary_map_ridge`, `map_ridge`, and the spectral finite engine's `foc_dense_max`, the unknowns
 nU nR N up to which the first-order-condition system is assembled from the operators' rows and LU-factored,
 beyond which it is solved by GMRES on the applied operators to `foc_krylov_tol` within `foc_krylov_maxiter`,

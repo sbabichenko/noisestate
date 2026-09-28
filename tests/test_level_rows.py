@@ -207,10 +207,13 @@ def test_a_naive_player_who_also_sees_what_moves_the_quote_is_warned():
 
 def test_continue_from_reaches_a_market_a_cold_start_does_not():
     """solve(m, continue_from={"gamma": 0}): Chapter 6's opaque market at gamma = 0.1 by continuation from the
-    cost-free corner, the same point as stepping there by hand; unknown parameters are refused with a hint."""
-    cold = ns.solve(_opaque(0.1))
+    cost-free corner, the same point as stepping there by hand; unknown parameters are refused with a hint.  A cold
+    start on simultaneous best responses does not reach it; the sequential ones (the default here) do, to the same
+    point (measured 2e-10)."""
+    cold = ns.solve(_opaque(0.1), settings={"best_responses": "simultaneous"})
     assert not cold.converged
     r = ns.solve(_opaque(0.1), continue_from={"gamma": 0.0})
+    assert np.abs(ns.solve(_opaque(0.1)).require_converged().kernel("P") - r.kernel("P")).max() < 1e-8
     assert r.converged and r.continued[0] == (0.0, "converged") and r.continued[-1][0] == 1.0
     by_hand = _up(_opaque, step=0.01)
     assert np.abs(r.kernel("P") - by_hand.kernel("P")).max() < 1e-7

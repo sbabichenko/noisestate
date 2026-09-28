@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 import warnings
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import scipy.linalg as sla
@@ -641,7 +641,8 @@ class EngineBase(MeanLayer):
                 x0 = {a.name: np.zeros(self.action_shapes[a.name]) for a in self.model.agents}
             else:
                 x0 = start_from if kind == "actions" else self.actions_from_maps(start_from)
-            pack, unpack, respond = self.pack_actions, self.unpack_actions, self.response_actions
+            pack, unpack = self.pack_actions, self.unpack_actions
+            respond = self.response_actions_sequential if self._sequential() else self.response_actions
         else:
             if kind is None:
                 x0 = self.zero_maps()
@@ -659,8 +660,11 @@ class EngineBase(MeanLayer):
             full = z0.copy(); full[free] = zz
             return (pack(respond(unpack(full))) - full)[free]
         st = self.settings
+        memory = self.ANDERSON_M
+        if getattr(self.c, "instant_loads", None):
+            memory = max(memory, st.anderson_m_instant)         # settings.anderson_m_instant: the complex ring beyond the unit circle
         z, resid, _, converged, message = solve_fixed_point(F, z0 if free is None else z0[free], tol=tol, verbose=self.verbose, damping=damping,
-                                                            anderson_iters=st.anderson_iters, max_newton=max_newton, M=self.ANDERSON_M,
+                                                            anderson_iters=st.anderson_iters, max_newton=max_newton, M=memory,
                                                             reg=st.anderson_reg, inner_m=st.newton_inner_m, max_evaluations=max_evaluations,
                                                             deadline=deadline, progress=progress, t0=t0)
         if free is not None:
@@ -766,6 +770,59 @@ class EngineBase(MeanLayer):
         """Every agent's best-response map against `maps` (the map-iteration fixed-point function)."""
         self._profile_actions = None
         return self._over_representatives(lambda a: self.best_response(a, maps)[0])
+
+    def _sequential(self) -> bool:
+        """Whether the fixed point iterates on sequential best responses (settings.best_responses; "auto": for a model with
+        instant observations, Chapter 6's markets, whose simultaneous map has complex eigenvalues beyond the unit circle.
+        Monitoring alone gains nothing: Ch3 with one privy player 22 -> 20 evaluations, Kyle-Back with a privy market maker
+        59 -> 63 and 26% slower)."""
+        mode = self.settings.best_responses
+        if mode == "auto":
+            return bool(getattr(self.c, "instant_loads", None))
+        return mode == "sequential"
+
+    def _sweep_blocks(self) -> List[List[Agent]]:
+        """The order of the sequential best responses: the model's agents in turn, except that the agents whose
+        deviations others monitor (Chapter 6's origins) answer together, as one block at the position of the first:
+        their monitored responses are one coupled solve at one profile (_monitoring), which a block solves once."""
+        blocks, origins = [], None
+        for a in self.model.agents:
+            if len(self.model.privy(a.name)) > 1:
+                if origins is None:
+                    origins = []
+                    blocks.append(origins)
+                origins.append(a)
+            else:
+                blocks.append([a])
+        return blocks
+
+    def response_actions_sequential(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """The best responses in turn (Gauss-Seidel, settings.best_responses = "sequential"): each agent, in the model's
+        order, answers the profile in which the agents before it have already answered (the maps recovered from those
+        action kernels, as response_actions does for the whole profile); the origins of monitored deviations answer
+        together (_sweep_blocks).  Its fixed points are response_actions' (an agent's answer at a fixed point is its
+        own action), so the equilibria are the same; the iteration is not: on Chapter 6's markets the simultaneous
+        map's Jacobian has pairs of complex eigenvalues beyond the unit circle (0.18 +- 1.11i at the two-trader
+        market's gamma = 0), the sequential one's radius is 0.75 there.  Ties answer simultaneously (tied agents share
+        one answer), so a model with ties uses response_actions.  One maps recovery per block instead of one in all."""
+        if self.model.ties:
+            return self.response_actions(actions)
+        blocks = self._sweep_blocks()
+        if len(blocks) == 1:
+            return self.response_actions(actions)
+        cur = dict(actions)
+        try:
+            for block in blocks:
+                # every agent's maps again: the world moved with the answers before (keeping the others' maps and
+                # taking the answering agents' own projections instead failed on Chapter 6's opaque market, as the
+                # iteration on raw maps does)
+                maps = self.maps_from_actions(cur)
+                self._profile_actions = dict(cur)
+                for a in block:
+                    cur[a.name] = self.best_response(a, maps, project=False)[1]["action"]
+            return cur
+        finally:
+            self._profile_actions = None
 
     def response_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Every agent's best-response action kernels against `actions`.  The iterate is kept as _profile_actions while

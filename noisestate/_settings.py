@@ -31,6 +31,8 @@ class Settings:
     anderson_iters: int = 150           # Anderson iterations before the Newton-Krylov polish takes over
     anderson_reg: float = 1e-8          # Tikhonov regularisation of the Anderson secant system, relative to its trace
     newton_inner_m: int = 15            # fresh Krylov vectors (evaluations of the map) per Newton step of the polish
+    anderson_m_instant: int = 25        # Anderson memory (at least) for a model with instant observations (a level seen at once, Chapter 6's quote): its best-response map has a ring of complex eigenvalues beyond the unit circle (0.24 +- 1.64i on the transparent market), and 15 secant pairs stalled there (310 evaluations with the polish, 101 at 25; Kyle-Back and Ch5 are slower at 25)
+    best_responses: str = "auto"        # the fixed-point map on action kernels: "sequential" (Gauss-Seidel: the agents answer in the model's order, each against the profile the agents before it have answered; the origins of monitored deviations answer together; ties answer simultaneously), "simultaneous" (Jacobi, every agent against the same profile), or "auto": sequential for a model with instant observations (Chapter 6's markets), simultaneous otherwise (monitoring alone gains nothing: Kyle-Back with a privy market maker 59 -> 63 evaluations).  The fixed points are the same equilibria; results move within the solve's tolerance.  Sequential took Chapter 6's two-trader market from 507 evaluations to 54 from zero (its Jacobian's radius 1.12 -> 0.75); elsewhere it gains less (Ch1 delayed 13 -> 9 evaluations, Ch3's transition 20 -> 15, Kyle-Back 47 -> 50), moves every result within the tolerance and leaves a symmetric pair of untied agents symmetric only to it, so it is not the default there
     # ---- the best response
     foc_rcond: float = 1e-10            # a best-response system whose reciprocal condition estimate is below this is singular
     stationary_map_ridge: float = 1e-14  # ridge of the stationary map projection's Gram, relative to its mean diagonal
@@ -82,6 +84,8 @@ class Settings:
             elif isinstance(f.default, float):
                 if isinstance(v, bool) or not isinstance(v, numbers.Real) or math.isnan(v):
                     raise TypeError(f"settings.{f.name} must be a number (default {default!r}), not {v!r}")
+        if self.best_responses not in ("auto", "sequential", "simultaneous"):
+            raise ValueError(f"settings.best_responses must be 'auto', 'sequential' or 'simultaneous', not {self.best_responses!r}")
         if self.risk_planning not in ("precommitment", "consistent"):
             raise ValueError(f"settings.risk_planning must be 'precommitment' or 'consistent', not {self.risk_planning!r}")
 

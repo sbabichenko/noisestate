@@ -144,11 +144,12 @@ def test_the_maps_hold_the_market_but_do_not_reach_it():
     """The market's equilibrium is unstable under best responses (radius 1.48).  The action kernels (the default) reach
     it from zero; the raw maps hold it (a few evaluations from it, the same costs) but from zero stall at 0.85 and say
     so -- not a second equilibrium: converged is False.  Ties, which need the maps, are refused with instant
-    observations for that reason."""
+    observations for that reason.  (How many evaluations the maps take to confirm it depends on how far below the
+    tolerance the action iteration stopped: 3 after 1e-11, 7 after 9.9e-11.)"""
     m = market(0.1, nodes=24)
     res = ns.solve(m).require_converged()
     held = ns.engines.solver(m).solve(start_from=res.maps, variable="maps")
-    assert held.converged and held.evaluations <= 5
+    assert held.converged and held.evaluations <= 8
     assert held.costs["trader"] == pytest.approx(res.costs["trader"], abs=1e-8)
     assert not ns.engines.solver(m).solve(variable="maps").converged
 
