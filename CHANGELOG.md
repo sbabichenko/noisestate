@@ -4,6 +4,17 @@
 
 ### Added
 
+- Consistent planning for risk-averse agents on the finite engine, `settings.risk_planning = "consistent"` (the default
+  stays precommitment, J_0 over the whole strategy): every date's self minimises the entropic cost of its own
+  continuation, discounted from its date, the later selves playing the equilibrium map. The condition is
+  `P_t S_t f_t^on = 0`, `S_t = (I - theta K_t)^-1` with `K_t` the continuation's kernel and `f_t^on` taken with the agent's
+  own later reactions on (`SpectralFiniteSolver._responses_on`, `FocOps(envelope=False)`); `risk.ConsistentTilt` computes
+  it with one Galerkin matrix per time row, and the best response adds it as a shift frozen at the profile. Checked
+  against `extras/leqg_reference.py` `ConsistentGame`, a brute-force discrete game solved by backward sweeps over the
+  date selves with exact conditional entropic objectives (tests/refs/leqg_ch1_consistent.json,
+  tests/refs/leqg_ch1_consistent_rho1.json; tests/test_cara_consistent.py). Refused with a past, monitoring, instant
+  observations or means.
+
 - Risk-averse agents with monitored deviations and instant observations on the finite engine (Chapter 6). A risk-averse
   privy player's response to a deviation it knows solves `f^xi_t(s) + theta <S f_t, K e_xi(s)> = 0`: the seed enters its
   cost as a known linear part and the conditional covariance drops out, so no prior on the seed is needed. The term needs

@@ -46,7 +46,7 @@ class FocSystem:
     RISK_KRYLOV_REDUCTION = 1e-4    # a warm-started risk-averse solve stops at this fraction of its initial residual (solve)
 
     def __init__(self, solver, agent: Agent, rowops: RowOps, projops: ProjOps, resp: RespOps, foc: FocOps,
-                 Zpass: np.ndarray, phi_past, tilt=None):
+                 Zpass: np.ndarray, phi_past, tilt=None, shift=None):
         c = solver.c; self.solver = solver; self.c = c; self.agent = agent
         self.rowops, self.projops, self.resp, self.foc = rowops, projops, resp, foc
         self.N, self.nP, self.ncol, self.Nm = c.N, len(c.prim), c.ncol, solver.Nm
@@ -63,6 +63,7 @@ class FocSystem:
             self.inv = np.arange(self.kept.size); self.n = self.kept.size
         self.matvecs = 0; self.iterations = 0; self.residual = 0.0; self.block_rcond = np.inf
         self.tilt = tilt                        # a risk-averse agent's correction (risk.Tilt), linear in the world
+        self.shift = shift                      # ... or, under consistent planning, a shift frozen at the profile (nU, N, ncol)
         # the right-hand side: the FOC of the passive world projected on the rows
         Zp = Zpass.reshape(self.nP, self.N, self.ncol)
         a = foc.atoms_of(Zp)
@@ -74,6 +75,8 @@ class FocSystem:
                 phi[:, :c.nW] += phi_past[ui]
             if tilt is not None:
                 phi = phi + d
+            if shift is not None:
+                phi = phi + shift[ui]
             b[ui] = projops.apply(phi)
         self.bvec = self.reduce(b.reshape(-1))
 
@@ -462,8 +465,13 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
         Zpass = Zp.reshape(nP * N, ncol)
     foc = FocOps(solver, agent, Roff)
     phi_past = solver._foc_affine(agent, foc)
-    tilt = solver._tilt(agent, maps, foc, Roff) if agent.risk_aversion else None
-    system = FocSystem(solver, agent, rowops, projops, resp, foc, Zpass, phi_past, tilt)
+    tilt = shift = None
+    if agent.risk_aversion:
+        if solver.settings.risk_planning == "consistent":
+            shift = solver._consistent_shift(agent, maps)
+        else:
+            tilt = solver._tilt(agent, maps, foc, Roff)
+    system = FocSystem(solver, agent, rowops, projops, resp, foc, Zpass, phi_past, tilt, shift)
     gamma, iters = system.solve(solver._last_gamma.get(agent.name))
     if solver.foc_free or tilt is not None:
         solver._last_gamma[agent.name] = gamma
@@ -499,10 +507,10 @@ def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None
     for ui, u in enumerate(agent.controls):
         phi = system.foc.foc(ui, a); phi_phys = fphys.foc(ui, ap)
         dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
-        if system.tilt is not None:
+        if system.tilt is not None or system.shift is not None:
             # a risk-averse agent: the kernel whose projection vanishes is S f, the risk-neutral one plus the
-            # correction (risk.py); physical + wedge + risk = foc
-            risk = system.tilt.delta(ui, Zfull) + system.tilt.delta_const(ui)
+            # correction (risk.py; under consistent planning the shift frozen at the profile); physical + wedge + risk = foc
+            risk = (system.tilt.delta(ui, Zfull) + system.tilt.delta_const(ui)) if system.tilt is not None else system.shift[ui]
             dec[u]["risk"] = risk
             dec[u]["foc"] = phi + risk
     out["decomp"] = dec

@@ -181,6 +181,7 @@ class RiskGeometry:
         # (row, one-time node) per pair, are a sparse product with f at the points (never Psi at the points)
         self.Mpast = self._row_nodes(self.Bpast, rp, wp)
         self.Mfut = self._row_nodes(self.Bfut, rf, wf)
+        self.fut_rows, self.fut_v, self.fut_w = rf, vf, wf                          # the future quadrature's points (ConsistentTilt)
 
         # the line paths of the engine's own operators (the same keys and geometry, so they are shared)
         self.lp_proj = c._path(("projection", 0.0), r_lo=np.zeros(N), r_hi=g.s,
@@ -858,3 +859,168 @@ class Tilt:
         tail = max(0.0, self.trace_K2() - float(np.sum(self.lam ** 2)))
         return ritz + 0.25 * th * tail
 
+
+class ConsistentTilt(Tilt):
+    """Consistent planning on the finite engine: every date's self minimises J_t = theta^-1 log E[exp(theta C_t) | F_t] of its
+    own continuation C_t = int_t^T e^{-rho (tau - t)} c_tau dtau (+ the terminal loss, + the integrals from t on), the later
+    selves playing the equilibrium map.  The tilt argument at date t (Ch1 appendix, with the kernel K_t of C_t) gives
+
+        P_t S_t f_t^on = 0,     S_t = (I - theta K_t)^-1,
+
+    one operator per date: K_t(u, v) = int_{max(u, v, t)}^T zeta(tau, u)' G zeta(tau, v) dtau (+ terminal, + the integrals'
+    cross kernel for v >= t) drops every cost before t, which the date-t self does not bear, and f_t^on is the FOC kernel with
+    the agent's own later reactions ON (the later selves do not share the date-t objective: no envelope; FocOps(envelope=
+    False) with the responses of SpectralFiniteSolver._responses_on).  At theta = 0 it is the risk-neutral condition at an
+    equilibrium.  The date-0 self's objective is the precommitment one, J_0 over the whole cost, so the breakdown check
+    (theta lambda_max(K) < 1) and the reported entropic cost are the precommitment's; the later dates need only
+    I - theta K_t invertible (their conditional entropic cost is finite whenever the date-0 one is).
+
+    The correction on the seen nodes (t, u), u <= t: Delta_t = theta K_t S_t f_t = theta K_t f_t + theta (K_t Phi) c_t,
+    c_t = theta (I - theta K_{t,G})^-1 Phi' K_t f_t (Sloan's iterate, as Tilt, with a Galerkin matrix per time row), K_t
+    discounted from t (the kernels here are discounted from zero, so theta enters as theta e^{rho t}):
+    K_t f_t on the nodes by the continuation path alone (tau >= t), Phi' K_t f_t = int_t^T E(tau)' G (A f_t)(tau) dtau and
+    K_{t,G} = int_t^T E' G E dtau by the geometry's per-row future quadrature, K_t Phi at the nodes (t, u) by a continuation
+    path of the Galerkin quadrature's order.  The best response adds (phi^on - phi^off) + Delta_t, frozen at the profile, to
+    its risk-neutral FOC kernel (the shift): at a fixed point the profile is the best response, so the equilibrium solves
+    the condition exactly."""
+
+    def __init__(self, geo: RiskGeometry, foc, agent, theta: float, Zprof: np.ndarray, R: Optional[np.ndarray], clip: bool = False):
+        if geo.n0:
+            raise NotImplementedError("consistent planning on the finite engine with initial shocks (a past)")
+        super().__init__(geo, foc, agent, theta, Zprof, R, clip=clip)
+        th = self.theta
+        c = self.c; g = geo.g; N, nW, P = geo.N, geo.nW, geo.P; m, mt = self.m, self.mt
+        n1P = len(geo.x1)
+        # K_t Phi at the nodes (t, u): int_t^T zeta(tau, u)' G E(tau) dtau (+ terminal, + the integrals for v >= t), through the
+        # contraction T[n, k, j, x] = sum_{q in n} w_q e^{-rho r_q} zeta_j(r_q, r_q - u)_k B[q, x] (B the one-time read of r_q)
+        key = ("consistent_path",)
+        if key not in geo.__dict__.setdefault("_cons", {}):
+            lp = g.path(g.t, g.a, r_lo=g.t, r_hi=np.full(N, c.Tg), point_fn=lambda k, r: (r, r - g.s[k]), m=geo.mq,
+                        side_t=g.side_t, side_d=g.side_ds)
+            Bq = geo._bary(lp.r, np.clip(g.panel_of(lp.r), 0, P - 1)) if lp.rows is not None else None
+            geo._cons[key] = (lp, Bq)
+        lp, Bq = geo._cons[key]
+        from scipy.sparse import diags
+        Psi = np.zeros((N, nW, self.E.shape[2]))
+        if lp.rows is not None:
+            wq = lp.w * np.exp(-geo.rho * lp.r)
+            zq = lp.read_unknown(self.zf.transpose(1, 0, 2).reshape(N, -1)).reshape(-1, m, nW)
+            QE = np.einsum("jl,xla->xja", self.Qf, self.E[:, :m])                    # (n1 P, m, nV)
+            for j in range(m):
+                for k in range(nW):
+                    if np.any(zq[:, j, k]):
+                        Tjk = (lp.R @ diags(wq * zq[:, j, k]) @ Bq).toarray()        # (N, n1 P)
+                        Psi[:, k] += Tjk @ QE[:, j]
+            if self.mx:
+                zxq = lp.read_unknown(self.zx.transpose(1, 0, 2).reshape(N, -1)).reshape(-1, self.mx, nW)
+                LPh = np.zeros((n1P, self.mx, self.E.shape[2]))
+                LPh[:, :, :self.nVb] = np.einsum("jk,nka->nja", self.Lx, self._phi_at(geo.x1))
+                for j in range(self.mx):
+                    for k in range(nW):
+                        if np.any(zxq[:, j, k]):
+                            Tjk = (lp.R @ diags(wq * zxq[:, j, k]) @ Bq).toarray()
+                            Psi[:, k] += Tjk @ LPh[:, j]
+        if mt:
+            Psi += np.einsum("njk,jl,la->nka", self.zT_at, self.QT, self.ET, optimize=True)
+        self.Psi_t = Psi
+        # per time row: the future quadrature's points v in [t, T] (geo.fut_*), E there, K_{t,G} and its inverse
+        rows = geo.fut_rows; v = geo.fut_v; w = geo.fut_w * np.exp(-geo.rho * v)
+        Ef = (geo.Bfut @ self.E.reshape(n1P, -1)).reshape(v.size, self.E.shape[1], -1)        # (nq, ma, nV)
+        self.Ef = Ef; self.wfut = w
+        nr = geo.n_rows
+        KG = np.zeros((nr, Ef.shape[2], Ef.shape[2]))
+        QEf = np.einsum("jl,qla->qja", self.Qf, Ef[:, :m])
+        if self.mx:
+            Exf = (geo.Bfut @ self.Ex.reshape(n1P, -1)).reshape(v.size, self.mx, -1)
+            Phf = np.zeros((v.size, nW, Ef.shape[2])); Phf[:, :, :self.nVb] = self._phi_at(v)
+            self.Exf, self.Phf = Exf, Phf
+        for r in range(nr):
+            sel = rows == r
+            K = np.einsum("q,qja,qjb->ab", w[sel], Ef[sel, :m], QEf[sel], optimize=True)
+            if self.mx:
+                X = np.einsum("q,qja,jk,qkb->ab", w[sel], Exf[sel], self.Lx, Phf[sel], optimize=True)
+                K += X + X.T
+            if mt:
+                K += np.exp(-geo.rho * geo.T) * (self.ET.T @ self.QT @ self.ET)
+            KG[r] = 0.5 * (K + K.T)
+        self.KG_t = KG
+        # the rows' first node (the terminal reads at (T, T - t) depend on the row's time only)
+        first = np.zeros(nr, dtype=int)
+        for (p, it), idx in sorted(c.trow_by_pit.items()):
+            first[geo.node_row[idx[0]]] = idx[0]
+        self.first_node = first
+        # the date-t self discounts from t: C_t = e^{rho t} int_t e^{-rho tau} c dtau, so its kernel is e^{rho t} times the one
+        # built here with the engine's discount from zero, and its risk aversion on that kernel theta_t = theta e^{rho t}
+        self.th_row = th * np.exp(geo.rho * g.t[first])
+        self.th_node = th * np.exp(geo.rho * g.t)
+        lam = np.linalg.eigvalsh(KG)
+        margin = 1.0 - self.th_row[:, None] * lam                                          # (rows, nV): I - theta_t K_{t,G}'s spectrum
+        self.info = {"min_abs_margin": float(np.abs(margin).min()), "min_margin": float(margin.min()),
+                     "theta_lambda_max_t": float((self.th_row[:, None] * lam).max())}
+        if self.info["min_abs_margin"] < 1e-8:
+            raise ValueError(f"consistent planning for {agent.name}: I - theta K_t is singular at some date (1 - theta lambda = "
+                             f"{self.info['min_abs_margin']:.1e}); the date's condition P_t S_t f_t = 0 is not well posed there")
+        self.Sg_t = np.linalg.inv(np.eye(KG.shape[1])[None] - self.th_row[:, None, None] * KG)
+        if self.mx:
+            zxa = self.zx.transpose(1, 0, 2).reshape(N, -1)
+            lpp, lr = geo.lp_proj, geo.lp_resp
+            self.proj_Ix = lpp.read_unknown(zxa).reshape(-1, self.mx, nW) if lpp.rows is not None else None
+            self.resp_Jx = lr.read(zxa).reshape(-1, self.mx, nW) if lr.rows is not None else None
+
+    def consistent_delta(self, ui: int, Zw: np.ndarray) -> np.ndarray:
+        """Delta_t = theta K_t S_t f_t^on on the seen nodes, (N, nW), f_t in the profile world Zw (n_prim, N, ncol)."""
+        geo = self.geo; th = self.theta; N, nW, m, mt = geo.N, geo.nW, self.m, self.mt
+        extra = self.fUc[ui] if (self.mx and self.fUc is not None) else None
+        own = self.Ldelta[ui] if self.mx else None
+        Z = np.asarray(Zw)[:, :, :nW, None]
+        AL, AU, _, phi, fU = self._delta(ui, Z, extra=extra, parts=True, own=own)
+        AU, phi, fU = AU[..., 0], phi[..., 0], fU[..., 0]
+        lc = geo.lp_cont
+        # K_t f_t at the nodes (t, u): tau >= t only
+        Kf = np.zeros((N, nW))
+        if lc.rows is not None:
+            J = lc.read(AU[:, :m] @ self.Qf.T).reshape(-1, m, 1)
+            Kf += (lc.R @ _bmm(self.cont_It, J).reshape(-1, nW)).reshape(N, nW)
+            if self.mx:
+                J = lc.read(fU @ self.Lx.T).reshape(-1, self.mx, 1)
+                Kf += (lc.R @ _bmm(self.cont_Itx, J).reshape(-1, nW)).reshape(N, nW)
+        if mt:
+            AT = geo.IRT @ AU[:, m:]
+            Kf += np.einsum("njk,jl,nl->nk", self.zT_at, self.QT, AT, optimize=True)
+        if own is not None:
+            Kf += np.einsum("nkd,d->nk", self.K_nodes(), own)
+        # Phi' K_t f_t per row
+        rows = geo.fut_rows; w = self.wfut
+        AUq = geo.Ifut @ AU                                                           # (nq, ma): A f_t at (v, v - t)
+        vals = np.einsum("q,qja,jl,ql->qa", w, self.Ef[:, :m], self.Qf, AUq[:, :m], optimize=True)
+        if self.mx:
+            fUq = geo.Ifut @ fU                                                       # f_t(v), v >= t
+            lr, lpp = geo.lp_resp, geo.lp_proj
+            AUx = np.zeros((N, self.mx))
+            if lpp.rows is not None:
+                AUx += (lpp.R @ (lpp.w[:, None] * np.einsum("qjk,qk->qj", self.proj_Ix, lpp.read(phi)))).reshape(N, self.mx)
+            if lr.rows is not None:
+                AUx += (lr.R @ (lr.w[:, None] * np.einsum("qjk,qk->qj", self.resp_Jx, lr.read_unknown(fU)))).reshape(N, self.mx)
+            AUxq = geo.Ifut @ AUx
+            vals += np.einsum("q,qja,jk,qk->qa", w, self.Exf, self.Lx, fUq, optimize=True)
+            vals += np.einsum("q,qj,jk,qka->qa", w, AUxq, self.Lx, self.Phf, optimize=True)
+        F = np.zeros((geo.n_rows, vals.shape[1]))
+        np.add.at(F, rows, vals)
+        if mt:
+            F += np.exp(-geo.rho * geo.T) * ((geo.IRT @ AU[:, m:])[self.first_node] @ self.QT @ self.ET)
+        if own is not None:
+            F += np.einsum("rda,d->ra", self._psi_t_at_rows(), own)                    # Phi' K_t (own delta_t) = (K_t Phi)(t)' own
+        C = self.th_row[:, None] * np.einsum("rab,rb->ra", self.Sg_t, F)
+        return self.th_node[:, None] * (Kf + np.einsum("nka,na->nk", self.Psi_t, C[geo.node_row]))
+
+    def _psi_t_at_rows(self) -> np.ndarray:
+        """(K_t Phi)(t) per row (rows, nW, nV): the node of the row at age 0."""
+        if getattr(self, "_psirow", None) is None:
+            geo = self.geo; g = geo.g
+            out = np.zeros((geo.n_rows, geo.nW, self.Psi_t.shape[2]))
+            for (p, it), idx in sorted(self.c.trow_by_pit.items()):
+                idx = np.asarray(idx)
+                k = idx[np.argmin(g.a[idx])]
+                out[geo.node_row[k]] = self.Psi_t[k]
+            self._psirow = out
+        return self._psirow

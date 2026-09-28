@@ -38,6 +38,7 @@ class Settings:
     foc_krylov_maxiter: int = 400       # spectral finite engine, matrix-free path: LGMRES iterations at most (beyond them the system is reported singular)
     # ---- risk-averse (CARA) agents, the spectral finite engine
     risk_basis: int = 0                 # Legendre functions per time panel (and channel) of the Galerkin part of the entropic correction (risk.py); 0: the grid's nodes per side plus 4
+    risk_planning: str = "precommitment"  # the spectral finite engine's criterion for risk-averse agents: "precommitment" (J_0 over the whole strategy) or "consistent" (every date's self minimises the entropic cost of its own continuation, the later selves playing the equilibrium map; risk.ConsistentTilt)
     # ---- the second-order check
     second_order_tol: float = 1e-4      # curvature (relative to the largest) below which a negative value is window truncation
     second_order_dense: int = 4000      # strategy dimension up to which the form is built densely (always settles, 2.7 s at 1600); Lanczos above

@@ -434,7 +434,9 @@ class FocOps:
     loss's (m_flow of them), Q block-diagonal, each with the adjoint's terminal condition as its operator: at a
     node (t, s), e^{-rho (T - t)} times the atom's response at T to an impulse at t, times (Q_T zeta)(T, s)."""
 
-    def __init__(self, solver, agent: Agent, R: np.ndarray):
+    def __init__(self, solver, agent: Agent, R: np.ndarray, envelope: bool = True):
+        """envelope=False: the continuation also runs through the agent's own controls' atoms (R then holds the agent's
+        own later reactions: consistent planning, whose later selves do not share the date-t objective)."""
         c = solver.c; g = c.g; self.c = c; self.agent = agent
         self.N, self.nP = c.N, len(c.prim)
         self.atoms, self.Q, _ = c.loss[agent.name]
@@ -450,7 +452,7 @@ class FocOps:
                               if v != u and (v, 0.0) in self.atoms])
             cont, lags = None, []
             if not agent.myopic:
-                js = [j for j, (nm, lag) in enumerate(self.atoms) if nm not in agent.controls]
+                js = [j for j, (nm, lag) in enumerate(self.atoms) if not envelope or nm not in agent.controls]
                 if js:
                     Rj = np.stack([self.AO[j][1] @ R[c.block(self.atoms[j][0]), ui] for j in js], axis=1)
                     keep = _nonzero_cols(Rj)

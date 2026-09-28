@@ -86,8 +86,9 @@ Chapter 6: monitored deviations (`monitors:`) and instant observations are solve
 finite engine without a past or a continuation (a transition refuses them); instant observations may not form a cycle
 and are refused with ties.  The general rectangular system is solved through response kernels rather than
 Proposition 6.10's gains, which agree in the linear-quadratic case; `res.foc_residual` checks the kernels.
-`risk_aversion` (the entropic objective) is solved by the spectral finite engine (precommitment: J_0 over the whole
-strategy) with no past or a past of initial shocks only, and without a continuation; monitored deviations and instant
+`risk_aversion` (the entropic objective) is solved by the spectral finite engine (precommitment, J_0 over the whole
+strategy, or with `settings.risk_planning = "consistent"` every date's self on its own continuation, then without a past,
+monitoring, instant observations or means) with no past or a past of initial shocks only, and without a continuation; monitored deviations and instant
 observations are solved (a risk-averse privy player's response gains the seed's tilt, not with initial shocks); means
 are solved (without a window, and not together with `integrals`).  With an integral whose quantity is the agent's own
 current control (or a control that reacts to it at once) the finite engine converges algebraically, about N^-2.4 (the

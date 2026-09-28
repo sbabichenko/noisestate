@@ -265,6 +265,34 @@ minimise their exact seed-world objective, log det plus the linear part; `tests/
 the responses agree to 5e-5 and the entropic costs to 1e-6 (theta 1, theta 1.5); without the term the responses are
 off by 0.1 to 1 (tests/test_cara_monitoring.py).
 
+### Consistent planning on the finite engine
+
+`settings.risk_planning = "consistent"` (`ns.solve(m, numerics={"settings": {"risk_planning": "consistent"}})`) replaces
+precommitment, `J_0` over the whole strategy, by consistent planning: every date's self minimises
+`J_t = theta^-1 log E[exp(theta C_t) | F_t]` of its own continuation `C_t = int_t^T e^{-rho (tau - t)} c_tau dtau` (+ the
+terminal loss and the integrals from t on), the later selves playing the equilibrium map.  The tilt argument at date t,
+with the kernel `K_t` of `C_t`, gives `P_t S_t f_t^on = 0`, `S_t = (I - theta K_t)^-1`: one operator per date.  `K_t` drops
+every cost before t (the date-t self does not bear it; under precommitment those costs still weight the outcomes through
+their cross terms with the future), discounts from t (so theta enters the kernels discounted from zero as `theta e^{rho t}`;
+precommitment's effective risk aversion at t is `theta e^{-rho t}` of this), and `f_t^on` is the FOC kernel with the
+agent's own later reactions on: the later selves do not share the date-t objective, so there is no envelope
+(`FocOps(envelope=False)` with `SpectralFiniteSolver._responses_on`, the fixed point `c = G Y (R0 + Resp c)` on the passive
+rows, as on the stationary engine).  At theta = 0 both criteria are the risk-neutral one (`P (phi^on - phi^off)` is
+5.5e-9 at Chapter 1's risk-neutral equilibrium, 14 nodes, against `|phi^on - phi^off|` = 0.11).
+
+`risk.ConsistentTilt` computes, frozen at the profile, `Delta_t = theta K_t S_t f_t^on` on the seen nodes by Sloan's iterate
+with one Galerkin matrix per time row: `K_t f_t` along the continuation path alone (tau >= t), `Phi' K_t f_t =
+int_t^T E' G (A f_t) dtau` and `K_{t,G} = int_t^T E' G E dtau` on the geometry's per-row future quadrature, `K_t Phi` at the
+nodes by a continuation path of the Galerkin quadrature's order.  The best response adds `(phi^on - phi^off) + Delta_t` to
+its risk-neutral FOC kernel, a shift like the stationary engine's: the system is the risk-neutral one (factored), and at a
+fixed point the profile is the best response, so the equilibrium solves the condition exactly.  The date-0 self's
+objective is the precommitment one, so the breakdown check (`theta lambda_max(K) < 1`) and `res.risk` are unchanged;
+later dates need `I - theta K_t` invertible (a singular one is refused with the date's margin).  Refused: a past,
+monitoring, instant observations, means.  Checked against `extras/leqg_reference.py` `ConsistentGame`, a brute-force
+discrete game solved by backward sweeps over the date selves, each date's row the exact minimiser of its conditional
+entropic objective (the unseen shocks integrated out: a quadratic form in the action and the seen signals), with no
+gradient and no optimiser (tests/refs/leqg_ch1_consistent.json, tests/test_cara_consistent.py).
+
 ### The stationary engine: consistent planning
 
 On the stationary engine each date's self minimises the entropic cost of its own discounted continuation,

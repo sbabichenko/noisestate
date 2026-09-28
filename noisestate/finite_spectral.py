@@ -83,6 +83,21 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         self._profile = (None, None)                           # (maps key, their closed loop): the world a risk-averse agent's K is taken in
         self._risk_scale = 1.0                                 # the continuation's step in risk aversion (solve): theta times this
         self._zbar = None                                      # the primaries' means of the last solve_means (the entropic cost's linear part)
+        self._consistent_info: Dict[str, dict] = {}            # agent -> the last consistent-planning shift's diagnostics
+        if averse and self.settings.risk_planning not in ("precommitment", "consistent"):
+            raise ValueError(f"settings.risk_planning must be 'precommitment' or 'consistent', not {self.settings.risk_planning!r}")
+        if averse and self.settings.risk_planning == "consistent":
+            why = []
+            if past is not None:
+                why.append("no past")
+            if any(a.monitors or a.instant for a in model.agents):
+                why.append("no monitoring or instant observations")
+            if why:
+                raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) under consistent planning on the finite engine need "
+                                          + "; ".join(why))
+        if averse and self.settings.risk_planning == "consistent" and self._mean_driven():
+            raise NotImplementedError(f"risk-averse agents ({', '.join(averse)}) under consistent planning on the finite engine are "
+                                      "solved without means (each date's linear part is its own)")
         if any(a.risk_aversion and a.integrals for a in model.agents) and self._mean_driven():
             raise NotImplementedError("risk-averse agents with stochastic-integral terms (integrals) are solved without means: the "
                                       "integrals' mean part (int xbar' L dW) joins the cost's linear part, which is not built yet")
@@ -886,6 +901,55 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         if not th:
             return None
         return Tilt(geometry(self.c, self.settings), foc, agent, th, self._profile_world(maps), R, clip=True)
+
+    def _responses_on(self, agent: Agent, maps, R0: np.ndarray) -> np.ndarray:
+        """(n_prim N, nU): the world's response to a unit spike of each of the agent's controls with its own later reactions
+        ON (consistent planning: the later selves play the map and do not share the date-t objective).  The later selves
+        know their own orders, so they react to the spike's effects on their passive rows (own controls excluded): from R0
+        (the others reacting, the own reaction off), the own reaction kernels c solve c = G Y (R0 + Resp c), G the map's
+        convolution per row (the closed loop's conv_left rows) and Y the passive rows' reads (as the stationary engine's
+        StationaryTilt._responses_on)."""
+        c = self.c; N = c.N; nP = len(c.prim); nU = len(agent.controls)
+        Resp = [finite_free.RespOps(self, agent, R0).dense(vi) for vi in range(nU)]            # (nP N, N) each
+        gm = maps[agent.name]
+        excl = frozenset(agent.controls)
+        GY = [np.zeros((N, nP * N)) for _ in range(nU)]
+        for r, (rname, drift, E, delay) in enumerate(c.rows[agent.name]):
+            blocks, _ = c.row_blocks_sparse(agent.name, r, excl)
+            for v in range(nU):
+                Cr = c.conv_left_rows(gm[v, r][:N], delay, 0, N)                               # (N, N): row kernel -> action kernel
+                for nm, S in blocks.items():
+                    GY[v][:, c.block(nm)] += (S.T @ Cr.T).T
+        A = np.eye(nU * N) - np.block([[GY[v] @ Resp[w] for w in range(nU)] for v in range(nU)])
+        out = np.empty_like(R0)
+        for ui in range(nU):
+            cvec = np.linalg.solve(A, np.concatenate([GY[v] @ R0[:, ui] for v in range(nU)]))
+            out[:, ui] = R0[:, ui] + sum(Resp[w] @ cvec[w * N:(w + 1) * N] for w in range(nU))
+        return out
+
+    def _consistent_shift(self, agent: Agent, maps) -> Optional[np.ndarray]:
+        """Consistent planning (settings.risk_planning = "consistent"): the shift (nU, N, ncol) a risk-averse agent's best
+        response adds to its risk-neutral FOC kernel, frozen at the profile `maps`, (phi^on - phi^off) + theta K_t S_t f_t^on on
+        the seen nodes (risk.ConsistentTilt); None at a continuation step of zero risk aversion."""
+        from .risk import ConsistentTilt, geometry
+        th = self._theta(agent)
+        if not th:
+            return None
+        c = self.c; N, nP, ncol = c.N, len(c.prim), c.ncol
+        Z = self._profile_world(maps)
+        R0 = self._spikes(c, maps, agent)[1]
+        Ron = self._responses_on(agent, maps, R0)
+        fon = finite_free.FocOps(self, agent, Ron, envelope=False)
+        foff = finite_free.FocOps(self, agent, R0)
+        Zr = Z.reshape(nP, N, ncol)
+        tilt = ConsistentTilt(geometry(c, self.settings), fon, agent, th, Z, Ron, clip=True)
+        aon, aoff = fon.atoms_of(Zr), foff.atoms_of(Zr)
+        out = np.zeros((len(agent.controls), N, ncol))
+        for ui in range(len(agent.controls)):
+            out[ui] = fon.foc(ui, aon) - foff.foc(ui, aoff)
+            out[ui, :, :c.nW] += tilt.consistent_delta(ui, Zr)
+        self._consistent_info[agent.name] = tilt.info
+        return out
 
     def _spectrum(self, agent: Agent, world: np.ndarray):
         """risk.Tilt with K's spectrum only, at theta = 0 (no breakdown test): its lam, lam_max and trace_K2."""

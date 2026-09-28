@@ -20,6 +20,7 @@ defaults are recorded in `res.numerics`, `res.solver_kw` and the payload's `opti
 | `foc_krylov_tol` | 1e-12 | spectral finite engine, matrix-free path: relative tolerance of the LGMRES solve of the first-order conditions |
 | `foc_krylov_maxiter` | 400 | spectral finite engine, matrix-free path: LGMRES iterations at most (beyond them the system is reported singular) |
 | `risk_basis` | 0 | Legendre functions per time panel (and channel) of the Galerkin part of the entropic correction (risk.py); 0: the grid's nodes per side plus 4 |
+| `risk_planning` | precommitment | the spectral finite engine's criterion for risk-averse agents: "precommitment" (J_0 over the whole strategy) or "consistent" (every date's self minimises the entropic cost of its own continuation, the later selves playing the equilibrium map; risk.ConsistentTilt) |
 | `second_order_tol` | 1e-4 | curvature (relative to the largest) below which a negative value is window truncation |
 | `second_order_dense` | 4000 | strategy dimension up to which the form is built densely (always settles, 2.7 s at 1600); Lanczos above |
 | `second_order_lanczos_tol` | 1e-6 | tolerance of the Lanczos extreme eigenvalues above that dimension |
@@ -44,7 +45,7 @@ The outer fixed point (`anderson_m`, `anderson_iters`, `anderson_reg`, `newton_i
 (`foc_rcond`, `stationary_map_ridge`, `map_ridge`, and the spectral finite engine's `foc_dense_max`, the unknowns
 nU nR N up to which the first-order-condition system is assembled from the operators' rows and LU-factored,
 beyond which it is solved by GMRES on the applied operators to `foc_krylov_tol` within `foc_krylov_maxiter`,
-preconditioned by its time-row blocks); risk-averse agents (`risk_basis`); the second-order check (`second_order_tol`, `second_order_dense`,
+preconditioned by its time-row blocks); risk-averse agents (`risk_basis`, `risk_planning`); the second-order check (`second_order_tol`, `second_order_dense`,
 `second_order_lanczos_tol`, `second_order_lanczos_maxiter`); the means (`mean_rcond`, `lead_weight_warn`);
 and the result's checks (`resolution_tol`, `window_tail_tol`, `settled_tol` for a transition's maps and means
 on [T - L, T] against the stationary ones, `mean_zero`, `refine_cost_tol`, `refine_kernel_tol`, `stability_k`,

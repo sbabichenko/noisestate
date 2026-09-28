@@ -19,8 +19,10 @@ from scipy.optimize import minimize
 
 
 class Game:
-    def __init__(self, n=100, T=1.0, p=(3.0, 3.0), r=(0.1, 0.1), sigma=1.0, theta=(0.0, 0.0), xdw=(0.0, 0.0), udw=(0.0, 0.0)):
+    def __init__(self, n=100, T=1.0, p=(3.0, 3.0), r=(0.1, 0.1), sigma=1.0, theta=(0.0, 0.0), xdw=(0.0, 0.0), udw=(0.0, 0.0), rho=0.0):
         self.n, self.T, self.dt = n, T, T / n
+        self.rho = float(rho)                            # the costs discounted: step k weighs e^{-rho k dt}
+        self.wd = np.exp(-self.rho * self.dt * np.arange(n))
         self.xdw = np.array(xdw, float)                  # player i's cost gains xdw_i sum_k X_k sigma sqrt(dt) g0_k (Ito: int xdw X sigma dW0)
         self.udw = np.array(udw, float)                  # ... and udw_i sum_k D_{i,k} sigma sqrt(dt) g0_k (its own control: int udw D_i sigma dW0)
         self.p, self.r, self.sigma, self.theta = np.array(p, float), np.array(r, float), float(sigma), np.array(theta, float)
@@ -45,9 +47,13 @@ class Game:
         return X, Y, D
 
     def cost_form(self, X, D, i):
-        M = self.dt * (X.T @ X + self.r[i] * D[i].T @ D[i])
+        if self.rho:
+            wd = self.wd[:, None]
+            M = self.dt * (X.T @ (wd * X) + self.r[i] * D[i].T @ (wd * D[i]))
+        else:                                            # undiscounted: the products as they were (the stored tables' bits)
+            M = self.dt * (X.T @ X + self.r[i] * D[i].T @ D[i])
         if self.xdw[i] or self.udw[i]:
-            S = np.zeros((self.n, self.m)); S[np.arange(self.n), 3 * np.arange(self.n)] = self.sigma * np.sqrt(self.dt)
+            S = np.zeros((self.n, self.m)); S[np.arange(self.n), 3 * np.arange(self.n)] = self.sigma * np.sqrt(self.dt) * self.wd
             A = self.xdw[i] * X.T @ S + self.udw[i] * D[i].T @ S
             M = M + 0.5 * (A + A.T)
         return M
@@ -69,12 +75,13 @@ class Game:
         J, W = self.objective(M, i)
         if not np.isfinite(J):
             return J, np.zeros(len(self.tril[0]))
-        Xb = 2.0 * dt * X @ W                               # dJ/dX_k (rows), and dJ/dD_{i,k} from the own-control term
+        wd = self.wd[:, None] if self.rho else 1.0
+        Xb = 2.0 * dt * wd * (X @ W) if self.rho else 2.0 * dt * X @ W    # dJ/dX_k (rows), and dJ/dD_{i,k} from the own-control term
         if self.xdw[i]:
-            Xb += self.xdw[i] * self.sigma * np.sqrt(dt) * W[3 * np.arange(n)]      # the integral: d tr(W sym(dX' S)) = dX_k . W s_k
-        Db = np.zeros_like(D); Db[i] = 2.0 * dt * self.r[i] * D[i] @ W
+            Xb += self.xdw[i] * self.sigma * np.sqrt(dt) * wd * W[3 * np.arange(n)]      # the integral: d tr(W sym(dX' S)) = dX_k . W s_k
+        Db = np.zeros_like(D); Db[i] = 2.0 * dt * self.r[i] * wd * (D[i] @ W) if self.rho else 2.0 * dt * self.r[i] * D[i] @ W
         if self.udw[i]:
-            Db[i] += self.udw[i] * self.sigma * np.sqrt(dt) * W[3 * np.arange(n)]
+            Db[i] += self.udw[i] * self.sigma * np.sqrt(dt) * wd * W[3 * np.arange(n)]
         Yb = np.zeros_like(Y)
         for k in range(n - 1, -1, -1):
             if k + 1 < n:
@@ -419,6 +426,107 @@ def table_means(ns_=(50, 100, 150, 200, 300), thetas=(0.0, 0.5, 1.0, 2.0), case=
 
 
 
+# ================================================================================================ consistent planning
+class ConsistentGame(Game):
+    """Game under consistent planning: every date's self of every player minimises the entropic cost of its OWN continuation
+    given what it has seen, J_{i,k} = theta^-1 log E[exp(theta C_{i,k}) | y_i,<k], C_{i,k} = sum_{j >= k} (X_j^2 + r_i D_{i,j}^2) dt
+    (+ the integrals from k on), the later selves of both players playing their maps; the date-k selves of the two players
+    play a Nash equilibrium given the later rows.  Solved by backward induction over k, with no gradient and no optimiser:
+    at date k the continuation cost is a quadratic form in (g, d), d = D_{i,k} a free coordinate; given the seen signals Y
+    (g = B'(BB')^-1 Y + U z, U an orthonormal basis of B's null space, z ~ N(0, I)) the date-k objective is the quadratic
+    form w' Omega w in w = (d, Y), Omega = F_ww + 2 theta F_wz (I - 2 theta F_zz)^-1 F_zw (+ a constant), exactly, and its
+    minimiser d = -Omega_dY Y / Omega_dd is the date-k row of the map.  The two players' date-k rows are iterated to their
+    fixed point (Gauss-Seidel)."""
+
+    def forward_free(self, G, i, k):
+        """Rows over (g, d) of X_j, y_{.,j}, D_{.,j}, with D_{i,k} = d (the last coordinate) and every other control by G."""
+        n, dt, m = self.n, self.dt, self.m
+        X = np.zeros((n, m + 1)); Y = np.zeros((2, n, m + 1)); D = np.zeros((2, n, m + 1))
+        for j in range(n):
+            if j:
+                X[j] = X[j - 1] + dt * (D[0, j - 1] + D[1, j - 1])
+                X[j, 3 * (j - 1)] += self.sigma * np.sqrt(dt)
+            for q in range(2):
+                if q == i and j == k:
+                    D[q, j, m] = 1.0
+                else:
+                    D[q, j] = G[q][j, :j] @ Y[q, :j] if j else 0.0
+                Y[q, j] = np.sqrt(self.p[q]) * dt * X[j]
+                Y[q, j, 3 * j + 1 + q] += np.sqrt(dt)
+        return X, Y, D
+
+    def date_row(self, G, i, k):
+        """Player i's date-k row (k coefficients on y_i,0..k-1) given G's other rows."""
+        if k == 0:
+            return np.zeros(0)
+        n, dt, m, th = self.n, self.dt, self.m, self.theta[i]
+        X, Y, D = self.forward_free(G, i, k)
+        Xk, Dk = X[k:], D[i, k:]
+        wd = np.exp(-self.rho * dt * np.arange(n - k))[:, None]          # the date-k self discounts from k
+        F = dt * (Xk.T @ (wd * Xk) + self.r[i] * Dk.T @ (wd * Dk))
+        if self.xdw[i] or self.udw[i]:
+            S = np.zeros((n - k, m + 1)); S[np.arange(n - k), 3 * np.arange(k, n)] = self.sigma * np.sqrt(dt) * wd[:, 0]
+            A = self.xdw[i] * Xk.T @ S + self.udw[i] * Dk.T @ S
+            F = F + 0.5 * (A + A.T)
+        B = Y[i, :k, :m]                                                   # the seen signals (they do not involve d)
+        P = np.linalg.solve(B @ B.T, B).T                                  # g = P Y + (the unseen part, covariance Sig)
+        Sig = np.eye(m) - P @ B                                            # the projector off the seen span: U U'
+        Tw = np.zeros((m + 1, 1 + k)); Tw[:m, 1:] = P; Tw[m, 0] = 1.0      # (g, d) = Tw (d, Y) + (U z, 0)
+        FT = F @ Tw
+        Om = Tw.T @ FT
+        if th:
+            # U (I - 2 theta U'F U)^-1 U' = Sig (I - 2 theta F_gg Sig)^-1: Omega gains 2 theta (F Tw)_g' Sig (I - 2 theta F_gg Sig)^-1 (F Tw)_g
+            A = np.eye(m) - 2.0 * th * F[:m, :m] @ Sig
+            X = np.linalg.solve(A, FT[:m])
+            Om = Om + 2.0 * th * FT[:m].T @ (Sig @ X)
+        Om = 0.5 * (Om + Om.T)
+        return -Om[0, 1:] / Om[0, 0]
+
+    def consistent_equilibrium(self, G0=None, tol=1e-12, sweeps=200):
+        """The date rows of both players: backward sweeps (k = n - 1 down to 1, each date's two rows to their fixed point given
+        the rest) repeated until no row moves by tol.  A date's row depends on the earlier rows too (through the law of what is
+        seen), so one backward pass is not the equilibrium; the sweeps are its fixed point.  Returns (G, the last sweep's
+        largest change)."""
+        n = self.n
+        G = [np.zeros((n, n)), np.zeros((n, n))] if G0 is None else [G0[0].copy(), G0[1].copy()]
+        sym = self.p[0] == self.p[1] and self.r[0] == self.r[1] and self.theta[0] == self.theta[1] and \
+            self.xdw[0] == self.xdw[1] and self.udw[0] == self.udw[1]
+        for sweep in range(sweeps):
+            worst = 0.0
+            for k in range(n - 1, 0, -1):
+                for it in range(50):
+                    change = 0.0
+                    for i in ((0,) if sym else (0, 1)):
+                        row = self.date_row(G, i, k)
+                        change = max(change, float(np.abs(row - G[i][k, :k]).max()))
+                        G[i][k, :k] = row
+                        if sym:
+                            G[1][k, :k] = row
+                    worst = max(worst, change)
+                    if change < tol:
+                        break
+            if worst < tol:
+                break
+        return G, worst
+
+
+def table_consistent(ns_=(40, 60, 80, 100, 120), thetas=(0.0, 0.5, 1.0, 1.5), rho=0.0, verbose=True):
+    """tests/refs/leqg_ch1_consistent.json: Chapter 1's symmetric game under consistent planning at every n and theta, and the
+    Richardson limit of each number (the entropic cost is the date-0 self's, J_0, the precommitment objective at these maps)."""
+    out = {}
+    for n in ns_:
+        for th in thetas:
+            g = ConsistentGame(n=n, theta=(th, th), rho=rho)
+            Gs, change = g.consistent_equilibrium()
+            rec = record(g, Gs); rec["change"] = change
+            out.setdefault(f"{th:g}", {"levels": []})["levels"].append(rec)
+            if verbose:
+                print(n, th, rec["entropic"], rec["expected"], rec["D1"], f"change {change:.1e}", flush=True)
+    for th, case in out.items():
+        lv = case["levels"]; nn = [r["n"] for r in lv]
+        case["limit"] = {k: [richardson([r[k][i] for r in lv], nn) for i in range(len(lv[0][k]))] for k in ("entropic", "expected", "D1", "D2")}
+    return out
+
 # ================================================================================================ monitored deviations
 class MonitorGame:
     """Chapter 6's privy response under the entropic objective, by brute force: player 1 regulates its own state from a
@@ -687,6 +795,10 @@ if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "udw":          # python extras/leqg_reference.py udw OUT.json
         import json
         json.dump(table_udw(), open(sys.argv[2], "w"), indent=1)
+        sys.exit(0)
+    if len(sys.argv) > 2 and sys.argv[1] == "consistent":   # python extras/leqg_reference.py consistent OUT.json
+        import json
+        json.dump(table_consistent(), open(sys.argv[2], "w"), indent=1)
         sys.exit(0)
     if len(sys.argv) > 2 and sys.argv[1] == "monitor":      # python extras/leqg_reference.py monitor OUT.json
         import json
