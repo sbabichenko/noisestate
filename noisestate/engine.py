@@ -133,7 +133,9 @@ def singular_system_message(name: str) -> str:
     return (f"the best-response system of {name} is singular: two of its rows may carry the same information, a "
             "control may have no quadratic term in its current value (a quadratic in a lagged read, D@tau, leaves "
             "the strategy free within tau of the window's edge), a row's noise loading may be zero, or the system "
-            "may be too ill-conditioned at this resolution (a very small control penalty, a long window)")
+            "may be too ill-conditioned at this resolution (a very small control penalty, a long window or horizon, or a "
+            "time scale much faster than the grid resolves, such as a large noise or precision: rescale the model's units "
+            "or raise numerics.nodes)")
 
 
 class EngineBase(MeanLayer):
@@ -444,7 +446,12 @@ class EngineBase(MeanLayer):
         ltol, lmax = self.settings.second_order_lanczos_tol, self.settings.second_order_lanczos_maxiter
         try:
             hi = float(eigsh(op, k=1, which="LA", tol=ltol, maxiter=lmax, return_eigenvectors=False)[0])
-            lo = float(eigsh(op, k=1, which="SA", tol=ltol, maxiter=lmax, return_eigenvectors=False)[0])
+            # the lowest as hi less the largest of hi I - A: ARPACK's tolerance is relative to the eigenvalue it seeks, and
+            # the lowest of a form that is nearly singular (an under-resolved grid, curvature 1e-7 of the largest) is near
+            # 0, so "SA" ran its whole budget without settling (3042 products and no answer on a 2160-unknown strategy);
+            # this one stops at ltol of hi, the scale the check reads it on (second_order_tol is relative to hi)
+            shifted = LinearOperator((n, n), matvec=lambda v: hi * np.ravel(v) - np.ravel(matvec(v)), dtype=float)
+            lo = hi - float(eigsh(shifted, k=1, which="LA", tol=ltol, maxiter=lmax, return_eigenvectors=False)[0])
         except Exception as exc:                          # Lanczos did not settle: say so rather than stay silent
             return {"min": None, "max": None, "ok": None, "converged": False, "message": f"{type(exc).__name__}: {exc}"[:120]}
         return {"lo": lo, "hi": hi}
@@ -671,9 +678,15 @@ class EngineBase(MeanLayer):
 
     def response_map(self, maps: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         """Every agent's best-response map against `maps` (the map-iteration fixed-point function)."""
+        self._profile_actions = None
         return self._over_representatives(lambda a: self.best_response(a, maps)[0])
 
     def response_actions(self, actions: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """Every agent's best-response action kernels against `actions`."""
+        """Every agent's best-response action kernels against `actions`.  The iterate is kept as _profile_actions while
+        they respond: a proximal best response (finite_free.FocSystem._proximal) is anchored at it."""
         maps = self.maps_from_actions(actions)
-        return self._over_representatives(lambda a: self.best_response(a, maps, project=False)[1]["action"])
+        self._profile_actions = actions
+        try:
+            return self._over_representatives(lambda a: self.best_response(a, maps, project=False)[1]["action"])
+        finally:
+            self._profile_actions = None

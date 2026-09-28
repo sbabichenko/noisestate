@@ -46,7 +46,8 @@ class FocSystem:
     RISK_KRYLOV_REDUCTION = 1e-4    # a warm-started risk-averse solve stops at this fraction of its initial residual (solve)
 
     def __init__(self, solver, agent: Agent, rowops: RowOps, projops: ProjOps, resp: RespOps, foc: FocOps,
-                 Zpass: np.ndarray, phi_past, tilt=None, shift=None):
+                 Zpass: np.ndarray, phi_past, tilt=None, shift=None, prox=None):
+        """prox: (weight, the agent's action iterate), a risk-averse agent's proximal best response (_proximal)."""
         c = solver.c; self.solver = solver; self.c = c; self.agent = agent
         self.rowops, self.projops, self.resp, self.foc = rowops, projops, resp, foc
         self.N, self.nP, self.ncol, self.Nm = c.N, len(c.prim), c.ncol, solver.Nm
@@ -64,6 +65,8 @@ class FocSystem:
         self.matvecs = 0; self.iterations = 0; self.residual = 0.0; self.block_rcond = np.inf
         self.tilt = tilt                        # a risk-averse agent's correction (risk.Tilt), linear in the world
         self.shift = shift                      # ... or, under consistent planning, a shift frozen at the profile (nU, N, ncol)
+        self.prox = prox                        # (weight, the agent's action iterate): the proximal term of _proximal
+        self.mu = 0.0                           # its weight, set by solve() from the system's scale
         # the right-hand side: the FOC of the passive world projected on the rows
         Zp = Zpass.reshape(self.nP, self.N, self.ncol)
         a = foc.atoms_of(Zp)
@@ -110,7 +113,14 @@ class FocSystem:
                 phi = phi + self.tilt.delta(ui, Zd, a, phi)
             out[ui] = self.projops.apply(phi)
         out = out.reshape(self.nG, -1)
+        if self.mu:
+            out = out + self.mu * self._prox_apply(G)
         return out[:, 0] if single else out
+
+    def _prox_apply(self, G: np.ndarray) -> np.ndarray:
+        """(nG, B): the proximal term's operator on the strategy G (nU, nR, Nm, B), the projection on the rows of the action
+        kernel the map makes, P (G_rows gamma): the metric of _proximal."""
+        return np.stack([self.projops.apply(self.rowops.apply(G[ui])) for ui in range(self.nU)]).reshape(self.nG, -1)
 
     def matvec(self, x: np.ndarray) -> np.ndarray:
         self.matvecs += 1
@@ -156,6 +166,8 @@ class FocSystem:
             for vi in range(nU):
                 FR = Fu @ Resp[vi]
                 Amat[rows_u, vi * nR * Nm:(vi + 1) * nR * Nm] += sum(H[:, k * N:(k + 1) * N] @ (FR @ Gk[k]) for k in range(ncol))
+        if self.mu:
+            Amat += self.mu * self._prox_apply(np.eye(nG).reshape(nU, nR, Nm, nG))
         if self.kept.size == nG:                        # every unknown kept: no copy of Amat
             return self._tie(Amat)
         return self._tie(Amat[np.ix_(self.kept, self.kept)])
@@ -181,6 +193,36 @@ class FocSystem:
             for ui in range(self.nU):
                 out[ui * self.nR * self.Nm:(ui + 1) * self.nR * self.Nm, j0:j1] = self.projops.apply(self.tilt.delta(ui, Zd)).reshape(-1, j1 - j0)
         return out
+
+    def _proximal(self) -> None:
+        """The proximal best response of a risk-averse agent: argmin J_frozen(g) + mu/2 |a(g) - a_prev|^2, a(g) the action
+        kernel the strategy g makes and a_prev the agent's action in the profile (the action iterate of the fixed point),
+        measured on the rows: the system Amat + mu P G, the right-hand side moved by mu P a_prev (_prox_apply).  At a fixed
+        point of the action iteration a(g) = a_prev exactly and the term vanishes, so the equilibrium is the same; what it
+        changes is the iteration.  (Anchored at the profile's raw map instead, it did not vanish: the map a projection
+        makes of an action is not the strategy that made it, and on Chapter 1's game the equilibrium moved by 4e-4.)
+
+        Why: the frozen best response solves E^Q[C''] g = ..., the expected cost's Hessian under the tilted measure with
+        the profile's K; the entropic cost's own Hessian adds theta Var^Q(C'), positive semidefinite, which freezing K
+        drops.  E^Q[C''] can go singular at an equilibrium whose entropic cost is convex (Kyle-Back with a prior at eps
+        0.05: its smallest eigenvalue falls from 2e-2 of the largest at theta 1 through zero at theta 1.58, where the
+        iteration's Jacobian has a pole) and the frozen iteration cannot cross it; mu P G, positive, stands in for the
+        dropped term.  mu is prox[0] times the ratio of the system's scale to the metric's (|z'Amat z| over z'P G z on
+        four fixed Rademacher probes).  Solved without it on a transition's frozen panels (a risk-averse agent has no
+        such past)."""
+        rel, a_prev = self.prox
+        c = self.c
+        if c.past is not None and c.P_lo > 0:
+            return
+        z = np.where(np.random.default_rng(0).random((self.n, 4)) < 0.5, -1.0, 1.0)
+        Zf = np.zeros((self.nG, 4)); Zf[self.kept] = z[self.inv]
+        sA = float(sum(abs(z[:, j] @ self.reduce(self.apply(Zf[:, j]))) for j in range(4)))
+        sP = float(sum(abs(Zf[:, j] @ self._prox_apply(Zf[:, j].reshape(self.nU, self.nR, self.Nm, 1))[:, 0]) for j in range(4)))
+        if not (sA > 0 and sP > 0):
+            return
+        self.mu = float(rel) * sA / sP
+        pa = np.stack([self.projops.apply(np.asarray(a_prev[ui], dtype=float)) for ui in range(self.nU)]).reshape(-1)
+        self.bvec = self.bvec - self.mu * self.reduce(pa)
 
     # ---- the preconditioner: the time-row-diagonal part of the operator
     def preconditioner(self):
@@ -243,6 +285,7 @@ class FocSystem:
         left out."""
         atoms, Q = self.foc.atoms, self.foc.Q
         ctrl = list(self.agent.controls); nU = self.nU
+        composite = self.c.composite or {}
         Ql = {}
         for l, w in self.foc.own_lags().items():
             M = np.zeros((nU, nU))
@@ -250,6 +293,17 @@ class FocSystem:
                 for vi, v in enumerate(ctrl):
                     if (u, l) in atoms and (v, l) in atoms:
                         M[ui, vi] = Q[atoms.index((u, l)), atoms.index((v, l))]
+            if l == 0.0 and any(composite.get(u) for u in ctrl):
+                # a control that draws instant reactions (a quote the traders see at once) moves them at its own node:
+                # its instantaneous curvature is c_u' Q c_v over the spike with the reactions, as FocOps.inst puts it in
+                # the operator.  With the own square alone, a quote with none (Chapter 6's market maker, whose curvature
+                # is the orders it draws) had a zero block at t = 0 and the Krylov path refused a regular system
+                C = np.zeros((nU, len(atoms)))
+                for ui, u in enumerate(ctrl):
+                    for x, coef in (composite.get(u) or {u: 1.0}).items():
+                        if (x, 0.0) in atoms:
+                            C[ui, atoms.index((x, 0.0))] += coef
+                M = C @ Q @ C.T
             if np.any(M):
                 Ql[l] = (w * M, self._lag_read(l))
         return Ql
@@ -302,6 +356,8 @@ class FocSystem:
         n = self.n
         st = self.solver.settings
         tol, maxiter = st.foc_krylov_tol, st.foc_krylov_maxiter
+        if self.prox is not None and not self.mu:
+            self._proximal()
         if not self.solver.foc_free:
             A0 = self.matrix()
             if self.tilt is None:
@@ -479,7 +535,12 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
             shift = solver._consistent_shift(agent, maps)
         else:
             tilt = solver._tilt(agent, maps, foc, Roff)
-    system = FocSystem(solver, agent, rowops, projops, resp, foc, Zpass, phi_past, tilt, shift)
+    prox = None
+    profile = getattr(solver, "_profile_actions", None)          # the action iterate (EngineBase.response_actions)
+    if (tilt is not None or shift is not None) and getattr(solver, "_risk_prox", None) and not want_decomp \
+            and profile is not None and profile.get(agent.name) is not None:
+        prox = (solver._risk_prox, profile[agent.name])         # the retry of a risk-averse solve (SpectralFiniteSolver._risk_solve)
+    system = FocSystem(solver, agent, rowops, projops, resp, foc, Zpass, phi_past, tilt, shift, prox)
     gamma, iters = system.solve(solver._last_gamma.get(agent.name))
     if solver.foc_free or tilt is not None:
         solver._last_gamma[agent.name] = gamma

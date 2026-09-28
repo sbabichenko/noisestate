@@ -96,7 +96,21 @@ def safe_eval(expr: str, params: Dict[str, float]) -> float:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _FUNCS and not node.keywords:
             return float(_FUNCS[node.func.id](*[ev(a) for a in node.args]))
         raise ValueError(f"unsupported expression in coefficient {expr!r}: {ast.dump(node)[:60]}")
-    return float(ev(tree))
+    # the arithmetic's own failures are the coefficient's, named with it: they reached the caller as a bare
+    # ZeroDivisionError, OverflowError or "math domain error", and a negative base to a fractional power as a complex
+    try:
+        value = ev(tree)
+    except (ZeroDivisionError, OverflowError) as exc:
+        raise ValueError(f"cannot evaluate coefficient {expr!r} at the parameters: {exc}") from None
+    except ValueError as exc:
+        if "math domain error" not in str(exc):
+            raise
+        raise ValueError(f"cannot evaluate coefficient {expr!r} at the parameters: a function outside its domain "
+                         "(sqrt or log of a negative number, log of 0)") from None
+    if isinstance(value, complex):
+        raise ValueError(f"cannot evaluate coefficient {expr!r} at the parameters: a negative number to a fractional "
+                         "power is not real")
+    return float(value)
 
 
 def eval_coef(c: Number, params: Dict[str, float]) -> float:
@@ -119,6 +133,26 @@ def parse_expr(spec, params: Dict[str, float]) -> Dict[str, float]:
     for atom, coef in items:
         out[atom] = out.get(atom, 0.0) + eval_coef(coef, params)
     return out
+
+
+def eval_params(pdict) -> Dict[str, float]:
+    """The params block's values, in order: a parameter may be a number or an expression in earlier ones.  Shared by the
+    grammar (Model.from_dict) and the equations form, which built its Params from the raw values and so refused an
+    expression parameter ("the value must be a number") that the same file in the grammar accepted."""
+    params: Dict[str, float] = {}
+    pdict = pdict or {}
+    if not isinstance(pdict, dict):
+        raise ValueError("params must be a mapping of name to number or expression")
+    for k, v in pdict.items():                                # a parameter may be an expression in earlier ones
+        try:
+            params[k] = eval_coef(v, params)
+        except ValueError as exc:
+            later = [n for n in pdict if n not in params and n != k and f"'{n}'" in str(exc)]
+            if later:
+                raise ValueError(f"parameter {k!r} uses {later[0]!r}, which is defined after it; parameters are "
+                                 "evaluated in order, so move it up") from None
+            raise
+    return params
 
 
 class _Recording(dict):
@@ -577,8 +611,27 @@ class Model:
     def validate(self) -> None:
         """Every structural rule of a model, checked in a fixed order, each by one named check below (the
         first failing rule raises its ValueError; the one warning is a control with no positive own quadratic
-        term).  Compile calls this on every engine; from_dict calls it before the unused-parameter check."""
+        term).  Compile calls this on every engine; from_dict calls it before the unused-parameter check.
+
+        A model is validated up to three times on its way to a solve (from_dict, then twice in the compile), and each
+        call warned again from a different line, which Python's once-per-location filter does not merge: a user saw
+        every model warning three times.  The warnings are collected and each is shown once per model object."""
+        caught = []
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                self._checks()
+        finally:                                       # the user's filters are back here, and a check that raised still warns
+            shown = self.__dict__.setdefault("_warnings_shown", set())
+            for w in caught:
+                if (w.category, str(w.message)) not in shown:
+                    shown.add((w.category, str(w.message)))
+                    warnings.warn(w.message, stacklevel=2)
+
+    def _checks(self) -> None:
+        """The checks of validate(), in order."""
         self._check_names()
+        self._check_finite()
         self._check_states()
         self._check_definitions()
         self._check_agents()
@@ -692,6 +745,52 @@ class Model:
         agent_names = [a.name for a in self.agents]
         if len(set(agent_names)) != len(agent_names):
             raise ValueError("duplicate agent names")
+
+    def _check_finite(self) -> None:
+        """Every number of the model is finite: the parameters and every coefficient, delay, constant and length
+        evaluated from them.  A NaN passes every sign check (each comparison with it is False) and flows into the
+        solve, which then reported a converged result with a NaN cost and every check passed; an infinity reached
+        the best response as a singular system.  Each is named here with the field it sits in."""
+        def bad(x) -> bool:
+            return isinstance(x, (int, float)) and not isinstance(x, bool) and not math.isfinite(x)
+
+        def check(where: str, x) -> None:
+            if bad(x):
+                raise ValueError(f"{where} is {x!r}; it must be a finite number, as every number of a model (check the "
+                                 "parameters it is computed from)")
+
+        for k, v in self.params.items():
+            check(f"parameter {k}", v)
+        for s in self.states:
+            for atom, c in list(s.drift.items()) + list(s.noise.items()):
+                check(f"state {s.name}: the coefficient of {atom}", c)
+            check(f"state {s.name}: initial", s.initial)
+        for d in self.definitions:
+            for atom, c in d.expr.items():
+                check(f"definition {d.name}: the coefficient of {atom}", c)
+        for a in self.agents:
+            for r in a.signals:
+                for atom, c in list(r.drift.items()) + list(r.noise.items()):
+                    check(f"row {a.name}.{r.name}: the coefficient of {atom}", c)
+                check(f"row {a.name}.{r.name}: delay", r.delay)
+            for what, terms in (("loss", a.loss), ("terminal", a.terminal), ("integral", a.integrals)):
+                for term in terms:
+                    if term:
+                        check(f"agent {a.name}: the coefficient of {what} term {term[1:]}", term[0])
+            check(f"agent {a.name}: constant", a.constant)
+            check(f"agent {a.name}: terminal_constant", a.terminal_constant)
+        hz = self.horizon
+        for what in ("discount", "window", "T", "settle"):
+            check(f"horizon.{what}", getattr(hz, what))
+        for sh in ((hz.past or {}).get("initial") or []) if isinstance(hz.past, dict) else []:
+            for key in ("loads", "rows"):
+                for k, v in (sh.get(key) or {}).items() if isinstance(sh, dict) else []:
+                    check(f"initial shock {sh.get('name')!r}: {key}.{k}", v)
+        nm = self.numerics
+        for what in ("unit", "unit_range", "tol", "damping"):
+            check(f"numerics.{what}", getattr(nm, what))
+        for b in nm.breakpoints or []:
+            check("numerics.breakpoints", b)
 
     def _check_states(self) -> None:
         """Each state loads known channels only, its drift is causal (no lead), its initial value is a finite
@@ -847,10 +946,17 @@ class Model:
     def _check_ties(self) -> None:
         """Each tie group names known agents that are structurally identical up to relabelling."""
         agent_names = [a.name for a in self.agents]
+        seen = {}
         for group in self.ties:
             for n in group:
                 if n not in agent_names:
                     raise ValueError(f"tie group names unknown agent {n}")
+                # the first of a group is its representative and the rest copy it, so an agent in two groups (or twice
+                # in one) would be both a copy and a representative: merge the groups into one instead
+                if n in seen:
+                    raise ValueError(f"agent {n} is in tie groups {seen[n]} and {list(group)}; an agent belongs to one tie "
+                                     "group, once (merge the groups)")
+                seen[n] = list(group)
             ag = [next(a for a in self.agents if a.name == n) for n in group]
             sigs = [self._agent_signature(a) for a in ag]
             for a, sig in zip(ag[1:], sigs[1:]):
@@ -1361,20 +1467,7 @@ class Model:
                 raise ValueError(f"agent {k}: controls must be a list of names, e.g. [{v['controls']}]")
             for rk, rv in (v.get("signals") or {}).items():
                 cls._check_keys("signal", rv or {}, cls._KEYS["signal"], f" '{k}.{rk}'")
-        params: Dict[str, float] = {}
-        pdict = d.get("params") or {}
-        if not isinstance(pdict, dict):
-            raise ValueError("params must be a mapping of name to number or expression")
-        for k, v in pdict.items():                            # a parameter may be an expression in earlier ones
-            try:
-                params[k] = eval_coef(v, params)
-            except ValueError as exc:
-                later = [n for n in pdict if n not in params and n != k and f"'{n}'" in str(exc)]
-                if later:
-                    raise ValueError(f"parameter {k!r} uses {later[0]!r}, which is defined after it; parameters are "
-                                     "evaluated in order, so move it up") from None
-                raise
-        params = _Recording(params)                            # records which parameters the model references
+        params = _Recording(eval_params(d.get("params")))       # records which parameters the model references
         hz = d.get("horizon") or {}
         if hz.get("settle") is not None and hz.get("T") is not None:
             raise ValueError("horizon takes exactly one of T (the terminal time) and settle (the tolerance the "
@@ -1444,7 +1537,7 @@ class Model:
                 params=MappingProxyType(params), source=copy.deepcopy(d), numerics=numerics)   # params read-only: see with_params()
         m.validate()                                           # structural errors first (its expansions also record
                                                                # the lag parameters, 'P@tau'); then the parameter check
-        for k, v in pdict.items():
+        for k, v in (d.get("params") or {}).items():
             if isinstance(v, str):
                 safe_eval(v, params)                           # a parameter used inside another one counts as used
         unused = sorted(set(params) - params.used)
@@ -1513,10 +1606,39 @@ def _eval_past_block(block, params):
     return block
 
 
-def _read_yaml(path: str):
+def yaml_load(fh, where: str = "the file"):
+    """yaml.safe_load, refusing a key given twice in one mapping.  YAML's loaders keep the last silently, so a second
+    `horizon:` block, or two agents of the same name, replaced the first with no word (the model solved was not the file
+    as read)."""
     import yaml
+
+    class _UniqueKeys(yaml.SafeLoader):
+        pass
+
+    def mapping(loader, node, deep=False):
+        explicit = [k for k, _ in node.value if k.tag != "tag:yaml.org,2002:merge"]   # a merge (<<) may be overridden
+        loader.flatten_mapping(node)
+        seen = {}
+        for key_node in explicit:
+            key = loader.construct_object(key_node, deep=True)
+            line = key_node.start_mark.line + 1
+            try:
+                first = seen.get(key)
+            except TypeError:                              # an unhashable key: the base constructor says so
+                break
+            if first is not None:
+                raise ValueError(f"{where}, line {line}: the key {key!r} is given twice in one mapping (first at line {first}); "
+                                 "YAML would keep only the last, so merge the two")
+            seen[key] = line
+        return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+    _UniqueKeys.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+    return yaml.load(fh, Loader=_UniqueKeys)
+
+
+def _read_yaml(path: str):
     with open(path) as fh:
-        return yaml.safe_load(fh)
+        return yaml_load(fh, path)
 
 
 def load(path: str) -> Model:

@@ -250,8 +250,10 @@ def test_near_the_breakdown():
 
 @slow("slow (the reference at n = 200); set NOISESTATE_SLOW=1")
 def test_regenerated_reference_row_agrees():
-    """The reference itself, recomputed at n = 50, 100, 200 for theta = 1: the stored table's levels to 1e-9, and its
-    three-level limit against the engine."""
+    """The reference itself, recomputed at n = 50, 100, 200 for theta = 1: the stored table's levels to 1e-8, and its
+    three-level limit against the engine.  The reference stops its fixed point at a map change of 1e-10 (L-BFGS inside),
+    so a level reproduces only to about 1e-9 and moves with the BLAS threads: 1.28e-9 at 2 threads, under 1e-9 at 4.
+    1e-8 still catches any change to the reference, four decades below the 2e-5 the engine is held to."""
     from leqg_reference import Game, equilibrium, record
     with open(REFS) as f:
         stored = {r["n"]: r for r in json.load(f)["theta 1"]["levels"]}
@@ -260,7 +262,7 @@ def test_regenerated_reference_row_agrees():
         g = Game(n=n, theta=(1.0, 1.0))
         Gs, _ = equilibrium(g)
         recs.append(record(g, Gs))
-        assert abs(recs[-1]["entropic"][0] - stored[n]["entropic"][0]) < 1e-9
+        assert abs(recs[-1]["entropic"][0] - stored[n]["entropic"][0]) < 1e-8
     J = richardson([r["entropic"][0] for r in recs], [50, 100, 200])
     res = ns.solve(ch1((1.0, 1.0)), diagnostics=False)
     assert abs(res.entropic_costs["player1"] - J) < 2e-5

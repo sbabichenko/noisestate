@@ -18,7 +18,7 @@ import yaml
 
 from . import __version__, solve as _solve
 from .plotting import plot_payload, plot_sweep_payload
-from .spec import Model
+from .spec import Model, yaml_load
 from .diagnostics import Policy, Status
 from .numerics import Numerics
 from .sweep import sweep
@@ -241,7 +241,7 @@ def _run(p, args) -> int:
         loaded = []
         for path in (args.old, args.new):
             with open(path) as fh:
-                data = yaml.safe_load(fh)
+                data = yaml_load(fh, path)
             _schema_check(data, path); loaded.append(data)
         if (args.T is None) == (args.settle is None):
             p.error("transition takes exactly one of --T and --settle TOL")
@@ -266,7 +266,7 @@ def _run(p, args) -> int:
             plot_path = _plot_output_path(args.plot); res.plot(plot_path); print("wrote", plot_path)
         return _exit_code(res, args)
     with open(args.model) as fh:
-        d = yaml.safe_load(fh)
+        d = yaml_load(fh, args.model)
     _schema_check(d, args.model)
     from . import equations
     if equations.is_equation_form(d):

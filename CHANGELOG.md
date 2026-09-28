@@ -4,14 +4,23 @@
 
 ### Added
 
+- The stationary engine reports a `cost window` row (never required by a policy) when an agent's flow loss still accrues
+  more than window_tail_tol of itself over the last tenth of the window (`res.cost_tail`): a loss term in a quantity that
+  has not decayed by L. The window check passes a random walk (its kernel does not move), so a myopic agent leaving one
+  uncontrolled reported a cost equal to L with every check passed; Chapter 4's market maker (P^2 - 2 P V) reports about
+  2.1 - L and now says so.
+
 - Risk-averse solves at small trading costs: a stalled solve, or one whose best response fails, is retried once from the
   same start with the best responses' Krylov solves tightened to 1e-6 (`RISK_KRYLOV_RETRY`); a warm-started risk-averse
   GMRES runs its restart cycles up to `foc_krylov_maxiter` steps instead of two cycles (which reported a regular system
   singular). Kyle-Back with a prior at eps 0.05, theta 1.5 now converges (CE 0.53980, as with 20 nodes). If the retry
   fails too, the message carries a second-order probe of the entropic cost, and the second-order check of a risk-averse
-  agent with an indefinite loss Hessian is that probe (`"bound": "probe"`) instead of "not checked". Beyond theta about
-  1.55 at eps 0.05 the best-response iteration is unstable (Jacobian eigenvalue -20 at theta 1.5, resolution-independent)
-  while the entropic cost stays convex along the probed direction: no loss of the minimum was found.
+  agent with an indefinite loss Hessian is that probe (`"bound": "probe"`) instead of "not checked". The retry's best
+  responses are proximal (`RISK_PROX`): the frozen best response's system, the expected cost's Hessian under the tilted
+  measure, goes singular at theta 1.58 on that market while the entropic cost stays convex (freezing K drops its
+  positive `theta Var^Q(C')`), and the plain iteration could not pass it; the proximal term, anchored at the action
+  iterate so that it vanishes at a fixed point, carries the path to theta 3 (0.4953722 at theta 2 against the brute-force
+  reference's 0.4953707). A solve that stops short no longer raises RiskBreakdown at its last iterate.
 
 - Consistent planning for risk-averse agents on the finite engine, `settings.risk_planning = "consistent"` (the default
   stays precommitment, J_0 over the whole strategy): every date's self minimises the entropic cost of its own
@@ -137,6 +146,34 @@
   (`{level: P}`) now carries the instant reactions it draws, as the solve's own spike responses always did. The market
   maker's quote spike in Chapter 6's market left out the trader's same-instant order, so the inventory started at 0
   instead of 2.5. The finite engine already had it right.
+
+- A non-finite number anywhere in a model (a NaN or infinite parameter, coefficient, delay, constant, length or numerics
+  value) is refused with its field. A NaN parameter used to solve to "converged, residual 0" with every check passed and a
+  NaN cost; an infinite one, or a NaN discount (NaN < 0 is False), failed as a "singular" system. A coefficient whose
+  arithmetic fails (1/0, sqrt(-1), log(0), an overflow, a negative number to a fractional power) is a ValueError naming it.
+- An equations-form file takes expression parameters (`r: "0.2 / 2"`, `s2: "2 * sigma"`), as the grammar and
+  docs/model_file.md always did; it refused them ("the value must be a number").
+- A key given twice in one YAML mapping (a second `horizon:`, two agents of one name) is refused with its line; YAML
+  kept the last silently.
+- numerics.tol and damping must be positive (tol 0 was accepted, a negative tol reported "not converged" at the exact
+  answer), max_newton a non-negative integer; the Settings fields are type-checked where they are set ("15" for a count
+  failed deep in the solve; a misspelt risk_planning passed on a risk-neutral model).
+- Kernel.at, res.evaluate and res.mean refuse NaN and a date past the grid, and the stationary Kernel.at an age past the
+  window; the interpolant's zero row outside its domain read as a response of exactly 0 (a random walk's too). A time
+  before 0, or a shock after t, still reads 0.
+- An initial shock may not be named like a Brownian shock (it was accepted, and res.kernel(X, "w0") read one of the two).
+  An agent in two tie groups, or twice in one, is refused.
+- The finite engine's matrix-free best response (from foc_dense_max, 16 nodes on Chapter 6's finite market) refused a
+  quote with no square of its own as "singular at t = 0": its time-row preconditioner took the own square alone, where the
+  curvature is the orders the quote draws at once (FocOps.inst's term). The block is now C Q C' over the spikes with their
+  instant reactions; the dense and matrix-free systems agree (1e-14 on the costs at 16 and 20 nodes).
+- The Lanczos second-order check (above second_order_dense) sought the lowest eigenvalue with ARPACK's tolerance relative
+  to itself, near 0 on a nearly singular form, and ran its budget without an answer (3042 products on a 2160-unknown
+  strategy); it is now hi less the largest eigenvalue of hi I - A, settled at the tolerance of hi.
+- A model's warnings are shown once per model; validate() runs three times on the way to a solve, and each warned from its
+  own line (three copies finite, five stationary).
+- sweep(): a point that raises names its value in the exception's notes and carries the points solved before it on
+  `exc.partial`.
 
 ## 2.0.0 (2026-09-26)
 

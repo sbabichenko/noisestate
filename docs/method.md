@@ -203,10 +203,23 @@ A warm-started risk-averse GMRES now runs its restart cycles up to `foc_krylov_m
 the preconditioned residual; two cycles left theta = 1.75 at 6.6e-7 and reported a singular system that is not: its
 smallest singular value is 1.4e-4 of the largest and every eigenvalue has a positive real part).  If the retry fails too,
 the message carries the entropic probe at the best iterate (or at the start, when a best response raised) and says
-whether the risk-averse best response has lost its minimum there.  On Kyle-Back at eps = 0.05 it has not: beyond theta
-about 1.55 the best-response iteration itself becomes unstable (`res.stability()`: a real eigenvalue of the best-response
-map's Jacobian of -4.4, -9.1, -20 at theta 1.25, 1.4, 1.5, the same at 16 and 20 nodes, against a radius of 0.7 up to
-theta 4 at eps = 0.2), and a start from the theta = 1.5 equilibrium does not reach theta = 1.6.
+whether the risk-averse best response has lost its minimum there.
+
+The retry's best responses are also proximal (`RISK_PROX`, `finite_free.FocSystem._proximal`): argmin of the frozen
+objective plus `mu/2 |a(g) - a_prev|^2`, `a(g)` the action kernel the strategy makes and `a_prev` the agent's action
+iterate, measured on its rows.  At a fixed point of the action iteration the term vanishes, so the equilibrium is the
+same.  It is there because the frozen best response solves `E^Q[C''] g = ...`, the expected cost's Hessian under the
+tilted measure at the profile's K, while the entropic cost's own Hessian adds `theta Var^Q(C')`, positive semidefinite,
+which freezing K drops.  On Kyle-Back with a prior at eps = 0.05 (16 nodes) the smallest eigenvalue of that frozen system
+at the equilibrium, relative to its largest, is 1.2e-2, 6.3e-3, 1.6e-3, 7.3e-4, -2.9e-4 and -3.6e-3 at theta 1, 1.25, 1.5,
+1.55, 1.6 and 1.7: it goes through zero at about 1.58, where the best-response map's Jacobian has a pole (the real
+eigenvalue of -4.4, -9.1, -20 at theta 1.25, 1.4, 1.5 that `res.stability()` measured, the same at 16 and 20 nodes), and
+the plain iteration from the theta = 1.5 equilibrium did not reach 1.6.  With the proximal retry each theta up to 3
+converges from the last in 190 to 240 evaluations, the certainty equivalent against `extras/kyle_reference.py` (n = 40
+.. 120, Richardson over the five levels): 0.5206574 against 0.5206571 at theta 1.7, 0.4953722 against 0.4953707 at 2.
+Anchored at the profile's raw map instead of the action iterate the term did not vanish (the map a projection makes of
+an action is not the strategy that made it): Chapter 1's game moved by 4e-4.  A solve that does not converge no longer
+raises RiskBreakdown at its last iterate (which can be anywhere); the message says so and the retry goes on.
 `res.foc[agent][control]` gains `"risk"`, the correction, so that `foc` (the kernel whose projection vanishes) is
 `physical + wedge + risk`.  `res.strategy()` is refused for a risk-averse agent: its action weighs the
 risk-adjusted noise-state, whose future part the result does not carry.

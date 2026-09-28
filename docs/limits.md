@@ -166,3 +166,27 @@ larger window from the previous holds the cost at 0.427295 through *L* = 24, wit
         prev = ns.solve(wider, start_from=ns.engines.stationary(wider).interpolate_maps(prev)).require_ok()
 
 `extras/tools/ch3_long_window_branch.py` reproduces the table, the figure and the continuation.
+
+**Time scales and long horizons.**  A finite horizon without lags is one panel: every kernel is a polynomial of
+`numerics.nodes` degree in each direction over [0, T].  A game whose own time scale is much shorter than T is not
+resolved there, and only the resolution row says so: the one-agent regulator of the tests (a filter and a feedback with
+rates of about 3) has its cost 0.13% off at T = 10 and 12 nodes, 190% off at T = 30, and its best-response system is
+singular at T = 200 or with the noise scaled by 1e8 (raising nodes does not help: 24 and 40 fail as 12 does).  Panels
+do: `numerics.breakpoints` every 3 time units brings T = 30 to 3e-6 in 13 s.  The triangle's pieces grow as the square of
+the panels (10 panels at 12 nodes: 7920 unknowns, 1.7 GB), and above `second_order_dense` (4000) the second-order check
+runs Lanczos, one strategy-sized application per product: 409 s of that T = 30 solve's 425 s, and 5.8 GB, were the
+check (710 s before the lowest eigenvalue was sought on the shifted form).  `solve(..., diagnostics=False)` skips it; rescaling time so that the fast rates are of order one is the cheaper
+remedy.
+
+**A stationary cost that grows with the window.**  The window row asks whether a kernel still moves at L; a random-walk
+state passes it (its kernel is constant), yet a loss term in its level squared accrues the same amount at every age, so
+the stationary cost is infinite and the one reported is the window's.  The `cost window` row reports the share of each
+agent's flow loss that accrues over the last tenth of the window (`res.cost_tail`, 10% for a constant integrand); it is
+reported and never required, since the strategies are right when the term moves nothing the agent chooses.  Chapter 4's
+market maker is the case (its P^2 - 2 P V leaves out V^2): its reported cost is about 2.1 - L.
+
+**Resolution floors.**  The Chapter 5 market's representation error settles at about 1.2e-6 (1.1e-6, 1.9e-6, 1.2e-6 at
+12, 14 and 16 nodes; its costs move by 1e-6 among them), above `resolution_tol` (1e-6): its resolution row fails at every
+grid.  The stationary engine's risk-averse agents (consistent planning) break down where theta times the conditional
+cost's largest eigenvalue reaches 1 and return a result that is not converged with that message; the finite engine raises
+RiskBreakdown instead.

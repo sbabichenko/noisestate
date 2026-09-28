@@ -170,12 +170,24 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 res.converged = False
                 res.message += f"; the monitored response kernels did not settle at the equilibrium (residual {self._kernel_residual:.1e})"
         super()._finish(res)
+        from .risk import RiskBreakdown
         for a in self.model.agents:
             if a.risk_aversion:
                 # the equilibrium's own spectrum (risk_report raises RiskBreakdown past it): an iterate beyond the
                 # breakdown was answered at a smaller theta (risk.Tilt, clip), so a fixed point that still needs that is
                 # no equilibrium of the entropic game
-                res.risk[a.name] = self.risk_report(a, res.world, res.costs[a.name], zbar=self._zbar, maps=res.maps)
+                try:
+                    res.risk[a.name] = self.risk_report(a, res.world, res.costs[a.name], zbar=self._zbar, maps=res.maps)
+                except RiskBreakdown as exc:
+                    if res.converged:
+                        raise
+                    # a solve that did not converge ends at its best iterate, which can be anywhere: past the breakdown
+                    # there is no evidence about the equilibrium, and raising made _risk_solve give up before its retry
+                    # (Kyle-Back at eps 0.05, theta 1.7 from the 1.6 equilibrium: theta lambda_max 194 at a wild iterate)
+                    res.risk[a.name] = {"risk_aversion": exc.theta, "entropic": float("nan"), "expected": float(res.costs[a.name]),
+                                        "lambda_max": exc.lam_max, "theta_lambda_max": exc.theta * exc.lam_max}
+                    res.message += (f"; the last iterate is past {a.name}'s risk-sensitive breakdown (theta lambda_max = "
+                                    f"{exc.theta * exc.lam_max:.3g}): no entropic cost there")
         if self.c.cont is not None:
             for a in self.model.agents:
                 res.cost_parts[a.name]["continuation"] = self.continuation_cost(a, res.world)
@@ -1145,13 +1157,17 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         return res
 
     RISK_KRYLOV_RETRY = 1e-6     # the risk-averse best responses' Krylov reduction on a retry after a stall or a failing best response (_risk_solve)
+    RISK_PROX = 1.0              # ... and the weight of their proximal term then, relative to the system's mean diagonal (FocSystem._proximal)
 
     def _risk_solve(self, averse, args: dict):
         """EngineBase.solve(**args) for a model with risk-averse agents, retried once from the same start with the best
         responses' Krylov solves tightened from FocSystem.RISK_KRYLOV_REDUCTION (1e-4 of the warm start's residual) to
         RISK_KRYLOV_RETRY when it stalls or a best response fails: near a fixed point the looser stop leaves a noise floor in
         the fixed-point map that Anderson and the Newton polish read as a stall (Kyle-Back at eps 0.05, theta 1.5, 16 nodes:
-        residual 2e-5; with the retry it converges).  If the retry fails too, the entropic cost's curvature is probed
+        residual 2e-5; with the retry it converges).  The retry's best responses are also proximal (RISK_PROX,
+        FocSystem._proximal): the frozen best response's system goes singular where the entropic cost is still convex, and
+        the iteration then diverges (the same market from theta 1.58 on); the proximal one crosses it (theta 1.6, 1.7 and 2
+        from the theta 1.5 equilibrium, 70 to 100 evaluations, against extras/kyle_reference.py).  If the retry fails too, the entropic cost's curvature is probed
         (_risk_curvature) at the best iterate, or at the start when a best response raised, and the message says whether
         the risk-averse best response has lost its minimum there."""
         from .risk import RiskBreakdown
@@ -1165,6 +1181,10 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         except ValueError as exc:
             failed = exc
         self._risk_krylov_reduction = self.RISK_KRYLOV_RETRY
+        self._risk_prox = self.RISK_PROX
+        # the best responses' GMRES warm starts are the failed attempt's last ones, wherever it wandered, and a warm-started
+        # risk-averse solve stops at a fraction of its start's residual: from a wild one that is a loose answer
+        self._last_gamma.clear()
         try:
             try:
                 res = super().solve(**args)
@@ -1177,14 +1197,17 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 elif self.init_kind(start) == "actions":
                     start = self.maps_from_actions(start)
                 why = str(failed if failed is not None else exc)
-                raise ValueError(f"{why}; retried with the best responses' Krylov reduction {self.RISK_KRYLOV_RETRY:g}: {str(exc)[:200]}; "
+                raise ValueError(f"{why}; retried with the best responses' Krylov reduction {self.RISK_KRYLOV_RETRY:g} and a proximal "
+                                 f"term {self.RISK_PROX:g}: {str(exc)[:200]}; "
                                  f"at the start: {self._risk_curvature(start, averse)}") from None
         finally:
             self._risk_krylov_reduction = None
+            self._risk_prox = None
         before = (f"the first attempt raised: {str(failed)[:200]}" if failed is not None else first.message)
         if first is not None:
             res.evaluations += first.evaluations
-        res.message = f"retried with the best responses' Krylov reduction {self.RISK_KRYLOV_RETRY:g} after: {before}; " + res.message
+        res.message = (f"retried with the best responses' Krylov reduction {self.RISK_KRYLOV_RETRY:g} and a proximal term "
+                       f"{self.RISK_PROX:g} after: {before}; " + res.message)
         if not res.converged:
             res.message += "; " + self._risk_curvature(res.maps, averse)
         return res

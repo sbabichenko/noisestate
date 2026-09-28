@@ -158,40 +158,56 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], n
     solver_kw = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
     built: List[dict] = []
     prev = prev2 = None
-    for v in values:
-        d = copy.deepcopy(base)
-        if param in HORIZON_LENGTHS:
-            d.setdefault("horizon", {})[param.split(".", 1)[1]] = float(v)
-        else:
-            d.setdefault("params", {})[param] = float(v)
-        m = Model.from_dict(d)
-        S, num = engines._build(m, numerics, **solver_kw)
-        t0 = time.time()
-        start_from = None
-        if prev is not None and not S.same_grid(prev.compiled) and hasattr(S, "warm_maps_from"):
-            start_from = S.warm_maps_from(prev)                    # another grid of the same model (a sweep over T)
-        if prev is not None and S.same_grid(prev.compiled):
-            w1 = warm_start(prev)
-            if prev2 is not None and S.same_grid(prev2.compiled):
-                w0 = warm_start(prev2); e1, e0 = built[-1]["value"], built[-2]["value"]
-                if abs(e1 - e0) > 0:
-                    start_from = {k: w1[k] + (w1[k] - w0[k]) * (float(v) - e1) / (e1 - e0) for k in w1}
+    values = list(values)
+    for i, v in enumerate(values):
+        try:
+            d = copy.deepcopy(base)
+            if param in HORIZON_LENGTHS:
+                d.setdefault("horizon", {})[param.split(".", 1)[1]] = float(v)
+            else:
+                d.setdefault("params", {})[param] = float(v)
+            m = Model.from_dict(d)
+            S, num = engines._build(m, numerics, **solver_kw)
+            t0 = time.time()
+            start_from = None
+            if prev is not None and not S.same_grid(prev.compiled) and hasattr(S, "warm_maps_from"):
+                start_from = S.warm_maps_from(prev)                    # another grid of the same model (a sweep over T)
+            if prev is not None and S.same_grid(prev.compiled):
+                w1 = warm_start(prev)
+                if prev2 is not None and S.same_grid(prev2.compiled):
+                    w0 = warm_start(prev2); e1, e0 = built[-1]["value"], built[-2]["value"]
+                    if abs(e1 - e0) > 0:
+                        start_from = {k: w1[k] + (w1[k] - w0[k]) * (float(v) - e1) / (e1 - e0) for k in w1}
+                if start_from is None:
+                    start_from = w1
+            kw = {**num.solve_kw(), **options}
             if start_from is None:
-                start_from = w1
-        kw = {**num.solve_kw(), **options}
-        if start_from is None:
-            kw["start_policy"] = default_start(S, kw.get("start_policy"))
-        res = S.solve(start_from=start_from, **kw)
-        change = None
-        if prev is not None and S.same_grid(prev.compiled):
-            a1, a0 = warm_start(res), warm_start(prev)
-            num = max(np.abs(a1[k] - a0[k]).max() for k in a1); den = max(max(np.abs(a0[k]).max() for k in a0), 1e-12)
-            change = float(num / den)
-        built.append(dict(param=param, value=float(v), result=res, seconds=time.time() - t0,
-                          evaluations=int(res.evaluations), converged=bool(res.converged), change=change))
-        if verbose:
-            print(f"{param} = {v:g}: {'ok' if res.converged else 'NOT converged'} in {res.evaluations} evaluations, {time.time()-t0:.1f}s", flush=True)
-        prev2, prev = prev, res
+                kw["start_policy"] = default_start(S, kw.get("start_policy"))
+            res = S.solve(start_from=start_from, **kw)
+            change = None
+            if prev is not None and S.same_grid(prev.compiled):
+                a1, a0 = warm_start(res), warm_start(prev)
+                num = max(np.abs(a1[k] - a0[k]).max() for k in a1); den = max(max(np.abs(a0[k]).max() for k in a0), 1e-12)
+                change = float(num / den)
+            built.append(dict(param=param, value=float(v), result=res, seconds=time.time() - t0,
+                              evaluations=int(res.evaluations), converged=bool(res.converged), change=change))
+            if verbose:
+                print(f"{param} = {v:g}: {'ok' if res.converged else 'NOT converged'} in {res.evaluations} evaluations, {time.time()-t0:.1f}s", flush=True)
+            prev2, prev = prev, res
+        except Exception as exc:
+            # a point that raises (a model its value makes invalid, a singular best response, a risk breakdown) ends the sweep
+            # as before, but no longer silently discards the points before it or leaves the value to be guessed
+            exc.partial = _rows(built, param, False)
+            note = (f"sweep: at {param} = {v}, point {i + 1} of {len(values)}; the {len(built)} point(s) before it "
+                    "solved and are on this exception's .partial (a Sweep)")
+            if hasattr(exc, "add_note"):
+                exc.add_note(note)
+            raise
+    return _rows(built, param, verbose)
+
+
+def _rows(built: List[dict], param: str, verbose: bool) -> "Sweep":
+    """The Sweep of the solved points, with each point's jump flag against the sweep's median change."""
     # continuity: a point whose change from its predecessor is far above the sweep's typical change is a
     # candidate branch jump (the change per point, not per unit of parameter: a geometric sweep moves
     # the same amount per point).  It is computed BEFORE the points are built: a SweepPoint is frozen,

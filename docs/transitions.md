@@ -49,7 +49,7 @@ error to 3.4e-6).  `continuation: end` ends the game at T instead (the maps with
 the kernels within about 3L of T, carry the end).  Two guards: `res.settled`, the largest relative
 distance of any map on [T - L, T] (and, with driven means, of the mean paths at T-) from the
 stationary ones, with the `settled` row flagging "TRANSITION NOT SETTLED by T - L: raise
-horizon.window" above `settled_tol` (1e-4, the closed loop's decay over a unit of t; on the
+horizon.T" above `settled_tol` (1e-4, the closed loop's decay over a unit of t; on the
 Chapter 3 precision change 4.8e-4 at T = 6, 2.7e-6 at T = 9); and `res.representation_parts`,
 which says whether the resolution guard's error sits in the interior, on the band's collapsing
 tip, on the last window or on the buffer (the tip and the last window are geometry, not

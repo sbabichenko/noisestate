@@ -237,6 +237,10 @@ class Past:
             raise ValueError(f"the past's shocks {self.channels} differ from the model's {chans}")
         rows = {f"{a.name}.{r.name}" for a in model.agents for r in a.signals}
         for sh in self.initial:
+            # a past of initial shocks only learns the channels here, after __init__'s check of the same clash ran on none:
+            # a clash made res.kernel(X, "w0") read one of two shocks of that name
+            if sh.name in chans:
+                raise ValueError(f"initial shock {sh.name!r} is named like one of the model's shocks {chans}; give it its own name")
             for s in sh.loads:
                 if s not in model.state_names:
                     raise ValueError(f"initial shock {sh.name!r} loads {s!r}, which is not a state of the model {model.state_names}")

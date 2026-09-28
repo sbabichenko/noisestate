@@ -54,7 +54,7 @@ from .schema import PAYLOAD_VERSION      # the format's version lives with the f
 from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, RESIDUAL_NORM, RESIDUAL_TOLERANCE,
                           Assessment, Policy, Refinement, Stability, Status, applicable, assess, classify,
                           verification)
-from .kernel import Kernel
+from .kernel import Kernel, check_coords
 from .names import NameNotFound, unknown
 from .spec import Model
 
@@ -859,6 +859,19 @@ class Result:
                 f"WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window"
                 + ("; the means' continuation integrals are truncated there as well)" if self.has_means else ")"),
                 "raise horizon.window")
+            # reported, never required by a policy: a loss term in a quantity that never decays leaves the strategies
+            # alone when it moves nothing the agent chooses (Chapter 4's market maker), only the cost is the window's
+            grows = {a: v for a, v in self.cost_tail.items() if v > self.WINDOW_TAIL_TOL}
+            if grows:
+                share = max(grows.values())
+                row("cost window", share, self.WINDOW_TAIL_TOL, False,
+                    f"COST GROWS WITH THE WINDOW ({', '.join(sorted(grows))}: {share:.0%} of the flow loss accrues over the last "
+                    "tenth of the window): a loss term reads a quantity whose response has not decayed by L -- a window too "
+                    "short for it (the window row), or a response that never decays (a random walk's level, a price that "
+                    "tracks one), whose stationary cost is infinite: the one reported is then the window's, while the "
+                    "strategies are unaffected when the term moves nothing the agent chooses",
+                    "raise horizon.window; if the share stays near 10% the term never decays: drop it from the loss if it "
+                    "moves no choice")
         for a, so in self.second_order.items():
             if so.get("converged") is False:
                 row(f"second_order:{a}", None, None, None, f"second-order check did not converge for {a!r}", so.get("message", ""))
@@ -909,6 +922,7 @@ class Result:
             "converged": "Whether the fixed-point solve reached its requested tolerance.",
             "resolution": "Whether the computed strategy is represented accurately on this grid.",
             "window": "Whether stationary kernels have stopped changing near the window boundary.",
+            "cost window": "Whether each stationary flow cost has stopped accruing near the window boundary (reported, not required).",
             "past window": "Whether the inherited stationary kernels have stopped changing near their boundary.",
             "continuation window": "Whether the stationary continuation kernels have stopped changing near their boundary.",
             "settled": "Whether transition strategies have reached the stationary continuation by the end of the horizon.",
@@ -1249,6 +1263,32 @@ class StationaryResult(Result):
                 worst = max(worst, float(np.abs(I1 @ K - I0 @ K).max() / peak))
         return worst
 
+    @property
+    def cost_tail(self) -> Dict[str, float]:
+        """Per agent, the share of its flow loss's integrand (over ages, in absolute value) that lies in the last tenth
+        of the window.  The window check asks whether a kernel still MOVES at L, which a random-walk state (constant
+        1) passes; a loss term in such a quantity's square still accrues a constant amount per unit of age, so the
+        stationary cost is infinite and the reported one grows with L: a myopic agent leaving a random walk
+        uncontrolled reported a cost equal to the window, with every check passed, and Chapter 4's market maker (P^2 -
+        2 P V, the V^2 left out) reports about 2.1 - L.  A decayed integrand scores near zero, a constant one 0.1."""
+        c = self.compiled; g = c.grid; L = float(g.L)
+        u = np.linspace(0.0, L, 401)
+        I = g.interp(u)
+        tail = u[:-1] >= 0.9 * L * (1 - 1e-12)                        # the trapezoid segments of the last tenth
+        Z = self.world[:, :c.nW]
+        out = {}
+        for a in self.model.agents:
+            atoms, Q, _ = c.loss[a.name]
+            if not len(atoms):
+                out[a.name] = 0.0
+                continue
+            zeta = np.stack([I @ (c.shift(lag) @ Z[c.block(nm)]) for nm, lag in atoms])      # (m, u, nW)
+            f = np.abs(0.5 * np.einsum("ij,iuk,juk->u", np.asarray(Q, dtype=float), zeta, zeta))
+            seg = 0.5 * (f[1:] + f[:-1]) * np.diff(u)                                              # the trapezoid rule
+            whole = float(seg.sum())
+            out[a.name] = float(seg[tail].sum() / whole) if whole > 0 else 0.0
+        return out
+
     def window_tail_extrapolation(self) -> dict:
         """Estimate tail decay from four consecutive tenths near the current window boundary.
 
@@ -1526,6 +1566,7 @@ class TriangleResult(Result):
         """Kernel value at (t, s) points: response at time t to a unit `shock` at time s."""
         name, shock = _nm(name), _nm(shock)
         t = np.asarray(t, dtype=float); s = np.asarray(s, dtype=float)
+        check_coords((t, s), self._node_axes()["time"], "evaluate")
         return self.grid.interp(t, t - s) @ self.kernel(name, shock)
 
     def mean(self, name: str, t) -> np.ndarray:
@@ -1534,6 +1575,7 @@ class TriangleResult(Result):
         if name not in self.means:
             raise NameNotFound(unknown("mean", name, list(self.means), "names with a mean"))
         t = np.atleast_1d(np.asarray(t, dtype=float)); g = self.grid
+        check_coords((t,), self._node_axes()["time"], "mean")
         a = t if g.L is None else np.zeros_like(t)              # the line s = 0, or (a strip, cut at age L) the age-0 line
         return g.interp(t, a) @ (self.compiled.mean_embed @ np.asarray(self.means[name], dtype=float))
 

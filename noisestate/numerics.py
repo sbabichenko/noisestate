@@ -66,6 +66,18 @@ class Numerics:
             self.continuation_nodes = int(self.continuation_nodes)
         if self.breakpoints is not None:
             self.breakpoints = [float(b) for b in self.breakpoints]
+        #  a tolerance of 0 or below cannot be met (a negative one returned "not converged" at the exact answer), and a
+        #  mixing weight of 0 takes no step; a NaN in either passed every comparison unnoticed
+        for name in ("tol", "damping"):
+            v = getattr(self, name)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < float("inf")):
+                raise ValueError(f"numerics.{name} must be a positive number, got {v!r}"
+                                 + (" (the fixed point's relative residual; 1e-10 stationary, 1e-8 finite by default)"
+                                    if name == "tol" else " (the Anderson mixing weight; 0.6 stationary, 0.5 finite by default)"))
+        if self.max_newton is not None:
+            if isinstance(self.max_newton, bool) or self.max_newton != int(self.max_newton) or int(self.max_newton) < 0:
+                raise ValueError(f"numerics.max_newton must be an integer of at least 0, got {self.max_newton!r}")
+            self.max_newton = int(self.max_newton)
         if self.variable is not None and self.variable not in ("actions", "maps"):
             raise ValueError(f"numerics.variable must be 'actions' or 'maps', not {self.variable!r}")
 

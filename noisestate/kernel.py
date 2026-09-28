@@ -18,6 +18,21 @@ from typing import Optional
 import numpy as np
 
 
+def check_coords(coords, times=None, what: str = "at") -> None:
+    """The interpolants give a point outside their domain a zero row (causality: s > t, or an age past the window), so a
+    NaN, or a date past the grid's last one, read as a response of exactly 0 rather than an error.  `times`: the grid's
+    dates, when the first coordinate is a date t."""
+    if any(np.isnan(np.asarray(c, dtype=float)).any() for c in coords):
+        raise ValueError(f"{what}{tuple(coords)!r}: a coordinate is NaN")
+    if times is not None and coords:
+        t_max = float(np.max(times))
+        t_arg = np.asarray(coords[0], dtype=float)
+        if t_arg.size and (t_arg > t_max * (1 + 1e-12) + 1e-12).any():
+            raise ValueError(f"{what}(t, ...): the time t must not pass {t_max:g}, the grid's last date (got t = "
+                             f"{t_arg.max():g}); before 0, and for a shock time s after t, the value is 0 (nothing has "
+                             "happened yet)")
+
+
 class Kernel(np.ndarray):
     """An ndarray with .axes, .at(*coords), .plot(path=None); see the module docstring."""
 
@@ -62,10 +77,17 @@ class Kernel(np.ndarray):
             raise ValueError("at() needs a kernel as res.kernel() returned it (a slice or a product has lost its nodes)")
         K = np.asarray(self)
         names = [a for a in self.axes]
+        check_coords(coords, self.axes.get("time") if "time" in names else None, "at")
         if names == ["age"]:
             if len(coords) != 1:
                 raise TypeError("at(age) on the stationary engine")
             age = np.atleast_1d(np.asarray(coords[0], dtype=float))
+            L = float(r.compiled.grid.L)
+            if (age > L * (1 + 1e-12) + 1e-12).any():
+                # the interpolant's zero row past the window read as a response of 0, which a random walk's is not
+                raise ValueError(f"at(age): the kernels live on the window [0, {L:g}] (got age {age.max():g}); the truncated "
+                                 "model forgets a shock at age L, so its response beyond is not the game's (a negative age, "
+                                 "a shock still to come, is 0)")
             out = r.compiled.grid.interp(age) @ K
         elif "shock_time" in names and "age" in names:
             if len(coords) != 2:

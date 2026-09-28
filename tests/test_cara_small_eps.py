@@ -45,3 +45,60 @@ def test_a_small_trading_cost_converges_with_the_retry():
     res = ns.solve(kyle(1.5, eps=0.05), diagnostics=False, start_from=prev.maps)
     assert res.converged and "retried" in res.message
     assert -res.entropic_costs["trader1"] == pytest.approx(0.53980, abs=2e-5)
+
+
+@pytest.mark.parametrize("planning", ["precommitment", "consistent"])
+def test_the_proximal_best_response_has_the_same_fixed_point(planning):
+    """The retry's proximal term mu (g - g_prev) vanishes at a fixed point: forced on from the start, the solve lands on the
+    equilibrium of the plain one (Chapter 1's game, theta 1 for both players, 12 nodes)."""
+    d = ns.load(ns.example("ch1_two_player_finite")).to_dict()
+    for a in ("player1", "player2"):
+        d["agents"][a]["risk_aversion"] = 1.0
+    m = ns.Model.from_dict(d)
+    num = {"settings": {"risk_planning": planning}}
+    plain = ns.solve(m, num, diagnostics=False)
+    S = ns.engines.spectral(m, settings=num["settings"])
+    S._risk_prox = S.RISK_PROX
+    prox = S.solve(diagnostics=False)
+    assert plain.converged and prox.converged
+    assert abs(prox.entropic_costs["player1"] - plain.entropic_costs["player1"]) < 1e-8
+    assert np.abs(prox.maps["player1"] - plain.maps["player1"]).max() < 1e-6 * np.abs(plain.maps["player1"]).max()
+
+
+@slow()
+def test_the_proximal_retry_crosses_the_frozen_system_s_singularity():
+    """eps 0.05 past theta 1.58, where the insider's frozen best-response system E^Q[C''] goes singular at the equilibrium
+    (its smallest eigenvalue, relative to the largest: 3.1e-3 at theta 1.5, -2.9e-4 at 1.6, -3.6e-3 at 1.7) while the
+    entropic cost stays convex: the plain iteration diverged from theta 1.5 to 1.6 (the market maker's system went singular
+    at a wild iterate).  The retry's proximal best responses cross it.  The certainty equivalents against
+    extras/kyle_reference.py (eps 0.05, Sigma0 1, n = 40 .. 120, Richardson over the five levels, reference fixed point to a
+    map change of 1e-5 or better): 0.5206571 at theta 1.7 and 0.4953707 at 2 (the four-level limits differ by 4e-6)."""
+    prev = None
+    for e in (0.2, 0.14, 0.1, 0.07):
+        prev = ns.solve(kyle(0.0, eps=e), diagnostics=False, **({"start_from": prev.maps} if prev is not None else {}))
+    for th in (1.0, 1.5, 1.7, 2.0):
+        prev = ns.solve(kyle(th, eps=0.05), diagnostics=False, start_from=prev.maps)
+        assert prev.converged
+        if th == 1.7:
+            assert -prev.entropic_costs["trader1"] == pytest.approx(0.5206571, abs=1e-5)
+    assert "proximal" in prev.message
+    assert -prev.entropic_costs["trader1"] == pytest.approx(0.4953707, abs=1e-5)
+
+
+def test_a_breakdown_at_a_non_converged_iterate_is_reported_not_raised(monkeypatch):
+    """A solve that stops short ends at its best iterate, which can be anywhere; a breakdown there says nothing of the
+    equilibrium, and raising it made the risk-averse solve give up before its proximal retry.  At a converged solve the
+    breakdown is the equilibrium's and still raises."""
+    from noisestate.finite_spectral import SpectralFiniteSolver
+    from noisestate.risk import RiskBreakdown
+
+    def past_it(self, agent, *a, **k):
+        raise RiskBreakdown(agent.name, 1.0, 1.5)
+    monkeypatch.setattr(SpectralFiniteSolver, "risk_report", past_it)
+    m = kyle(1.0, nodes=8)
+    base = ns.solve(kyle(0.0, nodes=8), diagnostics=False)
+    res = ns.engines.spectral(m).solve(start_from=base.maps, max_evaluations=1, diagnostics=False)
+    assert not res.converged and np.isnan(res.entropic_costs["trader1"]) and "past trader1's risk-sensitive breakdown" in res.message
+    with pytest.raises(RiskBreakdown):                  # the same maps taken as converged: the breakdown is the equilibrium's
+        ns.engines.spectral(m)._result(base.maps, converged=True, residual=0.0, evaluations=1, message="", solve_kw={},
+                                       diagnostics=False)

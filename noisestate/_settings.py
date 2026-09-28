@@ -16,6 +16,8 @@ engines: they are public arguments of solve(), recorded in res.solve_kw, and dif
 """
 from __future__ import annotations
 
+import math
+import numbers
 from dataclasses import dataclass, fields, replace
 from typing import Optional, Union
 
@@ -59,6 +61,28 @@ class Settings:
     stability_tol: float = 1e-3         # stability(): ARPACK tolerance
     stability_max_evaluations: int = 200    # stability(): rounds of best responses at most, Arnoldi and power iteration together
     stability_fallback: int = 30        # stability(): of those, the rounds kept for the power iteration when Arnoldi does not settle
+
+    def __post_init__(self):
+        """The type of every field, checked where it is set: a count given as "15" reached the Anderson loop as a
+        string (a TypeError from a comparison deep in the solve), a NaN threshold made every comparison with it False,
+        and a misspelt risk_planning passed silently unless an agent was risk averse.  The signs are not checked:
+        the tests move thresholds past their meaningful range on purpose (a negative second_order_tol, e.g.)."""
+        for f in fields(self):
+            v = getattr(self, f.name)
+            default = f.default
+            if isinstance(f.default, str):
+                if not isinstance(v, str):
+                    raise TypeError(f"settings.{f.name} must be a string, not {v!r}")
+            elif isinstance(f.default, int):
+                if isinstance(v, bool) or not isinstance(v, numbers.Integral):
+                    raise TypeError(f"settings.{f.name} must be an integer (default {default!r}), not {v!r}")
+                if v < 0:
+                    raise ValueError(f"settings.{f.name} must be a non-negative integer (default {default!r}), not {v!r}")
+            elif isinstance(f.default, float):
+                if isinstance(v, bool) or not isinstance(v, numbers.Real) or math.isnan(v):
+                    raise TypeError(f"settings.{f.name} must be a number (default {default!r}), not {v!r}")
+        if self.risk_planning not in ("precommitment", "consistent"):
+            raise ValueError(f"settings.risk_planning must be 'precommitment' or 'consistent', not {self.risk_planning!r}")
 
     @classmethod
     def of(cls, value: Union[None, "Settings", dict]) -> "Settings":

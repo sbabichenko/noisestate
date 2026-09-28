@@ -196,7 +196,8 @@ def _as_list(x) -> list:
 def _environment(d: dict):
     """The names an equation of the equations dict `d` may use: (env, params, states, controls), env mapping
     each parameter, d<shock>, state, control and definition (evaluated, in dependency order) to its object."""
-    values = dict(d.get("params") or {})
+    from .spec import eval_params
+    values = eval_params(d.get("params"))                   # an expression parameter at its value; the file keeps the expression
     params = {k: E.Param(k, v) for k, v in values.items()}
     shock_names = _shock_names(d)
     sh = E.shocks(*shock_names) if shock_names else None
