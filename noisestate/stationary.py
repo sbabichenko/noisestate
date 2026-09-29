@@ -504,10 +504,10 @@ class Compiled(CompiledBase):
         """closed_loop for a cyclically symmetric model with symmetric maps: the reduced control-row
         operator commutes with the cyclic relabelling, so in the Fourier basis over the cycle it is
         block diagonal, one block per mode, built from the representative agent's rows alone.
-        Switching one agent off (the passive world) breaks the symmetry by a low-rank change of that
-        agent's rows, applied with the Woodbury identity on top of the symmetric solve."""
+        Switching one agent off (the passive world) breaks the symmetry: the others' rows, the representative's with
+        their columns shifted, are then one real system on the remaining controls, solved directly."""
         st = self._mode_structure(); m, omega = st["m"], st["omega"]
-        nX, nU, N = self.nX, self.nU, self.N; n = len(self.prim) * N; nxs = nX * N
+        nX, N = self.nX, self.N; n = len(self.prim) * N; nxs = nX * N
         ncol = self.nW + len(impulse_controls)
         ex_agent = self.model.agents[[a.name for a in self.model.agents].index(excluded)] if excluded else None
         B = np.zeros((n, ncol))
@@ -539,8 +539,29 @@ class Compiled(CompiledBase):
                 rhs[csl[j][sh]] += MUX_rep[j * N:(j + 1) * N] @ GB[perms[sh]]
         if fcols.size:
             rhs[fcols] += MUX_rep[len(corb) * N:] @ GB
-        # mode blocks
         r = len(corb); nf = fcols.size
+        if ex_agent is not None:
+            # one agent switched off (the passive world): its controls are zero and the others' rows, the representative's
+            # with their columns shifted along the cycle, form one real system on the remaining controls, solved directly
+            # (a Woodbury correction on the mode solves took nW + |its controls| N complex right-hand sides)
+            others = [u for u in all_controls if u not in ex_agent.controls]
+            idx_o = np.concatenate([np.arange(all_controls.index(u) * N, (all_controls.index(u) + 1) * N) for u in others])
+            fixed = [x for x in rep_controls if x not in st["member"]]
+            Aoo = np.empty((idx_o.size, idx_o.size), order="F")
+            for i, u in enumerate(others):
+                if u in st["member"]:
+                    j, sh = st["member"][u]
+                    rows_u = R_rep[j * N:(j + 1) * N][:, cperms[(-sh) % m][idx_o]]
+                else:
+                    fi = fixed.index(u)
+                    rows_u = R_rep[(r + fi) * N:(r + fi + 1) * N][:, idx_o]
+                np.subtract(0.0, rows_u, out=Aoo[i * N:(i + 1) * N])
+            Aoo[np.arange(idx_o.size), np.arange(idx_o.size)] += 1.0
+            ZU = np.zeros_like(rhs)
+            ZU[idx_o] = _lu_solve(lu_factor(Aoo, overwrite_a=True, check_finite=False), rhs[idx_o])
+            Z = np.zeros((n, ncol)); Z[nxs:] = ZU; Z[:nxs] = GB if wzero else W @ ZU + GB
+            return Z
+        # mode blocks
         # modes k and m - k are complex conjugates (the operator and the right-hand sides are real), so only
         # k <= m/2 is factorised and solved; the conjugate mode's contribution is the conjugate's
         kmax = m // 2
@@ -577,24 +598,7 @@ class Compiled(CompiledBase):
                 if k == 0 and nf:
                     out[fcols] += zk[r * N:].real
             return out
-        if ex_agent is None:
-            ZU = solve_sym(rhs)
-        else:
-            # Woodbury: the excluded agent's control rows become identity rows (its strategy off)
-            rows0 = np.concatenate([np.arange(all_controls.index(u) * N, (all_controls.index(u) + 1) * N) for u in ex_agent.controls])
-            R0 = np.zeros((rows0.size, nU * N))                                  # the excluded agent's rows of the symmetric
-            for i, u in enumerate(ex_agent.controls):                             # operator: the representative's, columns shifted
-                if u in st["member"]:
-                    j, sh = st["member"][u]; R0[i * N:(i + 1) * N] = R_rep[j * N:(j + 1) * N][:, cperms[(-sh) % m]]
-                else:
-                    fi = [x for x in rep_controls if x not in st["member"]].index(u)
-                    R0[i * N:(i + 1) * N] = R_rep[(r + fi) * N:(r + fi + 1) * N]
-            E0 = np.zeros((nU * N, rows0.size)); E0[rows0, np.arange(rows0.size)] = 1.0
-            rhs_ex = rhs.copy(); rhs_ex[rows0] = 0.0                                # B rows of the excluded agent are zero
-            Y = solve_sym(np.concatenate([rhs_ex, E0], axis=1)); Yb, Ye = Y[:, :ncol], Y[:, ncol:]
-            cap = np.eye(rows0.size) + R0 @ Ye
-            ZU = Yb - Ye @ np.linalg.solve(cap, R0 @ Yb)
-            ZU[rows0] = 0.0
+        ZU = solve_sym(rhs)
         Z = np.zeros((n, ncol)); Z[nxs:] = ZU; Z[:nxs] = GB if wzero else W @ ZU + GB
         return Z
 
