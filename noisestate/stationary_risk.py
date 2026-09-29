@@ -126,11 +126,9 @@ class StationaryTilt:
 
     # ------------------------------------------------------------------ one lattice
     def _lattice(self, h: float):
-        g = self.c.grid
         Na = int(round(self.L / h))
         ages = h * np.arange(Na + 1)
-        I = g.interp(ages)
-        I[-1] = g.interp([self.L], side=-1)[0]                        # the age L from the left
+        I = self._geo(("I", round(h, 12)), lambda: self._lattice_interp(ages))
         half = np.ones(Na + 1); half[0] = half[-1] = 0.5             # the cut at ages 0 and L: half the one-sided value
         zt = np.einsum("an,jnc->ajc", I, self.z) * half[:, None, None]                                  # (Na + 1, m, nW)
         Rt = np.einsum("an,ujn->uaj", I, self.Rj)                                                        # (nU, Na + 1, m)
@@ -147,32 +145,60 @@ class StationaryTilt:
         out["tau"] = tau
         return out
 
-    @staticmethod
-    def _conv(a, b):
-        from scipy.signal import fftconvolve
-        return fftconvolve(a, b)
+    def _geo(self, key, make):
+        """What depends on the grid, the window and the lattice only (not on the profile), kept on the solver across the
+        best responses' tilts (one StationaryTilt per best response), on the compiled model (its grid, window and rate):
+        the lattice's interpolation rows, _read's per-age quadrature.  Read only."""
+        memo = self.c.__dict__.setdefault("_tilt_geo", {})
+        if key not in memo:
+            memo[key] = make()
+        return memo[key]
 
-    def _A(self, lat, zt, G):
-        """(A g)_j(tau_k) = int z_j(tau - u)' g(u) du on the lattice, (m, Nt): G (nW, Nu)."""
+    def _lattice_interp(self, ages):
+        g = self.c.grid
+        I = g.interp(ages)
+        I[-1] = g.interp([self.L], side=-1)[0]                        # the age L from the left
+        return I
+
+    def _spectra(self, lat, key: str, n_in: int, rev: bool):
+        """(f, {(j, c): rfft of the lag kernel lat[key][:, j, c], reversed for A', at length f}) over the nonzero kernels, made
+        once per lattice: f = next_fast_len(n_in + Na), the length scipy.signal.fftconvolve takes for a convolution of an
+        input of length n_in with them, so the convolutions below are fftconvolve's to the bit (its transforms one line at
+        a time, the kernel's made once instead of per call, the input's once for every kernel it meets)."""
+        memo = lat.setdefault("spectra", {})
+        if (key, rev) not in memo:
+            from scipy import fft as sf
+            zt = lat[key]
+            f = sf.next_fast_len(n_in + lat["Na"], True)
+            memo[key, rev] = (f, {(j, cc): sf.rfft(zt[::-1, j, cc] if rev else zt[:, j, cc], f)
+                                  for j in range(zt.shape[1]) for cc in range(self.nW) if np.any(zt[:, j, cc])})
+        return memo[key, rev]
+
+    def _A(self, lat, zt, G, key: str = "zt"):
+        """(A g)_j(tau_k) = int z_j(tau - u)' g(u) du on the lattice, (m, Nt): G (nW, Nu); zt = lat[key]."""
+        from scipy import fft as sf
         h, Na, Nt = lat["h"], lat["Na"], lat["Nt"]
-        m = zt.shape[1]
-        out = np.zeros((m, Nt))
-        for j in range(m):
-            for cc in range(self.nW):
-                if np.any(zt[:, j, cc]):
-                    out[j] += self._conv(G[cc], zt[:, j, cc])[Na:Na + Nt]
+        f, S = self._spectra(lat, key, G.shape[1], False)
+        out = np.zeros((zt.shape[1], Nt))
+        SG = {}
+        for (j, cc), Sz in S.items():                                                    # j major, c minor: the sums' order
+            if cc not in SG:
+                SG[cc] = sf.rfft(G[cc], f)
+            out[j] += sf.irfft(SG[cc] * Sz, f)[Na:Na + Nt]
         return h * out
 
-    def _At(self, lat, zt, B):
-        """(A' b)_c(u_i) = sum_k z(tau_k - u_i)' b(tau_k) (the weights already in b), (nW, Nu): B (m, Nt)."""
+    def _At(self, lat, zt, B, key: str = "zt"):
+        """(A' b)_c(u_i) = sum_k z(tau_k - u_i)' b(tau_k) (the weights already in b), (nW, Nu): B (m, Nt); zt = lat[key]."""
+        from scipy import fft as sf
         Nu = lat["Nu"]
+        f, S = self._spectra(lat, key, B.shape[1], True)
         out = np.zeros((self.nW, Nu))
-        for j in range(zt.shape[1]):
-            if not np.any(B[j]):
-                continue
-            for cc in range(self.nW):
-                if np.any(zt[:, j, cc]):
-                    out[cc] += self._conv(B[j], zt[::-1, j, cc])[:Nu]
+        SB = {}
+        for (j, cc), Sz in S.items():
+            if j not in SB:
+                SB[j] = sf.rfft(B[j], f) if np.any(B[j]) else None
+            if SB[j] is not None:
+                out[cc] += sf.irfft(SB[j] * Sz, f)[:Nu]
         return out
 
     def _K(self, lat, G):
@@ -182,8 +208,8 @@ class StationaryTilt:
         out = self._At(lat, lat["zt"], lat["dtau"][None, :] * (self.Q @ Ag))
         if self.mx:
             Gf = G[:, Na:Na + Nt]                                                        # g at u = tau >= 0
-            out += self._At(lat, lat["zxt"], lat["dtau"][None, :] * (self.Lx @ Gf))
-            Axg = self._A(lat, lat["zxt"], G)                                            # (mx, Nt)
+            out += self._At(lat, lat["zxt"], lat["dtau"][None, :] * (self.Lx @ Gf), "zxt")
+            Axg = self._A(lat, lat["zxt"], G, "zxt")                                            # (mx, Nt)
             ind = np.ones(Nt); ind[0] = 0.5                                              # 1_{u >= 0}, half at u = 0
             out[:, Na:Na + Nt] += (ind * np.exp(-self.rho * lat["tau"]))[None, :] * (self.Lx.T @ Axg)
         return out
@@ -236,7 +262,33 @@ class StationaryTilt:
         bx = self.Lx @ G[:, Na:] if self.mx else None
         ages = gr.nodes if ages is None else np.asarray(ages, dtype=float)
         out = np.zeros((ages.size, self.nW))
-        for n, a in enumerate(ages):
+        rows, IL = self._geo(("read", round(h, 12), ages.tobytes()), lambda: self._read_rows(h, ages))
+        zL = np.einsum("n,jnc->jc", IL, self.z)
+        zxL = np.einsum("n,jnc->jc", IL, self.zx) if self.mx else None
+        for n, (K, wd, frac, Iz, s, d_last, d_up) in enumerate(rows):
+            zk = np.einsum("kn,jnc->kjc", Iz, self.z)
+            val = np.einsum("k,kjc,jk->c", wd, zk, b[:, :K + 1])
+            if frac > 1e-14:
+                bu = (1 - s) * b[:, K] + s * b[:, K + 1]
+                val += 0.5 * frac * (d_last * np.einsum("jc,j->c", zk[-1], b[:, K])
+                                     + d_up * np.einsum("jc,j->c", zL, bu))
+            if self.mx:
+                zxk = np.einsum("kn,jnc->kjc", Iz, self.zx)
+                val += np.einsum("k,kjc,jk->c", wd, zxk, bx[:, :K + 1])
+                if frac > 1e-14:
+                    bxu = (1 - s) * bx[:, K] + s * bx[:, K + 1]
+                    val += 0.5 * frac * (d_last * np.einsum("jc,j->c", zxk[-1], bx[:, K])
+                                         + d_up * np.einsum("jc,j->c", zxL, bxu))
+            out[n] = self.theta * val
+        return out
+
+    def _read_rows(self, h: float, ages):
+        """_read's quadrature at each age a (profile-free): (K, the weights with the discount, the partial interval frac,
+        the interpolation rows at tau_k + a, frac / h, e^{-rho tau_K}, e^{-rho (L - a)}), and the row reading age L."""
+        gr = self.c.grid
+        IL = gr.interp([self.L], side=-1)[0]
+        rows = []
+        for a in ages:
             up = self.L - a
             K = int(np.floor(up / h + 1e-12))
             tk = h * np.arange(K + 1)
@@ -245,26 +297,9 @@ class StationaryTilt:
                 w[:] = 0.0
             frac = up - K * h
             Iz = gr.interp(tk + a)
-            Iz[tk + a >= self.L - 1e-12] = gr.interp([self.L], side=-1)[0]
-            zk = np.einsum("kn,jnc->kjc", Iz, self.z)
-            val = np.einsum("k,kjc,jk->c", w * np.exp(-self.rho * tk), zk, b[:, :K + 1])
-            if frac > 1e-14:
-                s = frac / h
-                bu = (1 - s) * b[:, K] + s * b[:, K + 1]
-                zL = np.einsum("n,jnc->jc", gr.interp([self.L], side=-1)[0], self.z)
-                val += 0.5 * frac * (np.exp(-self.rho * tk[-1]) * np.einsum("jc,j->c", zk[-1], b[:, K])
-                                     + np.exp(-self.rho * up) * np.einsum("jc,j->c", zL, bu))
-            if self.mx:
-                zxk = np.einsum("kn,jnc->kjc", Iz, self.zx)
-                val += np.einsum("k,kjc,jk->c", w * np.exp(-self.rho * tk), zxk, bx[:, :K + 1])
-                if frac > 1e-14:
-                    s = frac / h
-                    bxu = (1 - s) * bx[:, K] + s * bx[:, K + 1]
-                    zxL = np.einsum("n,jnc->jc", gr.interp([self.L], side=-1)[0], self.zx)
-                    val += 0.5 * frac * (np.exp(-self.rho * tk[-1]) * np.einsum("jc,j->c", zxk[-1], bx[:, K])
-                                         + np.exp(-self.rho * up) * np.einsum("jc,j->c", zxL, bxu))
-            out[n] = self.theta * val
-        return out
+            Iz[tk + a >= self.L - 1e-12] = IL
+            rows.append((K, w * np.exp(-self.rho * tk), frac, Iz, frac / h, np.exp(-self.rho * tk[-1]), np.exp(-self.rho * up)))
+        return rows, IL
 
     def risk_part(self, ui: int, h: float) -> np.ndarray:
         """theta K_0 S f_0^on on the past, at the age nodes (N, nW), on the lattice of step h."""
@@ -288,23 +323,24 @@ class StationaryTilt:
         (the noise it sees at s).  The rows are the passive ones (its own orders known and taken out)."""
         solver, c = self.solver, self.c
         h, Na, Nu, nW = lat["h"], lat["Na"], lat["Nu"], self.nW
-        Zpass = solver._spikes(c, self._maps, self.agent)[0]
-        ytil, yinst = solver._passive_rows(self.agent, Zpass)
         key = round(h, 12)
         if key not in self._qpast:
-            rows = []
+            Zpass = solver._spikes(c, self._maps, self.agent)[0]
+            ytil, yinst = solver._passive_rows(self.agent, Zpass)
+            # column r Na + m: the step s = u_m = -L + m h of row r, h y_r at the ages (m - i) h of the u_i <= s, plus its
+            # point loadings at u_m
+            lag = np.arange(Na)[None, :] - np.arange(Na + 1)[:, None]                  # (i, m): m - i
+            seen = lag >= 0
+            cols = []
             for r, y in enumerate(ytil):
                 if any(age != 0.0 for (_, age, _) in yinst[r]):
                     raise NotImplementedError("a risk-averse agent on the stationary engine with a delayed point loading on its rows")
-                yl = lat["I"] @ y[:, :nW]                                                # (Na + 1, nW) at the ages
-                for m in range(Na):                                                      # s = u_m = -L + m h
-                    v = np.zeros((nW, Na + 1))
-                    ages_idx = m - np.arange(0, m + 1)                                   # u_i <= s: age (m - i) h
-                    v[:, :m + 1] = h * yl[ages_idx].T
-                    for (k, age, w) in yinst[r]:
-                        v[k, m] += w
-                    rows.append(v.ravel())
-            self._qpast[key] = np.linalg.qr(np.array(rows).T)[0]                         # (nW (Na + 1), q) on the past block
+                hyl = h * (lat["I"] @ y[:, :nW])                                         # (Na + 1, nW) at the ages
+                V = np.where(seen[None], hyl.T[:, np.where(seen, lag, 0)], 0.0)          # (nW, Na + 1, Na)
+                for (k, age, w) in yinst[r]:
+                    V[k, np.arange(Na), np.arange(Na)] += w
+                cols.append(V.reshape(nW * (Na + 1), Na))
+            self._qpast[key] = np.linalg.qr(np.concatenate(cols, axis=1))[0]           # (nW (Na + 1), q) on the past block
         Qp = self._qpast[key]
         if not full:
             return Qp
