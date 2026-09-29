@@ -67,10 +67,13 @@
   `settings.auto_panels_growth` (4: a refinement round's estimated memory against the first grid's); past it the best
   result is returned with a warning naming the breakpoints of the resolved answer, `res.panels["suggested"]`, and
   `res.sharpen()` re-solves there from the result. `res.panels` records the route, rates, history and verdict. The
-  website's wedge at p = 1000, which the first version of this graded by halving in 56 s and 3.7 GB, takes 8 s and
+  website's wedge at p = 1000, which the first version of this graded by halving in 56-77 s and 3.7 GB, takes 8-10 s and
   0.7 GB for the same kernels (5e-5 of the converged reference, the cost to 2e-9) and warns that the check's 1e-6 needs
-  4032 unknowns; long-horizon regulators at p = 30, r = 0.01 or noise x5 take 5-30 s and at most 1.4 GB where they took up
-  to 99 s and 3.7 GB, their costs within 7e-7 of the closed forms.
+  4032 unknowns (`auto_panels_growth = 1`: its three time-scale panels alone, 4.4 s and 0.35 GB, kernels to 1.7e-4).
+  The long-horizon regulators of the limits pass (T = 5 .. 30 at p = 30, r = 0.01, noise x5; T = 100 at 8 nodes) take
+  at most 34 s and 1.4 GB where they took up to 153 s and 4.4 GB; their costs are within 1e-6 of the closed forms (1e-8 ..
+  1e-11 before); the six the budget stops short of the check (noise x5 at T = 5, 10, 30; T = 30 at p = 30 and at
+  r = 0.01; T = 100) warn and name the grid (three of them warned before as well, at 3.7-4.4 GB).
 - `RowOps.sparse()`; the finite engine's second-order form is assembled from sparse row operators, the responses' identity
   blocks skipped and M built a column block at a time (`dense_curvature_form(sparse=True)`), and `second_order_dense`
   is 8000 (was 4000): T = 30 on 10 panels, 12 nodes (7920 unknowns), solve and checks 425 s / 5.8 GB -> 48 s / 2.9 GB,

@@ -24,8 +24,8 @@ precision p = 1000 (a filter rate of 31.6 on T = 1) has its kernels 5.6% off poi
    panel's equilibrium when that took more than COARSE_EVALUATIONS (5) evaluations.  Every other model is solved on the
    one panel first, exactly as before (bit for bit when it passes, or fails by what more nodes fix).  On the whole test
    suite every solve predicted above 1e-2 at 8 nodes or more failed the check on one panel (the regulator at T = 10, the
-   wedge), and none the one panel resolves was predicted above 6e-3; below 8 nodes one model was (1.2e-2, resolved to
-   3e-12: a layer the kernels do not carry), which is what PRIOR_MIN_NODES keeps on its one panel.
+   wedge), and none the one panel resolves was predicted above 4e-3 there; below 8 nodes one was (1.2e-2, resolved to
+   3e-12: the prediction says a layer exists, not that the kernels carry it), which PRIOR_MIN_NODES keeps on its panel.
 
 2. Local refinement (_refine).  When the result fails the resolution check (settings.resolution_tol), every node's
    representation error (the check's own, per node) is read onto the breakpoint intervals (a piece's error counts for its
