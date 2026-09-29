@@ -290,10 +290,18 @@ class StationaryTilt:
                 terms = (w[:, None, :] * Rt[kc].transpose(0, 2, 1))[:, :, :, None] * Qz[:, :, None, :]   # (t, j, ip, c)
                 fut[ips] = np.add.reduce(terms.reshape(-1, ips.size, self.nW), axis=0) + 0.0
         else:
-            for ip in range(0, Na):
-                k = np.arange(ip, Na + 1)
-                w = h * disc[k]; w[0] *= 0.5; w[-1] *= 0.5
-                fut[ip] = np.einsum("k,kj,kjc->c", w, Rt[k], Qz[k - ip])
+            # fut[ip] = sum_j sum_{t = 0}^{Na - ip} V[ip + t, j] Qz[t, j] (V = h disc Rt), less half the two end terms (k = ip,
+            # t = 0; k = Na): per j one product with the Hankel matrix of V (a view of it zero-padded), a GEMM in place of
+            # a per-point sum (rounding-level different from it)
+            from numpy.lib.stride_tricks import sliding_window_view
+            V = (h * disc)[:, None] * Rt                                                # (Na + 1, m)
+            Vp = np.concatenate([V, np.zeros((Na + 1, m))])
+            for j in range(m):
+                Hk = sliding_window_view(Vp[:, j], Na + 1)[:Na]                          # Hk[ip, t] = V[ip + t, j]
+                fut[:Na] += Hk @ Qz[:, j, :]
+            ips = np.arange(Na)
+            fut[:Na] -= 0.5 * (V[:Na, :, None] * Qz[0][None]).sum(axis=1)                # k = ip
+            fut[:Na] -= 0.5 * np.einsum("j,ijc->ic", V[Na], Qz[Na - ips])              # k = Na
         if self.mx:
             fut += np.exp(-self.rho * lat["ages"])[:, None] * (lat["Rxt"][ui] @ self.Lx)            # u = 0 .. L (0+ at u = 0)
             fut[Na] *= 0.5                                                               # u = L: the cut, half its value
