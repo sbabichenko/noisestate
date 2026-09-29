@@ -36,6 +36,10 @@ from ._settings import Settings, tunable
 from .spec import Agent, Atom, Model
 
 
+EXACT_SHIFTS = "auto"      # "auto": exact-shift operators where a lag is not aligned with the panels; "always"; "never"
+                           # (the resampling reference, kept while the exact path is validated)
+
+
 def _lu_solve(lu, b: np.ndarray) -> np.ndarray:
     """scipy.linalg.lu_solve(lu, b), its finiteness check included, straight on LAPACK's getrs: the same routine without
     the wrapper's layers, which cost more than the solve at the closed loop's sizes (thousands of calls in a
@@ -92,6 +96,59 @@ class _BlockForm:
         return out
 
 
+class _BlockRow:
+    """An operator (N, n_prim N) from the world to one kernel, held as its nonzero primary blocks {p: (N, N) block, or a
+    float w for w I}: the exact-shift path's first-order-condition operators, whose blocks are mostly scaled identities
+    (the loss's instantaneous and own-lag reads) and whose products are then weighted sums of the world's blocks."""
+
+    def __init__(self, N: int, nP: int):
+        self.N, self.nP, self.blocks = N, nP, {}
+
+    @property
+    def shape(self):
+        return (self.N, self.nP * self.N)
+
+    def add_eye(self, p: int, w: float) -> None:
+        b = self.blocks.get(p)
+        if b is None or isinstance(b, float):
+            self.blocks[p] = (b or 0.0) + float(w)
+        else:
+            b[np.arange(self.N), np.arange(self.N)] += w
+
+    def add(self, p: int, M: np.ndarray) -> None:
+        b = self.blocks.get(p)
+        if b is None:
+            self.blocks[p] = np.array(M, dtype=float)
+        elif isinstance(b, float):
+            B = np.array(M, dtype=float); B[np.arange(self.N), np.arange(self.N)] += b
+            self.blocks[p] = B
+        else:
+            b += M
+
+    def add_rows(self, S: np.ndarray, other: "_BlockRow") -> None:
+        """self += S @ other, S (N, N)."""
+        for p, b in other.blocks.items():
+            self.add(p, S * b if isinstance(b, float) else S @ b)
+
+    def __matmul__(self, X: np.ndarray) -> np.ndarray:
+        N = self.N
+        out = np.zeros((N,) + X.shape[1:])
+        for p, b in self.blocks.items():
+            Xp = X[p * N:(p + 1) * N]
+            out += b * Xp if isinstance(b, float) else b @ Xp
+        return out
+
+    def dense(self) -> np.ndarray:
+        N = self.N
+        D = np.zeros(self.shape)
+        for p, b in self.blocks.items():
+            if isinstance(b, float):
+                D[np.arange(N), p * N + np.arange(N)] += b
+            else:
+                D[:, p * N:(p + 1) * N] += b
+        return D
+
+
 class Compiled(CompiledBase):
     """Grid, index maps and constant operators for a stationary model."""
     LEAD_WEIGHT_WARN = tunable("lead_weight_warn")     # warn when a lead's past flows outweigh the current one by more than this (settings)
@@ -137,6 +194,155 @@ class Compiled(CompiledBase):
         self._composite_static = self.composite            # the loss's instant reactions; use_maps adds the level rows
         self._modes = None
         self.P0, self.Pin = self.grid.propagator(self.A) if self.nX else (np.zeros((0, 0)), np.zeros((0, 0)))
+        self.exact = self._exact_mode(model)
+        self._row_terms: Dict[tuple, tuple] = {}
+        self._prop_shift: Dict[float, np.ndarray] = {}
+
+    # ------------------------------------------------------------- exact shifts
+    #  A lag on panels that are not aligned with it (a geometric tail) is applied through the shift-aware
+    #  operators of the grid (grid.py, "exact shifts") instead of a resampling matrix: a row reads a primary at a
+    #  shift t (row_terms), the convolutions, correlations and masses take t as an argument, and the spike responses
+    #  carry the parts of a map read at a lag (a point observation of an excluded control through a lagged atom) as
+    #  kernels of that shift (closed_loop(..., deltas=True)).  Where every shift is aligned (uniform panels, the
+    #  panels closed under the delays) the resampling is exact and the engine runs as it always did.
+
+    def _exact_mode(self, model: Model) -> bool:
+        """Whether this model runs on the exact-shift operators: EXACT_SHIFTS "auto" when some lag or delay is not aligned
+        with the panels, "always" whenever the model is supported (a check on aligned panels, where both paths agree),
+        "never" not at all (the resampling reference).  Instant observations, level rows, monitored deviations and
+        risk-averse agents run on the resampling path (their operators are not written for shifted kernels yet)."""
+        mode = EXACT_SHIFTS
+        if mode == "never" or not model.all_lags():
+            return False
+        if (self.instant_loads or self.levels or any(a.risk_aversion for a in model.agents) or any(a.integrals for a in model.agents)
+                or any(len(model.privy(a.name)) > 1 for a in model.agents)):
+            return False
+        if mode == "always":
+            return True
+        return any(not self.grid.aligned(s) for l in model.all_lags() for s in (l, -l))
+
+    def unaligned(self, s: float) -> bool:
+        """Whether a read at the shift s is carried as a kernel of that shift (the exact path, s not aligned)."""
+        return bool(self.exact) and not self.grid.aligned(s)
+
+    def row_terms(self, agent: str, r: int, excluded: set):
+        """row_blocks as shifts: ({primary: [(t, coef)]}, deltas), the row reading each primary at the shifts t (the
+        observation delay plus the atom's lag), summed per shift.  Map-independent, cached."""
+        key = (agent, r, frozenset(excluded))
+        hit = self._row_terms.get(key)
+        if hit is None:
+            name, drift, E, delay = self.rows[agent][r]
+            terms: Dict[str, Dict[float, float]] = {}
+            deltas: Dict[str, List[Tuple[float, float]]] = {}
+            for (n, l), c in drift.items():
+                if n in excluded:
+                    deltas.setdefault(n, []).append((delay + l, c))
+                else:
+                    t = round(float(delay + l), 12)
+                    terms.setdefault(n, {})
+                    terms[n][t] = terms[n].get(t, 0.0) + c
+            for k, ch in enumerate(self.channels):
+                if E[k] != 0.0:
+                    deltas.setdefault(ch, []).append((delay, E[k]))
+            hit = self._row_terms[key] = ({n: sorted(d.items()) for n, d in terms.items()}, deltas)
+        terms, deltas = hit
+        return terms, {k: list(v) for k, v in deltas.items()}
+
+    def prop_shifted(self, s: float) -> np.ndarray:
+        """The propagator of an input read at the shift s, rows permuted to the primary order (comp, node) as PX is,
+        columns (node, comp): grid.propagator_shifted, cached."""
+        key = round(float(s), 12)
+        hit = self._prop_shift.get(key)
+        if hit is None:
+            perm = np.arange(self.nX * self.N).reshape(self.N, self.nX).T.reshape(-1)
+            hit = self._prop_shift[key] = self.grid.propagator_shifted(self.A, key)[perm]
+        return hit
+
+    def _conv_left_by_shift(self, g: np.ndarray, shifts) -> Dict[float, np.ndarray]:
+        """{t: (nR, N, N)} the convolution operators of the maps g (nR, N) on a row kernel of class t, for each shift t."""
+        return {t: self.grid.conv_ops_left_shifted(g.T, t) for t in shifts}
+
+    def _delta_images(self, maps, off: set, excl: frozenset, impulse_controls, ncol: int):
+        """The point observations read at a shift the panels are not aligned with: D {s: (n, ncol)}, the map of each
+        observer's control on the row that sees an excluded control through a lagged atom, read at the lag s (a kernel
+        of class s in the control's block of the impulse column), and IMG (n, ncol), what D drives in the closed loop
+        at class 0: every observer's convolution of its maps with the rows that read D, and the states' propagated
+        inputs.  The closed loop's solution plus D is the world; its point columns carry the aligned ages only."""
+        nX, N = self.nX, self.N; n = len(self.prim) * N
+        D: Dict[float, np.ndarray] = {}
+        cols = {u: self.nW + j for j, u in enumerate(impulse_controls)}
+        for a in self.model.agents:
+            if a.name in off:
+                continue
+            g = maps[a.name]
+            for ui, u in enumerate(a.controls):
+                bl = self.block(u)
+                for r in range(len(a.signals)):
+                    _, deltas = self.row_terms(a.name, r, excl)
+                    for src, dl in deltas.items():
+                        if src not in cols:
+                            continue
+                        for age, w in dl:
+                            if not self.unaligned(age):
+                                continue
+                            s = round(float(age), 12)
+                            if s not in D:
+                                D[s] = np.zeros((n, ncol))
+                            D[s][bl, cols[src]] += w * g[ui, r]
+        if not D:
+            return D, None
+        IMG = np.zeros((n, ncol))
+        for a in self.model.agents:
+            if a.name in off:
+                continue
+            g = maps[a.name]
+            for ui, u in enumerate(a.controls):
+                bl = self.block(u)
+                for r in range(len(a.signals)):
+                    terms, _ = self.row_terms(a.name, r, excl)
+                    for nm, lst in terms.items():
+                        for s, Ds in D.items():
+                            Dp = Ds[self.block(nm)]
+                            if not Dp.any():
+                                continue
+                            for t, cf in lst:
+                                IMG[bl] += cf * (self.grid.conv_ops_left_shifted(g[ui, r][:, None], t + s)[0] @ Dp)
+        if nX:
+            for i, (nm, lag), cf in self.state_inputs:
+                if nm in excl:
+                    continue
+                for s, Ds in D.items():
+                    Dp = Ds[self.block(nm)]
+                    if not Dp.any():
+                        continue
+                    v = np.zeros((nX * N, ncol)); v[i::nX] = cf * Dp
+                    IMG[:nX * N] += self.prop_shifted(lag + s) @ v
+        return D, IMG
+
+    def _state_inputs_operator(self, excl: frozenset) -> np.ndarray:
+        """PU (nX N, n): the propagated inputs of the states from every primary, (comp, node) rows: PX U with U the
+        resampled lags, or on the exact path each lag's own shifted propagator (prop_shifted)."""
+        nX, N, n = self.nX, self.N, len(self.prim) * self.N
+        perm = np.arange(nX * N).reshape(N, nX).T.reshape(-1)
+        if not self.exact:
+            U = np.zeros((nX * N, n))                     # input to the propagator, (node, comp) ordering
+            for i, (nm, lag), c in self.state_inputs:
+                if nm in excl:
+                    continue
+                U[i::nX, self.block(nm)] += c * self.shift(lag)
+            return self.Pin[perm] @ U
+        by_lag: Dict[float, np.ndarray] = {}
+        for i, (nm, lag), c in self.state_inputs:
+            if nm in excl:
+                continue
+            t = round(float(lag), 12)
+            if t not in by_lag:
+                by_lag[t] = np.zeros((nX * N, n))
+            by_lag[t][i::nX, self.block(nm)] += c * np.eye(N)
+        PU = np.zeros((nX * N, n))
+        for t, U in by_lag.items():
+            PU += (self.Pin[perm] @ U) if t == 0.0 else (self.prop_shifted(t) @ U)
+        return PU
 
     # ------------------------------------------------------------- operators
     def _add_point_columns(self, B, rows, deltas, gur, impulse_controls) -> None:
@@ -158,7 +364,21 @@ class Compiled(CompiledBase):
             else:
                 continue
             for (age, w) in dl:
+                if self.exact and self.unaligned(age):
+                    continue                                 # a kernel of that shift instead (closed_loop's D)
                 B[rows, col] += w * (self.shift(age) @ gur)
+
+    def _exact_control_rows(self, MU: np.ndarray, rows: slice, a: Agent, ui: int, g: np.ndarray, excl: frozenset) -> None:
+        """The regular part of control ui's rows of the closed loop on the exact path: each row's map convolved with the
+        primaries it reads at their shifts, MU[rows, primary] += coef conv(g_r, . read at t)."""
+        per_row = [self.row_terms(a.name, r, excl)[0] for r in range(len(a.signals))]
+        shifts = sorted({t for terms in per_row for lst in terms.values() for t, _ in lst})
+        Cs = self._conv_left_by_shift(g[ui], shifts)
+        for r, terms in enumerate(per_row):
+            for nm, lst in terms.items():
+                blk = MU[rows, self.block(nm)]
+                for t, cf in lst:
+                    blk += cf * Cs[t][r]
 
     def shift(self, tau: float) -> np.ndarray:
         return self.grid.shift_cached(tau)
@@ -328,16 +548,10 @@ class Compiled(CompiledBase):
         key = excl
         if key not in self._elim:
             nX, N, n = self.nX, self.N, len(self.prim) * self.N
-            U = np.zeros((nX * N, n))                     # input to the propagator, (node, comp) ordering
-            for i, (nm, lag), c in self.state_inputs:
-                if nm in excl:
-                    continue
-                U[i::nX, self.block(nm)] += c * self.shift(lag)
             perm = np.arange(nX * N).reshape(N, nX).T.reshape(-1)     # prim index -> (node, comp) index
-            PX, P0X = self.Pin[perm], self.P0[perm]
-            PU = PX @ U
-            del U
-            k = nX * N                                    # I - P U_X built F-ordered and factored in place (no eye, no copy):
+            P0X = self.P0[perm]
+            PU = self._state_inputs_operator(excl)
+            k = nX * N                                   # I - P U_X built F-ordered and factored in place (no eye, no copy):
             A = np.subtract(0.0, PU[:, :k], order="F")    # 0 - x off the diagonal and 1 - x on it, the entries eye - x has
             A[np.arange(k), np.arange(k)] = 1.0 - PU[np.arange(k), np.arange(k)]
             lu = lu_factor(A, overwrite_a=True)
@@ -348,18 +562,47 @@ class Compiled(CompiledBase):
         return self._elim[key]
 
     def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
-                    impulse_controls: Sequence = ()):
+                    impulse_controls: Sequence = (), deltas: bool = False):
         """Solve the closed loop for the Brownian channels and for unit impulses in
         `impulse_controls` (whose owning agent's reactions are switched off when it is
         `excluded`).  maps[agent] has shape (n_controls, n_rows, N).
         Returns Z with shape (n_prim N, nW + len(impulse_controls)).  The states are eliminated
         through the cached propagator part (see _state_elimination); the solve is over the controls.
-        `excluded` may also be a tuple of agents, every one of them switched off (a deviation's privy set)."""
+        `excluded` may also be a tuple of agents, every one of them switched off (a deviation's privy set).
+        On the exact-shift path an impulse column's kernels have parts read at a lag the panels are not aligned
+        with (an observer's map on a row that sees the impulse through a lagged atom): deltas=True returns (Z, D)
+        with Z the rest and D {s: (n_prim N, ncol)} those parts, the world Z + sum_s S_s D[s]; without it Z carries
+        them resampled (their exact values at the nodes)."""
         if isinstance(excluded, (tuple, list)) and len(excluded) == 1:
             excluded = excluded[0]
         if self.sym is not None and not self.instant_loads and not self.levels and not isinstance(excluded, (tuple, list)) and self._maps_symmetric(maps):
-            return self.closed_loop_symmetric(maps, excluded, impulse_controls)
-        return self._closed_loop_eliminated(maps, excluded, impulse_controls)
+            return self.closed_loop_symmetric(maps, excluded, impulse_controls, split=deltas)
+        return self._closed_loop_eliminated(maps, excluded, impulse_controls, split=deltas)
+
+    def _deltas_for(self, maps, excluded, impulse_controls):
+        """(D, IMG) of _delta_images for a closed loop's arguments ({} and None off the exact path or without impulses)."""
+        if not (self.exact and impulse_controls):
+            return {}, None
+        off = set(excluded) if isinstance(excluded, (tuple, list)) else ({excluded} if excluded else set())
+        excl = frozenset(u for a in self.model.agents if a.name in off for u in a.controls)
+        return self._delta_images(maps, off, excl, impulse_controls, self.nW + len(impulse_controls))
+
+    def _with_deltas(self, Z: np.ndarray, D: dict, deltas: bool):
+        """A closed loop's return: (Z, D) with deltas, else Z with D's kernels resampled in (their values at the nodes)."""
+        if deltas:
+            return Z, D
+        for s, Ds in D.items():
+            Z = Z + self.sample_shifted(Ds, s)
+        return Z
+
+    def sample_shifted(self, X: np.ndarray, s: float) -> np.ndarray:
+        """The kernels X (n_prim N, ...) read at the shift s, at the nodes (the exact point values): shift(s) on every
+        primary's block."""
+        S = self.shift(s); N = self.N
+        out = np.empty_like(X)
+        for p in range(X.shape[0] // N):
+            out[p * N:(p + 1) * N] = S @ X[p * N:(p + 1) * N]
+        return out
 
     def _interp0(self) -> np.ndarray:
         """(N,) the read of a kernel at age 0+ (grid.interp([0.0])[0]), made once."""
@@ -367,12 +610,13 @@ class Compiled(CompiledBase):
             self._at0 = self.grid.interp([0.0])[0]
         return self._at0
 
-    def _closed_loop_eliminated(self, maps, excluded=None, impulse_controls=()):
+    def _closed_loop_eliminated(self, maps, excluded=None, impulse_controls=(), split: bool = False):
         nX, nU, N = self.nX, self.nU, self.N
         n = len(self.prim) * N; nxs = nX * N
         ncol = self.nW + len(impulse_controls)
         off = set(excluded) if isinstance(excluded, (tuple, list)) else ({excluded} if excluded else set())
         excl = frozenset(u for a in self.model.agents if a.name in off for u in a.controls)
+        D, IMG = self._deltas_for(maps, excluded, impulse_controls)
         B = np.zeros((n, ncol))
         if nX:
             lu, W, P0X, perm = self._state_elimination(excl)
@@ -396,6 +640,11 @@ class Compiled(CompiledBase):
                     self._state_forcing[skey] = hit
             B[:nxs] = hit[0]
             GB = hit[1]
+            if IMG is not None and IMG[:nxs].any():
+                B[:nxs] = B[:nxs] + IMG[:nxs]
+                GB = GB + _lu_solve(lu, IMG[:nxs])
+        if IMG is not None:
+            B[nxs:] += IMG[nxs:]
         # control rows: the strategies
         MU = np.zeros((nU * N, n))
         for a in self.model.agents:
@@ -404,6 +653,12 @@ class Compiled(CompiledBase):
             g = maps[a.name]
             for ui, u in enumerate(a.controls):
                 bl = slice(self.block(u).start - nxs, self.block(u).stop - nxs)
+                if self.exact:
+                    self._exact_control_rows(MU, bl, a, ui, g, excl)
+                    for r in range(len(a.signals)):
+                        _, deltas = self.row_terms(a.name, r, excl)
+                        self._add_point_columns(B, slice(nxs + bl.start, nxs + bl.stop), deltas, g[ui, r], impulse_controls)
+                    continue
                 Cs = self.grid.conv_ops_left(g[ui].T)                          # the rows' maps at once
                 for r in range(len(a.signals)):
                     blocks, deltas = self.row_blocks(a.name, r, excl)
@@ -435,7 +690,7 @@ class Compiled(CompiledBase):
             Z[:nxs] = W @ Z[nxs:] + GB
         else:
             Z[:] = np.linalg.solve(np.eye(nU * N) - MU, B)
-        return Z
+        return self._with_deltas(Z, D, split)
 
     # ------------------------------------------------ cyclic symmetry
     def _maps_symmetric(self, maps) -> bool:
@@ -489,6 +744,12 @@ class Compiled(CompiledBase):
         for i, u in enumerate(controls):
             a = owner[u]; ui = a.controls.index(u); g = maps[a.name]
             rows_here = slice(i * N, (i + 1) * N); bl = self.block(u)
+            if self.exact:
+                if regular:
+                    self._exact_control_rows(MU, rows_here, a, ui, g, excl)
+                for r in range(len(a.signals)):
+                    self._add_point_columns(B, bl, self.row_terms(a.name, r, excl)[1], g[ui, r], impulse_controls)
+                continue
             Cs = self.grid.conv_ops_left(g[ui].T) if regular else None       # the rows' maps at once
             for r in range(len(a.signals)):
                 blocks, deltas = self.row_blocks(a.name, r, excl)
@@ -500,7 +761,7 @@ class Compiled(CompiledBase):
                 self._add_point_columns(B, bl, deltas, gur, impulse_controls)
         return MU
 
-    def closed_loop_symmetric(self, maps, excluded=None, impulse_controls=()):
+    def closed_loop_symmetric(self, maps, excluded=None, impulse_controls=(), split: bool = False):
         """closed_loop for a cyclically symmetric model with symmetric maps: the reduced control-row
         operator commutes with the cyclic relabelling, so in the Fourier basis over the cycle it is
         block diagonal, one block per mode, built from the representative agent's rows alone.
@@ -510,6 +771,7 @@ class Compiled(CompiledBase):
         nX, N = self.nX, self.N; n = len(self.prim) * N; nxs = nX * N
         ncol = self.nW + len(impulse_controls)
         ex_agent = self.model.agents[[a.name for a in self.model.agents].index(excluded)] if excluded else None
+        D, IMG = self._deltas_for(maps, excluded, impulse_controls)
         B = np.zeros((n, ncol))
         lu, W, P0X, perm = self._state_elimination(frozenset())          # the symmetric world: nobody excluded
         wzero = self._elim_wzero[frozenset()]
@@ -520,6 +782,8 @@ class Compiled(CompiledBase):
                 if nm == u:
                     v = np.zeros(nX); v[i] = c
                     B[:nxs, self.nW + j] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
+        if IMG is not None:
+            B += IMG                                                     # what the lagged point observations drive
         GB = _lu_solve(lu, B[:nxs])
         corb, cols, csl, fcols, perms, cperms = st["corb"], st["cols"], st["csl"], st["fcols"], st["perms"], st["cperms"]
         # representative rows of the reduced operator (states eliminated): R = MUU + MUX W
@@ -560,7 +824,7 @@ class Compiled(CompiledBase):
             ZU = np.zeros_like(rhs)
             ZU[idx_o] = _lu_solve(lu_factor(Aoo, overwrite_a=True, check_finite=False), rhs[idx_o])
             Z = np.zeros((n, ncol)); Z[nxs:] = ZU; Z[:nxs] = GB if wzero else W @ ZU + GB
-            return Z
+            return self._with_deltas(Z, D, split)
         # mode blocks
         # modes k and m - k are complex conjugates (the operator and the right-hand sides are real), so only
         # k <= m/2 is factorised and solved; the conjugate mode's contribution is the conjugate's
@@ -600,7 +864,7 @@ class Compiled(CompiledBase):
             return out
         ZU = solve_sym(rhs)
         Z = np.zeros((n, ncol)); Z[nxs:] = ZU; Z[:nxs] = GB if wzero else W @ ZU + GB
-        return Z
+        return self._with_deltas(Z, D, split)
 
     def closed_loop_dense(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
                           impulse_controls: Sequence = ()):
@@ -612,19 +876,16 @@ class Compiled(CompiledBase):
         M = np.zeros((n, n))
         B = np.zeros((n, ncol))
         excl = set(self.model.agents[[a.name for a in self.model.agents].index(excluded)].controls) if excluded else set()
+        D, IMG = self._deltas_for(maps, excluded, impulse_controls)
+        if IMG is not None:
+            B += IMG
         # states
         if self.nX:
-            U = np.zeros((self.nX * self.N, n))           # input to the propagator, (node, comp) ordering
-            for i, (nm, lag), c in self.state_inputs:
-                if nm in excl:
-                    continue
-                U[i::self.nX, self.block(nm)] += c * self.shift(lag)
             xs = slice(0, self.nX * self.N)
             # propagator rows are (node, comp); primary vector is (comp, node): permute
             perm = np.arange(self.nX * self.N).reshape(self.N, self.nX).T.reshape(-1)   # prim index -> (node,comp) index
-            PX = self.Pin[perm]            # (comp,node) rows
             P0X = self.P0[perm]
-            M[xs, :] += PX @ U
+            M[xs, :] += self._state_inputs_operator(frozenset(excl))
             for k in range(self.nW):
                 B[xs, k] += P0X @ self.sigma[:, k]
             for j, u in enumerate(impulse_controls):
@@ -644,13 +905,16 @@ class Compiled(CompiledBase):
             g = maps[a.name]
             for ui, u in enumerate(a.controls):
                 bl = self.block(u)
+                if self.exact:
+                    self._exact_control_rows(M, bl, a, ui, g, frozenset(excl))
                 for r in range(len(a.signals)):
                     regular, deltas = self.row_seen(a.name, r, excl)
                     gur = g[ui, r]
-                    M[bl, :] += self.grid.conv_op_left(gur) @ regular
+                    if not self.exact:
+                        M[bl, :] += self.grid.conv_op_left(gur) @ regular
                     self._add_point_columns(B, bl, deltas, gur, impulse_controls)
         Z = np.linalg.solve(np.eye(n) - M, B)
-        return Z
+        return self._with_deltas(Z, D, False)
 
 
 
@@ -728,9 +992,17 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         c_k = sum_r (Conv[y_rk] + E_rk S_delta) gamma_r."""
         return self._row_operator_parts(agent, rows, inst)[0]
 
+    def _seen_rows(self, agent: Agent, Z: np.ndarray, excluded: set):
+        """EngineBase._seen_rows; on the exact-shift path each row as {shift: kernel} (_seen_rows_x)."""
+        if self.c.exact:
+            return self._seen_rows_x(agent, Z, excluded)
+        return super()._seen_rows(agent, Z, excluded)
+
     def _row_operator_parts(self, agent: Agent, rows, inst):
         """(Gk, pre): _row_operator's result and, per (row, channel) block that also has instantaneous entries, a copy
         of its regular part before they are added, {(r, k): (N, N)} (_foc_system reads the regular blocks from them)."""
+        if rows and isinstance(rows[0], dict):
+            return self._row_operator_parts_x(agent, rows, inst)
         c = self.c; N, nW = c.N, c.nW; nR = len(rows)
         Gk = np.zeros((nW, N, nR * N))
         sup, groups = self._row_support(agent, rows)
@@ -808,6 +1080,10 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         Called with the physical impulse responses (all reactions off) for the wedge decomposition.
         With atoms=True returns (Fu, Ms), Ms the per-control operators M (n_atoms, N, N) on the loss
         atoms' kernels that Fu contracts with Q (the mean part applies them to the targets q)."""
+        if self.c.exact:
+            if atoms:
+                raise NotImplementedError("atoms=True on the exact-shift path")
+            return self._foc_operators_x(agent, R, envelope)
         c = self.c; N = c.N; n_prim = len(c.prim) * N
         atms = c.loss[agent.name][0]; na = len(atms)
         AO, AO_eye, aidx, QT, per_u, (sole, sole_p), rest = self._foc_static(agent)   # AO_eye: an undelayed atom reads through the identity
@@ -879,8 +1155,11 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         Fphys = self._foc_operators(agent, self._physical_responses(agent, c.nW))
         dec = {}
         for ui, u in enumerate(agent.controls):
-            phi = np.stack([Fu[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
-            phi_phys = np.stack([Fphys[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
+            if isinstance(Fu[ui], dict):
+                phi, phi_phys = self._foc_kernel(Fu[ui], Zfull[:, :nW]), self._foc_kernel(Fphys[ui], Zfull[:, :nW])
+            else:
+                phi = np.stack([Fu[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
+                phi_phys = np.stack([Fphys[ui] @ Zfull[:, k] for k in range(nW)], axis=1)
             dec[u] = {"foc": phi, "physical": phi_phys, "wedge": phi - phi_phys}
             if out.get("risk_shift") is not None:
                 # a risk-averse agent: the kernel whose projection vanishes is S f^on (stationary_risk.py), the risk-neutral
@@ -992,8 +1271,19 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             if half_discount:
                 lg = np.array([float(l) for (_, l) in atoms])
                 Q = Q * np.exp(-0.5 * c.rho * (lg[:, None] + lg[None, :]))
-            blocks = [[c.atom_block(at)] for at in atoms]
             GB: Dict[Tuple[int, int], np.ndarray] = {}                 # the nonzero blocks, summed from zeros as the dense array was
+            if c.exact:                                                # the Gram of the atoms read at their lags, exactly
+                for i, (ni, li) in enumerate(atoms):
+                    for j, (nj, lj) in enumerate(atoms):
+                        if Q[i, j] == 0.0:
+                            continue
+                        key2 = (c.index[ni], c.index[nj])
+                        if key2 not in GB:
+                            GB[key2] = np.zeros((N, N))
+                        GB[key2] += Q[i, j] * c.grid.mass_shifted(li, lj)
+                self._loss_forms[key] = _BlockForm(n, N, GB)
+                return self._loss_forms[key]
+            blocks = [[c.atom_block(at)] for at in atoms]
             for i in range(len(atoms)):
                 for j in range(len(atoms)):
                     if Q[i, j] == 0.0:
@@ -1118,6 +1408,8 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         reads; an engine without them must not call the base _diagnostics.  With project=False the
         raw map is None and its projection is skipped (response_actions needs the action kernels
         only).  A singular system raises the ValueError of singular_system_message."""
+        if self.c.exact:
+            return self._best_response_x(agent, maps, want_decomp, project)
         c = self.c; N = c.N
         nR, nU = len(agent.signals), len(agent.controls)
         c.use_maps(maps)
@@ -1227,6 +1519,308 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 out += Resp[wi] @ x[wi * N:(wi + 1) * N]
             return out
         return close
+
+    # ------------------------------------------------------- the exact-shift path of the best response
+    #  (Compiled.exact: a lag the panels are not aligned with.)  The pieces of best_response with every lag an argument
+    #  of the grid's shift-aware operators instead of a resampling matrix: the spike responses keep their parts read
+    #  at a lag apart (R = R0 + sum_s S_s RD[s]), a row is {shift: kernel} (the primaries it reads at each shift), the
+    #  first-order-condition kernel is {class: operator on the world} (the loss's instantaneous and own-lag terms read
+    #  the atoms at their shifts; the continuation is a correlation at class 0), and its projection on the rows is a
+    #  correlation per class.  Aligned shifts are resampled as before (exactly).
+
+    def _spikes_x(self, c, maps, agent: Agent):
+        """(Zpass, R0, RD): _spikes with R's parts read at an unaligned lag kept apart, R = R0 + sum_s S_s RD[s]
+        (closed_loop(..., deltas=True)); cached for the last maps, copies out."""
+        key = self._maps_key(maps)
+        memo = self.__dict__.setdefault("_spike_cache_x", [None, {}])
+        if memo[0] != key:
+            memo[0], memo[1] = key, {}
+        hit = memo[1].get(agent.name) if c is self.c else None
+        if hit is None:
+            comp = c.composite or {}
+            ctrls = spike_controls(agent.controls, comp)
+            Zp, D = c.closed_loop(maps, excluded=agent.name, impulse_controls=ctrls, deltas=True)
+            spike = compose_spikes(Zp[:, c.nW:], ctrls, agent.controls, comp)
+            R0 = np.stack([spike[u] for u in agent.controls], axis=1)
+            RD = {}
+            for s, Ds in D.items():
+                sp = compose_spikes(Ds[:, c.nW:], ctrls, agent.controls, comp)
+                RD[s] = np.stack([sp[u] for u in agent.controls], axis=1)
+            hit = (Zp[:, :c.nW], R0, RD)
+            if c is self.c:
+                memo[1][agent.name] = hit
+        return hit[0].copy(), hit[1].copy(), {s: v.copy() for s, v in hit[2].items()}
+
+    def _response_operators_x(self, agent: Agent, R0: np.ndarray, RD: dict) -> list:
+        """_response_operators on the exact path: the convolution of the action with every primary's response, its parts
+        read at a lag through the shifted convolutions."""
+        c = self.c; N = c.N; nP = len(c.prim)
+        out = []
+        for ui, u in enumerate(agent.controls):
+            Cu = c.grid.conv_ops(R0[:, ui].reshape(nP, N).T).reshape(nP * N, N)
+            for s, Rs in RD.items():
+                Cu += c.grid.conv_ops_shifted(Rs[:, ui].reshape(nP, N).T, s).reshape(nP * N, N)
+            Cu[c.block(u)] = np.eye(N)
+            for v, coef in (c.composite or {}).get(u, {}).items():
+                if v != u:
+                    Cu[c.block(v)] += coef * np.eye(N)
+            out.append(Cu)
+        return out
+
+    def _half_discounted_x(self, agent: Agent, R0: np.ndarray, RD: dict) -> list:
+        """_half_discounted on the exact path: the response at age a weighted by e^{-rho a / 2}, a part read at the lag s
+        by e^{-rho (b + s) / 2} at its own node b."""
+        c = self.c; nodes = c.grid.nodes; nP = len(c.prim)
+        w0 = np.tile(np.exp(-0.5 * c.rho * nodes), nP)[:, None]
+        RDw = {s: np.tile(np.exp(-0.5 * c.rho * (nodes + s)), nP)[:, None] * Rs for s, Rs in RD.items()}
+        return self._response_operators_x(agent, w0 * R0, RDw)
+
+    def _seen_rows_x(self, agent: Agent, Z: np.ndarray, excluded: set):
+        """_seen_rows on the exact path: each row as {shift t: (N, ncol)}, the primaries it reads at t (the observation
+        delay plus the atom's lag) summed; an aligned shift is resampled into the class 0 (exactly)."""
+        c = self.c; rows, inst = [], []
+        for r in range(len(agent.signals)):
+            terms, deltas = c.row_terms(agent.name, r, excluded)
+            y: Dict[float, np.ndarray] = {0.0: np.zeros((c.N, Z.shape[1]))}
+            for nm, lst in terms.items():
+                Zb = Z[c.block(nm)]
+                for t, cf in lst:
+                    if c.unaligned(t):
+                        y[t] = y[t] + cf * Zb if t in y else cf * Zb
+                    else:
+                        y[0.0] += cf * (Zb if t == 0.0 else c.shift(t) @ Zb)
+            rows.append(y)
+            inst.append([(c.channels.index(src), age, w) for src, dl in deltas.items() if src in c.channels for (age, w) in dl])
+        return rows, inst
+
+    def _row_operator_parts_x(self, agent: Agent, rows, inst):
+        """_row_operator_parts on the exact path: the convolution of the map with every class of the row."""
+        c = self.c; N, nW = c.N, c.nW; nR = len(rows)
+        Gk = np.zeros((nW, N, nR * N))
+        for t in sorted({t for y in rows for t in y}):
+            pairs = [(r, int(k)) for r in range(nR) if t in rows[r] for k in np.where(rows[r][t][:, :nW].any(axis=0))[0]]
+            if pairs:
+                ops = c.grid.conv_ops_shifted(np.stack([rows[r][t][:, k] for r, k in pairs], axis=1), t)
+                for i, (r, k) in enumerate(pairs):
+                    Gk[k, :, r * N:(r + 1) * N] += ops[i]
+        pre = {}
+        for r in range(nR):
+            for (k, age, w) in inst[r]:
+                S = c.instant(age, c.rows[agent.name][r][3])
+                blk = Gk[k, :, r * N:(r + 1) * N]
+                if (r, k) not in pre:
+                    pre[(r, k)] = blk.copy()
+                if self._shift_is_eye(S):
+                    blk[np.arange(N), np.arange(N)] += w
+                else:
+                    blk += w * S
+        return Gk, pre
+
+    def _foc_operators_x(self, agent: Agent, R, envelope: bool = True) -> list:
+        """_foc_operators on the exact path: per control {class: _BlockRow (N, n_prim N)}, the first-order-condition
+        kernel being the sum over the classes of the kernel of that class of (operator @ world).  Loss atom i reads its
+        primary at the lag l_i; the instantaneous term reads it at l_i, a delayed read of the control itself at
+        l_i - lag (the window cutting it at L - lag), the continuation through atom j's response (its primary's R read at
+        l_j, the parts of R read at a lag at l_j + s) is a correlation at class 0, and a lead's past-date term a
+        convolution at class 0.  A class the panels are aligned with is resampled into class 0 (exactly).
+        R: the responses, (R0, RD) or an array with no parts read at a lag (the physical responses)."""
+        c = self.c; g = c.grid; N = c.N; nP = len(c.prim); rho = c.rho
+        if not envelope:
+            raise NotImplementedError("the exact-shift path does not carry the own later reactions (risk-averse agents)")
+        R0, RD = R if isinstance(R, tuple) else (R, {})
+        atms, Q, q = c.loss[agent.name]; na = len(atms)
+        idx = {at: j for j, at in enumerate(atms)}
+        comp = c.composite or {}
+        zero = g.shift_class(0.0)
+        Fu = []
+        for ui, u in enumerate(agent.controls):
+            F: Dict[tuple, _BlockRow] = {}
+
+            def row(cls):
+                cls = g.shift_class(cls)
+                if cls not in F:
+                    F[cls] = _BlockRow(N, nP)
+                return F[cls]
+            scal: Dict[int, list] = {}                                # atom j -> [(outer shift, weight)]: identity-type M_j
+            for v, coef in comp.get(u, {u: 1.0}).items():
+                j = idx.get((v, 0.0))
+                if j is not None:
+                    scal.setdefault(j, []).append((0.0, coef))
+            cont, leads = [], {}
+            if not agent.myopic:
+                for j, (name, lag) in enumerate(atms):
+                    if name == u and lag > 0:
+                        scal.setdefault(j, []).append((-lag, np.exp(-rho * lag)))
+                    if name not in agent.controls:
+                        cont.append(j)
+                        if lag < 0:
+                            leads[j] = self._lead_kernel(agent, (R0[:, ui], {s: Rs[:, ui] for s, Rs in RD.items()}), name, lag)
+            # the continuation operators of every (atom j, lag of atom i) pair, one batched correlation per pair of classes
+            CR: Dict[tuple, np.ndarray] = {}
+            if cont:
+                lis = sorted({li for (_, li) in atms})
+                parts = {}                                            # class of the response part -> [(j, column)]
+                for j in cont:
+                    name, lj = atms[j]; bj = c.block(name)
+                    parts.setdefault(g.shift_class(lj), []).append((j, R0[bj, ui]))
+                    for s, Rs in RD.items():
+                        if Rs[bj, ui].any():
+                            parts.setdefault(g.compose(lj, s), []).append((j, Rs[bj, ui]))
+                for cw, lst in parts.items():
+                    W = np.stack([col for _, col in lst], axis=1)
+                    for li in lis:
+                        ops = g.corr_ops_shifted(W, rho, cw, li)
+                        for (j, _), M in zip(lst, ops):
+                            CR[(j, li)] = CR[(j, li)] + M if (j, li) in CR else M
+            for i, (pn, li) in enumerate(atms):
+                p = c.index[pn]
+                for j in range(na):
+                    qji = Q[j, i]
+                    if qji == 0.0:
+                        continue
+                    for outer, w in scal.get(j, ()):
+                        row(g.compose(outer, li)).add_eye(p, qji * w)
+                    if (j, li) in CR:
+                        row(zero).add(p, qji * CR[(j, li)])
+                    if j in leads:
+                        row(zero).add(p, qji * g.conv_ops_left_shifted(leads[j][:, None], li)[0])
+            for cls in [k for k in F if k != zero and g.aligned(k)]:  # aligned: resampled into class 0, exactly
+                row(zero).add_rows(g.sample_class(cls), F.pop(cls))
+            Fu.append(F)
+        return Fu
+
+    def _lead_kernel(self, agent: Agent, Ru, name: str, lag: float) -> np.ndarray:
+        """kv (N,) of a lead's past-date term (_lead_term), from the response Ru = (R0 column, {s: RD column}) read at
+        the points -lag - v exactly."""
+        c = self.c; v = c.grid.nodes
+        R0u, RDu = Ru
+        m = v <= -lag + 1e-12
+        kv = np.zeros(c.N)
+        pts = -lag - v[m]
+        val = c.grid.interp(pts) @ R0u[c.block(name)]
+        for s, Rs in RDu.items():
+            val = val + c.grid.interp(pts - s) @ Rs[c.block(name)]
+        kv[m] = np.exp(c.rho * v[m]) * val
+        return kv
+
+    def _foc_kernel(self, Fui, Z: np.ndarray) -> np.ndarray:
+        """The first-order-condition kernel (N, ncol) of one control's operator (an array, or {class: operator} on the
+        exact path, the classes read at the nodes) in the world Z."""
+        if not isinstance(Fui, dict):
+            return Fui @ Z
+        g = self.c.grid
+        out = np.zeros((self.c.N, Z.shape[1]))
+        for cls, F in Fui.items():
+            X = F @ Z
+            out += X if cls == (0.0, 0.0, g.L) else g.sample_class(cls) @ X
+        return out
+
+    def _foc_system_x(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu, shift=None, Gk=None, Gpre=None):
+        """_foc_system on the exact path: Amat[u, v] = sum over the channels k of (sum over the classes K of the FOC kernel
+        of H_k^K Fu_u^K Resp_v) G_k and bvec[u] = sum H_k^K (Fu_u^K Zpass)_k, with H^K the projection of a kernel of class
+        K on the rows (a correlation with every class of the row, and the instantaneous entries read at the class's
+        shift).  The classes enter the first product only: P = sum_K H^K (Fu^K Resp_v), (rows' nodes, channel, N), then
+        one product with the row operators G over (channel, action node).  Both products skip what causality zeroes (a
+        correlation from a node reads only later ones, where the class does not reach back; the row operators read map
+        nodes no older than the action).  Gk and Gpre as _foc_system's."""
+        c = self.c; g = c.grid; N = c.N; nR, nU = len(rows), len(Fu); nW = c.nW
+        sup = np.stack([np.any([y[t][:, :nW].any(axis=0) for t in y], axis=0) for y in rows]) if rows else np.zeros((0, nW), dtype=bool)
+        delay = [c.rows[agent.name][r][3] for r in range(nR)]
+        Rn = np.where(sup.any(axis=1))[0]; Kn = np.where(sup.any(axis=0))[0]
+        nRn, nKn = len(Rn), len(Kn)
+        kpos = {int(k): i for i, k in enumerate(Kn)}
+        if Gk is None:
+            Gk, Gpre = self._row_operator_parts_x(agent, rows, inst)
+        zero = g.shift_class(0.0)
+        # G2[(ki, x), (r, b)]: every channel's row operator, action node x, map node b of row r (all rows: the instantaneous
+        # blocks of rows without a regular part are in it too)
+        G2 = np.ascontiguousarray(Gk[Kn].reshape(nKn * N, nR * N)) if nKn else np.zeros((0, nR * N))
+        # the projections: per class H[(ri, b, ki), j] (rows' map nodes and channel, the FOC kernel's node) and the
+        # instantaneous entries (r, k, (N, N) read of the class at the row's age, weight)
+        classes = sorted({cls for F in Fu for cls in F} | ({zero} if shift is not None else set()), key=lambda x: (x != zero, x))
+        chunks_x = c.causal_chunks(target=max(4, c.grid.P)) if nKn else []     # every panel a chunk
+        H, ent_h, chunks = {}, {}, {}
+        for cls in classes:
+            Hs = np.zeros((nRn, N, nKn, N))
+            for t in sorted({t for r in Rn for t in rows[r]}):
+                pairs = [(ri, int(k)) for ri, r in enumerate(Rn) if t in rows[r] for k in np.where(rows[r][t][:, :nW].any(axis=0))[0]]
+                if not pairs:
+                    continue
+                Hc = g.corr_ops_shifted(np.stack([rows[Rn[ri]][t][:, k] for ri, k in pairs], axis=1), 0.0, t, cls)   # (pair, b, j)
+                for i, (ri, k) in enumerate(pairs):
+                    Hs[ri, :, kpos[k], :] += Hc[i]
+                del Hc
+            # per chunk of the rows' map nodes, the first FOC node it reads (a correlation reads later nodes, a class
+            # reaching back by its shift a little earlier): the product skips the columns before it
+            nzj = [np.flatnonzero(Hs[:, lo:hi].any(axis=(0, 1, 2))) for lo, hi in chunks_x]
+            H[cls], chunks[cls] = Hs, [(lo, hi, int(j[0]) if j.size else N) for (lo, hi), j in zip(chunks_x, nzj)]
+            ent_h[cls] = [(r, k, g.sample_class(g.compose(-age, cls)), w) for r in range(nR) for (k, age, w) in inst[r]]
+        nG = nU * nR * N
+        Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
+        A6 = Amat.reshape(nU, nR, N, nU, nR, N); B3 = bvec.reshape(nU, nR, N)
+        gch = c.causal_chunks(target=max(4, c.grid.P // 2)) if nKn else []
+        for ui in range(nU):
+            # the right-hand side: the projection of the passive world's FOC kernel
+            for cls in classes:
+                F = Fu[ui].get(cls)
+                if F is None and not (shift is not None and cls == zero):
+                    continue
+                phi = F @ Zpass if F is not None else np.zeros((N, Zpass.shape[1]))
+                if shift is not None and cls == zero:
+                    phi = phi + shift[ui]
+                if nKn:
+                    B3[ui][Rn] += np.einsum("rbkj,jk->rb", H[cls], phi[:, Kn])
+                for (r, k, Sh, w) in ent_h[cls]:
+                    B3[ui, r] += w * (Sh @ phi[:, k])
+            for vi in range(nU):
+                # P[(ri, b), (ki, x)] = sum_K sum_j H^K[(ri, b, ki), j] (Fu^K Resp_v)[j, x]; E[r, b, x] the instantaneous
+                # projections' part, sum_K w Sh^K (Fu^K Resp_v) on row r (one per row and channel)
+                P = np.zeros((nRn, N, nKn, N))
+                E: Dict[tuple, np.ndarray] = {}
+                for cls, F in Fu[ui].items():
+                    FR = F @ Resp[vi]                                                           # (N, N)
+                    for lo, hi, j0 in chunks[cls]:
+                        if j0 < N:
+                            Hb = H[cls][:, lo:hi, :, j0:]                                       # (nRn, hi-lo, nKn, N-j0)
+                            P[:, lo:hi] += (Hb.reshape(-1, N - j0) @ FR[j0:]).reshape(nRn, hi - lo, nKn, N)
+                    for (r, k, Sh, w) in ent_h[cls]:
+                        X = w * (Sh @ FR)
+                        E[(r, k)] = E[(r, k)] + X if (r, k) in E else X
+                P2 = P.reshape(nRn * N, nKn * N)
+                # the regular projections through the row operators, causally: map nodes b' of a chunk read action nodes x >= lo
+                for lo, hi in gch:
+                    cols = np.concatenate([np.arange(r * N + lo, r * N + hi) for r in range(nR)])
+                    xs = np.concatenate([np.arange(ki * N + lo, (ki + 1) * N) for ki in range(nKn)])
+                    T = P2[:, xs] @ G2[np.ix_(xs, cols)]                                         # (nRn N, nR (hi - lo))
+                    T = T.reshape(nRn, N, nR, hi - lo)
+                    for ri, r in enumerate(Rn):
+                        A6[ui, r, :, vi, :, lo:hi] += T[ri]
+                # the instantaneous projections E through every row operator of their channel
+                for (r, k), X in E.items():
+                    A6[ui, r, :, vi] += (X @ Gk[k]).reshape(N, nR, N)
+        return Amat, bvec
+
+    def _best_response_x(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):
+        """best_response on the exact path (no instant observations, monitoring or risk aversion there)."""
+        c = self.c; N = c.N
+        nR, nU = len(agent.signals), len(agent.controls)
+        c.use_maps(maps)
+        Zpass, R0, RD = self._spikes_x(c, maps, agent)
+        Resp0 = self._response_operators_x(agent, R0, RD)
+        ytil, yinst = self._seen_rows_x(agent, Zpass, set(agent.controls))
+        Gk, Gpre = self._row_operator_parts_x(agent, ytil, yinst)
+        Fu = self._foc_operators_x(agent, (R0, RD))
+        Amat, bvec = self._foc_system_x(agent, ytil, yinst, Zpass, Resp0, Fu, None, Gk, Gpre)
+        gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
+        del Amat, bvec
+        cact = np.stack([(Gk @ gamma[ui].reshape(-1)).T for ui in range(nU)])
+        Zfull = Zpass.copy()
+        for ui in range(nU):
+            Zfull += Resp0[ui] @ cact[ui]
+        out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
+        if want_decomp:
+            self._decompose(agent, out, Fu, Resp0, Gk, maps, self._half_discounted_x(agent, R0, RD) if c.rho > 0 else Resp0)
+        return (self._project(agent, Zfull, cact) if project else None), out
 
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
         """Relative residual of the best-response action kernels after projection on the agent's raw
@@ -1541,11 +2135,17 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         maps2 = {a: np.einsum("fn,urn->urf", I, m) for a, m in maps.items()}
         full = np.zeros(nU * nR * N); full[idx] = vec
         d2 = np.concatenate([(I @ full[u * nR * N:(u + 1) * nR * N].reshape(nR, N).T).T.reshape(-1) for u in range(nU)])
-        Zpass, R0 = S2._spikes(c2, maps2, agent)
-        R = S2._impulse_responses(agent, maps2, R0)
-        ytil, yinst = S2._passive_rows(agent, Zpass)
-        Gk2 = S2._row_operator(agent, ytil, yinst)
-        Resp2 = S2._half_discounted(agent, R0, R) if c2.rho > 0 else S2._response_operators(agent, R)
+        if c2.exact:
+            Zpass, R0, RD = S2._spikes_x(c2, maps2, agent)
+            ytil, yinst = S2._passive_rows(agent, Zpass)
+            Gk2 = S2._row_operator(agent, ytil, yinst)
+            Resp2 = S2._half_discounted_x(agent, R0, RD) if c2.rho > 0 else S2._response_operators_x(agent, R0, RD)
+        else:
+            Zpass, R0 = S2._spikes(c2, maps2, agent)
+            R = S2._impulse_responses(agent, maps2, R0)
+            ytil, yinst = S2._passive_rows(agent, Zpass)
+            Gk2 = S2._row_operator(agent, ytil, yinst)
+            Resp2 = S2._half_discounted(agent, R0, R) if c2.rho > 0 else S2._response_operators(agent, R)
         GAO2 = S2._loss_form(agent, half_discount=c2.rho > 0)
         value = 0.0
         for k in range(c2.nW):
@@ -1613,6 +2213,18 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         if c.nX:
             perm = np.arange(c.nX * N).reshape(N, c.nX).T.reshape(-1)
             PX, P0X = c.Pin[perm], c.P0[perm]
+            if c.exact:                                        # every input through its lag's own propagator
+                rhs = P0X @ c.sigma
+                PL = np.zeros((c.nX * N, c.nX * N))
+                for i, (nm, lag), coef in c.state_inputs:
+                    Pl = (PX if lag == 0 else c.prop_shifted(lag))[:, i::c.nX]
+                    if nm in c.model.state_names:
+                        j = c.model.state_names.index(nm)
+                        PL[:, j * N:(j + 1) * N] += coef * Pl
+                    else:
+                        rhs = rhs + coef * (Pl @ Z[c.block(nm)])
+                Z[:c.nX * N] = np.linalg.solve(np.eye(c.nX * N) - PL, rhs) if PL.any() else rhs
+                return Z
             U = np.zeros((c.nX * N, nW))                       # inputs from controls
             Lx = np.zeros((c.nX * N, c.nX * N))                # inputs from lagged states (linear in X)
             for i, (nm, lag), coef in c.state_inputs:
@@ -1656,6 +2268,13 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         variance part, from the shocks; the mean part is mean_cost."""
         c = self.c
         atoms, Q, q = c.loss[agent.name]
+        if c.exact:                                                    # the atoms' Gram at their lags, exactly
+            G = np.zeros((len(atoms), len(atoms)))
+            for i, (ni, li) in enumerate(atoms):
+                for j, (nj, lj) in enumerate(atoms):
+                    if Q[i, j] != 0.0 and j >= i:
+                        G[i, j] = G[j, i] = float(np.sum(Z[c.block(ni)] * (c.grid.mass_shifted(li, lj) @ Z[c.block(nj)])))
+            return float(0.5 * np.sum(Q * G))
         zeta = np.stack([c.shift(lag) @ Z[c.block(nm)] for nm, lag in atoms])   # (m, N, nW)
         MZ = np.tensordot(zeta, c.cost_mass(), axes=([1], [0]))        # (m, nW, N): the mass applied to every atom kernel
         G = np.tensordot(MZ, zeta, axes=([1, 2], [2, 1]))              # <zeta_i, zeta_j> over ages and channels
@@ -1701,9 +2320,12 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             P[j, c.index[nm]] = 1.0
         R = None
         H = None
+        RX = None
         if not a.myopic:
             R = self._impulse_responses(a, maps, self._spikes(c, maps, a)[1])
             H = self._passive_dc(a, maps, R, atoms)
+            if H is None and c.exact:
+                RX = self._spikes_x(c, maps, a)[1:]
         for ui, u in enumerate(a.controls):
             m = np.zeros(len(atoms))
             for v, coef in (c.composite or {}).get(u, {u: 1.0}).items():      # the control and the instant reactions it draws
@@ -1719,6 +2341,12 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                         continue                              # own reactions: envelope
                     if H is not None:                         # the whole response (_passive_dc)
                         m[j] += np.exp(-rho * lag) * H[c.index[nm], ui]
+                    elif RX is not None:                      # the response's parts read at their lags, exactly
+                        R0, RD = RX; bl = c.block(nm); sh = lag if lag >= 0 else 0.0
+                        val = c.grid.discounted_mass_shifted(rho, sh) @ R0[bl, ui]
+                        for s, Rs in RD.items():
+                            val += c.grid.discounted_mass_shifted(rho, c.grid.compose(sh, s)) @ Rs[bl, ui]
+                        m[j] += val if lag >= 0 else np.exp(-rho * lag) * val
                     elif lag >= 0:
                         m[j] += dc @ (c.shift(lag) @ R[c.block(nm), ui])
                     else:
