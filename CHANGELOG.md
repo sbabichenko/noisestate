@@ -16,6 +16,23 @@
   agree to 5e-14.  The spectral finite engine's sparse second-order form no longer copies an N x N matrix per row
   operator (the Chapter 1 regulator at T = 10 with graded panels 2.25 -> 2.20 s, 549 -> 531 MB); the stationary loss
   form is held as its nonzero blocks and the state elimination is factored in place (bit-identical).
+- Faster again, results moving within each solve's tolerance (no longer to the bit).  The Anderson iteration drops the
+  secant pairs from far above the current residual, which dominated its regulariser and reduced every finite solve to
+  plain mixing: Chapter 1's game 15 -> 10 evaluations, the delayed game 13 -> 9, Chapter 3's transition 20 -> 16, the
+  finite CARA games 16-18 -> 11-13.  The stationary best response solves its first-order system and its map projection
+  by GMRES preconditioned with the factors of the last system built (refactored when that takes more than 5
+  iterations), from the last solution.  A cyclic tie's closed loop is linear in the number of firms (FFT mode transforms,
+  the passive world by a Woodbury correction where that is cheaper, the state forcing cached, no state elimination to
+  factor when no state is driven), its followers' diagnostics and mean conditions are the representative's relabelled,
+  and validating a tie no longer grows quadratically with it.  Stationary risk-averse agents go straight from the
+  risk-neutral equilibrium to their theta when the breakdown measure estimated there is at most 0.5, and warm-start the
+  correction's GMRES.  The Newton polish's stopping rule now implies the residual tolerance (it could stop at up to
+  sqrt(n) times it, reported not converged: Kyle-Back with eight tied traders).  Interleaved medians of 3 at 2 threads
+  (a loaded machine): the benchmark 53.6 -> 36.6 s, Chapter 5's market 10.4 -> 6.2 s (nodes 10: 19.1 -> 10.7), Chapter 3
+  with theta 0.3 4.8 -> 2.9 s, the finite cases 20-29% faster; the gap study's Chapter 5 market at 24 firms (unit_range 2)
+  64 -> 21 s and 1.4 GB -> 655 MB.  Maps move by at most 1.1e-8 (norm, relative) on the finite engines (tol 1e-8) and
+  4.3e-10 on the stationary (tol 1e-10), costs by at most 5e-9; every check's verdict is unchanged.  The test record
+  (tests/refs/baseline_0.4) and four cost pins were re-recorded.
 
 ## 2.1.0 (2026-09-29)
 
