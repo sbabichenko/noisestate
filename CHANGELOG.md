@@ -23,8 +23,23 @@
   on the finite (tol 1e-8). Models without instant observations are bit-identical unless solved by continuation
   (whose last point now starts from a 1e-6 path: it moves within its tolerance).
 
+### Fixed
+
+- Finite engine: a signal row whose noise loads a shock that also drives a state (correlated observation noise; Chapter
+  6's finite market, whose flow row loads the noise trades that move the inventory) is answered at once, so its map at
+  age 0 on a triangle's degenerate corner row is not zero; the projection on the rows gives that corner no quadrature
+  weight and left it at zero, which bent the raw maps' interpolant near every corner.  The reported equilibrium (built
+  from the raw maps) was 3.5e-4 off the closed form at 12 nodes and converged only algebraically, with a representation
+  error of 0.2 to 0.9 at every node count; the corners of such an agent's projection now carry the point condition they
+  had with a past, and the one-agent model is exact to 1e-12 (the finite Chapter 6 market at gamma 0.1 moves by 8e-5
+  to its converged value).  Every other model is bit-identical.  Found by the randomized campaign (extras/fuzz).
+
 ### Added
 
+- `extras/fuzz`: randomized differential testing -- seeded random models across the feature families, an independent
+  discrete brute-force reference, the one-agent closed form, cross-engine checks, invariances and self-consistency under
+  one rule (correct within the stated accuracy, or say so); `tests/test_fuzz.py` (a smoke set in the fast suite, the
+  campaign under NOISESTATE_SLOW) and `extras/fuzz/campaign.py` for larger campaigns with repros.
 - A finite horizon long against the model's time scales is re-cut automatically (`noisestate/time_panels.py`): a model with
   no `numerics.breakpoints`, no lags and no past window or continuation is solved on its one panel first, as before, and
   when that fails the resolution check by more than nodes fix (representation error above 5e-4) or is singular, it is

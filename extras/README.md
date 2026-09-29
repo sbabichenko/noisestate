@@ -36,3 +36,12 @@ Material tied to the dissertation's own solvers, kept out of the wheel:
   state.  tests/refs/stationary_cara_lq.json holds its levels (h = 0.1 to 0.0125) and their Richardson limits.
 * `patches/`: the fix for that C++ solver.
 * `tools/`: comparison scripts against the Chapter 1 solvers.
+* `fuzz/`: randomized differential testing.  `generate.py` draws seeded small models across the feature families (one
+  agent to three, 1-2 states, lags, delays, means, ties, myopia, priors, risk aversion, monitoring, instant
+  observations, transitions, invalid models), each printable as YAML; `reference.py` is an independent discrete
+  brute-force solver (finite and stationary, risk-neutral and precommitment entropic, no package code; it agrees with
+  `cells.py` to 1e-10 at every step count), `lqg.py` the one-agent closed form; `oracles.py` runs every check that
+  applies (the references, cross-engine agreement, invariances, theta -> 0, self-consistency) under the rule "correct
+  within the stated accuracy, or say so"; `campaign.py` runs a campaign with per-case timeouts and writes repros
+  (`python extras/fuzz/campaign.py --count 200 --workers 2 --out /tmp/fuzz`, `--replay repro.yaml`).
+  `tests/test_fuzz.py` runs a smoke set in the fast suite and the campaign under NOISESTATE_SLOW.

@@ -468,7 +468,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         sub = finite_free.panel_rows(self, agent, Zfull).sub
         shifts = [c.panel_shift(c.rows[agent.name][r][3]) if c.rows[agent.name][r][3] > 0 else 0 for r in range(nR)]
         gmap = np.zeros((nU, nR, Nm))
-        ctx = self._projection_context(agent) if past else None
+        ctx = self._projection_context(agent)
         systems: Dict[int, list] = {}                     # size -> [(cols, Rm, G, rhs (nU, n))]
         for (p, it), idx in sorted(c.trow_by_pit.items()):
             if past and (p >= c.P_T or p < c.P_lo):
@@ -489,11 +489,11 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         return gmap
 
     def _projection_context(self, agent: Agent):
-        """With a past, what every time row's system of maps_from_world shares: the identified map unknowns (keep),
+        """What every time row's system of maps_from_world shares: with a past the identified map unknowns (keep),
         the corner group of every map unknown (group), the time index of every node on the line s = 0 (diag_of)
         and the triangle of every action node on a degenerate corner row (corner_of)."""
         c = self.c; g = c.g; Nm = self.Nm; nR = len(agent.signals)
-        keep = self._identified(agent)
+        keep = self._identified(agent) if c.past is not None else None
         group = self._corner_index(agent)[:nR * Nm]                             # map unknown -> its corner group (or itself)
         diag_of = {int(node): j for j, node in enumerate(c.diag)}
         corner_of = {}                                                          # action node -> its triangle, on the degenerate row
@@ -501,6 +501,14 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             if pc.triangle:
                 for node in pc.offset + (0 if not pc.upper else (pc.nt - 1) * pc.na) + np.arange(pc.na):
                     corner_of[int(node)] = (pc.p, pc.q, pc.upper)
+        # without a past the corners are tied and point-conditioned only for an agent with a row whose noise loads a
+        # shock that also drives a state: it answers that shock at once, so its map at age 0 on a corner row is not
+        # zero and the projection, which gives the corner no quadrature weight, would leave it at the ridge's zero;
+        # every other model keeps the projection it had, bit for bit
+        if c.past is None:
+            driving = {ch for st in self.model.states for ch, v in st.noise.items() if v}
+            if not any(ch in driving and v for r in agent.signals for ch, v in r.noise.items()):
+                group = np.arange(nR * Nm)
         return keep, group, diag_of, corner_of
 
     def _time_row_system(self, agent: Agent, p: int, it: int, idx: np.ndarray, cact: np.ndarray, sub, shifts, ctx):
@@ -513,8 +521,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         c = self.c; g = c.g; N, nW, Nm = c.N, c.nW, self.Nm
         nR, nU = len(agent.signals), len(agent.controls)
         past = c.past is not None
-        if past:
-            keep, group, diag_of, corner_of = ctx
+        keep, group, diag_of, corner_of = ctx
         tv = g.t[idx[0]]
         w = g.row_weights(tv, side=(-1 if tv >= g.bp[p + 1] - 1e-12 else +1))[idx]
         parts = []
@@ -532,9 +539,9 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             cols = cols[keep[cols]]
             if cols.size == 0:
                 return None
-            uniq, inv = np.unique(group[cols], return_inverse=True)
-            if uniq.size < cols.size:                                           # tie the corner groups to one unknown each
-                Rm = np.zeros((cols.size, uniq.size)); Rm[np.arange(cols.size), inv] = 1.0
+        uniq, inv = np.unique(group[cols], return_inverse=True)
+        if uniq.size < cols.size:                                               # tie the corner groups to one unknown each
+            Rm = np.zeros((cols.size, uniq.size)); Rm[np.arange(cols.size), inv] = 1.0
         Bsub = sub(idx, cols)
         if Rm is not None:
             Bsub = Bsub @ Rm

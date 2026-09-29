@@ -52,6 +52,7 @@ and the suite silently returns to the slow figures.  Each gated test, and the on
 | test_limits.py::test_stationary_risk_aversion_near_the_breakdown_is_reached_in_steps | the stationary signal model at theta 1 reaches its equilibrium in the finite engine's steps (theta mu_max 0.886) | 23 |
 | test_limits.py::test_stationary_risk_aversion_past_the_breakdown_raises | theta 2 raises RiskBreakdown with reached 1.17 (the halved steps; the steps' unit test stays fast) | 110 |
 | test_limits.py::test_the_entropic_lattice_does_not_coarsen_with_the_window | the entropic lattice gap at L = 16 is the L = 8 one (entropic_steps' unit test stays fast) | 35 |
+| test_fuzz.py::test_fuzz_campaign | the randomized campaign (extras/fuzz): NOISESTATE_FUZZ_COUNT seeded models (default 40) from NOISESTATE_FUZZ_SEED (default 1000), families drawn per seed, every oracle that applies; no FINDING (a confident wrong answer, a refusal or crash of a valid model, an invalid model accepted); NOISESTATE_FUZZ_OUT=dir writes a YAML repro per finding. `python extras/fuzz/campaign.py --help` runs larger campaigns outside pytest | ~1500 (2 threads) |
 
 Kept in the fast suite above five seconds, one per feature: the regime change's loss path (12 s), the
 two-firm market's stability and window-edge second-order check (7 s), the transition sweeps (6 s), the
