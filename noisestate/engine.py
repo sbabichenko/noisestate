@@ -155,7 +155,7 @@ def _sparse_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx, cons
     for G, sl in forms:
         # H_uv = Resp_u' G Resp_v, a block of Resp_v's columns at a time: G applied to them (GR_v's columns), then its own
         # identity blocks' rows added and the other rows' through Resp_u (GR_v itself, nP N x N, never whole)
-        H = {(ui, vi): np.zeros((N, N)) for ui in range(nU) for vi in range(ui, nU)}
+        H = {(ui, vi): np.zeros((N, N), order="F") for ui in range(nU) for vi in range(ui, nU)}   # F: H' is C-ordered (below)
         for vi in range(nU):
             Rv = Resp[vi]
             for c0 in range(0, N, _FORM_COLUMNS):
@@ -187,14 +187,21 @@ def _sparse_curvature_form(Resp, Gk, forms, nU: int, nR: int, Nm: int, idx, cons
         for vi in range(ui, nU):
             Muv = Mall[ui * nb:(ui + 1) * nb, vi * nb:(vi + 1) * nb]
             for H, (G, sl) in zip(Hs, forms):
-                Huv = H[(ui, vi)]
+                Huv = H[(ui, vi)]                               # F-ordered: Huv' is the C-ordered operand scipy's sparse product
+                Hc = None                                       # ravels (handed a transposed view it copies N x N per call)
                 for k in range(sl.start, sl.stop):
                     Gg = Gs[k]
                     for c0 in range(0, nb, 4 * _FORM_COLUMNS):         # M's columns a block at a time: no n x n temporaries
                         c1 = min(nb, c0 + 4 * _FORM_COLUMNS)
                         Gc = Gg[:, c0:c1]
-                        HG = np.asarray((Gc.T @ Huv.T).T) if not isinstance(Gc, np.ndarray) else Huv @ Gc      # (N, c1 - c0)
+                        if isinstance(Gc, np.ndarray):
+                            if Hc is None:
+                                Hc = np.ascontiguousarray(Huv)          # the dense product as before, on a C-ordered H
+                            HG = Hc @ Gc                                                                    # (N, c1 - c0)
+                        else:
+                            HG = np.asarray((Gc.T @ Huv.T).T)
                         Muv[:, c0:c1] += np.asarray(Gg.T @ HG)
+                del Hc
             if vi != ui:
                 Mall[vi * nb:(vi + 1) * nb, ui * nb:(ui + 1) * nb] = Muv.T
     return Mall if idx.size == nG else Mall[np.ix_(idx, idx)]
