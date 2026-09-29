@@ -82,6 +82,16 @@ def _staircase_q(A: np.ndarray, reach: np.ndarray, bs: Optional[int] = None) -> 
     return Q
 
 
+def _upper_toeplitz(sym: np.ndarray) -> np.ndarray:
+    """The dense block upper triangular Toeplitz matrix (Na a, Na b) whose block (i, m) is sym[m - i] (a x b) for m >= i:
+    sym (Na, a, b), one strided view of the zero-padded symbol and one copy."""
+    from numpy.lib.stride_tricks import sliding_window_view
+    Na, a, b = sym.shape
+    E = np.concatenate([np.zeros((Na - 1, a, b)), sym])                 # E[s] = sym[s - (Na - 1)]
+    W = sliding_window_view(E, Na, axis=0)                              # W[s, :, :, t] = E[s + t]: block (i, t) at s = Na - 1 - i
+    return np.ascontiguousarray(W[::-1].transpose(0, 1, 3, 2)).reshape(Na * a, Na * b)
+
+
 class StationaryTilt:
     """What one best response of a risk-averse agent freezes at the profile: the atoms' lag kernels, the spike responses
     with and without the own reactions, and the lattice operators; shift() is Delta (nU, N, nW)."""
@@ -429,9 +439,131 @@ class StationaryTilt:
         Q[:, :Na + 1] = Qp.reshape(nW, Na + 1, -1)
         return Q.reshape(nW * Nu, -1)
 
+    GRAPH_BOUND = 1e6                   # _graph: the pivot block's condition and the symbol's l1 norm past which the QR is used
+
+    def _graph(self, lat):
+        """The information's span as a graph over pivot coordinates, or None (then _info_basis's QR serves).
+
+        The basis matrix A of _info_basis (rows (i, c): step i, channel c; columns (m, r): step m, row r) is block upper
+        triangular Toeplitz: A[(i, c), (m, r)] = a[m - i][c, r], a[0] carrying the rows' point loadings, and its last step's
+        rows (i = Na, the age 0) are zero.  Taking nR pivot channels P (where a[0] is best conditioned, a column-pivoted QR
+        of a[0]') and the others F, A = [A_P; A_F] (rows reordered) with A_P square block triangular Toeplitz, invertible
+        with a[0][P], so
+
+            span(A) = span([I; X]),    X = A_F A_P^-1,
+
+        X again block upper triangular Toeplitz, its symbol x = a_F * a_P^-1 (the causal convolution with the series
+        inverse: a Volterra resolvent, computed by one unit-triangular solve).  The projector off the span is then
+
+            Sigma g = [-X' s; s],  (I + X X') s = g_F - X g_P          (the complement form, when |F| <= |P|), or
+            Sigma g = g - [v; X v],  (I + X' X) v = g_P + X' g_F        (the primal form),
+
+        a Cholesky of the smaller Gram, whose entries are lagged sums of the symbol (Toeplitz: each is a partial sum
+        over one lag, O(Na^2) in all instead of a GEMM).  The same projector as the QR's (1e-15 on the stationary CARA
+        models) at a fraction of its cost: the QR of the staircase was most of a risk-averse best response.  A pivot
+        block that is ill conditioned, or a growing resolvent (a row whose noise loading is small next to its drift),
+        leaves the graph steep; past GRAPH_BOUND the QR is used."""
+        from scipy.linalg import qr, solve_triangular, cholesky
+        from numpy.lib.stride_tricks import sliding_window_view
+        key = round(lat["h"], 12)
+        memo = self.__dict__.setdefault("_gpast", {})
+        if key in memo:
+            return memo[key]
+        memo[key] = None
+        h, Na, nW = lat["h"], lat["Na"], self.nW
+        solver, c = self.solver, self.c
+        Zpass = solver._spikes(c, self._maps, self.agent)[0]
+        ytil, yinst = solver._passive_rows(self.agent, Zpass)
+        nR = len(ytil)
+        if nR == 0 or nR >= nW or Na < 1:
+            return None
+        a = np.zeros((Na, nW, nR))                                      # a[d][c, r]
+        for r, y in enumerate(ytil):
+            if any(age != 0.0 for (_, age, _) in yinst[r]):
+                raise NotImplementedError("a risk-averse agent on the stationary engine with a delayed point loading on its rows")
+            a[:, :, r] = h * (lat["I"][:Na] @ y[:, :nW])
+            for (k, age, w) in yinst[r]:
+                a[0, k, r] += w
+        _, _, piv = qr(a[0].T, pivoting=True, mode="economic")
+        P = np.sort(piv[:nR]); F = np.setdiff1d(np.arange(nW), P)
+        nF = F.size
+        a0 = a[0][P]
+        if not np.all(np.isfinite(a)) or np.linalg.cond(a0) > self.GRAPH_BOUND:
+            return None
+        a0i = np.linalg.inv(a0)
+        # the series inverse b of a_P (b[0] = a0^-1): the last block column of A_P^-1, from the unit upper triangular system
+        # blockdiag(a0^-1) A_P z = blockdiag(a0^-1) e_last (column m of step m: rows i <= m)
+        cP = np.einsum("pq,dqr->dpr", a0i, a[:, P, :])                  # a0^-1 a_P[d], cP[0] = I
+        if Na > 1:
+            rhs = np.zeros((Na * nR, nR)); rhs[-nR:] = a0i
+            z = solve_triangular(_upper_toeplitz(cP), rhs, lower=False, unit_diagonal=True, check_finite=False)
+            b = z.reshape(Na, nR, nR)[::-1]                              # b[d] = block (Na - 1 - d) of the last column
+        else:
+            b = a0i[None]
+        # x = a_F * b (causal, the first Na lags): one direct convolution per entry, summed over the pivot rows
+        x = np.zeros((Na, nF, nR))
+        aF = a[:, F, :]
+        for ci in range(nF):
+            for r in range(nR):
+                acc = np.zeros(Na)
+                for p in range(nR):
+                    acc += np.convolve(aF[:, ci, p], b[:, p, r])[:Na]
+                x[:, ci, r] = acc
+        if not np.all(np.isfinite(x)) or float(np.abs(x).sum(axis=0).max()) > self.GRAPH_BOUND:
+            return None
+        # X dense (F coordinates (i, c) x P coordinates (m, p), time major): X[(i, c), (m, p)] = x[m - i][c, p], m >= i
+        X = _upper_toeplitz(x)
+        comp = nF <= nR
+        # the Gram's lagged sums: complement (I + X X')[(i, c), (j, c')] (i <= j) = sum_{t = 0}^{Na-1-j} x[t + j - i] x[t]';
+        # primal (I + X' X)[(m, p), (m', p')] (m <= m') = sum_{s = 0}^{m} x[s]' x[s + m' - m]
+        xp = np.concatenate([x, np.zeros_like(x)])                          # x[k] = 0 for k >= Na
+        lagged = sliding_window_view(xp, Na, axis=0)[:Na]                   # lagged[d, :, :, t] = x[t + d]
+        if comp:
+            prod = np.einsum("dcrt,tkr->dtck", lagged, x)                   # x[t + d] x[t]'
+        else:
+            prod = np.einsum("tcp,dcqt->dtpq", x, lagged)                   # x[t]' x[t + d]
+        S = np.cumsum(prod, axis=1)                                         # S[d, T] = the partial sum to T
+        del prod
+        k = nF if comp else nR
+        # the lower triangle only (the Cholesky reads no other): block (i + d, i) is block (i, i + d)', S[d, Na - 1 - d - i]
+        # (complement) or S[d, i] (primal), written one block diagonal at a time through the flat (Na Na, k, k) view
+        G5 = np.zeros((Na, Na, k, k))
+        flat = G5.reshape(Na * Na, k, k)
+        for d in range(Na):
+            vals = S[d, Na - 1 - d::-1] if comp else S[d, :Na - d]
+            flat[d * Na::Na + 1][:Na - d] = vals.transpose(0, 2, 1)
+        del S
+        Gm = G5.transpose(0, 2, 1, 3).reshape(Na * k, Na * k)
+        del G5, flat
+        Gm[np.diag_indices_from(Gm)] += 1.0
+        try:
+            Lc = cholesky(Gm, lower=True, check_finite=False)
+        except np.linalg.LinAlgError:
+            return None
+        out = {"P": P, "F": F, "X": X, "L": Lc, "comp": comp, "Na": Na}
+        memo[key] = out
+        return out
+
     def _sigma(self, lat, G):
         """Sigma g: the part of g (nW, Nu) the agent has not seen (its information's span taken out on the past block)."""
         Na = lat["Na"]
+        gr = self._graph(lat)
+        if gr is not None:
+            from scipy.linalg import solve_triangular
+            P, F, X, Lc = gr["P"], gr["F"], gr["X"], gr["L"]
+            out = G.copy()
+            gP = G[P, :Na].T.ravel(); gF = G[F, :Na].T.ravel()             # time major (i, c); the step Na is not touched
+            if gr["comp"]:
+                s = solve_triangular(Lc, gF - X @ gP, lower=True, check_finite=False)
+                s = solve_triangular(Lc, s, lower=True, trans="T", check_finite=False)
+                oP, oF = -(X.T @ s), s
+            else:
+                v = solve_triangular(Lc, gP + X.T @ gF, lower=True, check_finite=False)
+                v = solve_triangular(Lc, v, lower=True, trans="T", check_finite=False)
+                oP, oF = gP - v, gF - X @ v
+            out[P, :Na] = oP.reshape(Na, P.size).T
+            out[F, :Na] = oF.reshape(Na, F.size).T
+            return out
         Qp = self._info_basis(lat, full=False)
         out = G.copy()
         gp = G[:, :Na + 1].ravel()
