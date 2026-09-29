@@ -208,6 +208,22 @@ def test_lead_cross_term_in_a_driven_model(rho):
     assert "-0.000000" not in res.summary()
 
 
+def test_lead_cross_term_kernels_converge_spectrally():
+    """The lead's past-date term reads the response over the lead only: at the node of age |lead| the lower copy carries
+    its left limit and the upper copy (the next panel's first node) zero.  Both copies set made a bump on the next
+    panel, and the kernels of a model with a lead cross term converged as n^-2 just past the lead (the control's
+    kernel 2.3e-3 of its peak between 16 and 48 nodes); now 16 and 24 nodes agree to rounding."""
+    a, r, theta, c, tau = 1.0, 1.0, 1.0, 0.3, 2.0
+    out = []
+    for n in (16, 24):
+        d = one_agent(a, r, theta, 0.0, nodes=n).to_dict(); d["agents"]["a"]["loss"].append([2.0 * c, "D", f"X@-{tau:g}"])
+        res = ns.solve(ns.Model.from_dict(d), tol=1e-12).require_converged()
+        ages = np.linspace(0.01, 15.99, 800)
+        out.append((res.kernel("D").at(ages), res.costs["a"]))
+    assert np.abs(out[0][0] - out[1][0]).max() < 1e-9 * np.abs(out[1][0]).max()
+    assert abs(out[0][1] - out[1][1]) < 1e-12 * abs(out[1][1])
+
+
 def tug_of_war(L, nodes):
     """Chapter 1's two players on a random walk with conflicting targets (0 and 1), player 2's row delayed by 0.5, no
     discount: at the mean both push constantly against each other, D1 = -D2 = 1 / (r1 k2 + r2 k1) with k_j the other's

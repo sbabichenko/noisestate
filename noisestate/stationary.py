@@ -255,6 +255,13 @@ class Compiled(CompiledBase):
             return False
         if (self.instant_loads or self.levels or any(a.risk_aversion for a in model.agents) or any(a.integrals for a in model.agents)
                 or any(len(model.privy(a.name)) > 1 for a in model.agents)):
+            bad = [l for l in model.all_lags() if not (self.grid.aligned(l) and self.grid.aligned(-l))]
+            if bad and mode != "never":
+                warnings.warn(f"{model.name}: the lag(s) {bad} are not aligned with the panels, and a model with instant "
+                              "observations, level rows, monitored deviations or risk-averse agents reads them by resampling "
+                              "(no exact shifts there yet): a kernel's break at a lag inside a panel is an error no node count "
+                              "removes; unit panels through the window (numerics.unit_range = the window) read them exactly",
+                              stacklevel=3)
             return False
         if mode == "always":
             return True
@@ -1892,7 +1899,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         the points -lag - v exactly."""
         c = self.c; v = c.grid.nodes
         R0u, RDu = Ru
-        m = v <= -lag + 1e-12
+        m = (v < -lag - 1e-12) | ((np.abs(v + lag) <= 1e-12) & (c.grid.node_sides() == -1))     # as _lead_term
         kv = np.zeros(c.N)
         pts = -lag - v[m]
         val = c.grid.interp(pts) @ R0u[c.block(name)]
@@ -2307,8 +2314,12 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         # discounted objective has a further term over those past dates:
         #   int_0^{|lag|} e^{rho v} r(|lag| - v) (Q zeta)_j(a - v) dv   (a convolution with k(v))
         c = self.c; v = c.grid.nodes
-        m = v <= -lag + 1e-12                          # only the dates t - v within the lead (the exponential
-        kv = np.zeros(c.N)                             # of rho v at the far end of the window would overflow)
+        # only the dates t - v within the lead (the exponential of rho v at the far end of the window would overflow), and at
+        # v = |lag| the lower copy of the node alone: the kernel stops there, so the upper copy (the next panel's first node)
+        # reads its right limit, zero (both copies set left a bump on that panel: Chapter-1-type games with a lead cross term
+        # converged as n^-2 just past the lead, 2.3e-3 of the control's peak at 16 nodes)
+        m = (v < -lag - 1e-12) | ((np.abs(v + lag) <= 1e-12) & (c.grid.node_sides() == -1))
+        kv = np.zeros(c.N)
         kv[m] = np.exp(c.rho * v[m]) * (c.grid.interp(-lag - v[m]) @ Ru[c.block(name)])
         return c.grid.conv_op(kv)
 
