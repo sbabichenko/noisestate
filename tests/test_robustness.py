@@ -1,6 +1,6 @@
 """Regression tests for the 2026-09-28 robustness pass: inputs a new user gets wrong, and the answers that were silently
 wrong or misleading for them."""
-import copy, math
+import math
 import numpy as np, pytest
 import noisestate as ns
 from noisestate import Settings, Numerics

@@ -190,7 +190,6 @@ class Discrete:
         # each agent's regressors: one per row and step, the constant, the priors its rows load
         self.reg = []
         for a in p.agents:
-            names = [(r[0], j) for r in a["rows"] for j in range(n)]
             extra = []
             if self.has_means:
                 extra.append(("1", None))
@@ -312,7 +311,6 @@ class Discrete:
             if k == n:
                 break
             for ai, a in enumerate(p.agents):
-                nc = len(a["controls"])
                 for ui, u in enumerate(a["controls"]):
                     if exo == ai:
                         if self.stationary:
@@ -529,7 +527,6 @@ class Discrete:
         F = Y[ai][:nr * n, W:].reshape(nr, n, nc)
         wd = np.exp(-self.p.rho * self.h * np.arange(n))
         dl = self.reg[ai]["delay"]
-        A_ = len(atoms)
         V = 2.0 * wd[:, None, None] * np.einsum("ij,tju->tiu", Q, ZI)          # (n, A, nc)
 
         def conv(P_, Yr):         # (n, A) x (n, W) -> (n, A, W): sum_{b <= s} P_(s - b) Yr(b)

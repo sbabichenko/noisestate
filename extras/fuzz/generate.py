@@ -26,7 +26,6 @@ the horizon, and the finite horizons are 0.5 to 2 time units.  The families:
 """
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass, field
 
 import numpy as np

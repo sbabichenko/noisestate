@@ -8,7 +8,6 @@ window 1.5 times as long (the grid extended by panels like the last one, started
 costs to move by less than window_cost_tol (1e-6 of the largest cost, refine()'s level).  It is measured on request:
 res.check_window(), which require_ok() runs when its policy needs it; the exploratory policy and the minimum an
 equilibrium is verified by do not."""
-import numpy as np
 import pytest
 
 import noisestate as ns

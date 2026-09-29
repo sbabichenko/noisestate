@@ -80,7 +80,7 @@ def write_repro(outdir, rec):
     os.makedirs(os.path.join(outdir, "repros"), exist_ok=True)
     bad = [c for c in rec["checks"] if c["verdict"] == "FINDING"]
     head = [f"# fuzz case {rec['id']} (family {rec['family']}, seed {rec['seed']}, tags {rec.get('tags')})",
-            f"# replay: python extras/fuzz/campaign.py --replay <this file>"]
+            "# replay: python extras/fuzz/campaign.py --replay <this file>"]
     for c in bad:
         head.append(f"# FINDING [{c.get('kind')}] {c['check']}: {c['detail']}"[:1000])
     path = os.path.join(outdir, "repros", f"{rec['id']}.yaml")

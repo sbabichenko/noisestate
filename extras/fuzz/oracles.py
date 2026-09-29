@@ -357,7 +357,7 @@ def self_consistency(case, base):
     finite = all(np.isfinite(v) for v in costs.values())
     if base.converged:
         out.append(verdict("finite costs", finite, fmt(costs), said_so=False, kind="sanity"))
-    parts_ok, worst = True, 0.0
+    worst = 0.0
     for a, parts in r.cost_parts.items():
         s = sum(float(v) for v in parts.values())
         worst = max(worst, abs(s - costs[a]) / max(1.0, abs(costs[a])))
@@ -600,7 +600,7 @@ def optimality_check(case, base, trials=4):
     from noisestate.stationary import StationarySolver
     from noisestate.finite_spectral import SpectralFiniteSolver
     from noisestate.finite_free import RowOps, RespOps
-    r = base.res; out = []
+    r = base.res
     try:
         S = r._make_solver() if hasattr(r, "_make_solver") else None
     except Exception:                          # noqa: BLE001

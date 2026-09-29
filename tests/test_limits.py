@@ -2,13 +2,11 @@
 time_panels.py), the Chapter 5 market's representation floor (the window edge less a lag as a cut), and the stationary
 engine's risk-averse agents at and past the breakdown (and their entropic cost's lattice at long windows)."""
 import math
-import warnings
 
 import numpy as np
 import pytest
 
 import noisestate as ns
-from noisestate import Numerics
 from noisestate.grid import AgeGrid
 from noisestate import time_panels
 from noisestate.time_panels import graded_breakpoints
