@@ -362,11 +362,9 @@ class Result:
 
         This used to subtract the second-order check on a discounted stationary model, on the
         ground that the discounted objective is not a quadratic form in the stationary kernel.  That
-        was wrong, and the dissertation says so: the discounted objective IS written as a quadratic
-        form, and its joint running Hessian carries no discount -- rho enters only as the strictly
-        positive weight e^{-rho t}, which cannot change the sign of a form that is semidefinite
-        pointwise in t.  The check is made on the average-cost system and holds at every rho, which
-        is what the Kyle-Back chapter does.
+        was wrong: the discounted objective IS a quadratic form in the deviation, and the stationary
+        engine checks it at every rho (StationarySolver._half_discounted: the responses weighted by
+        e^{-rho tau / 2}).
         """
         return frozenset(self.SUPPORTED_CHECKS)
 

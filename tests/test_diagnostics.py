@@ -112,13 +112,9 @@ def test_the_discount_does_not_take_the_second_order_check_away():
     form in the stationary kernel".  That is wrong, and it made ch4_kyle_back -- the example the
     README prints in full -- permanently unacceptable.
 
-    The dissertation writes the discounted stationary objective as a quadratic form explicitly,
-    "with the joint running Hessian positive semidefinite".  That Hessian is TIME-LOCAL and carries
-    no rho: the discount enters only as the strictly positive weight e^{-rho t}, which cannot change
-    the sign of a form that is semidefinite pointwise in t.  So the verdict is the same at every rho,
-    the check is made on the average-cost system, and the Kyle-Back chapter says exactly that: "The
-    second-order checks are made on the average-cost system and do not rely on the rho > 0
-    hypothesis."
+    The discounted stationary objective is a quadratic form in the deviation; at rho > 0 the check
+    is made on its own form (the responses weighted by e^{-rho tau / 2}, test_second_order_discount),
+    at rho = 0 on the average-cost one.  The Kyle-Back trader's is positive at every rho tried.
     """
     kb = ns.solve(example("ch4_kyle_back"), {"nodes": 20})
     assert kb.model.horizon.discount > 0 and kb.model.horizon.kind == "stationary"

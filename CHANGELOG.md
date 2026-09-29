@@ -50,6 +50,17 @@
 
 ### Fixed
 
+- Stationary engine, second-order check at a positive discount: the form is now the discounted objective's own, every
+  response to the agent's deviation weighted by e^{-rho tau / 2} at its age tau (an atom read at lag l older by l), which
+  at rho = 0 is the average-cost form it was.  The unweighted form is the flow loss of a deviation made at every date,
+  the past's included; the argument that a discount cannot change its sign holds only for a loss positive semidefinite
+  pointwise, and a trader's is not.  Chapter 6's transparent market (gamma 0.1, window 8): the trader read NOT A
+  MINIMUM at -0.062 (the equilibrium is not even a critical point of that form's objective: slope 5.8e-2 along its
+  lowest direction, 2e-4 for the discounted objective); it is +0.0059, and the opaque market's trader +0.0058 (was
+  -0.054).  Checked against the discounted Riccati solution of one agent trading against its own transient impact:
+  convex exactly when the weighted form is, where the unweighted form called the Riccati optimum a saddle.  Every
+  stationary second-order value at rho > 0 moves (Kyle-Back's trader stays positive at every rho).
+
 - Stationary engine: the continuation in a mean first-order condition (targets, constant drifts) is the passive world's
   discounted DC gain over all ages, its Laplace transform at the discount rate, not its integral over the window.  A
   constant is felt at every age, and the passive world (one reaction fewer than the equilibrium) can decay far more

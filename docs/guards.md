@@ -124,12 +124,24 @@ computed.
   the check finds a negative direction it re-evaluates that direction, zero-extended, on a window
   longer by two lags with the same maps (one operator build, no new fixed point): positive there
   means truncation, reported as `embedded` and a `window edge` note rather than a saddle.
-  A DISCOUNT DOES NOT TAKE THE CHECK AWAY.  The discounted stationary objective is a quadratic form,
-  and its joint running Hessian carries no discount: rho enters only as the strictly positive weight
-  `e^{-rho t}`, which cannot change the sign of a form that is semidefinite pointwise in t.  The
-  check is therefore made on the average-cost system and its verdict holds at every rho, as the
-  dissertation's Kyle-Back chapter does ("the second-order checks are made on the average-cost
-  system and do not rely on the rho > 0 hypothesis").  Up to a strategy dimension of 1000 the form is built densely and always
+  A DISCOUNT DOES NOT TAKE THE CHECK AWAY, but it changes the form.  The discounted objective's
+  second variation weighs a pair of responses, to deviations at s and s' seen at t, by e^{-rho t};
+  written as e^{rho s / 2} x_s with x stationary (a feasible deviation: a map on the rows times a
+  deterministic factor), that is a weight e^{-rho tau / 2} on each response's own age tau, and the
+  form in x is a Toeplitz form on [0, inf) whose symbol is the average-cost form of the responses so
+  weighted.  So the check is that form (`_half_discounted`; an atom read at lag l adds l to the
+  age), and it is the average-cost form at rho = 0.  With a loss that is positive semidefinite
+  pointwise every such form is, at every rho; a trader's loss (D (P - V)) is not, and there the
+  verdict depends on rho.  The unweighted form -- which this check used before, on the argument
+  that a pointwise semidefinite Hessian keeps its sign -- is the flow loss of a deviation made at
+  every date, the past's included; the equilibrium is not a critical point of it (Chapter 6's
+  trader: slope 5.8e-2 along its lowest direction, against 2e-4 for the discounted objective) and it
+  reported that trader NOT A MINIMUM (-0.062) where the discounted form is +0.0059.  Checked on
+  one agent against its own transient impact (dX = (-X + lam D) dt + dW, loss X D + D^2, rho = 1):
+  the problem is convex iff lam >= -1.5 (the discounted Riccati equation's solvability), the
+  unweighted form's threshold is -1; at lam = -1.1 the package's equilibrium is the Riccati optimum
+  (to 2e-6 at window 24) and the old check called it a saddle (-0.26), at -1.6 there is no optimum
+  and both flag it.  Up to a strategy dimension of 1000 the form is built densely and always
   settles; above that a Lanczos iteration is used, and when it does not settle the report says so
   (`converged: False`) instead of staying silent.  The undiscounted Kyle-Back model at a
   trading cost of 0.01 crosses the threshold (-1.6e-4) on the window of 8: the truncation

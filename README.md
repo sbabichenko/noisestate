@@ -564,10 +564,9 @@ below -1e-4 of the largest prints
 `NOT A MINIMUM (the best response of 'trader1' is a saddle: its loss is not convex in its own
 strategy, smallest curvature -1.8e-03 of the largest)`.  A negative direction that is positive on a
 window longer by two lags is reported as `window edge: ... a truncation of the lagged loss terms at the
-edge, not a saddle` instead.  The check also applies with a positive discount: the discounted objective is
-a quadratic form whose joint running Hessian carries no discount, since `rho` enters only as the
-strictly positive weight `e^{-rho t}`, so the verdict is the same at every `rho` and the check is
-made on the average-cost system.
+edge, not a saddle` instead.  The check also applies with a positive discount, on the discounted
+objective's own form: a deviation's responses are weighted by `e^{-rho tau / 2}` at their age `tau`
+(docs/guards.md says why), which at `rho = 0` is the average-cost form.
 
 **Settled.**  A transition whose maps on [T - L, T] are more than 1e-4 of their peak from the
 stationary continuation prints `TRANSITION NOT SETTLED by T - L` and suggests a larger `--T`; the

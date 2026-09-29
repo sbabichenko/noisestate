@@ -624,13 +624,10 @@ class StationarySolver(MonitoredDeviations, EngineBase):
     #
     #      J = 1/2 E int_0^inf e^{-rho t} [X' G^XX X + 2 G^X' X + 2 D' G^DX X + D' G^DD D] dt
     #
-    #  "with the joint running Hessian positive semidefinite".  That Hessian is TIME-LOCAL and
-    #  carries no rho: the discount enters only as the strictly positive weight e^{-rho t}, which
-    #  cannot change the sign of a form that is semidefinite pointwise in t.  So the check may be
-    #  made on the average-cost system and its answer holds at every rho >= 0 -- which is what the
-    #  Kyle-Back chapter does: "The second-order checks are made on the average-cost system and do
-    #  not rely on the rho > 0 hypothesis", reporting the exact quadratic form positive definite
-    #  with smallest eigenvalue 2 eps.  cost_mass() is that average-cost Gram at every rho.
+    #  "with the joint running Hessian positive semidefinite".  Where that Hessian is semidefinite
+    #  the form is at every rho; where it is not (a trader's D (P - V)) the sign depends on rho, and
+    #  the second-order check is made on the discounted objective's own form, the responses weighted
+    #  by e^{-rho tau / 2} (_half_discounted; at rho = 0 the average-cost form).
 
     def __init__(self, model: Model, verbose: bool = False, settings=None):
         """settings: the tuning constants (noisestate.Settings, or a dict of its fields; the defaults when None)."""
@@ -829,12 +826,14 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 H[r * N:(r + 1) * N, k * N:(k + 1) * N] += w * c.instant_adjoint(age, c.rows[agent.name][r][3])
         return H
 
-    def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk, maps=None) -> None:
+    def _decompose(self, agent: Agent, out: dict, Fu, Resp, Gk, maps=None, Resp_so=None) -> None:
         """The second-order check and the FOC decomposition (instantaneous/physical/wedge).  Tied agents
-        share the second-order check of their representative (the same problem up to relabelling)."""
+        share the second-order check of their representative (the same problem up to relabelling).  Resp_so: the
+        second-order form's response operators (_half_discounted at rho > 0) [Resp]."""
         c = self.c; nW = c.nW; Zfull = out["Zfull"]
+        Rso = Resp if Resp_so is None else Resp_so
         out["second_order"] = self._shared_second_order(
-            agent, lambda: self._second_order(agent, Resp, Gk, np.tile(self._identified(agent), len(agent.controls)), maps))
+            agent, lambda: self._second_order(agent, Rso, Gk, np.tile(self._identified(agent), len(agent.controls)), maps))
         Fphys = self._foc_operators(agent, self._physical_responses(agent, c.nW))
         dec = {}
         for ui, u in enumerate(agent.controls):
@@ -857,10 +856,9 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         Lanczos on matvecs.  With a past the world has the initial shocks' columns after the channels',
         each under the point form of the line s = 0 (_loss_form(agent, start_from=True)), as expected_cost
         integrates them.  Returns {"min", "max", "ok", "converged"} with min/max the eigenvalues
-        of M scaled by max.  The objective is a quadratic form in the strategy at every discount,
-        because it enters the objective only as the strictly positive weight e^{-rho t} on a
-        time-local Hessian, so the form's SIGN -- which is the whole verdict -- is the same at every
-        rho and the check is made on the average-cost system.
+        of M scaled by max.  At a discount rho > 0, Resp are the responses weighted by e^{-rho tau / 2}
+        (_half_discounted) and the loss form's lagged atoms likewise: the discounted objective's own form,
+        the average-cost form at rho = 0.
         The objective is truncated at the window, so a strategy can push a little loss past the edge:
         curvatures within SECOND_ORDER_TOL of the largest are treated as that, not as a saddle.
         When the form is not positive and the engine defines _embedded_curvature(agent, maps, idx,
@@ -869,7 +867,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         value turns the verdict into ok with "edge" and "embedded" recorded."""
         c = self.c
         N, nW = c.N, c.nW; nR, nU = len(agent.signals), len(agent.controls)
-        GAO = self._loss_form(agent)                                             # symmetric loss form on the world
+        GAO = self._loss_form(agent, half_discount=c.rho > 0)                    # symmetric loss form on the world
         ncol = Gk.shape[0]                                                      # the channels, then a past's initial shocks
         forms = [(GAO, slice(0, nW))]                                           # (loss form, its columns of the world)
         if ncol > nW:
@@ -934,19 +932,24 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 out["ok"] = out["edge"]
         return out
 
-    def _loss_form(self, agent: Agent, start_from: bool = False) -> np.ndarray:
+    def _loss_form(self, agent: Agent, start_from: bool = False, half_discount: bool = False) -> np.ndarray:
         """The loss form on the primary kernels, AO' kron(Q, mass) AO for the stacked atom operators AO,
         assembled block by block over the atoms' primary blocks (each atom reads one primary through one
         N x N block; an undelayed atom through the identity, whose products are skipped).  Map-independent,
         cached per agent.  With start_from=True the form of a past's initial-shock column: the same atoms under
-        the point mass of the line s = 0 (_init_mass), as expected_cost integrates those columns."""
-        key = (agent.name, start_from)
+        the point mass of the line s = 0 (_init_mass), as expected_cost integrates those columns.  With
+        half_discount=True the second-order form's (_half_discounted): an atom read at lag l is a response older by l,
+        so Q_ij carries e^{-rho (l_i + l_j) / 2} (a lead's negative lag raises it)."""
+        key = (agent.name, start_from) if not half_discount else (agent.name, start_from, "half")
         if key not in self._loss_forms:
             c = self.c; N = c.N; n = len(c.prim) * N
             atoms, Q, q = c.loss[agent.name]
             if start_from:
                 raise NotImplementedError("the form of an initial-shock column is the spectral finite engine's (finite_free)")
             mass = c.cost_mass()
+            if half_discount:
+                lg = np.array([float(l) for (_, l) in atoms])
+                Q = Q * np.exp(-0.5 * c.rho * (lg[:, None] + lg[None, :]))
             blocks = [[c.atom_block(at)] for at in atoms]
             GAO = np.zeros((n, n))
             for i in range(len(atoms)):
@@ -1124,8 +1127,33 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         if shift is not None:
             out["risk_shift"] = shift
         if want_decomp:
-            self._decompose(agent, out, Fu, Resp, Gk, maps)
+            self._decompose(agent, out, Fu, Resp, Gk, maps, self._half_discounted(agent, R0, R) if c.rho > 0 else Resp)
         return (self._project(agent, Zfull, self._map_part(agent, Zfull, cact)) if project else None), out
+
+    def _half_discounted(self, agent: Agent, R0: np.ndarray, R: np.ndarray):
+        """The response operators of the second-order form at a discount rate rho > 0: every response to the agent's
+        action weighted by e^{-rho tau / 2} at its age tau (the action itself, tau = 0, by one), then closed under the
+        agent's own instant reactions and, with monitoring, taken from the monitored R, as best_response does.
+
+        The objective is E int_0^inf e^{-rho t} l(t) dt from a date on which the agent's deviation starts, so its second
+        variation weighs a pair of responses to actions at s and s', seen at t, by e^{-rho t}; with the deviation written
+        e^{rho s / 2} x_s, x stationary (a map on the rows, times a deterministic factor: as feasible as x), that is
+        e^{-rho (t - s) / 2} e^{-rho (t - s') / 2}, a weight on each response's own age, and the form per unit time of x
+        is the average-cost form with the responses so weighted.  This family of deviations is the whole of it: the form
+        on [0, inf) in the variable x is a Toeplitz form whose symbol is this form's, so it is positive on every feasible
+        deviation exactly when this form is.  At rho = 0 it is the average-cost form.  (The average-cost form itself --
+        the responses unweighted -- is the curvature of the flow loss of a deviation made at every date, the past's
+        included, which no player can make; with a loss that is not positive semidefinite, a trader's, its sign is
+        not the discounted objective's: Chapter 6's trader at window 8 reads -0.062 there and +0.0059 here.)  Exponential
+        weights commute with the convolutions of the closure, so weighting R before closing is weighting the closed
+        responses."""
+        c = self.c
+        w = np.tile(np.exp(-0.5 * c.rho * c.grid.nodes), len(c.prim))[:, None]
+        Resp0 = self._response_operators(agent, w * R0)
+        close = self._instant_closure(agent, Resp0)
+        if close is not None:
+            Resp0 = [close(Rv) for Rv in Resp0]
+        return Resp0 if R is R0 else self._response_operators(agent, w * R, keep_own=close is not None)
 
     def _instant_closure(self, agent: Agent, Resp):
         """For an agent with instant observations, the map Z -> Z' closing a world Z (computed with the agent's controls
@@ -1469,11 +1497,12 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         maps2 = {a: np.einsum("fn,urn->urf", I, m) for a, m in maps.items()}
         full = np.zeros(nU * nR * N); full[idx] = vec
         d2 = np.concatenate([(I @ full[u * nR * N:(u + 1) * nR * N].reshape(nR, N).T).T.reshape(-1) for u in range(nU)])
-        Zpass, R = S2._spikes(c2, maps2, agent)
-        R = S2._impulse_responses(agent, maps2, R)
+        Zpass, R0 = S2._spikes(c2, maps2, agent)
+        R = S2._impulse_responses(agent, maps2, R0)
         ytil, yinst = S2._passive_rows(agent, Zpass)
-        Gk2 = S2._row_operator(agent, ytil, yinst); Resp2 = S2._response_operators(agent, R)
-        GAO2 = S2._loss_form(agent)
+        Gk2 = S2._row_operator(agent, ytil, yinst)
+        Resp2 = S2._half_discounted(agent, R0, R) if c2.rho > 0 else S2._response_operators(agent, R)
+        GAO2 = S2._loss_form(agent, half_discount=c2.rho > 0)
         value = 0.0
         for k in range(c2.nW):
             zd = np.zeros(GAO2.shape[0])
