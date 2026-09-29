@@ -16,7 +16,9 @@ import noisestate as ns
 from noisestate import Param, State, Control, Agent, define, shocks, dt
 
 
-def build(N=3, tau=0.5, L=24.0, nodes=8, unit_range=8.0, **over):
+def build(N=3, tau=0.5, L=24.0, nodes=None, unit_range=None, **over):
+    """The market with N firms.  nodes and unit_range None (the default, the shipped example): no grid in the file, the
+    solve chooses its age panels (noisestate/age_panels.py); either given is written into the file's numerics."""
     values = dict(theta=4.0, xi=0.15, zeta=0.5, kappa=0.3, m=1.0, r=0.2, rP=0.0, c=0.2, sigma_u=1.0,
                   theta_a=0.5, sigma_a=1.0, theta_eta=0.5, sigma_eta=1.0, s1=2.5, s2=0.3, s3=0.3, s4=2.0, tau=tau)
     values.update(over)
@@ -58,7 +60,7 @@ def build(N=3, tau=0.5, L=24.0, nodes=8, unit_range=8.0, **over):
             "own_prod": wv[f"w_a{v}"]}))
     return ns.Game([q] + [x for v in range(N) for x in (a[v], eta[v])], firms, name="ch5_cycle_market",
                     ties=[firms], horizon=ns.Stationary(window=L, discount=0.0), params=p.values(),
-                    numerics={"nodes": nodes, "unit": tau, "unit_range": unit_range})
+                    numerics={k: v for k, v in (("nodes", nodes), ("unit", tau), ("unit_range", unit_range)) if v is not None})
 
 if __name__ == "__main__":
     path = sys.argv[1] if len(sys.argv) > 1 else "examples/ch5_cycle_market.yaml"

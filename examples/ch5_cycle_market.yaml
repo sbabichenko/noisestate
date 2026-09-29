@@ -69,4 +69,4 @@ agents:
 horizon: {window: 24.0}
 ties:
 - [firm0, firm1, firm2]
-numerics: {nodes: 8, unit: 0.5, unit_range: 8.0}
+numerics: {unit: 0.5}

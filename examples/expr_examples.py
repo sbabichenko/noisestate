@@ -100,7 +100,7 @@ def ch5_cycle_market(N: int = 3) -> ns.Model:
             "order_book": o[cus] * dt + s3 * dw[f"w_{v}_2"], "upstream_order": o[sup] * dt + s4 * dw[f"w_{v}_3"],
             "own_prod": dw[f"w_a{v}"]}))
     return ns.Game([q] + [x for v in range(N) for x in (a[v], eta[v])], firms, window=24.0, definitions=defs,
-                   ties=[firms], name="ch5_cycle_market", numerics={"nodes": 8, "unit": 0.5, "unit_range": 8.0})
+                   ties=[firms], name="ch5_cycle_market", numerics={"unit": 0.5})
 
 
 def ch3_precision_change(past="ch3_two_player.yaml") -> ns.Model:
