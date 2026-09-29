@@ -10,11 +10,11 @@
   block Cholesky factor (the sum over the eigenvalues row by row, without cancellation), a block forward substitution
   and Lanczos for the largest eigenvalue; the correction's convolutions reuse the lag kernels' transforms (the same
   sums as scipy's fftconvolve, to the bit); the information basis is a staircase QR where its matrix is not tall (the
-  C++ port's).  Chapter 3's two-player game with theta 0.3 and rho 0.5: 254 -> 4.0 s and 3.9 GB -> 166 MB peak;
-  Kyle-Back's insider on wealth (the C++ port's stat_cara_kyle) 62 -> 17.7 s and 941 -> 213 MB.  The equilibria are
+  C++ port's).  Chapter 3's two-player game with theta 0.3 and rho 0.5: 209 -> 3.9 s and 3.9 GB -> 167 MB peak;
+  Kyle-Back's insider on wealth (the C++ port's stat_cara_kyle) 62 -> 17.4 s and 945 -> 218 MB (2 threads).  The equilibria are
   bit-identical except where the staircase QR is used (Kyle-Back's maps move by 9e-15 relative); the entropic costs
   agree to 5e-14.  The spectral finite engine's sparse second-order form no longer copies an N x N matrix per row
-  operator (the Chapter 1 regulator at T = 10 with graded panels 2.58 -> 2.33 s, 555 -> 527 MB); the stationary loss
+  operator (the Chapter 1 regulator at T = 10 with graded panels 2.25 -> 2.20 s, 549 -> 531 MB); the stationary loss
   form is held as its nonzero blocks and the state elimination is factored in place (bit-identical).
 
 ## 2.1.0 (2026-09-29)
