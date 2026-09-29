@@ -336,8 +336,13 @@ class Compiled(CompiledBase):
             perm = np.arange(nX * N).reshape(N, nX).T.reshape(-1)     # prim index -> (node, comp) index
             PX, P0X = self.Pin[perm], self.P0[perm]
             PU = PX @ U
-            lu = lu_factor(np.eye(nX * N) - PU[:, :nX * N])
-            W = lu_solve(lu, PU[:, nX * N:])
+            del U
+            k = nX * N                                    # I - P U_X built F-ordered and factored in place (no eye, no copy):
+            A = np.subtract(0.0, PU[:, :k], order="F")    # 0 - x off the diagonal and 1 - x on it, the entries eye - x has
+            A[np.arange(k), np.arange(k)] = 1.0 - PU[np.arange(k), np.arange(k)]
+            lu = lu_factor(A, overwrite_a=True)
+            del A
+            W = lu_solve(lu, PU[:, k:])
             self._elim[key] = (lu, W, P0X, perm)
             self._elim_wzero[key] = not W.any()          # no state driven by a control: the products with W are skipped
         return self._elim[key]
