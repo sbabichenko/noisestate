@@ -23,6 +23,21 @@
   on the finite (tol 1e-8). Models without instant observations are bit-identical unless solved by continuation
   (whose last point now starts from a 1e-6 path: it moves within its tolerance).
 
+- `deviation_response` follows Chapter 6's blip convention by default: after its spike the deviating player, which
+  knows its seed, continues through its own response to it (D^{i<-i}), whether or not anyone else is privy. Before,
+  a deviator nobody else monitored held its control after the spike (the frozen continuation), so the paths showed
+  its opponents reacting while it did nothing; that path is still `continuation="frozen"`. With players privy to the deviator, `"frozen"` now gives the frozen
+  spike they answer seed by seed (before, it silently gave the blip): the privy players' responses depend on what they
+  expect the deviator to do next. The first-order conditions,
+  and so every equilibrium, are the same under both (the chapter's lemma on blip and frozen continuations). Checked
+  on a lone regulator, whose blip continuation is the full-information feedback on its own displacement.
+
+- `solve(model, continue_from={parameter: value})`: continuation from values where the model solves cold to its own,
+  each point starting from the last, the step halved where one does not converge; the path is `res.continued`.
+- A warning when a player sees another's control level without monitoring it while also seeing what that control's
+  owner observes (a trader seeing the quote and the order flow): such a player is privy, and built naive its reading
+  of a quote off the rule is not pinned down.
+
 ### Fixed
 
 - Finite engine: a signal row whose noise loads a shock that also drives a state (correlated observation noise; Chapter
@@ -42,6 +57,54 @@
   (foc_residual 3.9e-2 -> 2.5e-12).  Chapter 6's markets, whose quote is in the trader's rows, move by at most 1e-10.
 - Ties: a single tie group whose agents differ by the names of public states (a ring where each player sees its
   neighbour's state) is tied by a verified cyclic relabelling (`symmetry.find_cyclic_symmetry`) instead of refused.
+
+- The Chapter 5 market's representation-error floor (about 1.2e-6 at 12 to 16 nodes, failing the resolution check at every
+  grid): the kernels jump at L - d (a lagged read past the window is cut off), which lay inside the last geometric panel
+  beyond unit_range. The geometric panels are cut at L - d for every lag; the error falls with the nodes (3.6e-7 at 8,
+  7.0e-8 at 12, 6.9e-9 at 14). Every stationary model with lags and unit_range below the window gets the extra cuts.
+- Stationary risk-averse agents: the continuation in theta jumped from 0.5 to 1 and could land on a spurious fixed point
+  past the breakdown (the one-agent signal model at theta 1, reported not converged); past the 0.5 step it now takes the
+  finite engine's steps, halves a step that lands past the breakdown, raises RiskBreakdown with `reached` where the path
+  ends short of theta, and raises RiskBreakdown for a converged solution past the breakdown (was "not converged").
+- The stationary date-0 entropic cost's lattices were L / 40 .. L / 160, so their error grew with the window (the gap
+  between the finest two 9.3e-3 at L = 16); the step is capped at 0.2 (`ENTROPIC_STEP`), unchanged up to L = 8.
+
+- The monitoring iteration's Volterra solve for a frozen spike's seeds falls back to least squares when a trial point
+  far from the equilibrium makes the discretised operator singular (the iteration keeps its best round), instead of
+  raising.
+
+- `deviation_response` on the stationary engine, all-naive corner: a spike of a control whose level others observe
+  (`{level: P}`) now carries the instant reactions it draws, as the solve's own spike responses always did. The market
+  maker's quote spike in Chapter 6's market left out the trader's same-instant order, so the inventory started at 0
+  instead of 2.5. The finite engine already had it right.
+
+- A non-finite number anywhere in a model (a NaN or infinite parameter, coefficient, delay, constant, length or numerics
+  value) is refused with its field. A NaN parameter used to solve to "converged, residual 0" with every check passed and a
+  NaN cost; an infinite one, or a NaN discount (NaN < 0 is False), failed as a "singular" system. A coefficient whose
+  arithmetic fails (1/0, sqrt(-1), log(0), an overflow, a negative number to a fractional power) is a ValueError naming it.
+- An equations-form file takes expression parameters (`r: "0.2 / 2"`, `s2: "2 * sigma"`), as the grammar and
+  docs/model_file.md always did; it refused them ("the value must be a number").
+- A key given twice in one YAML mapping (a second `horizon:`, two agents of one name) is refused with its line; YAML
+  kept the last silently.
+- numerics.tol and damping must be positive (tol 0 was accepted, a negative tol reported "not converged" at the exact
+  answer), max_newton a non-negative integer; the Settings fields are type-checked where they are set ("15" for a count
+  failed deep in the solve; a misspelt risk_planning passed on a risk-neutral model).
+- Kernel.at, res.evaluate and res.mean refuse NaN and a date past the grid, and the stationary Kernel.at an age past the
+  window; the interpolant's zero row outside its domain read as a response of exactly 0 (a random walk's too). A time
+  before 0, or a shock after t, still reads 0.
+- An initial shock may not be named like a Brownian shock (it was accepted, and res.kernel(X, "w0") read one of the two).
+  An agent in two tie groups, or twice in one, is refused.
+- The finite engine's matrix-free best response (from foc_dense_max, 16 nodes on Chapter 6's finite market) refused a
+  quote with no square of its own as "singular at t = 0": its time-row preconditioner took the own square alone, where the
+  curvature is the orders the quote draws at once (FocOps.inst's term). The block is now C Q C' over the spikes with their
+  instant reactions; the dense and matrix-free systems agree (1e-14 on the costs at 16 and 20 nodes).
+- The Lanczos second-order check (above second_order_dense) sought the lowest eigenvalue with ARPACK's tolerance relative
+  to itself, near 0 on a nearly singular form, and ran its budget without an answer (3042 products on a 2160-unknown
+  strategy); it is now hi less the largest eigenvalue of hi I - A, settled at the tolerance of hi.
+- A model's warnings are shown once per model; validate() runs three times on the way to a solve, and each warned from its
+  own line (three copies finite, five stationary).
+- sweep(): a point that raises names its value in the exception's notes and carries the points solved before it on
+  `exc.partial`.
 
 ### Added
 
@@ -193,73 +256,6 @@
   With that, Chapter 6's transparent market is the same whether the trader sees the quote and the order flow or only
   the quote, being privy (checked to 1e-8), and a market with one privy and one naive trader, both seeing only the
   quote, solves (the same trader on the path; after a quote spike the privy one sells 2.5 at once, the naive one 0.84).
-
-### Changed
-
-- `deviation_response` follows Chapter 6's blip convention by default: after its spike the deviating player, which
-  knows its seed, continues through its own response to it (D^{i<-i}), whether or not anyone else is privy. Before,
-  a deviator nobody else monitored held its control after the spike (the frozen continuation), so the paths showed
-  its opponents reacting while it did nothing; that path is still `continuation="frozen"`. With players privy to the deviator, `"frozen"` now gives the frozen
-  spike they answer seed by seed (before, it silently gave the blip): the privy players' responses depend on what they
-  expect the deviator to do next. The first-order conditions,
-  and so every equilibrium, are the same under both (the chapter's lemma on blip and frozen continuations). Checked
-  on a lone regulator, whose blip continuation is the full-information feedback on its own displacement.
-
-- `solve(model, continue_from={parameter: value})`: continuation from values where the model solves cold to its own,
-  each point starting from the last, the step halved where one does not converge; the path is `res.continued`.
-- A warning when a player sees another's control level without monitoring it while also seeing what that control's
-  owner observes (a trader seeing the quote and the order flow): such a player is privy, and built naive its reading
-  of a quote off the rule is not pinned down.
-
-### Fixed
-
-- The Chapter 5 market's representation-error floor (about 1.2e-6 at 12 to 16 nodes, failing the resolution check at every
-  grid): the kernels jump at L - d (a lagged read past the window is cut off), which lay inside the last geometric panel
-  beyond unit_range. The geometric panels are cut at L - d for every lag; the error falls with the nodes (3.6e-7 at 8,
-  7.0e-8 at 12, 6.9e-9 at 14). Every stationary model with lags and unit_range below the window gets the extra cuts.
-- Stationary risk-averse agents: the continuation in theta jumped from 0.5 to 1 and could land on a spurious fixed point
-  past the breakdown (the one-agent signal model at theta 1, reported not converged); past the 0.5 step it now takes the
-  finite engine's steps, halves a step that lands past the breakdown, raises RiskBreakdown with `reached` where the path
-  ends short of theta, and raises RiskBreakdown for a converged solution past the breakdown (was "not converged").
-- The stationary date-0 entropic cost's lattices were L / 40 .. L / 160, so their error grew with the window (the gap
-  between the finest two 9.3e-3 at L = 16); the step is capped at 0.2 (`ENTROPIC_STEP`), unchanged up to L = 8.
-
-- The monitoring iteration's Volterra solve for a frozen spike's seeds falls back to least squares when a trial point
-  far from the equilibrium makes the discretised operator singular (the iteration keeps its best round), instead of
-  raising.
-
-- `deviation_response` on the stationary engine, all-naive corner: a spike of a control whose level others observe
-  (`{level: P}`) now carries the instant reactions it draws, as the solve's own spike responses always did. The market
-  maker's quote spike in Chapter 6's market left out the trader's same-instant order, so the inventory started at 0
-  instead of 2.5. The finite engine already had it right.
-
-- A non-finite number anywhere in a model (a NaN or infinite parameter, coefficient, delay, constant, length or numerics
-  value) is refused with its field. A NaN parameter used to solve to "converged, residual 0" with every check passed and a
-  NaN cost; an infinite one, or a NaN discount (NaN < 0 is False), failed as a "singular" system. A coefficient whose
-  arithmetic fails (1/0, sqrt(-1), log(0), an overflow, a negative number to a fractional power) is a ValueError naming it.
-- An equations-form file takes expression parameters (`r: "0.2 / 2"`, `s2: "2 * sigma"`), as the grammar and
-  docs/model_file.md always did; it refused them ("the value must be a number").
-- A key given twice in one YAML mapping (a second `horizon:`, two agents of one name) is refused with its line; YAML
-  kept the last silently.
-- numerics.tol and damping must be positive (tol 0 was accepted, a negative tol reported "not converged" at the exact
-  answer), max_newton a non-negative integer; the Settings fields are type-checked where they are set ("15" for a count
-  failed deep in the solve; a misspelt risk_planning passed on a risk-neutral model).
-- Kernel.at, res.evaluate and res.mean refuse NaN and a date past the grid, and the stationary Kernel.at an age past the
-  window; the interpolant's zero row outside its domain read as a response of exactly 0 (a random walk's too). A time
-  before 0, or a shock after t, still reads 0.
-- An initial shock may not be named like a Brownian shock (it was accepted, and res.kernel(X, "w0") read one of the two).
-  An agent in two tie groups, or twice in one, is refused.
-- The finite engine's matrix-free best response (from foc_dense_max, 16 nodes on Chapter 6's finite market) refused a
-  quote with no square of its own as "singular at t = 0": its time-row preconditioner took the own square alone, where the
-  curvature is the orders the quote draws at once (FocOps.inst's term). The block is now C Q C' over the spikes with their
-  instant reactions; the dense and matrix-free systems agree (1e-14 on the costs at 16 and 20 nodes).
-- The Lanczos second-order check (above second_order_dense) sought the lowest eigenvalue with ARPACK's tolerance relative
-  to itself, near 0 on a nearly singular form, and ran its budget without an answer (3042 products on a 2160-unknown
-  strategy); it is now hi less the largest eigenvalue of hi I - A, settled at the tolerance of hi.
-- A model's warnings are shown once per model; validate() runs three times on the way to a solve, and each warned from its
-  own line (three copies finite, five stationary).
-- sweep(): a point that raises names its value in the exception's notes and carries the points solved before it on
-  `exc.partial`.
 
 ## 2.0.0 (2026-09-26)
 
