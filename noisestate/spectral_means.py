@@ -244,8 +244,11 @@ class SpectralMeans:
         R = self._impulse_responses(a, maps, R)
         foc = finite_free.FocOps(self, a, R)
         atoms, Q, q = foc.atoms, foc.Q, foc.q
+        tail = self._continuation_tail(a, atoms, Q, q)
         for ui in range(len(a.controls)):
             row = blk(ui)
+            if tail is not None:
+                bu[row] -= tail[ui]
             for j in range(len(atoms)):
                 bj = np.zeros((len(atoms), N, Nt)); bj[j] = E
                 Oj = S0 @ foc.on_qzeta(ui, bj)                              # the condition's read of (Q zeta + q)_j's mean
@@ -259,6 +262,40 @@ class SpectralMeans:
                             bu[row] -= Q[j, i] * (Oj @ pre)
         self._freeze_buffer(Mu, bu, [c.index[u] for u in a.controls])
         return Mu, bu
+
+    def _continuation_tail(self, agent: Agent, atoms, Q, q) -> Optional[np.ndarray]:
+        """(nU, Nt) or None: with a stationary continuation, the part of the mean first-order condition beyond the
+        strip, which is cut at age L: sum_j tail_j (Q zbar + q)_j at the continuation's constant means, tail_j the
+        discounted integral of atom j's passive response past the age L (a lag l at L - l) in the continuation
+        (StationarySolver.passive_tails).  The stationary engine's mean condition takes the whole response, so this
+        keeps a model as its own past and continuation at its constant means (4.7e-10 at 16 nodes; without it 6e-2
+        on Chapter 3 with a target at L = 3).  The response past L is the continuation's -- the closure's assumption
+        that the transition has settled.  None without a continuation, for a myopic agent, or where the
+        continuation's condition takes the window's integral."""
+        c = self.c
+        if c.cont is None or agent.myopic or not any(q) and not any(float(c.cont.means.get(n, 0.0)) for n in c.prim):
+            return None
+        L = float(c.cont.compiled.grid.L)
+        on = np.arange(c.Nt) < c.P_T * c.g.nt                               # the buffer's rows are frozen anyway
+        lags = sorted({float(l) for (nm, l) in atoms if nm not in agent.controls})
+        if not lags:
+            return None
+        A = np.full(int(on.sum()), L)          # the strip is cut at age L: the continuation past it
+        Scont = c.cont._solver()
+        ages = np.unique(np.concatenate([np.maximum(A - l, 0.0) for l in lags]))
+        T3 = Scont.passive_tails(agent, c.cont.maps, ages)
+        if T3 is None:
+            return None
+        zc = np.array([float(c.cont.means.get(nm, 0.0)) for (nm, l) in atoms])
+        gc = Q @ zc + np.asarray(q, dtype=float)[:len(zc)]
+        out = np.zeros((len(agent.controls), c.Nt))
+        for j, (nm, l) in enumerate(atoms):
+            if nm in agent.controls or not gc[j]:
+                continue
+            k = np.searchsorted(ages, np.maximum(A - l, 0.0))
+            for ui in range(len(agent.controls)):
+                out[ui, on] += np.exp(-c.rho * l) * T3[ui, Scont.c.index[nm], k] * gc[j]
+        return out
 
     def _freeze_buffer(self, M: np.ndarray, b: np.ndarray, prims) -> None:
         """On the time line with a continuation: the rows of the given primaries (in the order of M's row blocks)

@@ -1749,6 +1749,51 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             return None
         return sla.lu_solve((lu, piv), F, check_finite=False)
 
+    def passive_tails(self, agent: Agent, maps: Dict[str, np.ndarray], ages: np.ndarray) -> Optional[np.ndarray]:
+        """(nU, n_prim, len(ages)): int_A^inf e^{-rho a} R_p(a) da for every age A in `ages` (A >= 0), R the agent's
+        passive response to a unit impulse of each of its controls under `maps` -- the part of a mean first-order
+        condition's continuation beyond a transition's strip, which ends at T + L (spectral_means).  The whole-age
+        transform (_passive_dc) less the integral up to A of the response on a grid extended to max(ages) (panels as
+        wide as the last one, the maps zero beyond L: the response there is exact).  None where _passive_dc is."""
+        c = self.c
+        R0 = self._impulse_responses(agent, maps, self._spikes(c, maps, agent)[1])
+        H = self._passive_dc(agent, maps, R0, c.loss[agent.name][0])
+        if H is None:
+            return None
+        g = c.grid; top = float(np.max(ages))
+        bp = [float(b) for b in g.breakpoints]
+        width = bp[-1] - bp[-2]
+        while bp[-1] < top - 1e-12:
+            bp.append(bp[-1] + width)
+        if len(bp) > len(g.breakpoints):
+            S2 = type(self)(self.model._patch_horizon(window=bp[-1]).with_numerics(breakpoints=bp), **self.solver_kw)
+            c2 = S2.c; g2 = c2.grid
+            sides = g2.node_sides(); I = np.zeros((g2.N, g.N))
+            for sd in (+1, -1):
+                sel = (sides == sd) | ((sides == 0) & (sd == +1))
+                I[sel] = g.interp(g2.nodes[sel], side=sd)                   # zero beyond the old window
+            maps2 = {a: np.einsum("fn,urn->urf", I, m) for a, m in maps.items()}
+            R = S2._impulse_responses(agent, maps2, S2._spikes(c2, maps2, agent)[1])
+        else:
+            c2, g2, R = c, g, R0
+        xg, wg = np.polynomial.legendre.leggauss(g2.n + 2)
+        out = np.zeros((len(agent.controls), len(c.prim), len(ages)))
+        for k, A in enumerate(ages):
+            pts, wts = [], []
+            for lo, hi in zip(g2.breakpoints[:-1], g2.breakpoints[1:]):
+                hi = min(hi, A)
+                if hi <= lo:
+                    break
+                pts.append(0.5 * (hi - lo) * xg + 0.5 * (hi + lo)); wts.append(0.5 * (hi - lo) * wg)
+            if not pts:
+                inner = np.zeros((len(c.prim), len(agent.controls)))
+            else:
+                x = np.concatenate(pts); w = np.concatenate(wts) * np.exp(-c.rho * x)
+                Iw = w @ g2.interp(x)
+                inner = np.stack([Iw @ R[c2.block(nm)] for nm in c.prim])     # (n_prim, nU)
+            out[:, :, k] = (H - inner).T
+        return out
+
     def _assemble_means(self, maps, **variant):
         self._mean_tails = {}
         return super()._assemble_means(maps, **variant)

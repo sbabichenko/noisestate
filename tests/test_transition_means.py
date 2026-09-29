@@ -62,30 +62,32 @@ def test_same_model_means_are_the_stationary_constants():
 
 @slow("slow (6 s; the time-line mean system is pinned above and by tests/test_transition.py); set NOISESTATE_SLOW=1")
 def test_target_change_runs_from_the_old_means_to_the_new():
-    """The target moves from 1 to 2 (12 nodes, T = 6): X's mean path starts at the old constant 0.8662 and rises
-    monotonically to the new 1.7324, reached at T to 1e-6; D1 jumps at 0+ (4.1115 against the old 1.7989) and
-    falls to the new 3.5979; the buffer carries the new constants, and the path's gap at T- (7.7e-4 on X: the
+    """The target moves from 1 to 2 (12 nodes, T = 6): X's mean path starts at the old constant 0.7669 and rises
+    monotonically to the new 1.5337, reached at T to 1e-6; D1 jumps at 0+ (5.4876 against the old 2.5164) and
+    falls to the new 5.0328; the buffer carries the new constants, and the path's gap at T- (6.8e-4 on X: the
     means settle more slowly than the maps, which are at 6.3e-7) is in `settled`; the game ending at T instead
-    (a past shorter than T, no continuation) solves too, with the controls vanishing at T."""
+    (a past shorter than T, no continuation) solves too, with the controls vanishing at T.  (The stationary means
+    take the passive responses over all ages, and the strip's condition their part past age L; with both the
+    window's integrals, before, the old and new X were 0.8662 and 1.7324.)"""
     old = stationary(with_target(1.0), 12)
     res = ns.solve(with_target(2.0).with_finite(6.0).with_numerics(nodes=12), past=old, continuation="stationary",
                    start_policy="stationary").require_converged()
     new = res.continuation.means
-    assert abs(old.means["X"] - 0.86621659) < 1e-7 and abs(new["X"] - 1.73243318) < 1e-7 and abs(new["D1"] - 3.59787014) < 1e-7
+    assert abs(old.means["X"] - 0.76685176) < 1e-7 and abs(new["X"] - 1.53370351) < 1e-7 and abs(new["D1"] - 5.03282942) < 1e-7
     c = res.compiled; on = np.arange(c.Nt) < c.P_T * c.g.nt              # the time nodes of [0, T]; the rest the buffer's
     X = res.means["X"]
     assert abs(X[0] - old.means["X"]) < 1e-12 and abs(res.mean("X", 6.0)[0] - new["X"]) < 1e-6
-    assert np.all(np.diff(X[on]) > -1e-9) and abs(res.mean("X", 2.0)[0] - 1.66309) < 1e-4 and abs(res.mean("X", 3.0)[0] - 1.71283) < 1e-4
-    assert abs(res.mean("D1", 0.0)[0] - 4.11152) < 1e-4 and abs(res.mean("D1", 6.0)[0] - new["D1"]) < 1e-6
-    assert abs(res.mean("D2", 0.0)[0] + 3.01782) < 1e-4
+    assert np.all(np.diff(X[on]) > -1e-9) and abs(res.mean("X", 2.0)[0] - 1.47232) < 1e-4 and abs(res.mean("X", 3.0)[0] - 1.51635) < 1e-4
+    assert abs(res.mean("D1", 0.0)[0] - 5.48756) < 1e-4 and abs(res.mean("D1", 6.0)[0] - new["D1"]) < 1e-6
+    assert abs(res.mean("D2", 0.0)[0] + 4.51932) < 1e-4
     for n in ("X", "D1", "D2"):
         assert np.abs(res.means[n][~on] - new[n]).max() == 0.0
-    # the means settle more slowly than the maps: X's path at T- is 7.7e-4 below the new constant (the buffer's
-    # frozen value), which `settled` reports (1.9e-4 of the largest mean, D1 at 0+) where the maps alone sit at 6.3e-7
-    assert abs(X[on][-1] - new["X"] + 7.7e-4) < 1e-5 and abs(res.mean("X", 6.0)[0] - new["X"]) < 1e-12
-    assert 1.5e-4 < res.settled < 2.5e-4 and res.cost_parts["player1"]["mean"] > 0
+    # the means settle more slowly than the maps: X's path at T- is 6.8e-4 below the new constant (the buffer's
+    # frozen value), which `settled` reports (1.2e-4 of the largest mean, D1 at 0+) where the maps alone sit at 6.3e-7
+    assert abs(X[on][-1] - new["X"] + 6.8e-4) < 1e-5 and abs(res.mean("X", 6.0)[0] - new["X"]) < 1e-12
+    assert 1.0e-4 < res.settled < 1.5e-4 and res.cost_parts["player1"]["mean"] > 0
     assert res.settled == max(res._make_solver(res.model).settled(res.maps), res._make_solver(res.model).settled_means(res.means))
     end = ns.solve(with_target(1.0).with_finite(6.0).with_numerics(nodes=12), past=old).require_converged()
     assert isinstance(end, TransitionResult) and end.continuation is None
     assert abs(end.mean("X", 0.0)[0] - old.means["X"]) < 1e-12 and abs(end.mean("D1", 6.0)[0]) < 1e-12
-    assert abs(end.mean("D1", 1.0)[0] - 1.7997) < 1e-3 and end.mean("D1", 5.0)[0] < 1.0
+    assert abs(end.mean("D1", 1.0)[0] - 1.8164) < 1e-3 and end.mean("D1", 5.0)[0] < 1.0

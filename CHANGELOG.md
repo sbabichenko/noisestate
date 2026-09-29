@@ -74,7 +74,9 @@
   reads it (`WINDOW TOO SHORT FOR THE MEANS`).  Changed numbers: every stationary model with means, by its passive
   worlds' tail -- the Chapter 5 market's costs by 7e-7 relative (mean part 6e-6); Chapter 3 with a target for player
   1 at window 3, mean X 0.866 -> 0.767 (0.7479 from window 6 on; the window's integral reached 0.753 only at 12).  The
-  dissertation's numbers do not use this path (its Chapter 1 means are finite-horizon).
+  dissertation's numbers do not use this path (its Chapter 1 means are finite-horizon).  A transition with a
+  stationary continuation adds, to the mean condition on its strip (cut at age L), the continuation's passive response
+  past L (`StationarySolver.passive_tails`), so a model as its own past and continuation keeps its constant means.
 
 - Finite engine: a signal row whose noise loads a shock that also drives a state (correlated observation noise; Chapter
   6's finite market, whose flow row loads the noise trades that move the inventory) is answered at once, so its map at
