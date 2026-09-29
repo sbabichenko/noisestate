@@ -1456,6 +1456,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
     RISK_EDGE = 1e-3                    # 1 - theta mu_max (the finite engine's rule), and a step within this of it short of the
     RISK_MAX_STEPS = 40                 # model's theta, or past this many steps, ends the path there: RiskBreakdown(reached)
     RISK_HALVINGS = 3                   # steps whose fixed point is past the breakdown are halved at most this many times in all
+    RISK_JUMP = 0.5                     # from the risk-neutral equilibrium straight to the model's theta when theta mu_max there, estimated at it, is at most this
     RISK_STEP_EVALUATIONS = 100         # evaluations of a step between those of RISK_STEPS, unless solve() was bounded
     ENTROPIC_LATTICE = (40, 80, 160)    # lattice steps (L / these) of the date-0 continuation's entropic cost (res.risk) ...
     ENTROPIC_STEP = 0.2                 # ... the coarsest capped at this (and the others in proportion): windows above 8
@@ -1523,6 +1524,18 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 if not res.converged or last:
                     break
                 maps, good = res.maps, sc
+                if not sc and steps and self.RISK_JUMP > 0:
+                    # the breakdown measure at the model's theta estimated at the risk-neutral equilibrium (theta mu_max scales
+                    # with theta; one lattice, the coarsest): well inside the breakdown, straight to the model's theta, the
+                    # intermediate steps being warm starts only
+                    from .stationary_risk import StationaryTilt
+                    try:
+                        est = max(StationaryTilt(self, a, res.maps, float(a.risk_aversion)).cond_excess(self.entropic_steps(self.c.grid.L)[0])[1]
+                                  for a in averse)
+                    except (ValueError, np.linalg.LinAlgError):
+                        est = float("inf")
+                    if np.isfinite(est) and est <= self.RISK_JUMP:
+                        steps = [1.0]
                 if sc:
                     # the next step: the model's theta while the breakdown measure there, estimated at this step's equilibrium
                     # (theta mu_max scales with theta), is at most RISK_STEP; else a step closing RISK_GAIN of the gap to the
