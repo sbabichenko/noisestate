@@ -497,17 +497,46 @@ class StationaryTilt:
             a[:, :, r] = h * (lat["I"][:Na] @ y[:, :nW])
             for (k, age, w) in yinst[r]:
                 a[0, k, r] += w
+        if not np.all(np.isfinite(a)):
+            return None
+        # a row that is pure noise (no drift; one loading: Kyle's order flow for the insider) contributes the unit columns of
+        # its channel at every step, so that channel's past is all seen: Sigma zeroes it (K0), and the graph is of the other
+        # rows on the other channels (their columns less those coordinates span the rest)
+        pure = [r for r in range(nR) if not np.any(a[1:, :, r]) and np.count_nonzero(a[0, :, r]) == 1]
+        K0 = sorted({int(np.flatnonzero(a[0, :, r])[0]) for r in pure})
+        if len(K0) < len(pure):
+            pure, K0 = [], []
+        rows = [r for r in range(nR) if r not in pure]
+        chans = np.array([c_ for c_ in range(nW) if c_ not in K0], dtype=int)
+        a = a[:, chans][:, :, rows]
+        nR = len(rows)
+        if nR == 0:
+            out = {"K0": np.array(K0, dtype=int), "P": None, "Na": Na}
+            memo[key] = out
+            return out
+        if nR >= chans.size:
+            return None
         _, _, piv = qr(a[0].T, pivoting=True, mode="economic")
-        P = np.sort(piv[:nR]); F = np.setdiff1d(np.arange(nW), P)
+        Pl = np.sort(piv[:nR]); Fl = np.setdiff1d(np.arange(chans.size), Pl)
+        P, F = chans[Pl], chans[Fl]
         nF = F.size
-        a0 = a[0][P]
-        if not np.all(np.isfinite(a)) or np.linalg.cond(a0) > self.GRAPH_BOUND:
+        a0 = a[0][Pl]
+        if np.linalg.cond(a0) > self.GRAPH_BOUND:
             return None
         a0i = np.linalg.inv(a0)
         # the series inverse b of a_P (b[0] = a0^-1): the last block column of A_P^-1, from the unit upper triangular system
-        # blockdiag(a0^-1) A_P z = blockdiag(a0^-1) e_last (column m of step m: rows i <= m)
-        cP = np.einsum("pq,dqr->dpr", a0i, a[:, P, :])                  # a0^-1 a_P[d], cP[0] = I
-        if Na > 1:
+        # blockdiag(a0^-1) A_P z = blockdiag(a0^-1) e_last (column m of step m: rows i <= m); one row: the power series
+        # 1 / a_P by Newton's doubling, b <- b - b (a_P b - 1) mod z^2n, two direct convolutions a step
+        cP = np.einsum("pq,dqr->dpr", a0i, a[:, Pl, :])                 # a0^-1 a_P[d], cP[0] = I
+        if Na > 1 and nR == 1:
+            ser, bs, n_ = cP[:, 0, 0], np.ones(1), 1
+            while n_ < Na:
+                m_ = min(2 * n_, Na)
+                e_ = np.convolve(ser[:m_], bs)[n_:m_]                   # a_P b - 1: zero below n_
+                bs = np.concatenate([bs, -np.convolve(bs, e_)[:m_ - n_]])
+                n_ = m_
+            b = (bs * a0i[0, 0])[:, None, None]
+        elif Na > 1:
             rhs = np.zeros((Na * nR, nR)); rhs[-nR:] = a0i
             z = solve_triangular(_upper_toeplitz(cP), rhs, lower=False, unit_diagonal=True, check_finite=False)
             b = z.reshape(Na, nR, nR)[::-1]                              # b[d] = block (Na - 1 - d) of the last column
@@ -515,7 +544,7 @@ class StationaryTilt:
             b = a0i[None]
         # x = a_F * b (causal, the first Na lags): one direct convolution per entry, summed over the pivot rows
         x = np.zeros((Na, nF, nR))
-        aF = a[:, F, :]
+        aF = a[:, Fl, :]
         for ci in range(nF):
             for r in range(nR):
                 acc = np.zeros(Na)
@@ -553,7 +582,7 @@ class StationaryTilt:
             Lc = cholesky(Gm, lower=True, check_finite=False)
         except np.linalg.LinAlgError:
             return None
-        out = {"P": P, "F": F, "X": X, "L": Lc, "comp": comp, "Na": Na}
+        out = {"K0": np.array(K0, dtype=int), "P": P, "F": F, "X": X, "L": Lc, "comp": comp, "Na": Na}
         memo[key] = out
         return out
 
@@ -563,8 +592,11 @@ class StationaryTilt:
         gr = self._graph(lat)
         if gr is not None:
             from scipy.linalg import solve_triangular
-            P, F, X, Lc = gr["P"], gr["F"], gr["X"], gr["L"]
             out = G.copy()
+            out[gr["K0"], :Na] = 0.0                                        # pure-noise rows' channels: all seen
+            if gr["P"] is None:
+                return out
+            P, F, X, Lc = gr["P"], gr["F"], gr["X"], gr["L"]
             gP = G[P, :Na].T.ravel(); gF = G[F, :Na].T.ravel()             # time major (i, c); the step Na is not touched
             if gr["comp"]:
                 s = solve_triangular(Lc, gF - X @ gP, lower=True, check_finite=False)

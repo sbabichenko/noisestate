@@ -273,7 +273,8 @@ def test_the_graph_projector_is_the_qr_projector(which):
     rng = np.random.default_rng(3)
     for h in tl.hs:
         lat = tl._lattice(h)
-        assert tl._graph(lat) is not None
+        gr = tl._graph(lat)
+        assert gr is not None and gr["K0"].size == (1 if which == "kyle" else 0)     # Kyle's order flow: a pure-noise row
         G = rng.standard_normal((tl.nW, lat["Nu"]))
         S = tl._sigma(lat, G)
         Qp = tl._info_basis(lat, full=False)
