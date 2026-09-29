@@ -289,6 +289,24 @@ class Compiled(CompiledBase):
         blocks, deltas = hit
         return blocks, {k: list(v) for k, v in deltas.items()}
 
+    def row_deltas(self, agent: str, r: int, excluded: set) -> Dict[str, List[Tuple[float, float]]]:
+        """row_blocks' instantaneous entries alone (no operators to build): cached per (agent, row, excluded controls),
+        without row_blocks' memory cap (a few tuples per row), returned as fresh lists."""
+        memo = self.__dict__.setdefault("_row_deltas", {})
+        key = (agent, r, frozenset(excluded))
+        hit = memo.get(key)
+        if hit is None:
+            name, drift, E, delay = self.rows[agent][r]
+            hit = {}
+            for (n, l), c in drift.items():
+                if n in excluded:
+                    hit.setdefault(n, []).append((delay + l, c))
+            for k, ch in enumerate(self.channels):
+                if E[k] != 0.0:
+                    hit.setdefault(ch, []).append((delay, E[k]))
+            memo[key] = hit
+        return {k: list(v) for k, v in hit.items()}
+
     def _row_blocks(self, agent: str, r: int, excluded: set):
         name, drift, E, delay = self.rows[agent][r]
         S = self.shift(delay)
@@ -550,12 +568,14 @@ class Compiled(CompiledBase):
             rows_here = slice(i * N, (i + 1) * N); bl = self.block(u)
             Cs = self.grid.conv_ops_left(g[ui].T) if regular else None       # the rows' maps at once
             for r in range(len(a.signals)):
-                blocks, deltas = self.row_blocks(a.name, r, excl)
                 gur = g[ui, r]
                 if regular:
+                    blocks, deltas = self.row_blocks(a.name, r, excl)
                     C = Cs[r]
                     for nm, op in blocks.items():
                         MU[rows_here, self.block(nm)] += C @ op
+                else:
+                    deltas = self.row_deltas(a.name, r, excl)
                 self._add_point_columns(B, bl, deltas, gur, impulse_controls)
         return MU
 
