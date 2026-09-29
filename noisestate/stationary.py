@@ -59,6 +59,39 @@ def _strict_lower(m: int) -> np.ndarray:
     return M
 
 
+class _BlockForm:
+    """A loss form on the world (n x n, n = n_prim N) held as its nonzero N x N blocks {(p, p2): block}: the second-order
+    form reads it only on the responding nodes (form[np.ix_(nz, nz)], a copy of those entries, the same as the dense
+    array's), so the n x n array is made only for a product with it (__matmul__: the Lanczos path, the embedded
+    curvature), once."""
+
+    def __init__(self, n: int, N: int, blocks: Dict[Tuple[int, int], np.ndarray]):
+        self.shape, self.N, self.blocks, self._dense = (n, n), N, blocks, None
+
+    def dense(self) -> np.ndarray:
+        if self._dense is None:
+            N = self.N
+            D = np.zeros(self.shape)
+            for (p, p2), B in self.blocks.items():
+                D[p * N:(p + 1) * N, p2 * N:(p2 + 1) * N] = B
+            self._dense = D
+        return self._dense
+
+    def __matmul__(self, X):
+        return self.dense() @ X
+
+    def __getitem__(self, key):
+        r, c = (np.asarray(k).ravel() for k in key)                   # np.ix_'s pair
+        N = self.N
+        out = np.zeros((r.size, c.size))
+        rb, cb = r // N, c // N
+        for (p, p2), B in self.blocks.items():
+            ri = np.where(rb == p)[0]; ci = np.where(cb == p2)[0]
+            if ri.size and ci.size:
+                out[np.ix_(ri, ci)] = B[np.ix_(r[ri] - p * N, c[ci] - p2 * N)]
+        return out
+
+
 class Compiled(CompiledBase):
     """Grid, index maps and constant operators for a stationary model."""
     LEAD_WEIGHT_WARN = tunable("lead_weight_warn")     # warn when a lead's past flows outweigh the current one by more than this (settings)
@@ -932,11 +965,11 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 out["ok"] = out["edge"]
         return out
 
-    def _loss_form(self, agent: Agent, start_from: bool = False, half_discount: bool = False) -> np.ndarray:
+    def _loss_form(self, agent: Agent, start_from: bool = False, half_discount: bool = False) -> "_BlockForm":
         """The loss form on the primary kernels, AO' kron(Q, mass) AO for the stacked atom operators AO,
         assembled block by block over the atoms' primary blocks (each atom reads one primary through one
-        N x N block; an undelayed atom through the identity, whose products are skipped).  Map-independent,
-        cached per agent.  With start_from=True the form of a past's initial-shock column: the same atoms under
+        N x N block; an undelayed atom through the identity, whose products are skipped) and held as those blocks
+        (_BlockForm: the (n_prim N)^2 array only for a product with it).  Map-independent, cached per agent.  With start_from=True the form of a past's initial-shock column: the same atoms under
         the point mass of the line s = 0 (_init_mass), as expected_cost integrates those columns.  With
         half_discount=True the second-order form's (_half_discounted): an atom read at lag l is a response older by l,
         so Q_ij carries e^{-rho (l_i + l_j) / 2} (a lead's negative lag raises it)."""
@@ -951,7 +984,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 lg = np.array([float(l) for (_, l) in atoms])
                 Q = Q * np.exp(-0.5 * c.rho * (lg[:, None] + lg[None, :]))
             blocks = [[c.atom_block(at)] for at in atoms]
-            GAO = np.zeros((n, n))
+            GB: Dict[Tuple[int, int], np.ndarray] = {}                 # the nonzero blocks, summed from zeros as the dense array was
             for i in range(len(atoms)):
                 for j in range(len(atoms)):
                     if Q[i, j] == 0.0:
@@ -960,8 +993,10 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                     for p, Ai in blocks[i]:
                         for p2, Aj in blocks[j]:
                             WA = W if _is_eye(Aj) else W @ Aj
-                            GAO[p * N:(p + 1) * N, p2 * N:(p2 + 1) * N] += WA if _is_eye(Ai) else Ai.T @ WA
-            self._loss_forms[key] = GAO
+                            if (p, p2) not in GB:
+                                GB[(p, p2)] = np.zeros((N, N))
+                            GB[(p, p2)] += WA if _is_eye(Ai) else Ai.T @ WA
+            self._loss_forms[key] = _BlockForm(n, N, GB)
         return self._loss_forms[key]
 
     def _causal_chunks(self):
