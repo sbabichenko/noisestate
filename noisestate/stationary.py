@@ -1991,7 +1991,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 Mx[i, i] = 1.0; pinned.append(i)                # a random walk with no inputs: its level is taken as 0
         return Mx, bx, pinned
 
-    def _mean_conditions(self, agent: Agent, maps: Dict[str, np.ndarray]):
+    def _mean_conditions_rows(self, agent: Agent, maps: Dict[str, np.ndarray]):
         """The agent's mean first-order conditions, one row per control.  With g = Q zbar + q on the loss atoms
         it is sum_j m_j g_j = 0: m_j = 1 on the control's current value, e^{-rho tau} on its own read at lag
         tau, and for every other atom the discounted DC gain int_0^inf e^{-rho a} R_j(a) da of the atom's
@@ -2146,4 +2146,41 @@ class StationarySolver(MonitoredDeviations, EngineBase):
 
     def _assemble_means(self, maps, **variant):
         self._mean_tails = {}
+        self._mean_rows = {}
         return super()._assemble_means(maps, **variant)
+
+    def _tie_step(self, agent: Agent, maps) -> Optional[Tuple[str, int]]:
+        """(representative, t) when `agent` is t steps along a cyclic tie from its representative and its problem is the
+        representative's relabelled (symmetric maps; risk-neutral, unmonitored, no instant observations: the conditions
+        of the relabelled diagnostics), else None."""
+        c = self.c; sym = c.sym
+        if (sym is None or agent.name not in sym.agents[1:] or c.instant_loads or c.levels or not c._maps_symmetric(maps)
+                or any(a.risk_aversion or a.monitors for a in self.model.agents) or any(c.rep[f] != sym.agents[0] for f in sym.agents)):
+            return None
+        return sym.agents[0], sym.agents.index(agent.name)
+
+    def _moved(self, name: str, t: int) -> str:
+        """A name moved t steps along the cycle."""
+        for _ in range(t):
+            name = self.c.sym.names.get(name, name)
+        return name
+
+    def _mean_conditions(self, agent: Agent, maps: Dict[str, np.ndarray]):
+        """The rows of _mean_conditions_rows; a tied follower's are its representative's with the primaries relabelled
+        along the cycle (its passive world, impulse responses and DC gains are the representative's moved), not its own
+        passive world: one per tie instead of one per agent."""
+        hit = self._tie_step(agent, maps)
+        memo = self.__dict__.setdefault("_mean_rows", {})
+        key = self._maps_key(maps) if self.c.sym is not None else None
+        if hit is None or memo.get(hit[0], (None,))[0] != key:
+            out = self._mean_conditions_rows(agent, maps)
+            memo[agent.name] = (key, out)
+            return out
+        rep, t = hit
+        Mu, bu = memo[rep][1]
+        c = self.c
+        cols = np.array([c.index[self._moved(nm, t)] for nm in c.prim])     # rep's primary p is the follower's cols[p]
+        Mf = np.zeros_like(Mu); Mf[:, cols] = Mu
+        if rep in self._mean_tails:
+            self._mean_tails[agent.name] = self._mean_tails[rep]
+        return Mf, bu.copy()
