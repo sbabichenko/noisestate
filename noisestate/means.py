@@ -1,4 +1,4 @@
-"""The mean layer shared by the three engines: the means (targets, constant drifts, initial states) and the mean
+"""The mean layer shared by the engines: the means (targets, constant drifts, initial states) and the mean
 part of the costs, solved once at the end of a solve.
 
 The kernels never depend on the means (the model is linear-quadratic-Gaussian), so the means are one linear

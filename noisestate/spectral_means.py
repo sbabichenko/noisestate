@@ -6,7 +6,7 @@ quadrature weights on the time nodes, the read of a kernel at age 0 on every tim
 Volterra operator of the mean dynamics and the read of a path at t - lag.  SpectralMeans is the solver's
 part (a mixin of SpectralFiniteSolver, finite_spectral.py): the mean system on the line s = 0 or on the time
 line and the loss atoms' mean paths, the hooks of EngineBase's mean layer (engine.py: the assembly, the solve,
-the mean costs and the result's mean fields, shared by the three engines); its first-order conditions go
+the mean costs and the result's mean fields, shared by the engines); its first-order conditions go
 through the FOC operators of spectral_operators.py (FocOps)."""
 from __future__ import annotations
 

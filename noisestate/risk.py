@@ -409,7 +409,6 @@ class Tilt:
             for j in range(self.mx):
                 for k in range(nW):
                     Tx[:, k, j, :] = (geo.SPsi @ diags(Zqx[:, j, k]) @ geo.BPsi).toarray()
-            self.Tpsix = Tx
             Psi = Psi + np.einsum("ukjn,nja->uka", Tx, LPh, optimize=True)
             Psi = Psi + np.exp(-geo.rho * geo.x1)[:, None, None] * np.einsum("jk,uja->uka", self.Lx, self.Ex)
         self.Psi = Psi
@@ -520,7 +519,6 @@ class Tilt:
         geo = self.geo; foc = self.foc; c = self.c; th = self.theta
         N, nW, m, mt = geo.N, geo.nW, self.m, self.mt
         AL, AU, Cc, phi, fU, own = self._seed_parts(ui, Zw)
-        n1P = len(geo.x1)
         EC = np.einsum("xja,ra->rxj", self.E, Cc, optimize=True)                  # (rows, n1 P, ma): E(tau) c_t per time row
         nP = len(c.prim)
         out = np.zeros((N, nP * N))
@@ -943,7 +941,6 @@ class ConsistentTilt(Tilt):
             if mt:
                 K += np.exp(-geo.rho * geo.T) * (self.ET.T @ self.QT @ self.ET)
             KG[r] = 0.5 * (K + K.T)
-        self.KG_t = KG
         # the rows' first node (the terminal reads at (T, T - t) depend on the row's time only)
         first = np.zeros(nr, dtype=int)
         for (p, it), idx in sorted(c.trow_by_pit.items()):
@@ -969,7 +966,7 @@ class ConsistentTilt(Tilt):
 
     def consistent_delta(self, ui: int, Zw: np.ndarray) -> np.ndarray:
         """Delta_t = theta K_t S_t f_t^on on the seen nodes, (N, nW), f_t in the profile world Zw (n_prim, N, ncol)."""
-        geo = self.geo; th = self.theta; N, nW, m, mt = geo.N, geo.nW, self.m, self.mt
+        geo = self.geo; N, nW, m, mt = geo.N, geo.nW, self.m, self.mt
         extra = self.fUc[ui] if (self.mx and self.fUc is not None) else None
         own = self.Ldelta[ui] if self.mx else None
         Z = np.asarray(Zw)[:, :, :nW, None]

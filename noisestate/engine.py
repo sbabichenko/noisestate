@@ -1,4 +1,4 @@
-"""Plumbing shared by the three engines.
+"""Plumbing shared by the engines (stationary, spectral finite, and extras/cells.py's cell engine).
 
 Every engine iterates on a dict of per-agent arrays (raw maps on the agent's rows, or action
 kernels), packs the arrays of the tie-group representatives into one vector for the outer solver,

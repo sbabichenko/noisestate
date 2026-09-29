@@ -1370,7 +1370,7 @@ class StationarySolver(EngineBase):
         for a in self.model.agents:
             if a.risk_aversion and self._risk_scale:
                 # the entropic cost of the date-0 continuation C_0 = int_0^inf e^{-rho t} c_t dt (+ the integrals), unconditional:
-                # E C_0 = the flow cost / rho, plus K_0's spectral excess (stationary_risk.StationaryTilt.excess)
+                # E C_0 = the flow cost / rho, plus the conditional excess of the date-0 self (stationary_risk.StationaryTilt.cond_excess)
                 from .stationary_risk import StationaryTilt
                 th = float(a.risk_aversion) * self._risk_scale
                 tl = StationaryTilt(self, a, res.maps, th)

@@ -1,4 +1,4 @@
-"""Model compilation shared by the three engines.
+"""Model compilation shared by the engines (stationary, spectral finite, extras/cells.py).
 
 Turns a validated Model into the arrays every engine needs and that do not
 depend on the discretisation: the primary quantities (states then controls),

@@ -473,7 +473,7 @@ def solve(S0, num, start_from, start_policy, run: dict, diagnostics: bool, build
         wanted = scale_breakpoints(T, scales, nodes)
         bp = wanted if budget.fits(wanted) else _fitted(T, wanted, scales, nodes, budget)
         if len(bp) > 2:
-            S, num1 = build(model, _with_bp(num, bp))
+            S, _ = build(model, _with_bp(num, bp))
             if verbose:
                 print(f"  -- the one panel is predicted not to resolve the time scales (start rate {scales['start']:.3g}, end "
                       f"rate {scales['end']:.3g} on T = {T:g}): {len(bp) - 1} panels {_fmt(bp)}, {S.c.N} nodes", flush=True)
@@ -588,7 +588,7 @@ def _after_one_panel(S0, num, first, first_error, scales, pred, budget, run, dia
     budget.first = budget.memory(bp)
     prev_evals = first.evaluations if first is not None else 0
     try:
-        S, num1 = build(model, _with_bp(num, bp))
+        S, _ = build(model, _with_bp(num, bp))
         start = S.interpolate_maps(first) if first is not None else None
         if verbose:
             print(f"  -- the one panel is under-resolved or singular: {len(bp) - 1} panels {_fmt(bp)}, {S.c.N} nodes", flush=True)

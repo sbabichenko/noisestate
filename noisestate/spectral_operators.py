@@ -665,7 +665,6 @@ class PanelRows:
             if nd > 0:
                 cols.append(r * self.Nm + self.N + np.arange(nd))
         width = sum(cc.size for cc in cols); ncol = self.c.ncol
-        size = ncol * (hi - lo) * width
         block = _scratch("panel_rows", (ncol, hi - lo, width)); block.fill(0.0)
         _scratch_owner()["panel_rows"] = id(self)
         into, pos = [], 0

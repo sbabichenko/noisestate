@@ -289,7 +289,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
 
     def _wire_time(self, L: Optional[float]) -> None:
         """The map-independent structures on the grid: the Volterra path (r from the shock time, or zero for an
-        old shock, to t) with its e^{A(t - r)} weights when there are states; the time rows (trows, trow_by_pit,
+        old shock, to t) with its e^{A(t - r)} weights when there are states; the time rows (trow_by_pit,
         panel_of_node); and the time nodes tm (Nt of them, both one-sided values at a breakpoint, tm_side),
         the line s = 0 (diag, Nd) and mean_embed, which carries a path on the time nodes as the kernel constant
         in shock age on the new-shock region.  Invariant: a time row's nodes are contiguous within its panel,
@@ -309,7 +309,6 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
             for it in range(pc.nt):
                 idx = pc.offset + it * pc.na + np.arange(pc.na)
                 rows.setdefault((pc.p, it), []).append(idx)
-        self.trows: List[Tuple[int, np.ndarray]] = [(k[0], np.concatenate(v)) for k, v in sorted(rows.items())]
         self.trow_by_pit: Dict[Tuple[int, int], np.ndarray] = {k: np.concatenate(v) for k, v in rows.items()}
         self.panel_of_node = np.concatenate([np.full(pc.n, pc.p) for pc in g.pieces])
         # the mean paths live on the time nodes, panel by panel (both one-sided values at a breakpoint): the

@@ -61,7 +61,7 @@ class StationaryTilt:
         c.use_maps(maps)
         self._maps = maps
         self._qpast: Dict[float, np.ndarray] = {}
-        nW, N = self.nW, self.N
+        nW = self.nW
         nU = len(agent.controls)
         self.Z = Z = c.closed_loop(maps)[:, :nW]
         self.Ron = Ron = self._responses_on(solver, maps)
@@ -139,7 +139,7 @@ class StationaryTilt:
             out["zxt"] = np.einsum("an,jnc->ajc", I, self.zx) * half[:, None, None]
             out["Rxt"] = np.einsum("an,ujn->uaj", I, self.Rx)
         Nf = int(np.ceil(self.U / h))
-        out["Nu"] = Nu = Na + Nf + 1                                  # u_i = -L + i h, i = 0 .. Na + Nf
+        out["Nu"] = Na + Nf + 1                                  # u_i = -L + i h, i = 0 .. Na + Nf
         out["Nt"] = Nt = Nf + 1                                       # tau_k = k h, k = 0 .. Nf
         tau = h * np.arange(Nt)
         wt = np.ones(Nt); wt[0] = 0.5
@@ -165,7 +165,7 @@ class StationaryTilt:
 
     def _At(self, lat, zt, B):
         """(A' b)_c(u_i) = sum_k z(tau_k - u_i)' b(tau_k) (the weights already in b), (nW, Nu): B (m, Nt)."""
-        Na, Nu = lat["Na"], lat["Nu"]
+        Nu = lat["Nu"]
         out = np.zeros((self.nW, Nu))
         for j in range(zt.shape[1]):
             if not np.any(B[j]):
@@ -282,18 +282,6 @@ class StationaryTilt:
         return np.stack(out)
 
     # ------------------------------------------------------------------ the entropic cost of the date-0 continuation
-    def spectrum(self, h: float) -> np.ndarray:
-        """The eigenvalues of K_0 on the lattice of step h (the Nystrom matrix, assembled column by column)."""
-        lat = self._lattice(h)
-        n = self.nW * lat["Nu"]
-        Km = np.empty((n, n))
-        E = np.zeros(n)
-        for j in range(n):
-            E[j] = 1.0
-            Km[:, j] = self._K(lat, E.reshape(self.nW, -1)).ravel()
-            E[j] = 0.0
-        return np.real(np.linalg.eigvals(Km))
-
     def _info_basis(self, lat, full: bool = True) -> np.ndarray:
         """An orthonormal basis (columns) of what the agent has seen by date 0, in the lattice's coordinates x = sqrt(h) g: each
         past step s = -L .. -h of each row r, h y_r(s - u) (its drift part, the passive row kernel) plus its point loadings
@@ -359,18 +347,3 @@ class StationaryTilt:
         term1 = 0.5 * th * float(np.sum((Y ** 2) / (1.0 - th * mu)[:, None]))
         term2 = float(np.sum(-np.log1p(-th * mu) - th * mu) / (2.0 * th))
         return term1 + term2, float(th * mu.max())
-
-    def excess(self, n_age=(80, 160)):
-        """J_0 - E C_0 = (2 theta)^-1 sum (-log(1 - theta lambda) - theta lambda) over K_0's eigenvalues (the unconditional
-        entropic cost of the date-0 continuation, the past's shocks included), on two lattices and Richardson's h^2 step;
-        and the largest eigenvalue (the breakdown at theta lambda_max = 1)."""
-        th = self.theta
-        vals, lmax = [], []
-        for na in n_age:
-            lam = self.spectrum(self.L / na)
-            lmax.append(float(lam.max()))
-            if th * lam.max() >= 1.0:
-                from .risk import RiskBreakdown
-                raise RiskBreakdown(self.agent.name, th, float(lam.max()))
-            vals.append(float(np.sum(-np.log1p(-th * lam) - th * lam) / (2.0 * th)))
-        return (4.0 * vals[1] - vals[0]) / 3.0, lmax[-1], abs(vals[1] - vals[0])

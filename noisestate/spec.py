@@ -1051,7 +1051,7 @@ class Model:
     def _check_horizon(self) -> None:
         """The horizon: nodes an integer of at least 2, every lag, delay and lead below the primary axis's
         extent, unit_range within it, unit positive, breakpoints increasing from 0 to it, each length
-        positive where the kind has one, discount non-negative, kind one of the three engines."""
+        positive where the kind has one, discount non-negative, kind one of the three horizons."""
         hz = self.horizon
         if self.numerics.nodes != int(self.numerics.nodes):
             raise ValueError(f"numerics.nodes must be an integer, got {self.numerics.nodes!r}")
