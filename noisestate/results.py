@@ -288,6 +288,8 @@ class Result:
     representation_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> where it sits (transition: interior / band tip / last window)
     refinement: Optional[object] = None        # filled by refine(): a Refinement, with the finer Result
     window_check: Optional[object] = None      # filled by check_window() (stationary): a WindowCheck, with the longer window's Result
+    panels: Optional[dict] = None              # finite horizon without lags: how the time panels were found (time_panels.py): route, breakpoints,
+                                               # rates, history, resolved, and "suggested" (the breakpoints to re-solve with when not resolved; sharpen())
     solver_class: object = None                # the engine that produced this result, with its options, so that
     solver_kw: dict = field(default_factory=dict)      # refine()/stability() rebuild the same solver
     solve_kw: dict = field(default_factory=dict)
@@ -797,6 +799,24 @@ class Result:
     def _refined_nodes(self, n0: int, factor: float) -> int:
         import math
         return max(n0 + 2, int(math.ceil(n0 * factor)))
+
+    def sharpen(self, breakpoints=None, **solve_kw) -> "Result":
+        """The same model re-solved on sharper time panels, started from this result interpolated onto them: on
+        `breakpoints`, by default res.panels["suggested"] (the grid a finite horizon's automatic panels stopped short of
+        within their budget, or the time-scale grid of a one panel solved with settings.auto_panels_max 0: the browser's
+        fast answer first, the sharp one next).  Returns self when there is nothing to sharpen to.  solve_kw go to
+        solve() (diagnostics=False, e.g.); the new result's res.panels says whether it is resolved and, if not, what next."""
+        bp = breakpoints if breakpoints is not None else (self.panels or {}).get("suggested")
+        if not bp:
+            return self
+        from . import solve as _solve
+        model = self.model.with_numerics(breakpoints=[float(b) for b in bp])
+        kw = {k: v for k, v in self.solve_kw.items()
+              if k not in ("start_from", "start_policy", "max_evaluations", "deadline", "diagnostics", "progress")}
+        kw.update(solve_kw)
+        if "start_from" not in kw and "start_policy" not in kw:
+            kw["start_from"] = self._make_solver(model).interpolate_maps(self)
+        return _solve(model, **kw)
 
     def refine(self, factor: float = 1.5, **solve_kw) -> "Refinement":
         """Re-solve on a finer grid (nodes x factor) and report the relative change of every agent's

@@ -76,6 +76,12 @@ class _GridCache:
     def cache_clear(self) -> None:
         self._grids.clear()
 
+    def discard(self, grid) -> None:
+        """Drop `grid` (the object) from the cache: a grid an automatic refinement has moved past (time_panels.py), whose
+        operators would otherwise stay for the rest of the process."""
+        for k in [k for k, g in self._grids.items() if g is grid]:
+            del self._grids[k]
+
 def _age_grid(breakpoints: Tuple[float, ...], nodes: int) -> AgeGrid:
     return AgeGrid(list(breakpoints), nodes)
 

@@ -10,6 +10,7 @@ import pytest
 import noisestate as ns
 from noisestate import Numerics
 from noisestate.grid import AgeGrid
+from noisestate import time_panels
 from noisestate.time_panels import graded_breakpoints
 
 from helpers import slow
@@ -89,8 +90,14 @@ def test_a_thirty_time_constant_horizon_is_graded():
 @slow()
 def test_a_hundred_time_units_are_graded_at_eight_nodes():
     """T = 100 at 8 nodes: 2950 times the closed form on the one panel (smooth kernels of the wrong equilibrium, a Chebyshev
-    tail of 0.16), graded to 15 panels and the cost to 1e-7 (55 s)."""
-    res = ns.solve(lqg(100.0, nodes=8), diagnostics=False)
+    tail of 0.16).  Its time-scale grid (w = 0.5 at both ends, 13 panels, 5824 unknowns) is past the default budget, which
+    returns a coarser grid (10 panels, the cost 1e-4 off, 19 s) with a warning naming the grid; with the budget raised it
+    is solved to the closed form (the earlier version's default: 164 s and 4.5 GB)."""
+    with pytest.warns(UserWarning, match="numerics.breakpoints"):
+        res = ns.solve(lqg(100.0, nodes=8), diagnostics=False)
+    assert res.panels["suggested"] and len(res.numerics.breakpoints) > 5
+    big = {"settings": {"auto_panels_max": 20000, "auto_panels_memory": 16000, "auto_panels_growth": 8.0}}
+    res = ns.solve(lqg(100.0, nodes=8), big, diagnostics=False)
     assert len(res.numerics.breakpoints) > 10 and abs(res.costs["a"] / lqg_cost(100.0) - 1) < 1e-7
 
 
@@ -102,6 +109,92 @@ def test_a_failure_more_nodes_fix_is_left_to_the_nodes():
     assert res.numerics.breakpoints is None and "graded" not in res.message
     with pytest.raises(ValueError, match="singular"):
         ns.solve(m, {"settings": {"foc_rcond": 1.0}})
+
+
+def tug(p, T=1.0, nodes=12):
+    """The website's wedge page: two players pulling one state towards opposite targets, both seeing it at precision p."""
+    return ns.Model.from_dict({"name": "tug", "params": {"p": p, "r": 0.1}, "shocks": ["w0", "w1", "w2"],
+                               "states": {"X": "(D1 + D2) dt + dw0"},
+                               "agents": {"player1": {"controls": "D1", "observes": {"y1": "sqrt(p) X dt + dw1"}, "loss": "X^2 - 2 X + r D1^2"},
+                                          "player2": {"controls": "D2", "observes": {"y2": "sqrt(p) X dt + dw2"}, "loss": "X^2 + 2 X + r D2^2"}},
+                               "horizon": {"T": T}, "numerics": {"nodes": nodes}})
+
+
+def test_the_time_scales_come_from_the_linear_algebra():
+    """The filter's rate sigma sqrt(p), and the terminal layer of the Nash Riccati: sqrt(3 / r) for two players pulling one
+    integrator (each alone would have 1 / sqrt(r)); the regulator's 1 / sqrt(r) at the end, its closed loop's at the start."""
+    sc = time_panels.time_scales(tug(1000.0))
+    assert sc["start"] == pytest.approx(math.sqrt(1000.0)) and sc["end"] == pytest.approx(math.sqrt(3 / 0.1), rel=1e-6)
+    sc = time_panels.time_scales(lqg(1.0))
+    assert sc["end"] == pytest.approx(1 / math.sqrt(0.1)) and max(sc["filter"]) == pytest.approx(math.sqrt(3.0))
+    assert time_panels.time_scales(ns.load(ns.example("ch1_delayed_finite"))) is None           # lags: no prediction
+
+
+def test_the_layer_tail_predicts_the_one_panels_failure():
+    """A tanh layer of rate 31.6 on a panel of 0.25: 7.9e-4 predicted, 8.8e-4 measured (the wedge's first panel); on the one
+    panel [0, 1] 3.0e-2 predicted, 1.7e-2 measured."""
+    assert time_panels.layer_tail(0.25, math.sqrt(1000.0), 12) == pytest.approx(7.9e-4, rel=0.01)
+    assert time_panels.layer_tail(1.0, math.sqrt(1000.0), 12) == pytest.approx(3.03e-2, rel=0.01)
+    assert time_panels.predicted_tail(time_panels.time_scales(lqg(1.0)), 1.0, 12) < 1e-4
+
+
+def test_the_time_scale_grid():
+    """First widths from the layer tails (3e-4), doubling to the middle: the regulator's T = 30 grid is the one the graded
+    search of the earlier version found, the wedge's at p = 1000 is three panels; models one panel resolves get no grid."""
+    assert time_panels.suggest(lqg(30.0)) == [0.0, 1.0, 3.0, 7.0, 23.0, 27.0, 29.0, 30.0]
+    assert time_panels.suggest(tug(1000.0)) == [0.0, 0.125, 0.375, 1.0]
+    assert time_panels.suggest(lqg(1.0)) is None and time_panels.suggest(tug(9.0)) is None
+
+
+def test_every_shipped_finite_example_keeps_its_one_panel():
+    """The prediction is conservative: every finite example without lags is predicted below PRIOR_ABOVE and solved on one
+    panel first (bit-identical to the version before the time scales)."""
+    for name in ("ch1_two_player_finite", "kyle_back_prior"):
+        m = ns.load(ns.example(name))
+        sc = time_panels.time_scales(m)
+        assert time_panels.predicted_tail(sc, float(m.horizon.extent), int(m.numerics.resolved(m.horizon.kind).nodes)) \
+            <= time_panels.PRIOR_ABOVE
+
+
+def test_the_wedge_at_high_precision_is_cheap_and_warns():
+    """The wedge page's p = 1000 (a filter rate of 31.6 on T = 1): one panel was 5.6% off pointwise; the previous grading
+    took 56 s and 3.7 GB.  Now three panels from the time scales, one local refinement within the budget (1440 unknowns,
+    about 8 s), the cost to 1e-8 of the converged 1.4247318249, and a warning naming the breakpoints of the resolved answer."""
+    with pytest.warns(UserWarning, match=r"numerics.breakpoints \[0, 0.125, 0.25"):
+        res = ns.solve(tug(1000.0))
+    assert res.numerics.breakpoints == [0.0, 0.125, 0.375, 0.6875, 1.0] and res.compiled.N == 1440
+    assert abs(res.costs["player1"] / 1.4247318249 - 1) < 1e-8
+    assert res.panels["route"] == "refined" and not res.panels["resolved"] and res.panels["suggested"]
+    assert max(res.representation_error.values()) < 1e-5
+
+
+def test_fast_then_sharpen():
+    """The browser's hook: the one panel with the automatic grids off (fast), its res.panels naming the time-scale grid, then
+    res.sharpen() on it, started from the fast answer."""
+    fast = ns.solve(tug(1000.0), {"settings": {"auto_panels_max": 0}}, diagnostics=False)
+    assert fast.numerics.breakpoints is None and fast.panels["suggested"] == [0.0, 0.125, 0.375, 1.0]
+    sharp = fast.sharpen(diagnostics=False)
+    assert sharp.numerics.breakpoints == [0.0, 0.125, 0.375, 1.0] and sharp.converged
+    assert sharp.evaluations < 15 and abs(sharp.costs["player1"] / 1.4247318249 - 1) < 1e-7
+    one = ns.solve(lqg(1.0))
+    assert one.panels["resolved"] and one.panels["suggested"] is None and one.sharpen() is one
+
+
+def test_a_one_panel_that_fails_badly_is_refined():
+    """T = 5 is predicted below PRIOR_ABOVE (6.9e-3) and solved on its one panel (representation error 1.1e-3, the cost 2e-5
+    off); the failure is past GRADE_ABOVE and the trial finds grading cuts it, so it is re-solved on the time-scale grid,
+    warm-started, to the closed form."""
+    res = ns.solve(lqg(5.0))
+    assert res.panels["route"] == "refined" and res.numerics.breakpoints == [0.0, 1.0, 4.0, 5.0]
+    assert res.panels["history"][0][0] == 1 and res.panels["resolved"]
+    assert abs(res.costs["a"] / lqg_cost(5.0) - 1) < 1e-8
+
+
+def test_the_budget_stops_a_refinement_and_names_the_grid():
+    """No refinement round past settings.auto_panels_growth x the first grid: the time-scale grid alone, with the warning."""
+    with pytest.warns(UserWarning, match="auto_panels_growth"):
+        res = ns.solve(tug(1000.0), {"settings": {"auto_panels_growth": 1.0}}, diagnostics=False)
+    assert res.numerics.breakpoints == [0.0, 0.125, 0.375, 1.0] and len(res.panels["suggested"]) > 4
 
 
 # ------------------------------------------------------------------------------------------------ Chapter 5's floor

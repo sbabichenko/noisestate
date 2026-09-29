@@ -78,6 +78,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         self._krylov_log: List[Tuple[str, int, float]] = []  # (agent, GMRES iterations, relative residual) of every Krylov solve
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.Nm) for a in model.agents}
         self._rep_parts: Dict[str, Dict[str, float]] = {}      # agent -> where the representation error sits (with a past)
+        self._rep_by_node: Dict[str, np.ndarray] = {}           # agent -> the relative representation error at every node
         self._fixed_disc: Dict[str, np.ndarray] = {}           # agent -> the fixed discrete weights (freeze_before)
         self._fixed_actions: Dict[str, np.ndarray] = {}        # agent -> its action kernels (nU, N, ncol) on the fixed panels, zero elsewhere
         self._profile = (None, None)                           # (maps key, their closed loop): the world a risk-averse agent's K is taken in
@@ -1270,7 +1271,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
 
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
         recon_all = finite_free.reconstruction(self, agent, Zfull, g)
-        c = self.c; gr = c.g; worst = 0.0
+        c = self.c; gr = c.g; worst = 0.0; by_node = None
         # where the error sits: the band's tip (the upper triangle collapsing to the corner (L, L), where the
         # map's pieces degenerate), the last window [T - L, T] (the end), or the interior, so that a resolution
         # problem can be told from the two geometric floors
@@ -1288,9 +1289,11 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
             err[c.diag, c.nW:] = np.abs(recon - actions[ui])[c.diag, c.nW:]     # an initial shock's column: on the line s = 0 only
             rel = err.max(axis=1) / max(1e-300, np.abs(actions[ui][:, :c.nW]).max(), np.abs(actions[ui][c.diag, c.nW:]).max(initial=0.0))
             worst = max(worst, float(rel.max()))
+            by_node = rel if by_node is None else np.maximum(by_node, rel)
             for key, sel in regions:
                 parts[key] = max(parts[key], float(rel[sel].max(initial=0.0)))
         self._rep_parts[agent.name] = parts
+        self._rep_by_node[agent.name] = by_node          # the error at every node (time_panels: which panels to split)
         return worst
 
     def _diagnostics(self, res) -> None:

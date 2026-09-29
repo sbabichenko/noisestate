@@ -270,17 +270,12 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
     run = dict(max_evaluations=max_evaluations, deadline=deadline, progress=progress, **kw)
     if not time_panels.eligible(S):
         res = S.solve(start_from=start_from, start_policy=engines.default_start(S, start_policy), diagnostics=diagnostics, **run)
+        if time_panels.plain(S):
+            time_panels.annotate(S, res)              # res.panels: resolved?, and the breakpoints to sharpen to
         return _after_solve(res, refine, stability, diagnostics)
-    # one panel on [0, T]: a horizon long against the model's time scales is re-solved on graded panels (time_panels.py)
-    res, err = None, None
-    try:
-        res = S.solve(start_from=start_from, start_policy=engines.default_start(S, start_policy), diagnostics=diagnostics, **run)
-    except ValueError as exc:
-        if not time_panels._singular(exc):
-            raise
-        err = exc
-    res = time_panels.solve_graded(S, num, res, err, run, diagnostics, verbose=verbose,
-                                   build=lambda m, n: engines._build(m, n, verbose=verbose, past=past, continuation=continuation))
+    # one panel on [0, T], unless the model's time scales say it will not resolve them (time_panels.py)
+    res = time_panels.solve(S, num, start_from, start_policy, run, diagnostics, verbose=verbose,
+                            build=lambda m, n: engines._build(m, n, verbose=verbose, past=past, continuation=continuation))
     return _after_solve(res, refine, stability, diagnostics)
 
 
