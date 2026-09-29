@@ -291,7 +291,7 @@ class StationaryTilt:
         F[:, Na] = 0.5 * (past[0] + fut[0])                                              # u = 0: the average of the two sides
         return F
 
-    def _solve(self, lat, F):
+    def _solve(self, lat, F, key=None):
         """g = (I - theta K_0 Sigma)^-1 f_0: the tilt of what the agent has not seen (Sigma), which is S f_0 wherever the
         condition holds (P_0 g = 0) and, unlike (I - theta K_0)^-1, well conditioned whenever the conditional entropic cost is
         finite (K_0's past-past block, the seen shocks', can be large: a Kyle insider's inventory)."""
@@ -300,11 +300,17 @@ class StationaryTilt:
         op = LinearOperator((nW * Nu, nW * Nu), matvec=lambda x: x - th * self._K(lat, self._sigma(lat, x.reshape(nW, Nu))).ravel(),
                             dtype=float)
         b = F.ravel()
-        x, info = gmres(op, b, rtol=1e-12, atol=0.0, restart=200, maxiter=50)
+        # started from the last solution of the same (agent, control, lattice): the fixed point's iterates and the stability
+        # matvecs' perturbations move it little, and GMRES's tolerance is relative to b, not to the start's residual
+        memo = self.solver.__dict__.setdefault("_tilt_x0", {}) if key is not None else {}
+        x0 = memo.get(key)
+        x, info = gmres(op, b, x0=x0 if x0 is not None and x0.shape == b.shape else None, rtol=1e-12, atol=0.0, restart=200, maxiter=50)
         res = float(np.linalg.norm(op @ x - b) / max(np.linalg.norm(b), 1e-300))
         self.gmres.append((info, res))
         if res > 1e-8:
             raise ValueError(f"the stationary risk correction's solve (I - theta K_0 Sigma) g = f_0 did not converge (residual {res:.1e})")
+        if key is not None:
+            memo[key] = x.copy()
         return x.reshape(nW, Nu)
 
     def _read(self, lat, G, ages=None):
@@ -358,7 +364,7 @@ class StationaryTilt:
     def risk_part(self, ui: int, h: float) -> np.ndarray:
         """theta K_0 S f_0^on on the past, at the age nodes (N, nW), on the lattice of step h."""
         lat = self._lattice(h)
-        G = self._solve(lat, self._f(lat, ui))
+        G = self._solve(lat, self._f(lat, ui), key=(self.agent.name, ui, round(h, 12), self.theta))
         return self._read(lat, self._sigma(lat, G))                                      # theta K_0 Sigma g = g - f_0
 
     def shift(self) -> np.ndarray:
