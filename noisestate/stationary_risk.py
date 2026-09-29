@@ -381,30 +381,40 @@ class StationaryTilt:
         if key not in self._qpast:
             Zpass = solver._spikes(c, self._maps, self.agent)[0]
             ytil, yinst = solver._passive_rows(self.agent, Zpass)
-            # column m nR + r: the step s = u_m = -L + m h of row r, h y_r at the ages (m - i) h of the u_i <= s, plus its point
-            # loadings at u_m; rows in time-major order (i nW + c), so the matrix is a staircase: column m reaches the rows of
-            # the steps i <= m only
+            # the step s = u_m = -L + m h of row r: h y_r at the ages (m - i) h of the u_i <= s, plus its point loadings at u_m
             nR = len(ytil)
-            lag = np.arange(Na)[None, :] - np.arange(Na + 1)[:, None]                  # (i, m): m - i
-            seen = lag >= 0
-            A = np.zeros((Na + 1, nW, Na, nR))
+            n, q = nW * (Na + 1), nR * Na
+            hyls = []
             for r, y in enumerate(ytil):
                 if any(age != 0.0 for (_, age, _) in yinst[r]):
                     raise NotImplementedError("a risk-averse agent on the stationary engine with a delayed point loading on its rows")
-                hyl = h * (lat["I"] @ y[:, :nW])                                         # (Na + 1, nW) at the ages
-                A[:, :, :, r] = np.where(seen[:, None, :], hyl.T[:, np.where(seen, lag, 0)].transpose(1, 0, 2), 0.0)
-                for (k, age, w) in yinst[r]:
-                    A[np.arange(Na), k, np.arange(Na), r] += w
-            n, q = nW * (Na + 1), nR * Na
+                hyls.append(h * (lat["I"] @ y[:, :nW]))                                  # (Na + 1, nW) at the ages
             if 2 * q >= n:
-                # at least half as many columns as rows (rows at least half the channels): the staircase QR, a fraction of
-                # the dense one's work (1/10 on Kyle-Back's insider); on a tall matrix (a row seeing many channels) the
-                # dense QR is as fast, and is kept (the panels' overhead)
+                # at least half as many columns as rows (rows at least half the channels): with the rows in time order
+                # (i nW + c) and the columns by step (m nR + r) the matrix is a staircase, column m reaching the rows of the
+                # steps i <= m only (the reversed row kernel, one slice per column, built F-ordered for the QR), and the
+                # staircase QR does a fraction of the dense one's work (1/10 on Kyle-Back's insider); on a tall matrix (a row
+                # seeing many channels) the dense QR is as fast, and is kept (the panels' overhead)
+                A = np.zeros((n, q), order="F")
+                for r, hyl in enumerate(hyls):
+                    Hf = hyl[::-1].ravel()                                               # the ages L .. 0, channel minor
+                    for m in range(Na):
+                        A[:(m + 1) * nW, m * nR + r] = Hf[(Na - m) * nW:]
+                    for (k, age, w) in yinst[r]:
+                        A[np.arange(Na) * nW + k, np.arange(Na) * nR + r] += w
                 reach = nW * (np.arange(q) // nR + 1)                                    # column m nR + r: rows of the steps <= m
-                Qt = _staircase_q(A.reshape(n, q), reach)                                # (n, min(n, q)), time-major rows
+                Qt = _staircase_q(A, reach)                                              # (n, min(n, q)), time-major rows
                 Qp = Qt.reshape(Na + 1, nW, -1).transpose(1, 0, 2).reshape(n, -1)
             else:                                                                        # rows (c, i), columns r Na + m
-                Qp = np.linalg.qr(A.transpose(1, 0, 3, 2).reshape(n, q))[0]
+                lag = np.arange(Na)[None, :] - np.arange(Na + 1)[:, None]              # (i, m): m - i
+                seen = lag >= 0
+                cols = []
+                for r, hyl in enumerate(hyls):
+                    V = np.where(seen[None], hyl.T[:, np.where(seen, lag, 0)], 0.0)      # (nW, Na + 1, Na)
+                    for (k, age, w) in yinst[r]:
+                        V[k, np.arange(Na), np.arange(Na)] += w
+                    cols.append(V.reshape(n, Na))
+                Qp = np.linalg.qr(np.concatenate(cols, axis=1))[0]
             self._qpast[key] = np.ascontiguousarray(Qp)                                  # (nW (Na + 1), q) on the past block
         Qp = self._qpast[key]
         if not full:
