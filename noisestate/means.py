@@ -157,6 +157,8 @@ class MeanLayer:
         answer, not a check: it runs with diagnostics=False too."""
         c = self.c; m = self.model; Nt = self._mean_nodes(); times = self._mean_times()
         zbar = self.solve_means(res.maps)
+        tails = getattr(self, "_mean_tails", None)
+        res.mean_tail = max(tails.values()) if tails else None
         path = (lambda v: float(v[0])) if times is None else (lambda v: v)
         def value(expr):
             paths = self._mean_atoms(zbar, list(expr))

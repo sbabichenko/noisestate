@@ -54,19 +54,19 @@ def open_loop_nash(a, r, theta, rho):
 
 @pytest.mark.parametrize("a,r,theta,rho", [(1.0, 1.0, 1.0, 0.0), (2.0, 0.5, -3.0, 0.0), (0.5, 2.0, 2.0, 0.0), (1.0, 1.0, 1.0, 0.5), (2.0, 0.3, 1.5, 1.0)])
 def test_one_agent_target_closed_form(a, r, theta, rho):
-    """ubar = theta a / (1 + r a (a + rho)), xbar = ubar / a (the discounted deterministic optimum).  On the window the
-    continuation of the mean first-order condition is the DC gain of e^{-(a + rho) t} truncated at L, DC_L = (1 - e^{-(a + rho) L})
-    / (a + rho): the solver reproduces the windowed closed form ubar_L = theta DC_L / (r + DC_L / a) to round-off (3e-15 seen)
-    and the exact one to that truncation, e^{-(a + rho) L} on L = 16: 1.1e-7 at (a, rho) = (1, 0) (2.8e-8 seen), 3.4e-4 at
-    (0.5, 0) (7.5e-5 seen), below 1e-10 from a + rho = 1.5 on.  The mean cost is (xbar - theta)^2 - theta^2 + r ubar^2."""
-    m = one_agent(a, r, theta, rho); res = ns.solve(m).require_converged(); L = m.horizon.window
-    DC = (1.0 - np.exp(-(a + rho) * L)) / (a + rho)
-    u_win, u_exact = theta * DC / (r + DC / a), theta * a / (1.0 + r * a * (a + rho))
-    ub, xb = res.means["D"], res.means["X"]
-    assert abs(ub - u_win) < 1e-12 and abs(xb - ub / a) < 1e-12
-    assert abs(ub - u_exact) < max(1e-12, np.exp(-(a + rho) * L) * max(1.0, abs(theta)))
-    assert abs(res.cost_parts["a"]["mean"] - ((xb - theta) ** 2 - theta ** 2 + r * ub ** 2)) < 1e-12
-    assert res.costs["a"] == res.cost_parts["a"]["variance"] + res.cost_parts["a"]["mean"] and res.means["a.y"] == xb
+    """ubar = theta a / (1 + r a (a + rho)), xbar = ubar / a (the discounted deterministic optimum).  The continuation of
+    the mean first-order condition is the DC gain of the passive response e^{-(a + rho) t} over ALL ages, 1 / (a + rho),
+    whatever the window: the solver reproduces the closed form to round-off on L = 16 and on L = 4, where the window's
+    integral (1 - e^{-(a + rho) L}) / (a + rho), which it used before, was 13% short at (a, rho) = (0.5, 0) and moved
+    ubar by 3.7e-2.  The mean cost is (xbar - theta)^2 - theta^2 + r ubar^2."""
+    u_exact = theta * a / (1.0 + r * a * (a + rho))
+    for L in (16.0, 4.0):
+        m = one_agent(a, r, theta, rho, L=L, unit=min(2.0, L)); res = ns.solve(m).require_converged()
+        ub, xb = res.means["D"], res.means["X"]
+        assert abs(ub - u_exact) < 1e-12 * max(1.0, abs(theta)) and abs(xb - ub / a) < 1e-12 * max(1.0, abs(theta))
+        assert abs(res.cost_parts["a"]["mean"] - ((xb - theta) ** 2 - theta ** 2 + r * ub ** 2)) < 1e-12
+        assert res.costs["a"] == res.cost_parts["a"]["variance"] + res.cost_parts["a"]["mean"] and res.means["a.y"] == xb
+        assert res.mean_tail is None                          # the whole response, not the window's integral
     assert f"mean {res.cost_parts['a']['mean']:+.6f}" in res.summary() and "means: X=" in res.summary()
 
 
@@ -135,7 +135,8 @@ def test_tied_agents_and_the_cycle_market_get_identical_means():
         assert abs(a - b) <= 1e-12 * max(1.0, abs(a)), (part, a, b)
     assert set(r5.cost_parts["firm0"]) == set(r5.cost_parts["firm1"])
     assert any("random walks with no inputs" in n for n in m.notes) and any("linear loss term" in n for n in m.notes)
-    assert "the means' continuation integrals are truncated there as well" in r5.summary()      # its window is flagged
+    assert "window too short" in repr(r5)                          # its window is flagged (the kernels'; the means' continuation is whole)
+    assert r5.mean_tail is None
 
 
 def test_means_are_part_of_the_answer_payload_and_cli(tmp_path):
@@ -175,9 +176,9 @@ def test_validation_of_constants_and_singular_mean_systems():
     with pytest.raises(ValueError, match="no stationary mean"):
         ns.solve(walk)
     # driven by the control, which offsets the drift: ubar = -0.3, and its first-order condition 2 r ubar + 2 (xbar - theta) DC = 0
-    # puts xbar at theta - r ubar / DC with DC the windowed DC gain of a random walk, (1 - e^{-rho L}) / rho (L itself at rho = 0)
+    # puts xbar at theta - r ubar / DC with DC the discounted DC gain of a random walk, 1 / rho
     walk["states"]["X"]["drift"] = {"D": 1.0, "const": 0.3}; walk["horizon"]["discount"] = 0.5
-    res = ns.solve(walk).require_converged(); DC = (1.0 - np.exp(-0.5 * 16.0)) / 0.5
+    res = ns.solve(walk).require_converged(); DC = 1.0 / 0.5
     assert abs(res.means["D"] + 0.3) < 1e-12 and abs(res.means["X"] - (1.0 + 0.3 / DC)) < 1e-12
     # a random walk driven by a control whose first-order condition never reads it: its mean is undetermined
     sing = {"name": "s", "shocks": ["w0", "w1"], "states": {"V": {"drift": {"D": 1.0}, "noise": {"w0": 1.0}}},
@@ -194,14 +195,63 @@ def test_validation_of_constants_and_singular_mean_systems():
 def test_lead_cross_term_in_a_driven_model(rho):
     """A lead cross term 2c D X@-tau (allowed: the own current control against a led quantity) enters the mean
     first-order condition through the response of X weighted by e^{rho tau}, the kernels' lead convention (the
-    flows before t that read the quantity after t): r ubar + c xbar + DC_L [(xbar - theta) + e^{rho tau} c ubar] = 0
-    with xbar = ubar / a, so ubar = DC_L theta / (r + c / a + DC_L / a + e^{rho tau} c DC_L); at rho = 0 the weight
-    is one and the lead is the lag's mean."""
+    flows before t that read the quantity after t): r ubar + c xbar + DC [(xbar - theta) + e^{rho tau} c ubar] = 0
+    with xbar = ubar / a and DC = 1 / (a + rho), so ubar = DC theta / (r + c / a + DC / a + e^{rho tau} c DC); at rho = 0
+    the weight is one and the lead is the lag's mean."""
     a, r, theta, c, tau = 1.0, 1.0, 1.0, 0.3, 2.0
     d = one_agent(a, r, theta, rho).to_dict(); d["agents"]["a"]["loss"].append([2.0 * c, "D", f"X@-{tau:g}"])
-    res = ns.solve(ns.Model.from_dict(d)).require_converged(); L = d["horizon"]["window"]
-    DC = (1.0 - np.exp(-(a + rho) * L)) / (a + rho); w = np.exp(rho * tau)
+    res = ns.solve(ns.Model.from_dict(d)).require_converged()
+    DC = 1.0 / (a + rho); w = np.exp(rho * tau)
     ub = DC * theta / (r + c / a + DC / a + w * c * DC); xb = ub / a
     assert abs(res.means["D"] - ub) < 1e-10 and abs(res.means["X"] - xb) < 1e-10
     assert abs(res.cost_parts["a"]["mean"] - ((xb - theta) ** 2 - theta ** 2 + r * ub ** 2 + 2.0 * c * ub * xb)) < 1e-10
     assert "-0.000000" not in res.summary()
+
+
+def tug_of_war(L, nodes):
+    """Chapter 1's two players on a random walk with conflicting targets (0 and 1), player 2's row delayed by 0.5, no
+    discount: at the mean both push constantly against each other, D1 = -D2 = 1 / (r1 k2 + r2 k1) with k_j the other's
+    DC gain on X, and player 1's passive world (player 2's delayed reaction alone) decays slowly."""
+    ag = lambda i, d: {"controls": [f"D{i}"], "signals": {f"y{i}": {"drift": {"X": float(np.sqrt(3.0))}, "noise": {f"w{i}": 1.0}, "delay": d}},
+                       "loss": [[1.0, "X", "X"], [0.1, f"D{i}", f"D{i}"]] + ([[-2.0, "X"]] if i == 2 else [])}
+    return ns.Model.from_dict({"name": "tug", "shocks": ["w0", "w1", "w2"], "states": {"X": {"drift": {"D1": 1.0, "D2": 1.0}, "noise": {"w0": 1.0}}},
+                               "agents": {"player1": ag(1, 0.0), "player2": ag(2, 0.5)},
+                               "horizon": {"kind": "stationary", "window": L}, "numerics": {"nodes": nodes, "unit": 0.5}})
+
+
+def test_the_means_continuation_is_whole_so_the_means_do_not_wait_for_the_passive_world():
+    """The mean first-order condition weighs the passive response of every loss atom by a constant, so it needs its
+    integral over all ages.  In the tug of war player 1's passive response of X is still 42% of its peak at L = 3
+    (the equilibrium's kernels 0.5%): over the window alone player 1's mean push |D1| was 7.24 at L = 3, 8.15 at 6,
+    8.40 at 12, and the costs 16% apart; over all ages it is 8.4534 / 8.42046 / 8.42044 at L = 3 / 6 / 9, the mean parts
+    0.8% apart at L = 3 and 5e-6 from L = 6.  _passive_dc agrees with the grid's integral where the passive response has
+    decayed (player 2's at L = 9, 1.1e-4 of its peak left at the edge)."""
+    r3, r6, r9 = (ns.solve(tug_of_war(L, n)).require_converged() for L, n in ((3.0, 16), (6.0, 22), (9.0, 28)))
+    assert r3.mean_tail is None and r6.mean_tail is None
+    assert abs(r6.means["D1"] - r9.means["D1"]) < 1e-5 * abs(r9.means["D1"]) and abs(r6.means["D1"] + r6.means["D2"]) < 1e-10
+    assert abs(r3.means["D1"] - r9.means["D1"]) < 1e-2 * abs(r9.means["D1"])
+    for a in r9.costs:
+        assert abs(r6.cost_parts[a]["mean"] - r9.cost_parts[a]["mean"]) < 1e-5 * abs(r9.cost_parts[a]["mean"])
+        assert abs(r3.cost_parts[a]["mean"] - r9.cost_parts[a]["mean"]) < 1e-2 * abs(r9.cost_parts[a]["mean"])
+    # player 2's passive world (player 1 reacting at once) has decayed by L = 9: the grid's integral is the transform
+    S = engines.solver(tug_of_war(9.0, 28)); res = S.solve(diagnostics=False); c = S.c; a2 = S.model.agents[1]
+    R = S._impulse_responses(a2, res.maps, S._spikes(c, res.maps, a2)[1]); H = S._passive_dc(a2, res.maps, R, c.loss[a2.name][0])
+    dc = c.grid.discounted_mass(0.0)
+    assert abs(H[c.index["X"], 0] - dc @ R[c.block("X"), 0]) < 3e-4 * abs(R[c.block("X"), 0]).max() and R[c.block("X"), 0][-1] < 2e-4   # the tail beyond L and abs(H[c.index["D1"], 0] + 1.0) < 1e-12
+
+
+def test_the_window_check_reads_the_means_where_their_continuation_is_the_windows():
+    """Where the whole-age transform does not apply (here an instant observation) the mean condition keeps the window's
+    integral and the result keeps the passive response's level at L, which the `window` check reads."""
+    d = {"name": "instant", "shocks": ["w0", "w1", "w2"],
+         "states": {"X": {"drift": {"X": -0.2, "D0": 1.0, "D1": 1.0}, "noise": {"w0": 1.0}}},
+         "agents": {"a0": {"controls": ["D0"], "signals": {"y": {"drift": {"X": 2.0}, "noise": {"w1": 1.0}}},
+                           "loss": [[1.0, "X", "X"], [-2.0, "X"], [1.0, "D0", "D0"]], "monitors": ["a1"]},
+                    "a1": {"controls": ["D1"], "signals": {"y": {"drift": {"X": 1.0}, "noise": {"w2": 1.0}}},
+                           "loss": [[1.0, "X", "X"], [1.0, "D1", "D1"], [0.3, "D0", "D0"], [0.6, "D1", "D0"]],
+                           "instant": ["D0"], "monitors": ["a0"]}},
+         "horizon": {"kind": "stationary", "window": 2.0, "discount": 0.0}, "numerics": {"nodes": 12}}
+    res = ns.solve(ns.Model.from_dict(d)).require_converged()
+    assert res.mean_tail is not None and res.mean_tail > 0.02
+    row = [r for r in res._check_rows() if r["name"] == "window"][0]
+    assert row["value"] == res.mean_tail and not row["ok"] and "WINDOW TOO SHORT FOR THE MEANS" in row["flag"]

@@ -265,23 +265,26 @@ def test_old_noise_loading_on_a_channel_the_new_row_drops_is_kept_on_the_band():
 
 def test_mean_paths_start_from_the_past_means_and_initial_overrides():
     """Chapter 3 with a target for player1 (loss term -2 X), T = L = 3, 12 nodes, its own stationary solution as
-    the past: Xbar(0) is the old mean (0.86621649, the initial condition), Dbar1(0+) = 1.80018873 against the
-    old constant 1.79893500 (the horizon's end is L away), both controls vanish at T, and the paths are
-    pinned at their 12-node values (16 nodes moves them by up to 8e-6).  `initial: 0` on X overrides the
-    past's mean: Xbar(0) = 0 and the whole path moves."""
+    the past: Xbar(0) is the old mean (0.76685143, the initial condition), Dbar1(0+) = 1.85932382 against the
+    old constant 2.51641431 (the horizon's end is only 3 away, and the passive response of X to a push decays
+    slowly, so the end is felt at once), both controls vanish at T, and the paths are pinned at their 12-node
+    values (16 nodes moves them by up to 9e-6).  `initial: 0` on X overrides the past's mean: Xbar(0) = 0 and the
+    whole path moves.  (Before the stationary means' continuation was taken over all ages the old mean was
+    0.86621649 and Dbar1 1.79893500, the window's values: 0.7476 and 2.354 at L = 12, where the whole-age
+    continuation gives 0.7479 and 2.357 from L = 6 on.)"""
     m = example("ch3_two_player")
     d = m.to_dict(); d["agents"]["player1"]["loss"].append([-2.0, "X"])
     mt = ns.Model.from_dict(d)
     statt = stationary(mt, 16)
-    assert abs(statt.means["X"] - 0.86621649) < 1e-8 and abs(statt.means["D1"] - 1.79893500) < 1e-8
+    assert abs(statt.means["X"] - 0.76685143) < 1e-8 and abs(statt.means["D1"] - 2.51641431) < 1e-8
     res = ns.solve(mt.with_finite(3.0).with_numerics(nodes=12), past=statt).require_converged()
     at = np.array([0.0, 0.5, 1.0, 2.0, 3.0])
     assert abs(res.mean("X", 0.0)[0] - statt.means["X"]) < 1e-12
-    assert np.abs(res.mean("X", at) - [0.86621649, 0.85546733, 0.86347325, 0.91547552, 0.95468024]).max() < 1e-6
-    assert np.abs(res.mean("D1", at) - [1.80018873, 1.66937965, 1.49563855, 0.94540394, 0.0]).max() < 1e-5
-    assert np.abs(res.mean("D2", at) - [-1.84477844, -1.67009829, -1.46449802, -0.8821671, 0.0]).max() < 1e-5
+    assert np.abs(res.mean("X", at) - [0.76685143, 0.8027106, 0.83545081, 0.90740673, 0.95089406]).max() < 1e-6
+    assert np.abs(res.mean("D1", at) - [1.85932382, 1.70086554, 1.51245613, 0.950078, 0.0]).max() < 1e-5
+    assert np.abs(res.mean("D2", at) - [-1.7780614, -1.63479888, -1.445883, -0.87728556, 0.0]).max() < 1e-5
     assert abs(res.mean("D1", 3.0)[0]) < 1e-12 and abs(res.mean("D2", 3.0)[0]) < 1e-12
-    assert abs(res.cost_parts["player1"]["mean"] + 1.82696694) < 1e-6 and abs(res.cost_parts["player2"]["mean"] - 3.46545099) < 1e-6
+    assert abs(res.cost_parts["player1"]["mean"] + 1.66590202) < 1e-6 and abs(res.cost_parts["player2"]["mean"] - 3.32229439) < 1e-6
     d0 = mt.to_dict(); d0["states"]["X"]["initial"] = 0.0
     m0 = ns.Model.from_dict(d0)
     assert m0.states[0].initial == 0.0 and m0.to_dict()["states"]["X"]["initial"] == 0.0 and mt.states[0].initial is None

@@ -60,7 +60,7 @@ failure, and says whether any setting could change it.
 | `converged` | the fixed point's residual | `tol` | `NOT converged` | `res.message` |
 | `diagnostics` | none | none | `diagnostics skipped (solve(diagnostics=False): no second-order check, first-order-condition decomposition or representation error)` | solve again with diagnostics=True |
 | `resolution` | the largest representation error | `resolution_tol` 1e-6 | `UNDER-RESOLVED (representation error 1.3e-05: raise numerics.nodes)`; a transition adds the error by region and `an error only on the band tip or the last window is the geometry there, not the interior's resolution` | raise numerics.nodes |
-| `window` (stationary) | `res.window_tail` | `window_tail_tol` 0.02 | `WINDOW TOO SHORT (a kernel still moves by 4.1% of its peak over the last tenth of the window: raise horizon.window)`, adding `the means' continuation integrals are truncated there as well` when the means are driven | raise horizon.window |
+| `window` (stationary) | `res.window_tail` | `window_tail_tol` 0.02 | `WINDOW TOO SHORT (a kernel still moves by 4.1% of its peak over the last tenth of the window: raise horizon.window)`; `WINDOW TOO SHORT FOR THE MEANS (...)` when a mean condition integrates a passive response over the window (`res.mean_tail`, below) | raise horizon.window |
 | `window cost` (stationary; required by the publication policy) | the largest change of an agent's cost, relative to the largest cost, on a window 1.5 times as long (`res.check_window()`; `require_ok()` measures it when the policy needs it, `skipped` until then) | `window_cost_tol` 1e-6 | `WINDOW TOO SHORT FOR THE COSTS (a window of 12 moves trader1's cost by 6.5e-05 of the largest; market_maker left out, whose cost is the window's (cost window)): raise horizon.window` | raise horizon.window |
 | `cost window` (stationary; reported, required by no policy) | the largest share of an agent's flow loss accrued over the last tenth of the window (`res.cost_tail`) | `window_tail_tol` 0.02 | `COST GROWS WITH THE WINDOW (market_maker: 12% of the flow loss accrues over the last tenth of the window): a loss term reads a quantity whose response has not decayed by L ...` | raise horizon.window; near 10% the term never decays: drop it from the loss if it moves no choice |
 | `second_order:<agent>` | the smallest curvature relative to the largest | `-second_order_tol` (-1e-4) | `NOT A MINIMUM (the best response of 'trader1' is a saddle: its loss is not convex in its own strategy, smallest curvature -1.8e-03 of the largest)`; `second-order check did not converge for 'trader1'` when Lanczos did not settle, or for a risk-averse agent whose loss Hessian is not positive semidefinite (the form, the expected cost's, bounds the entropic cost's curvature from below only when it is; the record then carries `"bound": "entropic"`) | the loss is not convex in the agent's own strategy |
@@ -95,9 +95,13 @@ computed.
   of the window relative to that kernel's peak; above 2% the summary says `WINDOW TOO SHORT`,
   because the equilibrium solved is that of the model truncated at `horizon.window`.  A kernel that
   has decayed or reached a constant limit (a random-walk state, a price that tracks it) is not
-  flagged.  The means' continuation integrals (the DC gains of the impulse responses) are truncated
-  at the window as well, so the same guard covers them, and the flag says so when the means are
-  nonzero.  The Kyle-Back example with `rho: 0` is flagged: with no discounting the trader's
+  flagged.  The means' continuation (the DC gains of the passive-world impulse responses) is not
+  truncated: it is the passive world's transform at the discount rate, over all ages, because a
+  passive world (one reaction fewer than the equilibrium) can decay far more slowly than the
+  equilibrium's kernels.  Where that transform does not apply (level rows, instant observations,
+  monitored deviations; a passive response not decaying at L) the condition integrates over the
+  window, `res.mean_tail` keeps the passive response's level at L relative to its peak, and the
+  `window` check reads the larger of the two: `WINDOW TOO SHORT FOR THE MEANS (...)`.  The Kyle-Back example with `rho: 0` is flagged: with no discounting the trader's
   stationary problem has no solution and the kernels are window artefacts, so its profit settles
   neither in the window nor in the resolution -- 0.35, 0.93, 0.93 on a window of 8 and 0.63, 0.76,
   0.66 on 16, at 12, 24 and 48 nodes.  There is no number to quote, which is the point; an earlier

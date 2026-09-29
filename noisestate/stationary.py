@@ -641,6 +641,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         self.c = Compiled(model, settings=self.settings)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
         self._monitored = None                          # (maps key, {agent: monitored R}, {origin: seed world}, residual) of the last maps
+        self._mean_tails: Dict[str, float] = {}        # agent -> its passive response's level at L where the means use the window's integral (_passive_dc)
         self._spike_cache = (None, {})                  # (maps key, {(agent, excluded): (Zpass, R)}) of the last maps (_spikes)
         self._atom_blocks: Dict[str, tuple] = {}        # agent -> the loss atoms' blocks and which are the identity
         self._kernel_residual = 0.0                     # the inner solve's residual at the last maps
@@ -1614,9 +1615,10 @@ class StationarySolver(MonitoredDeviations, EngineBase):
     def _mean_conditions(self, agent: Agent, maps: Dict[str, np.ndarray]):
         """The agent's mean first-order conditions, one row per control.  With g = Q zbar + q on the loss atoms
         it is sum_j m_j g_j = 0: m_j = 1 on the control's current value, e^{-rho tau} on its own read at lag
-        tau, and for every other atom the discounted DC gain int_0^L e^{-rho a} R_j(a) da of the atom's
+        tau, and for every other atom the discounted DC gain int_0^inf e^{-rho a} R_j(a) da of the atom's
         passive-world impulse response (the other agents reacting through their kernels, the agent's own
-        control passive; a lead reads the whole response of its primary, weighted by e^{rho tau})."""
+        control passive; a lagged or lead atom weighted by e^{-rho tau}): exact over all ages (_passive_dc), or
+        where that does not apply its integral over the window, int_0^L."""
         c = self.c; nP = len(c.prim); rho = c.rho; a = agent
         dc = c.grid.discounted_mass(rho)
         atoms, Q, q = c.loss[a.name]
@@ -1625,23 +1627,99 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         for j, (nm, lag) in enumerate(atoms):
             P[j, c.index[nm]] = 1.0
         R = None
+        H = None
+        if not a.myopic:
+            R = self._impulse_responses(a, maps, self._spikes(c, maps, a)[1])
+            H = self._passive_dc(a, maps, R, atoms)
         for ui, u in enumerate(a.controls):
             m = np.zeros(len(atoms))
             for v, coef in (c.composite or {}).get(u, {u: 1.0}).items():      # the control and the instant reactions it draws
                 if (v, 0.0) in atoms:
                     m[atoms.index((v, 0.0))] += coef
-            if not a.myopic:
-                if R is None:
-                    R = self._spikes(c, maps, a)[1]
-                    R = self._impulse_responses(a, maps, R)
+            if a.myopic:
+                pass
+            else:
                 for j, (nm, lag) in enumerate(atoms):
                     if nm in a.controls:
                         if nm == u and lag > 0:               # delayed read of the control itself
                             m[j] += np.exp(-rho * lag)
                         continue                              # own reactions: envelope
-                    if lag >= 0:
+                    if H is not None:                         # the whole response (_passive_dc)
+                        m[j] += np.exp(-rho * lag) * H[c.index[nm], ui]
+                    elif lag >= 0:
                         m[j] += dc @ (c.shift(lag) @ R[c.block(nm), ui])
                     else:
                         m[j] += np.exp(-rho * lag) * (dc @ R[c.block(nm), ui])
             Mu[ui] = m @ Q @ P; bu[ui] = -(m @ q)
         return Mu, bu
+
+    PASSIVE_DC_RCOND = 1e-12
+
+    def _passive_dc(self, agent: Agent, maps: Dict[str, np.ndarray], R: np.ndarray, atoms) -> Optional[np.ndarray]:
+        """The discounted DC gains of the agent's passive world over ALL ages, H (n_prim, nU) with
+        H[p, u] = int_0^inf e^{-rho a} R_p(a) da for a unit impulse of the agent's control u, the others reacting
+        through `maps`: the passive world's Laplace transform at s = rho, one small linear system on the primaries,
+        (s - A) x - sum inputs e^{-s lag} = 0 on the states, v = sum_r g_vr(s) sum c e^{-s (delay + lag)} on every
+        other control (g_vr(s) = int_0^L e^{-s a} g_vr(a) da: a map lives on the window, so this is exact), the
+        agent's own controls the impulse.
+
+        The mean first-order condition needs the whole response: a constant is felt at every age, and the passive
+        world (one reaction fewer than the equilibrium) can decay much more slowly than the equilibrium's kernels,
+        whose tail the window check measures.  Its integral over [0, L] made the means window-dependent where the
+        kernels were not (a two-player tracking game with conflicting targets at window 3: player 1's passive
+        response still 42% of its peak at L, the mean control 7.24 against 8.40 at L = 12, the costs 16% off).
+
+        None where the integral over the window of `R` (the passive responses on the grid) stays, with the discounted
+        response's level at L relative to its peak kept in self._mean_tails[agent] for the result's `window` check:
+        level rows, instant observations and monitored deviations (their responses are not the maps' plain closed
+        loop), a singular transform (a random walk driven by the agent that nothing in the passive world pulls back,
+        at rho = 0: the response does not decay and its integral grows with the window -- two players pushing such a
+        walk toward different targets with no information have no stationary means) and a passive world whose
+        discounted response is largest at the window's edge (not decaying: the transform would be an analytic
+        continuation, not the integral).  A random walk with no inputs at all is pinned (nothing moves it)."""
+        c = self.c
+        s = c.rho; nX = c.nX; nP = len(c.prim)
+        ea = np.exp(-s * c.grid.nodes)
+        tail = 0.0
+        for nm, lag in atoms:
+            if nm in agent.controls:
+                continue
+            f = np.abs(ea[:, None] * R[c.block(nm)])
+            peak = f.max()
+            if peak > 0:
+                tail = max(tail, float(f[-1].max() / peak))
+        if c.levels or c.instant_loads or len(self.model.privy(agent.name)) > 1:
+            self._mean_tails[agent.name] = tail
+            return None
+        dm = c.grid.discounted_mass(s)
+        M = np.zeros((nP, nP)); F = np.zeros((nP, len(agent.controls)))
+        M[:nX, :nX] = s * np.eye(nX) - c.A
+        for i, (nm, lag), coef in c.state_inputs:
+            M[i, c.index[nm]] -= coef * np.exp(-s * lag)
+        for i in range(nX):
+            if not M[i].any():
+                M[i, i] = 1.0                                # a random walk with no inputs: nothing moves it
+        for ui, u in enumerate(agent.controls):
+            M[c.index[u], c.index[u]] = 1.0; F[c.index[u], ui] = 1.0
+        for b in self.model.agents:
+            if b.name == agent.name:
+                continue
+            g = maps[b.name]
+            for vi, v in enumerate(b.controls):
+                k = c.index[v]; M[k, k] += 1.0
+                for r, (_, drift, _, delay) in enumerate(c.rows[b.name]):
+                    gh = float(dm @ g[vi, r])
+                    for (n, l), coef in drift.items():
+                        M[k, c.index[n]] -= gh * coef * np.exp(-s * (delay + l))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", sla.LinAlgWarning)
+            lu, piv = sla.lu_factor(M, check_finite=False)
+        gecon, = sla.get_lapack_funcs(("gecon",), (lu,))
+        if not float(gecon(lu, np.linalg.norm(M, 1))[0]) > self.PASSIVE_DC_RCOND or tail >= 1.0 - 1e-9:
+            self._mean_tails[agent.name] = tail
+            return None
+        return sla.lu_solve((lu, piv), F, check_finite=False)
+
+    def _assemble_means(self, maps, **variant):
+        self._mean_tails = {}
+        return super()._assemble_means(maps, **variant)

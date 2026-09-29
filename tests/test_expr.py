@@ -112,9 +112,10 @@ def test_target_script_pieces(tmp_path):
     eq = game.solve(ns.Numerics(nodes=16, unit=0.5))
     verdict = eq.diagnostics.assess()
     #  every check the solve makes passes; the costs' window is measured on request (require_ok), and on this window of 3
-    #  a longer one moves player 2's cost by 16%: the README's numbers are the window's
+    #  a longer one moves player 2's cost by 0.65% (the maps' own truncation; it was 16% while the means' continuation
+    #  was the window's integral of player 1's slowly decaying passive response)
     assert verdict.policy == "publication" and [(b.check, str(b.status)) for b in verdict.blocking] == [("window cost", "skipped")]
-    assert not eq.check_window().ok and eq.window_check.cost_change > 0.1
+    assert not eq.check_window().ok and 1e-3 < eq.window_check.cost_change < 1e-2
     k = eq.kernel("X", "w0")
     assert isinstance(k, np.ndarray) and isinstance(k, ns.Kernel) and k.shape == (len(eq.axes["age"]),)
     assert list(k.axes) == ["age"] and np.array_equal(k.axes["age"], eq.axes["age"])

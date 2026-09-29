@@ -111,9 +111,15 @@ no initial state) every mean is exactly zero, with no solve.  A random walk with
 0, so the means of what it enters are relative to its level (`model.notes` says so); a random walk
 with a constant drift and no feedback, and a singular mean system (a state whose mean no
 first-order condition determines, a control with no quadratic term in its current value), are
-refused with a `ValueError`.  On the stationary engine the continuation integrals are truncated at
-the window like the kernels' own, which is what `window_tail` reports; the flag says so when the
-means are nonzero.
+refused with a `ValueError`.  On the stationary engine the continuation of a mean first-order
+condition is the passive world's discounted DC gain over all ages, int_0^inf e^{-rho a} R(a) da,
+computed as its Laplace transform at s = rho (a small linear system on the primaries, the maps'
+transforms exact since they live on the window): a constant is felt at every age, and the passive
+world can decay much more slowly than the kernels (a tug of war whose player's passive response is
+still 42% of its peak at the window's edge while the equilibrium's kernels are at 0.5%).  Level
+rows, instant observations and monitored deviations keep the window's integral, and the `window`
+check then reads the passive response's level at L (`res.mean_tail`); a random walk that nothing
+in the passive world pulls back at rho = 0 keeps it too (its integral grows with the window).
 
 ## Risk-averse agents
 

@@ -43,6 +43,21 @@
 
 ### Fixed
 
+- Stationary engine: the continuation in a mean first-order condition (targets, constant drifts) is the passive world's
+  discounted DC gain over all ages, its Laplace transform at the discount rate, not its integral over the window.  A
+  constant is felt at every age, and the passive world (one reaction fewer than the equilibrium) can decay far more
+  slowly than the equilibrium's kernels, which the `window` check measured: in a two-player tug of war on a random walk
+  (conflicting targets, one row delayed, window 3; the script tests/test_expr.py drives) player 1's passive response
+  was still 42% of its peak at the window's edge while the kernels were at 0.5%, the mean push 7.24 against 8.40 at
+  window 12, and the costs 16% off.  Now 8.453 at window 3 and 8.4205 from window 6 on, the costs within 0.7% at 3.
+  One agent's means are its closed form to round-off at any window (they were off by the window's e^{-(a + rho) L}).
+  Level rows, instant observations and monitored deviations keep the window's integral, as does a passive world that
+  does not decay; `res.mean_tail` then keeps the passive response's level at the window's edge and the `window` check
+  reads it (`WINDOW TOO SHORT FOR THE MEANS`).  Changed numbers: every stationary model with means, by its passive
+  worlds' tail -- the Chapter 5 market's costs by 7e-7 relative (mean part 6e-6); Chapter 3 with a target for player
+  1 at window 3, mean X 0.866 -> 0.767 (0.7479 from window 6 on; the window's integral reached 0.753 only at 12).  The
+  dissertation's numbers do not use this path (its Chapter 1 means are finite-horizon).
+
 - Finite engine: a signal row whose noise loads a shock that also drives a state (correlated observation noise; Chapter
   6's finite market, whose flow row loads the noise trades that move the inventory) is answered at once, so its map at
   age 0 on a triangle's degenerate corner row is not zero; the projection on the rows gives that corner no quadrature

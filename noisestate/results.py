@@ -298,6 +298,7 @@ class Result:
     means: Dict[str, object] = field(default_factory=dict)        # quantity -> its mean, a float (stationary) or a path (finite); zero when nothing drives it
     mean_times: Optional[np.ndarray] = None                       # the time nodes of the mean paths (finite engines)
     cost_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> {"variance", "mean", "constant"} parts of its cost
+    mean_tail: Optional[float] = None                             # stationary: the passive responses' level at L where the means' continuation is the window's integral
     risk: Dict[str, Dict[str, float]] = field(default_factory=dict)   # risk-averse agent -> {"risk_aversion", "entropic", "expected", "lambda_max", "theta_lambda_max"}
     settings: Settings = DEFAULT                                  # the tuning constants of the engine that produced this result
     kind: str = "base"
@@ -942,10 +943,16 @@ class Result:
             "window is the geometry there, not the interior's resolution)" if where else ")") if rep is not None else "", "raise numerics.nodes")
         tail = getattr(self, "window_tail", None)
         if tail is not None:
-            row("window", float(tail), self.WINDOW_TAIL_TOL, bool(tail <= self.WINDOW_TAIL_TOL),
-                f"WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window"
-                + ("; the means' continuation integrals are truncated there as well)" if self.has_means else ")"),
-                "raise horizon.window")
+            mt = self.mean_tail if self.has_means else None
+            if mt is not None and mt > tail:
+                row("window", float(mt), self.WINDOW_TAIL_TOL, bool(mt <= self.WINDOW_TAIL_TOL),
+                    f"WINDOW TOO SHORT FOR THE MEANS (a passive response in a mean first-order condition is still {mt:.1%} of "
+                    "its peak at the window's edge, and the condition integrates it over the window: raise horizon.window)",
+                    "raise horizon.window")
+            else:
+                row("window", float(tail), self.WINDOW_TAIL_TOL, bool(tail <= self.WINDOW_TAIL_TOL),
+                    f"WINDOW TOO SHORT (a kernel still moves by {tail:.1%} of its peak over the last tenth of the window: raise horizon.window)",
+                    "raise horizon.window")
             # reported, never required by a policy: a loss term in a quantity that never decays leaves the strategies
             # alone when it moves nothing the agent chooses (Chapter 4's market maker), only the cost is the window's
             grows = {a: v for a, v in self.cost_tail.items() if v > self.WINDOW_TAIL_TOL}
