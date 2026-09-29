@@ -37,6 +37,9 @@
 - A warning when a player sees another's control level without monitoring it while also seeing what that control's
   owner observes (a trader seeing the quote and the order flow): such a player is privy, and built naive its reading
   of a quote off the rule is not pinned down.
+- Internal: Chapter 6's response-kernel iteration and the pieces around it are written once for both engines
+  (`noisestate/monitoring.py`, `MonitoredDeviations`), and `deviation_response` once for both results; unused code
+  removed (StationaryTilt's unconditional excess, unread attributes).  Results bit-identical.
 
 ### Fixed
 
