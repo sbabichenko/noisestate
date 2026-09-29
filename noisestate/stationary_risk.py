@@ -51,8 +51,8 @@ def _staircase_q(A: np.ndarray, reach: np.ndarray, bs: Optional[int] = None) -> 
     reach[j] (nondecreasing): a blocked QR whose reflectors and updates touch only the rows a panel's columns reach
     (LAPACK dgeqrf on the panel, dormqr on the trailing columns up to k, then Q by applying the panels backwards to the
     identity), a fraction of the dense QR's work on a staircase (the information basis's time-ordered rows and columns:
-    about 1/4 on Chapter 3's model, 1/7 on Kyle-Back's).  The same basis as numpy.linalg.qr's in exact arithmetic (up to
-    the columns' signs, which the projector Q Q' does not see)."""
+    about 1/10 on Kyle-Back's insider).  The same basis as numpy.linalg.qr's in exact arithmetic (up to the columns'
+    signs, which the projector Q Q' does not see); in floating point another one of the same span."""
     from scipy.linalg.lapack import dgeqrf, dormqr
     n, q = A.shape
     k = min(n, q)
@@ -182,9 +182,9 @@ class StationaryTilt:
         return out
 
     def _geo(self, key, make):
-        """What depends on the grid, the window and the lattice only (not on the profile), kept on the solver across the
-        best responses' tilts (one StationaryTilt per best response), on the compiled model (its grid, window and rate):
-        the lattice's interpolation rows, _read's per-age quadrature.  Read only."""
+        """What depends on the grid, the window and the lattice only (not on the profile), kept across the best responses'
+        tilts (one StationaryTilt per best response) on the compiled model, whose grid, window and rate it is: the
+        lattice's interpolation rows, _read's per-age quadrature.  Read only."""
         memo = self.c.__dict__.setdefault("_tilt_geo", {})
         if key not in memo:
             memo[key] = make()
@@ -202,13 +202,13 @@ class StationaryTilt:
         input of length n_in with them, so the convolutions below are fftconvolve's to the bit (its transforms one line at
         a time, the kernel's made once instead of per call, the input's once for every kernel it meets)."""
         memo = lat.setdefault("spectra", {})
-        if (key, rev) not in memo:
+        if (key, rev, n_in) not in memo:
             from scipy import fft as sf
             zt = lat[key]
             f = sf.next_fast_len(n_in + lat["Na"], True)
-            memo[key, rev] = (f, {(j, cc): sf.rfft(zt[::-1, j, cc] if rev else zt[:, j, cc], f)
-                                  for j in range(zt.shape[1]) for cc in range(self.nW) if np.any(zt[:, j, cc])})
-        return memo[key, rev]
+            memo[key, rev, n_in] = (f, {(j, cc): sf.rfft(zt[::-1, j, cc] if rev else zt[:, j, cc], f)
+                                        for j in range(zt.shape[1]) for cc in range(self.nW) if np.any(zt[:, j, cc])})
+        return memo[key, rev, n_in]
 
     def _A(self, lat, zt, G, key: str = "zt"):
         """(A g)_j(tau_k) = int z_j(tau - u)' g(u) du on the lattice, (m, Nt): G (nW, Nu); zt = lat[key]."""
