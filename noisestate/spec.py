@@ -29,6 +29,7 @@ import copy
 import os
 
 import ast
+import functools
 import math
 import re
 import warnings
@@ -45,11 +46,18 @@ CONST = "const"                   # the key of a constant in a state's drift (a 
 _ATOM_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:@\s*([-+]?[0-9.eE+-]+|[A-Za-z_][A-Za-z0-9_]*))?\s*$")
 
 
-def parse_atom(s: str, params: Dict[str, float]) -> Atom:
+@functools.lru_cache(maxsize=65536)
+def _atom_parts(s: str):
+    """(name, lag string or None) of an atom string, or None when it is not one: the regular expression once per string."""
     m = _ATOM_RE.match(s)
-    if not m:
+    return (m.group(1), m.group(2)) if m else None
+
+
+def parse_atom(s: str, params: Dict[str, float]) -> Atom:
+    parts = _atom_parts(s) if isinstance(s, str) else _ATOM_RE.match(s)        # (a non-string raises re's TypeError, as before)
+    if parts is None:
         raise ValueError(f"bad atom {s!r}; expected 'name' or 'name@lag'")
-    name, lag = m.group(1), m.group(2)
+    name, lag = parts
     if lag is None:
         return (name, 0.0)
     try:
@@ -453,6 +461,8 @@ class Model:
         """Expand an expression over atom strings into primary atoms (states, controls): the linear part;
         a constant (the key `const`, allowed in a state's drift, see constant()) is left out."""
         defs = {d.name: d.expr for d in self.definitions}
+        prim = set(self.state_names); prim.update(self.control_names)       # once per call, not per atom
+        parsed: Dict[str, list] = {}
         out: Expr = {}
 
         def add(name: str, lag: float, coef: float, depth: int):
@@ -462,10 +472,12 @@ class Model:
                 if lag != 0:
                     raise ValueError(f"a constant has no lag: write {CONST}, not {CONST}@{lag:g}")
             elif name in defs:
-                for sub, c2 in defs[name].items():
-                    n2, l2 = parse_atom(sub, self.params)
+                terms = parsed.get(name)
+                if terms is None:
+                    terms = parsed[name] = [(parse_atom(sub, self.params), c2) for sub, c2 in defs[name].items()]
+                for (n2, l2), c2 in terms:
                     add(n2, lag + l2, coef * c2, depth + 1)
-            elif name in self.state_names or name in self.control_names:
+            elif name in prim:
                 key = (name, float(lag))
                 out[key] = out.get(key, 0.0) + coef
             else:
@@ -511,19 +523,26 @@ class Model:
                             lags.add(abs(l))
         return sorted(lags)
 
-    def _agent_signature(self, a: "Agent"):
-        """Structure of an agent's problem up to relabelling of its own controls, rows, channels and of
-        the other agents' controls: what a tie must preserve."""
-        own = {u: f"own{i}" for i, u in enumerate(a.controls)}
-        others = set(self.control_names) - set(a.controls)
-        # states referenced by one agent only are that agent's private states: compared by role, not name
+    def _state_users(self) -> Dict[str, set]:
+        """Per state, the agents whose rows or loss read it (a state one agent reads is its private state)."""
         users: Dict[str, set] = {}
+        states = set(self.state_names)
         for ag in self.agents:
             exprs = [self.expand(r.drift) for r in ag.signals] + [self.expand({s: 1.0}) for t in ag.loss for s in t[1:]]
             for e in exprs:
                 for (n, l) in e:
-                    if n in self.state_names:
+                    if n in states:
                         users.setdefault(n, set()).add(ag.name)
+        return users
+
+    def _agent_signature(self, a: "Agent", users: Optional[Dict[str, set]] = None):
+        """Structure of an agent's problem up to relabelling of its own controls, rows, channels and of
+        the other agents' controls: what a tie must preserve.  `users`: _state_users(), when the caller has it."""
+        own = {u: f"own{i}" for i, u in enumerate(a.controls)}
+        others = set(self.control_names) - set(a.controls)
+        # states referenced by one agent only are that agent's private states: compared by role, not name
+        if users is None:
+            users = self._state_users()
 
         states = {s.name: s for s in self.states}
 
@@ -958,7 +977,8 @@ class Model:
                                      "group, once (merge the groups)")
                 seen[n] = list(group)
             ag = [next(a for a in self.agents if a.name == n) for n in group]
-            sigs = [self._agent_signature(a) for a in ag]
+            users = self._state_users()
+            sigs = [self._agent_signature(a, users) for a in ag]
             for a, sig in zip(ag[1:], sigs[1:]):
                 if sig != sigs[0] and not self._cyclic_tie_verified():
                     raise ValueError(f"tied agents {group[0]} and {a.name} are not structurally identical "
