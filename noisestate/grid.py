@@ -25,7 +25,7 @@ spectrally accurate for kernels that are smooth within panels.
 from __future__ import annotations
 
 from functools import cached_property
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 from numpy.lib.stride_tricks import as_strided
@@ -170,16 +170,26 @@ class AgeGrid:
         breakpoint is shifted exactly: the lower copy of the node at tau reads f(0-) = 0 and the upper
         copy f(0+), and the lead is the transpose of the lag on the duplicated nodes.  Interior nodes
         read from above for a lag and from below for a lead (they never sit on a breakpoint when the
-        panels are aligned to the lags)."""
+        panels are aligned to the lags).
+        The rows are the shifted kernel's values at the nodes, exact point samples on any panels; as a
+        kernel on the panels (its interpolant) it is exact only where the panels are aligned with tau
+        (aligned(tau)), and the exact-shift operators below take the shift as an argument instead."""
         if abs(tau) < 1e-15:
             return np.eye(self.N)
+        return self.shifted_reads(self.nodes, self.node_sides(), tau)
+
+    def shifted_reads(self, nodes: np.ndarray, sides: np.ndarray, tau: float) -> np.ndarray:
+        """(len(nodes), N): the values at `nodes` of a kernel read at the lag tau (a lead for tau < 0), each node
+        on its side of a breakpoint (sides +1: the right limit, -1: the left limit, 0: interior); shift(tau) is
+        this at the grid's own nodes.  Another grid's nodes whose panels are cut at the shifted breakpoints read
+        a shifted kernel exactly (propagator_shifted)."""
         eps = 1e-14 * max(1.0, self.L)
-        sides = self.node_sides()
-        pts = self.nodes - tau
+        pts = np.asarray(nodes, dtype=float) - tau
+        sides = np.asarray(sides)
         for b in self.breakpoints:                       # a shifted node that lands within round-off of a breakpoint
             pts[np.abs(pts - b) <= 1e-12 * max(1.0, self.L)] = b     # is on it (non-dyadic units: 0.9 - 0.3)
         inner = +1 if tau > 0 else -1
-        M = np.zeros((self.N, self.N))
+        M = np.zeros((len(pts), self.N))
         for s in (+1, -1):
             sel = (sides == s) | ((sides == 0) & (s == inner))
             if sel.any():
@@ -224,6 +234,234 @@ class AgeGrid:
                 w += (ws * np.exp(-key * xs)) @ self.interp(xs, side=+1)
             self._dmass[key] = w
         return self._dmass[key]
+
+    # ------------------------------------------------------------ exact shifts
+    #  A kernel read at a shift s (a lag s > 0, a lead s < 0) is f(a - s) for a in [0, L], zero where a - s leaves
+    #  [0, L]: a piecewise polynomial on the panels moved by s.  shift(s) resamples it onto the grid's panels, which
+    #  is exact when the panels are aligned with s (aligned(s)) and on any other panels interpolates a function that
+    #  breaks at b + s inside a panel: an error no number of nodes removes, of the size of the kernel's
+    #  non-smoothness at b (Chapter 5's market: the representation error 5.6e-12 on unit panels, 5e-7 with a
+    #  geometric tail).  The operators here take the shift as an argument: their quadratures split at the shifted
+    #  breakpoints as well, so they integrate products of shifted nodal kernels exactly on any panels.
+    #
+    #  A shift CLASS is (s, lo, hi): the nodal kernel x standing for x(a - s) on ages a in [lo, hi] and zero elsewhere,
+    #  with lo >= max(0, s) and hi <= min(L, L + s) (the window: `natural` bounds when not narrower).  Composed shifts
+    #  narrow it: a lead by d of a kernel read at the lag l reads x at a + d - l only for a <= L - d (compose).  An
+    #  argument given as a float s is the class (s, natural bounds).
+
+    def shift_class(self, s, lo: Optional[float] = None, hi: Optional[float] = None) -> Tuple[float, float, float]:
+        """The normalized class (s, lo, hi) (every bound rounded to 12 digits): lo, hi default to the window's."""
+        if isinstance(s, tuple):
+            s, lo, hi = s
+        s = round(float(s), 12)
+        L = self.L
+        nlo, nhi = max(0.0, s), min(L, L + s)
+        lo = nlo if lo is None else max(nlo, round(float(lo), 12))
+        hi = nhi if hi is None else min(nhi, round(float(hi), 12))
+        return (s, lo, hi)
+
+    def compose(self, outer: float, cls) -> Tuple[float, float, float]:
+        """The class of a kernel of class `cls` read again at the shift `outer`: f(a - outer) of f = x(. - s) on [lo, hi]."""
+        s, lo, hi = self.shift_class(cls)
+        o = float(outer)
+        return self.shift_class(s + o, max(lo + o, o, 0.0), min(hi + o, self.L + o, self.L))
+
+    def is_natural(self, cls) -> bool:
+        s, lo, hi = self.shift_class(cls)
+        return (lo, hi) == (max(0.0, s), min(self.L, self.L + s))
+
+    def aligned(self, s) -> bool:
+        """Whether shift(s) is exact as a kernel on the panels: every breakpoint b with b + s inside (0, L) is a
+        breakpoint (the panels move onto unions of panels).  A class (s, lo, hi) is aligned when s is and its bounds
+        are breakpoints."""
+        if isinstance(s, tuple):
+            s, lo, hi = self.shift_class(s)
+            return self.aligned(s) and all(np.min(np.abs(self.breakpoints - x)) <= 1e-12 * max(1.0, self.L) for x in (lo, hi))
+        s = round(float(s), 12)
+        memo = self.__dict__.setdefault("_aligned", {})
+        hit = memo.get(s)
+        if hit is None:
+            tol = 1e-12 * max(1.0, self.L)
+            bp = self.breakpoints
+            moved = bp + s
+            moved = moved[(moved > tol) & (moved < self.L - tol)]
+            hit = memo[s] = bool(np.all(np.min(np.abs(moved[:, None] - bp[None, :]), axis=1) <= tol)) if moved.size else True
+        return hit
+
+    def sample_class(self, cls) -> np.ndarray:
+        """(N, N): the values at the nodes of a kernel of class cls (shift(s) with the rows outside [lo, hi] zero, a
+        node on a bound reading the inside only from its own side): exact point values on any panels."""
+        s, lo, hi = self.shift_class(cls)
+        S = self.shift(s)
+        if self.is_natural((s, lo, hi)):
+            return S
+        memo = self.__dict__.setdefault("_sample_class", {})
+        hit = memo.get((s, lo, hi))
+        if hit is None:
+            tol = 1e-12 * max(1.0, self.L)
+            sides = self.node_sides(); a = self.nodes
+            out = (a < lo - tol) | ((a <= lo + tol) & (sides == -1)) | (a > hi + tol) | ((a >= hi - tol) & (sides == +1))
+            hit = S.copy(); hit[out] = 0.0
+            memo[(s, lo, hi)] = hit
+        return hit
+
+    def _conv_rows_shifted(self, cls, ks) -> np.ndarray:
+        """(len(ks), N, N): T[a, i, j] = int_0^a l_i(b) y_j(a - b) db at the nodes a = nodes[ks], y_j the basis kernel of
+        class cls = (s, lo, hi): l_j(a - b - s) for a - b in [lo, hi].  The convolution of a kernel with one of class
+        cls; at the class 0 it is _conv_rows (the same pieces and points)."""
+        s, lo, hi = self.shift_class(cls)
+        T = np.zeros((len(ks), self.N, self.N))
+        bp = list(self.breakpoints)
+        m = self.n + 2
+        for t, k in enumerate(ks):
+            a = self.nodes[k]
+            b0, b1 = max(0.0, a - hi), min(a, a - lo)
+            if b1 - b0 <= 1e-14:
+                continue
+            cuts = bp + [a - s - b for b in bp]
+            xs, ws = self._gauss_pieces(b0, b1, cuts, m)
+            Li = self.interp(xs, side=+1)              # l_i(b)
+            Lj = self.interp(a - s - xs, side=-1)      # l_j(a - s - b): approach from the left
+            T[t] = (Li * ws[:, None]).T @ Lj
+        return T
+
+    def _conv_flat_shifted(self, cls, left: bool) -> np.ndarray:
+        """The shifted convolution tensor flattened for a product: [(a, i), j] (the class-cls kernel's side j contracted)
+        or, left=True, [(a, j), i] (the unshifted kernel's side i contracted).  Cached per class."""
+        cls = self.shift_class(cls)
+        key = (cls, left)
+        memo = self.__dict__.setdefault("_conv_shift", {})
+        hit = memo.get(key)
+        if hit is None:
+            N = self.N
+            other = memo.get((cls, not left))
+            if other is None:
+                T = self._conv_rows_shifted(cls, range(N))                                      # [a, i, j]
+            else:
+                T = other.reshape(N, N, N)                     # [a, i, j] when the other is the right layout, [a, j, i] when left
+                T = T if left else T.transpose(0, 2, 1)
+            hit = memo[key] = np.ascontiguousarray(T.transpose(0, 2, 1) if left else T).reshape(N * N, N)
+        return hit
+
+    def conv_ops_shifted(self, Y: np.ndarray, cls) -> np.ndarray:
+        """(m, N, N): conv_ops for the m kernels Y (N, m) of class cls: (C g)(a) = int_0^a g(b) y(a - b - s) db over a - b in
+        [lo, hi]."""
+        cls = self.shift_class(cls)
+        if cls == (0.0, 0.0, self.L):
+            return self.conv_ops(Y)
+        Y = np.asarray(Y, dtype=float); N = self.N
+        return (self._conv_flat_shifted(cls, False) @ Y).reshape(N, N, -1).transpose(2, 0, 1)
+
+    def conv_ops_left_shifted(self, G: np.ndarray, cls) -> np.ndarray:
+        """(m, N, N): conv_ops_left on a kernel of class cls: (C y)(a) = int_0^a g(b) y(a - b - s) db for the m fixed g (N, m)."""
+        cls = self.shift_class(cls)
+        if cls == (0.0, 0.0, self.L):
+            return self.conv_ops_left(G)
+        G = np.asarray(G, dtype=float); N = self.N
+        return (self._conv_flat_shifted(cls, True) @ G).reshape(N, N, -1).transpose(2, 0, 1)
+
+    def _corr_rows_shifted(self, rho: float, cw, cz) -> np.ndarray:
+        """(N, N, N): T[a, i, j] = int_0^{L-a} e^{-rho x} w_i(x) z_j(a + x) dx, w_i the basis kernel of class cw and z_j of
+        class cz: the correlation of a kernel of class cw with one of class cz.  At the classes 0 it is _corr_rows."""
+        sw, lw, hw = self.shift_class(cw)
+        sz, lz, hz = self.shift_class(cz)
+        T = np.zeros((self.N, self.N, self.N))
+        bp = list(self.breakpoints)
+        m = self.n + 2
+        L = self.L
+        for k in range(self.N):
+            a = self.nodes[k]
+            lo, hi = max(0.0, lw, lz - a), min(L - a, hw, hz - a)
+            if hi - lo <= 1e-14:
+                continue
+            cuts = [b + sw for b in bp] + [b + sz - a for b in bp]
+            xs, ws = self._gauss_pieces(lo, hi, cuts, m)
+            Li = self.interp(xs - sw, side=+1)
+            Lj = self.interp(a + xs - sz, side=+1)
+            T[k] = (Li * (ws * np.exp(-rho * xs))[:, None]).T @ Lj
+        return T
+
+    def corr_ops_shifted(self, W: np.ndarray, rho: float, cw, cz) -> np.ndarray:
+        """(m, N, N): corr_ops for the m kernels W (N, m) of class cw acting on a kernel z of class cz:
+        (C z)(a) = int_0^{L-a} e^{-rho x} w(x - sw) z(a + x - sz) dx within both classes' bounds.  Cached per (rho, cw, cz)."""
+        cw, cz = self.shift_class(cw), self.shift_class(cz)
+        if cw == (0.0, 0.0, self.L) and cz == (0.0, 0.0, self.L):
+            return self.corr_ops(W, rho)
+        key = (float(rho), cw, cz)
+        memo = self.__dict__.setdefault("_corr_shift", {})
+        flat = memo.get(key)
+        if flat is None:
+            T = self._corr_rows_shifted(float(rho), cw, cz)
+            flat = memo[key] = np.ascontiguousarray(T.transpose(0, 2, 1)).reshape(self.N * self.N, self.N)   # [(a, j), i]
+        W = np.asarray(W, dtype=float); N = self.N
+        return (flat @ W).reshape(N, N, -1).transpose(2, 0, 1)
+
+    def mass_shifted(self, c1, c2) -> np.ndarray:
+        """(N, N): M[i, j] = int_0^L u_i(a) v_j(a) da, u_i the basis kernel of class c1 and v_j of class c2: the Gram of a
+        kernel of class c1 with one of class c2 (mass_matrix at the classes 0)."""
+        c1, c2 = self.shift_class(c1), self.shift_class(c2)
+        if c1 == c2 == (0.0, 0.0, self.L):
+            return self.mass_matrix
+        memo = self.__dict__.setdefault("_mass_shift", {})
+        hit = memo.get((c1, c2))
+        if hit is None:
+            back = memo.get((c2, c1))
+            if back is not None:
+                hit = back.T
+            else:
+                (s1, l1, h1), (s2, l2, h2) = c1, c2
+                lo, hi = max(l1, l2), min(h1, h2)
+                if hi - lo <= 1e-14:
+                    hit = np.zeros((self.N, self.N))
+                else:
+                    bp = list(self.breakpoints)
+                    xs, ws = self._gauss_pieces(lo, hi, [b + s1 for b in bp] + [b + s2 for b in bp], self.n + 2)
+                    I1 = self.interp(xs - s1, side=+1); I2 = self.interp(xs - s2, side=+1)
+                    hit = (I1 * ws[:, None]).T @ I2
+            memo[(c1, c2)] = hit
+        return hit
+
+    def discounted_mass_shifted(self, rho: float, cls) -> np.ndarray:
+        """(N,): w with int_0^L e^{-rho a} f(a) da = w @ x for the kernel f of class cls with the nodal values x."""
+        cls = self.shift_class(cls)
+        if cls == (0.0, 0.0, self.L):
+            return self.discounted_mass(rho)
+        memo = self.__dict__.setdefault("_dmass_shift", {})
+        key = (float(rho), cls)
+        hit = memo.get(key)
+        if hit is None:
+            s, lo, hi = cls
+            hit = np.zeros(self.N)
+            if hi - lo > 1e-14:
+                xs, ws = self._gauss_pieces(lo, hi, [b + s for b in self.breakpoints], self.n + 2)
+                hit = (ws * np.exp(-float(rho) * xs)) @ self.interp(xs - s, side=+1)
+            memo[key] = hit
+        return hit
+
+    def propagator_shifted(self, A: np.ndarray, s: float) -> np.ndarray:
+        """P_s (N m x N m), (node, component) ordering: the state x' = A x + u(a - s), x(0) = 0, driven by an input of
+        class s, at the nodes (propagator's P at s = 0).  Solved on the panels cut at the shifted breakpoints as well
+        (there the input is a polynomial on every panel, read exactly by shifted_reads), then read at this grid's nodes."""
+        s = round(float(s), 12)
+        if s == 0.0:
+            return self.propagator(A)[1]
+        A = np.atleast_2d(np.asarray(A, dtype=float)); m = A.shape[0]
+        memo = self.__dict__.setdefault("_prop_shift", {})
+        key = (s, A.tobytes())
+        hit = memo.get(key)
+        if hit is None:
+            tol = 1e-12 * max(1.0, self.L)
+            cuts = [b + s for b in self.breakpoints if tol < b + s < self.L - tol]
+            fine = AgeGrid(list(self.breakpoints) + cuts, self.n)
+            E = self.shifted_reads(fine.nodes, fine.node_sides(), s)              # (fine N, N): exact
+            sides = self.node_sides(); I = np.zeros((self.N, fine.N))
+            for sd in (+1, -1):
+                sel = (sides == sd) | ((sides == 0) & (sd == +1))
+                I[sel] = fine.interp(self.nodes[sel], side=sd)
+            _, PF = fine.propagator(A)
+            Im = np.eye(m)
+            hit = memo[key] = np.kron(I, Im) @ PF @ np.kron(E, Im)
+        return hit
 
     # ---------------------------------------------------------- propagator
     def propagator(self, A: np.ndarray):
