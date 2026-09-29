@@ -25,6 +25,9 @@ def _finite_or_raise(rn: float, evals: int) -> None:
                            "above about 700; check the parameter scales")
 
 
+PRUNE = 1e4          # anderson(): secant pairs whose residual change exceeds PRUNE times the current residual are dropped
+
+
 def anderson(F: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, tol: float = 1e-10, M: int = 6,
              beta: float = 0.5, maxiter: int = 200, reg: float = 1e-8, verbose: bool = False):
     """Solve F(x) = 0 for the residual F(x) = G(x) - x of a fixed-point map G.
@@ -44,6 +47,11 @@ def anderson(F: Callable[[np.ndarray], np.ndarray], x0: np.ndarray, tol: float =
             return x, rn, evals, True, False
         if k >= 40 and best_rn > 0.7 * best_hist[-20]:
             return best_x, best_rn, evals, False, True
+        # the secant pairs from far above the current residual (|dR| > PRUNE |r|) dominate the regulariser, which is
+        # relative to the Gram's trace, and silence the recent pairs: the step would be plain mixing x + beta r
+        rnorm = float(np.linalg.norm(r))
+        while len(dR) > 1 and float(np.linalg.norm(dR[0])) > PRUNE * rnorm:
+            dX.pop(0); dR.pop(0)
         if dX:
             Rm = np.stack(dR, axis=1)                                   # (n, m)
             A = Rm.T @ Rm
