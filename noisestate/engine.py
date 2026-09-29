@@ -35,6 +35,34 @@ def _psd(M, rtol: float = 1e-12) -> bool:
     return bool(np.linalg.eigvalsh(0.5 * (M + M.T))[0] >= -rtol * max(1.0, float(np.abs(M).max())))
 
 
+PSD_EXTREMES_MIN = 2500     # psd_extremes: the dimension from which a certified form's extremes come from its Cholesky, not eigh
+
+
+def psd_extremes(M: np.ndarray):
+    """(lo, hi), the extreme eigenvalues of a symmetric positive semidefinite M (a certified second-order form, Curvature):
+    hi by Lanczos on M, then lo as 1 / the largest eigenvalue of M^-1 by Lanczos on M's Cholesky factor, made in place
+    (M is destroyed; no second n x n array, where eigh's tridiagonal reduction is 4/3 n^3 against the Cholesky's n^3 / 3:
+    2.5 -> 0.96 s at 4032 unknowns, the lowest eigenvalue the same to 1e-21 of the largest).  None when the Cholesky
+    fails (a form singular to rounding): the caller rebuilds it for eigh."""
+    from scipy.linalg import solve_triangular
+    from scipy.linalg.lapack import dpotrf
+    from scipy.sparse.linalg import LinearOperator, eigsh
+    n = M.shape[0]
+    v0 = np.random.default_rng(0).standard_normal(n)
+    hi = float(eigsh(LinearOperator((n, n), matvec=lambda v: M @ v, dtype=float), k=1, which="LA", tol=1e-13, v0=v0,
+                     return_eigenvectors=False)[0])
+    C, info = dpotrf(M, lower=1, clean=0, overwrite_a=1)
+    if info != 0:
+        return None
+
+    def inv(v):
+        y = solve_triangular(C, v, lower=True, check_finite=False)
+        return solve_triangular(C, y, lower=True, trans="T", check_finite=False)
+    mu = float(eigsh(LinearOperator((n, n), matvec=inv, dtype=float), k=1, which="LA", tol=1e-12, v0=v0,
+                     return_eigenvectors=False)[0])
+    return 1.0 / mu, hi
+
+
 class Curvature(dict):
     """res.second_order[agent]: {"min", "max", "ok", "converged"} (and "bound", "edge", ... where a check adds them), the
     second-order check of the agent's best response.

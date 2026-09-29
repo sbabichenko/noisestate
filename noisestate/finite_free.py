@@ -30,7 +30,7 @@ from typing import Dict, Optional
 import numpy as np
 from scipy.linalg import get_lapack_funcs, lu_solve
 
-from .engine import dense_curvature_form, singular_system_message, symmetrize
+from .engine import PSD_EXTREMES_MIN, dense_curvature_form, psd_extremes, singular_system_message, symmetrize
 from .spec import Agent
 from .spectral_operators import FocOps, InstantResp, PanelRows, PathOp, ProjOps, RespOps, RowOps, instant_resp
 
@@ -604,12 +604,12 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
                            foc=system.foc, tilt=None, shift=None)
     held.world_of = lambda gamma: FocSystem.world_of(held, gamma)             # the Lanczos branch's operator (_form_matvec)
     averse = system.tilt is not None or getattr(system, "shift", None) is not None
-    out = solver._lazy_curvature(agent, lambda: _curvature_form(solver, agent, held, averse=averse),
+    out = solver._lazy_curvature(agent, lambda: _curvature_form(solver, agent, held, averse=averse, psd=True),
                                  {"bound": "entropic"} if averse else None)
     return out
 
 
-def _curvature_form(solver, agent: Agent, system: FocSystem, averse: bool = False) -> Optional[dict]:
+def _curvature_form(solver, agent: Agent, system: FocSystem, averse: bool = False, psd: bool = False) -> Optional[dict]:
     """The second-order check (EngineBase._second_order's contract) on the operators: the form M = T' G T on
     the kept strategy, T the strategy -> world map (RowOps then RespOps), G the loss form (the atoms' kernels
     under Q and the sparse mass; a past's initial columns under the point form of the line s = 0, the time
@@ -624,7 +624,12 @@ def _curvature_form(solver, agent: Agent, system: FocSystem, averse: bool = Fals
     V = None
     if n <= solver.SECOND_ORDER_DENSE:
         Mfull = symmetrize(_dense_form(solver, agent, system, idx))
-        if not averse and system.tilt is None and getattr(system, "shift", None) is None:
+        ext = psd_extremes(Mfull) if psd and n >= PSD_EXTREMES_MIN else None     # a certified form (Curvature), large
+        if ext is None and psd and n >= PSD_EXTREMES_MIN:
+            Mfull = symmetrize(_dense_form(solver, agent, system, idx))       # its Cholesky failed (and consumed it)
+        if ext is not None:
+            (lo, hi), Mfull = ext, None
+        elif not averse and system.tilt is None and getattr(system, "shift", None) is None:
             # LAPACK's syevd on the form itself (numpy's eigvalsh copies it: n^2 more at the peak); the directions are
             # asked of it only for a risk-averse agent's probe, below
             from scipy.linalg import eigh
@@ -632,7 +637,8 @@ def _curvature_form(solver, agent: Agent, system: FocSystem, averse: bool = Fals
             Mfull = None
         else:
             w = np.linalg.eigvalsh(Mfull)
-        lo, hi = float(w[0]), float(w[-1])
+        if ext is None:
+            lo, hi = float(w[0]), float(w[-1])
     else:
         matvec = _form_matvec(solver, agent, system, idx)
         res = solver._lanczos_extremes(lambda v: matvec(v)[:, 0], n)

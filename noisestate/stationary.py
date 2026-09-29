@@ -27,7 +27,7 @@ from scipy.linalg import lu_factor, lu_solve
 
 from .grid import AgeGrid
 from .grid_cache import age_grid
-from .engine import EngineBase, _is_eye, dense_curvature_form, singular_system_message, symmetrize
+from .engine import PSD_EXTREMES_MIN, EngineBase, _is_eye, dense_curvature_form, psd_extremes, singular_system_message, symmetrize
 from .monitoring import MonitoredDeviations, compose_spikes, spike_controls
 from .compile import CompiledBase, close_under_delays
 from .symmetry import find_cyclic_symmetry
@@ -1027,9 +1027,9 @@ class StationarySolver(MonitoredDeviations, EngineBase):
     def _second_order(self, agent: Agent, Resp, Gk, keep, maps=None) -> Optional[dict]:
         """_curvature_form's check, deferred to the first read of its numbers when the loss form is positive semidefinite
         (EngineBase._lazy_curvature: the check passes by that certificate)."""
-        return self._lazy_curvature(agent, lambda: self._curvature_form(agent, Resp, Gk, keep, maps))
+        return self._lazy_curvature(agent, lambda: self._curvature_form(agent, Resp, Gk, keep, maps, psd=True))
 
-    def _curvature_form(self, agent: Agent, Resp, Gk, keep, maps=None) -> Optional[dict]:
+    def _curvature_form(self, agent: Agent, Resp, Gk, keep, maps=None, psd: bool = False) -> Optional[dict]:
         """Second-order condition of the best response: the agent's objective is a quadratic form in its
         strategy, and a first-order condition is a minimum only if that form is positive on the
         feasible strategies (those its rows can express).  The form is computed exactly from the
@@ -1092,8 +1092,14 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             # eigenvalues only (no n x n eigenvectors and their workspace); the lowest direction is
             # computed only when the embedding below needs it
             Mfull = symmetrize(dense_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx))
-            w = np.linalg.eigvalsh(Mfull)
-            lo, hi = float(w[0]), float(w[-1])
+            ext = psd_extremes(Mfull) if psd and n >= PSD_EXTREMES_MIN else None     # certified (Curvature) and large
+            if ext is not None:
+                lo, hi = ext
+            else:
+                if psd and n >= PSD_EXTREMES_MIN:                               # its Cholesky failed (and consumed it)
+                    Mfull = symmetrize(dense_curvature_form(Resp, Gk, forms, nU, nR, Nm, idx))
+                w = np.linalg.eigvalsh(Mfull)
+                lo, hi = float(w[0]), float(w[-1])
             vmin = lambda: sla.eigh(Mfull, subset_by_index=[0, 0])[1][:, 0]
         else:
             vmin = None

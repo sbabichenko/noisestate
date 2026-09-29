@@ -272,3 +272,21 @@ def test_an_indefinite_loss_is_checked_on_its_form():
     from noisestate.engine import Curvature
     res = ns.solve(ns.example("ch4_kyle_back"))
     assert res.second_order and not any(isinstance(so, Curvature) for so in res.second_order.values())
+
+
+def test_a_large_certified_form_takes_its_extremes_from_its_cholesky(monkeypatch):
+    """Above PSD_EXTREMES_MIN a certified form's extremes come from Lanczos on it and on its Cholesky factor's inverse
+    (engine.psd_extremes), not eigh: the same numbers to 1e-12 of the largest.  Forced here on Chapter 1's finite game and
+    Chapter 3's stationary one by lowering the threshold; and on a matrix singular to rounding the Cholesky fails and the
+    caller is told (None)."""
+    import numpy as np
+    from noisestate import engine, finite_free, stationary
+    eager = {n: ns.solve(ns.example(n)).second_order for n in ("ch1_two_player_finite", "ch3_two_player")}
+    for mod in (finite_free, stationary):
+        monkeypatch.setattr(mod, "PSD_EXTREMES_MIN", 10)
+    for n, ref in eager.items():
+        got = ns.solve(ns.example(n)).second_order
+        for a in ref:
+            assert abs(got[a]["min"] - ref[a]["min"]) < 1e-12 and abs(got[a]["max"] - ref[a]["max"]) < 1e-12, (n, a, got[a], ref[a])
+    v = np.random.default_rng(1).standard_normal((50, 3))
+    assert engine.psd_extremes(v @ v.T) is None
