@@ -34,8 +34,8 @@ it names the lags' common unit) gets its panels here; any of the three given is 
    res.sharpen() solves.
 
 res.panels = {"route": "a priori" | "refined", "unit", "nodes", "breakpoints", "tails" (per panel, the accepted grid's),
-"history" [(panels, N, largest tail, representation error or None, firm-level cost of the first agent)], "resolved",
-"suggested"}; res.numerics.breakpoints and nodes are the grid used (a solve with them reproduces the result).
+"history" [(panels, N, largest tail, representation error or None (the checks run on the grid kept only), the first
+agent's cost, evaluations)], "evaluations" (per round), "resolved", "suggested"}; res.numerics.breakpoints and nodes are the grid used (a solve with them reproduces the result).
 suggest(model) gives the a priori grid without solving.
 """
 from __future__ import annotations
@@ -171,7 +171,8 @@ def _next_grid(bp, nodes, tl, tol, unit, exact) -> Tuple[List[float], int]:
 def _history_row(res, tl) -> tuple:
     rep = max(res.representation_error.values()) if res.representation_error else None
     first = res.model.agents[0].name
-    return (res.compiled.grid.P, int(res.compiled.N), float(tl.max()), None if rep is None else float(rep), float(res.costs.get(first, np.nan)))
+    return (res.compiled.grid.P, int(res.compiled.N), float(tl.max()), None if rep is None else float(rep), float(res.costs.get(first, np.nan)),
+            int(res.evaluations))
 
 
 def solve(model, numerics, start_from, start_policy, run: dict, diagnostics: bool, build, verbose: bool = False):
@@ -201,7 +202,7 @@ def solve(model, numerics, start_from, start_policy, run: dict, diagnostics: boo
             kw["start_from"] = S.interpolate_maps(prev)
         if verbose:
             print(f"  -- age panels, round {rnd}: {len(bp) - 1} panels x {nodes} nodes (N = {(len(bp) - 1) * nodes})", flush=True)
-        res = S.solve(diagnostics=diagnostics, **kw)
+        res = S.solve(diagnostics=False, **kw)                       # the checks once, on the grid kept (below)
         tl = tails(res)
         info["history"].append(_history_row(res, tl))
         ok = bool(tl.max() <= tol)
@@ -218,7 +219,15 @@ def solve(model, numerics, start_from, start_policy, run: dict, diagnostics: boo
             break
         prev, bp, nodes = res, nbp, nn
         info["route"] = "refined"
-    info.update(nodes=nodes, breakpoints=[float(b) for b in bp], tails=[float(x) for x in tl], resolved=bool(tl.max() <= tol))
+    if diagnostics:                                                  # the checks of the grid kept: its engine's own pass
+        import time
+        t0 = time.time()
+        res.solve_kw.pop("diagnostics", None)
+        S._diagnostics(res)
+        res.seconds += time.time() - t0
+        info["history"][-1] = _history_row(res, tl)
+    info.update(nodes=nodes, breakpoints=[float(b) for b in bp], tails=[float(x) for x in tl], resolved=bool(tl.max() <= tol),
+                evaluations=[h[5] for h in info["history"]])
     if not info["resolved"] and res.converged:
         warnings.warn(f"{model.name}: the automatic age panels stopped at N = {(len(bp) - 1) * nodes} with a Chebyshev tail of "
                       f"{tl.max():.1e} (above settings.auto_grid_tol {tol:g}); res.sharpen() re-solves on the suggested grid "

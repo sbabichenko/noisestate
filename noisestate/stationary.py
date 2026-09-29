@@ -331,21 +331,24 @@ class Compiled(CompiledBase):
         if not D:
             return D, None
         IMG = np.zeros((n, ncol))
+        live = {s: {nm for nm in self.prim if Ds[self.block(nm)].any()} for s, Ds in D.items()}
         for a in self.model.agents:
             if a.name in off:
                 continue
             g = maps[a.name]
+            per_row = [self.row_terms(a.name, r, excl)[0] for r in range(len(a.signals))]
+            need = sorted({round(t + s, 12) for terms in per_row for nm, lst in terms.items() for s in D if nm in live[s] for t, _ in lst})
             for ui, u in enumerate(a.controls):
                 bl = self.block(u)
-                for r in range(len(a.signals)):
-                    terms, _ = self.row_terms(a.name, r, excl)
+                ops = self._conv_left_by_shift(g[ui], need)            # (nR, N, N) per shift, every row's map at once
+                for r, terms in enumerate(per_row):
                     for nm, lst in terms.items():
                         for s, Ds in D.items():
-                            Dp = Ds[self.block(nm)]
-                            if not Dp.any():
+                            if nm not in live[s]:
                                 continue
+                            Dp = Ds[self.block(nm)]
                             for t, cf in lst:
-                                IMG[bl] += cf * (self.grid.conv_ops_left_shifted(g[ui, r][:, None], t + s)[0] @ Dp)
+                                IMG[bl] += cf * (ops[round(t + s, 12)][r] @ Dp)
         if nX:
             for i, (nm, lag), cf in self.state_inputs:
                 if nm in excl:
