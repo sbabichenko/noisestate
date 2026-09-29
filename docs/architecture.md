@@ -74,7 +74,7 @@ evaluation calls `SpectralFiniteSolver.best_response`, which is `finite_free.bes
    G_k read one panel at a time by `PanelRows`), the systems of one size solved in one LAPACK call.
 7. **Checks** (with `want_decomp`, at the equilibrium: `_diagnostics`).  The FOC decomposition (foc, physical,
    wedge), the second-order form on the operators (`_second_order`, dense within `second_order_dense`, Lanczos
-   beyond) and the representation error (`reconstruction` against the actions, located by region).
+   beyond; for a convex loss deferred to the first read of its numbers, `engine.Curvature`) and the representation error (`reconstruction` against the actions, located by region).
 
 The means (`spectral_means.py`, the hooks of `EngineBase`'s mean layer) are solved once at the end, in
 `_mean_part`: one linear system on the time nodes from every control's mean first-order condition

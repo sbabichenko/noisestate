@@ -82,6 +82,16 @@ def _staircase_q(A: np.ndarray, reach: np.ndarray, bs: Optional[int] = None) -> 
     return Q
 
 
+def _upper_toeplitz(sym: np.ndarray) -> np.ndarray:
+    """The dense block upper triangular Toeplitz matrix (Na a, Na b) whose block (i, m) is sym[m - i] (a x b) for m >= i:
+    sym (Na, a, b), one strided view of the zero-padded symbol and one copy."""
+    from numpy.lib.stride_tricks import sliding_window_view
+    Na, a, b = sym.shape
+    E = np.concatenate([np.zeros((Na - 1, a, b)), sym])                 # E[s] = sym[s - (Na - 1)]
+    W = sliding_window_view(E, Na, axis=0)                              # W[s, :, :, t] = E[s + t]: block (i, t) at s = Na - 1 - i
+    return np.ascontiguousarray(W[::-1].transpose(0, 1, 3, 2)).reshape(Na * a, Na * b)
+
+
 class StationaryTilt:
     """What one best response of a risk-averse agent freezes at the profile: the atoms' lag kernels, the spike responses
     with and without the own reactions, and the lattice operators; shift() is Delta (nU, N, nW)."""
@@ -223,31 +233,36 @@ class StationaryTilt:
             out[j] += sf.irfft(SG[cc] * Sz, f)[Na:Na + Nt]
         return h * out
 
-    def _At(self, lat, zt, B, key: str = "zt"):
-        """(A' b)_c(u_i) = sum_k z(tau_k - u_i)' b(tau_k) (the weights already in b), (nW, Nu): B (m, Nt); zt = lat[key]."""
-        from scipy import fft as sf
-        Nu = lat["Nu"]
-        f, S = self._spectra(lat, key, B.shape[1], True)
-        out = np.zeros((self.nW, Nu))
-        SB = {}
-        for (j, cc), Sz in S.items():
-            if j not in SB:
-                SB[j] = sf.rfft(B[j], f) if np.any(B[j]) else None
-            if SB[j] is not None:
-                out[cc] += sf.irfft(SB[j] * Sz, f)[:Nu]
-        return out
+    def _stacked(self, lat, keys, n_in: int, rev: bool):
+        """(f, the rfft at length f of every lag kernel of lat[k] for k in keys, stacked (sum of their atoms, nW, f // 2 + 1),
+        reversed for A'), made once per lattice: _K's convolutions as one transform per operand."""
+        memo = lat.setdefault("stacked", {})
+        mk = (tuple(keys), rev, n_in)
+        if mk not in memo:
+            from scipy import fft as sf
+            zt = np.concatenate([lat[k] for k in keys], axis=1)                          # (Na + 1, m (+ mx), nW)
+            f = sf.next_fast_len(n_in + lat["Na"], True)
+            memo[mk] = (f, sf.rfft((zt[::-1] if rev else zt).transpose(1, 2, 0), f, axis=-1))
+        return memo[mk]
 
     def _K(self, lat, G):
-        """K_0 g on the lattice, (nW, Nu)."""
-        Na, Nt = lat["Na"], lat["Nt"]
-        Ag = self._A(lat, lat["zt"], G)
-        out = self._At(lat, lat["zt"], lat["dtau"][None, :] * (self.Q @ Ag))
+        """K_0 g on the lattice, (nW, Nu): A g for the atoms and the integrals' atoms together, A' of both weighted, each
+        by transforming its operand once (the products summed over the kernels in frequency, one inverse per output
+        line: the same convolutions as _A / _At's, rounding-level different)."""
+        from scipy import fft as sf
+        h, Na, Nt, Nu = lat["h"], lat["Na"], lat["Nt"], lat["Nu"]
+        m = lat["zt"].shape[1]
+        keys = ("zt", "zxt") if self.mx else ("zt",)
+        f, SZ = self._stacked(lat, keys, G.shape[1], False)
+        AG = h * sf.irfft(np.einsum("jcf,cf->jf", SZ, sf.rfft(G, f, axis=-1)), f, axis=-1)[:, Na:Na + Nt]   # (m + mx, Nt)
+        B = lat["dtau"][None, :] * (self.Q @ AG[:m])
         if self.mx:
-            Gf = G[:, Na:Na + Nt]                                                        # g at u = tau >= 0
-            out += self._At(lat, lat["zxt"], lat["dtau"][None, :] * (self.Lx @ Gf), "zxt")
-            Axg = self._A(lat, lat["zxt"], G, "zxt")                                            # (mx, Nt)
+            B = np.concatenate([B, lat["dtau"][None, :] * (self.Lx @ G[:, Na:Na + Nt])])
+        f2, SZt = self._stacked(lat, keys, Nt, True)
+        out = sf.irfft(np.einsum("jcf,jf->cf", SZt, sf.rfft(B, f2, axis=-1)), f2, axis=-1)[:, :Nu]
+        if self.mx:
             ind = np.ones(Nt); ind[0] = 0.5                                              # 1_{u >= 0}, half at u = 0
-            out[:, Na:Na + Nt] += (ind * np.exp(-self.rho * lat["tau"]))[None, :] * (self.Lx.T @ Axg)
+            out[:, Na:Na + Nt] += (ind * np.exp(-self.rho * lat["tau"]))[None, :] * (self.Lx.T @ AG[m:])
         return out
 
     def _f(self, lat, ui: int):
@@ -280,10 +295,18 @@ class StationaryTilt:
                 terms = (w[:, None, :] * Rt[kc].transpose(0, 2, 1))[:, :, :, None] * Qz[:, :, None, :]   # (t, j, ip, c)
                 fut[ips] = np.add.reduce(terms.reshape(-1, ips.size, self.nW), axis=0) + 0.0
         else:
-            for ip in range(0, Na):
-                k = np.arange(ip, Na + 1)
-                w = h * disc[k]; w[0] *= 0.5; w[-1] *= 0.5
-                fut[ip] = np.einsum("k,kj,kjc->c", w, Rt[k], Qz[k - ip])
+            # fut[ip] = sum_j sum_{t = 0}^{Na - ip} V[ip + t, j] Qz[t, j] (V = h disc Rt), less half the two end terms (k = ip,
+            # t = 0; k = Na): per j one product with the Hankel matrix of V (a view of it zero-padded), a GEMM in place of
+            # a per-point sum (rounding-level different from it)
+            from numpy.lib.stride_tricks import sliding_window_view
+            V = (h * disc)[:, None] * Rt                                                # (Na + 1, m)
+            Vp = np.concatenate([V, np.zeros((Na + 1, m))])
+            for j in range(m):
+                Hk = sliding_window_view(Vp[:, j], Na + 1)[:Na]                          # Hk[ip, t] = V[ip + t, j]
+                fut[:Na] += Hk @ Qz[:, j, :]
+            ips = np.arange(Na)
+            fut[:Na] -= 0.5 * (V[:Na, :, None] * Qz[0][None]).sum(axis=1)                # k = ip
+            fut[:Na] -= 0.5 * np.einsum("j,ijc->ic", V[Na], Qz[Na - ips])              # k = Na
         if self.mx:
             fut += np.exp(-self.rho * lat["ages"])[:, None] * (lat["Rxt"][ui] @ self.Lx)            # u = 0 .. L (0+ at u = 0)
             fut[Na] *= 0.5                                                               # u = L: the cut, half its value
@@ -429,9 +452,163 @@ class StationaryTilt:
         Q[:, :Na + 1] = Qp.reshape(nW, Na + 1, -1)
         return Q.reshape(nW * Nu, -1)
 
+    GRAPH_BOUND = 1e6                   # _graph: the pivot block's condition and the symbol's l1 norm past which the QR is used
+
+    def _graph(self, lat):
+        """The information's span as a graph over pivot coordinates, or None (then _info_basis's QR serves).
+
+        The basis matrix A of _info_basis (rows (i, c): step i, channel c; columns (m, r): step m, row r) is block upper
+        triangular Toeplitz: A[(i, c), (m, r)] = a[m - i][c, r], a[0] carrying the rows' point loadings, and its last step's
+        rows (i = Na, the age 0) are zero.  Taking nR pivot channels P (where a[0] is best conditioned, a column-pivoted QR
+        of a[0]') and the others F, A = [A_P; A_F] (rows reordered) with A_P square block triangular Toeplitz, invertible
+        with a[0][P], so
+
+            span(A) = span([I; X]),    X = A_F A_P^-1,
+
+        X again block upper triangular Toeplitz, its symbol x = a_F * a_P^-1 (the causal convolution with the series
+        inverse: a Volterra resolvent, computed by one unit-triangular solve).  The projector off the span is then
+
+            Sigma g = [-X' s; s],  (I + X X') s = g_F - X g_P          (the complement form, when |F| <= |P|), or
+            Sigma g = g - [v; X v],  (I + X' X) v = g_P + X' g_F        (the primal form),
+
+        a Cholesky of the smaller Gram, whose entries are lagged sums of the symbol (Toeplitz: each is a partial sum
+        over one lag, O(Na^2) in all instead of a GEMM).  The same projector as the QR's (1e-15 on the stationary CARA
+        models) at a fraction of its cost: the QR of the staircase was most of a risk-averse best response.  A pivot
+        block that is ill conditioned, or a growing resolvent (a row whose noise loading is small next to its drift),
+        leaves the graph steep; past GRAPH_BOUND the QR is used."""
+        from scipy.linalg import qr, solve_triangular, cholesky
+        from numpy.lib.stride_tricks import sliding_window_view
+        key = round(lat["h"], 12)
+        memo = self.__dict__.setdefault("_gpast", {})
+        if key in memo:
+            return memo[key]
+        memo[key] = None
+        h, Na, nW = lat["h"], lat["Na"], self.nW
+        solver, c = self.solver, self.c
+        Zpass = solver._spikes(c, self._maps, self.agent)[0]
+        ytil, yinst = solver._passive_rows(self.agent, Zpass)
+        nR = len(ytil)
+        if nR == 0 or nR >= nW or Na < 1:
+            return None
+        a = np.zeros((Na, nW, nR))                                      # a[d][c, r]
+        for r, y in enumerate(ytil):
+            if any(age != 0.0 for (_, age, _) in yinst[r]):
+                raise NotImplementedError("a risk-averse agent on the stationary engine with a delayed point loading on its rows")
+            a[:, :, r] = h * (lat["I"][:Na] @ y[:, :nW])
+            for (k, age, w) in yinst[r]:
+                a[0, k, r] += w
+        if not np.all(np.isfinite(a)):
+            return None
+        # a row that is pure noise (no drift; one loading: Kyle's order flow for the insider) contributes the unit columns of
+        # its channel at every step, so that channel's past is all seen: Sigma zeroes it (K0), and the graph is of the other
+        # rows on the other channels (their columns less those coordinates span the rest)
+        pure = [r for r in range(nR) if not np.any(a[1:, :, r]) and np.count_nonzero(a[0, :, r]) == 1]
+        K0 = sorted({int(np.flatnonzero(a[0, :, r])[0]) for r in pure})
+        if len(K0) < len(pure):
+            pure, K0 = [], []
+        rows = [r for r in range(nR) if r not in pure]
+        chans = np.array([c_ for c_ in range(nW) if c_ not in K0], dtype=int)
+        a = a[:, chans][:, :, rows]
+        nR = len(rows)
+        if nR == 0:
+            out = {"K0": np.array(K0, dtype=int), "P": None, "Na": Na}
+            memo[key] = out
+            return out
+        if nR >= chans.size:
+            return None
+        _, _, piv = qr(a[0].T, pivoting=True, mode="economic")
+        Pl = np.sort(piv[:nR]); Fl = np.setdiff1d(np.arange(chans.size), Pl)
+        P, F = chans[Pl], chans[Fl]
+        nF = F.size
+        a0 = a[0][Pl]
+        if np.linalg.cond(a0) > self.GRAPH_BOUND:
+            return None
+        a0i = np.linalg.inv(a0)
+        # the series inverse b of a_P (b[0] = a0^-1): the last block column of A_P^-1, from the unit upper triangular system
+        # blockdiag(a0^-1) A_P z = blockdiag(a0^-1) e_last (column m of step m: rows i <= m); one row: the power series
+        # 1 / a_P by Newton's doubling, b <- b - b (a_P b - 1) mod z^2n, two direct convolutions a step
+        cP = np.einsum("pq,dqr->dpr", a0i, a[:, Pl, :])                 # a0^-1 a_P[d], cP[0] = I
+        if Na > 1 and nR == 1:
+            ser, bs, n_ = cP[:, 0, 0], np.ones(1), 1
+            while n_ < Na:
+                m_ = min(2 * n_, Na)
+                e_ = np.convolve(ser[:m_], bs)[n_:m_]                   # a_P b - 1: zero below n_
+                bs = np.concatenate([bs, -np.convolve(bs, e_)[:m_ - n_]])
+                n_ = m_
+            b = (bs * a0i[0, 0])[:, None, None]
+        elif Na > 1:
+            rhs = np.zeros((Na * nR, nR)); rhs[-nR:] = a0i
+            z = solve_triangular(_upper_toeplitz(cP), rhs, lower=False, unit_diagonal=True, check_finite=False)
+            b = z.reshape(Na, nR, nR)[::-1]                              # b[d] = block (Na - 1 - d) of the last column
+        else:
+            b = a0i[None]
+        # x = a_F * b (causal, the first Na lags): one direct convolution per entry, summed over the pivot rows
+        x = np.zeros((Na, nF, nR))
+        aF = a[:, Fl, :]
+        for ci in range(nF):
+            for r in range(nR):
+                acc = np.zeros(Na)
+                for p in range(nR):
+                    acc += np.convolve(aF[:, ci, p], b[:, p, r])[:Na]
+                x[:, ci, r] = acc
+        if not np.all(np.isfinite(x)) or float(np.abs(x).sum(axis=0).max()) > self.GRAPH_BOUND:
+            return None
+        # X dense (F coordinates (i, c) x P coordinates (m, p), time major): X[(i, c), (m, p)] = x[m - i][c, p], m >= i
+        X = _upper_toeplitz(x)
+        comp = nF <= nR
+        # the Gram's lagged sums: complement (I + X X')[(i, c), (j, c')] (i <= j) = sum_{t = 0}^{Na-1-j} x[t + j - i] x[t]';
+        # primal (I + X' X)[(m, p), (m', p')] (m <= m') = sum_{s = 0}^{m} x[s]' x[s + m' - m]
+        xp = np.concatenate([x, np.zeros_like(x)])                          # x[k] = 0 for k >= Na
+        lagged = sliding_window_view(xp, Na, axis=0)[:Na]                   # lagged[d, :, :, t] = x[t + d]
+        if comp:
+            prod = np.einsum("dcrt,tkr->dtck", lagged, x)                   # x[t + d] x[t]'
+        else:
+            prod = np.einsum("tcp,dcqt->dtpq", x, lagged)                   # x[t]' x[t + d]
+        S = np.cumsum(prod, axis=1)                                         # S[d, T] = the partial sum to T
+        del prod
+        k = nF if comp else nR
+        # the lower triangle only (the Cholesky reads no other): block (i + d, i) is block (i, i + d)', S[d, Na - 1 - d - i]
+        # (complement) or S[d, i] (primal), written one block diagonal at a time through the flat (Na Na, k, k) view
+        G5 = np.zeros((Na, Na, k, k))
+        flat = G5.reshape(Na * Na, k, k)
+        for d in range(Na):
+            vals = S[d, Na - 1 - d::-1] if comp else S[d, :Na - d]
+            flat[d * Na::Na + 1][:Na - d] = vals.transpose(0, 2, 1)
+        del S
+        Gm = G5.transpose(0, 2, 1, 3).reshape(Na * k, Na * k)
+        del G5, flat
+        Gm[np.diag_indices_from(Gm)] += 1.0
+        try:
+            Lc = cholesky(Gm, lower=True, check_finite=False)
+        except np.linalg.LinAlgError:
+            return None
+        out = {"K0": np.array(K0, dtype=int), "P": P, "F": F, "X": X, "L": Lc, "comp": comp, "Na": Na}
+        memo[key] = out
+        return out
+
     def _sigma(self, lat, G):
         """Sigma g: the part of g (nW, Nu) the agent has not seen (its information's span taken out on the past block)."""
         Na = lat["Na"]
+        gr = self._graph(lat)
+        if gr is not None:
+            from scipy.linalg import solve_triangular
+            out = G.copy()
+            out[gr["K0"], :Na] = 0.0                                        # pure-noise rows' channels: all seen
+            if gr["P"] is None:
+                return out
+            P, F, X, Lc = gr["P"], gr["F"], gr["X"], gr["L"]
+            gP = G[P, :Na].T.ravel(); gF = G[F, :Na].T.ravel()             # time major (i, c); the step Na is not touched
+            if gr["comp"]:
+                s = solve_triangular(Lc, gF - X @ gP, lower=True, check_finite=False)
+                s = solve_triangular(Lc, s, lower=True, trans="T", check_finite=False)
+                oP, oF = -(X.T @ s), s
+            else:
+                v = solve_triangular(Lc, gP + X.T @ gF, lower=True, check_finite=False)
+                v = solve_triangular(Lc, v, lower=True, trans="T", check_finite=False)
+                oP, oF = gP - v, gF - X @ v
+            out[P, :Na] = oP.reshape(Na, P.size).T
+            out[F, :Na] = oF.reshape(Na, F.size).T
+            return out
         Qp = self._info_basis(lat, full=False)
         out = G.copy()
         gp = G[:, :Na + 1].ravel()

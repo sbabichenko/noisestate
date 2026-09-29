@@ -30,7 +30,7 @@ from typing import Dict, Optional
 import numpy as np
 from scipy.linalg import get_lapack_funcs, lu_solve
 
-from .engine import dense_curvature_form, singular_system_message, symmetrize
+from .engine import PSD_EXTREMES_MIN, dense_curvature_form, psd_extremes, singular_system_message, symmetrize
 from .spec import Agent
 from .spectral_operators import FocOps, InstantResp, PanelRows, PathOp, ProjOps, RespOps, RowOps, instant_resp
 
@@ -44,6 +44,8 @@ class FocSystem:
     and the GMRES solve."""
 
     RISK_KRYLOV_REDUCTION = 1e-4    # a warm-started risk-averse solve stops at this fraction of its initial residual (solve)
+    PREC_GROWTH = 1.3               # the kept time-row preconditioner is rebuilt once GMRES takes more than this times its steps at the build (+2)
+    fresh_preconditioner = False    # set for a solve that must build its own (the equilibrium's decomposition)
 
     def __init__(self, solver, agent: Agent, rowops: RowOps, projops: ProjOps, resp: RespOps, foc: FocOps,
                  Zpass: np.ndarray, phi_past, tilt=None, shift=None, prox=None):
@@ -369,7 +371,15 @@ class FocSystem:
             lu = self.solver._factor_regular(self.agent, A0)
             prec = lambda r: lu_solve(lu, np.asarray(r, dtype=float).ravel(), check_finite=False)       # noqa: E731
         else:
-            blocks = self.preconditioner()
+            # the time-row blocks of the last best response of this agent while its GMRES count stays within PREC_GROWTH of
+            # the count they were built at (they move with the maps by the outer residual, and a warm start near the fixed
+            # point needs a few steps whatever): their build was 8-15% of a matrix-free finite solve.  A fresh build at a
+            # cold start, for the equilibrium's decomposition, and when the count grows; its condition test with it.
+            cache = self.solver.__dict__.setdefault("_prec_cache", {})
+            hit = cache.get(self.agent.name)
+            reuse = (hit is not None and x0 is not None and not self.fresh_preconditioner
+                     and hit[2] <= self.PREC_GROWTH * hit[1] + 2)
+            blocks = hit[0] if reuse else self.preconditioner()
             # LAPACK's getrs on each block's factors: what lu_solve calls, without its checks and wrappers (a few
             # microseconds a block, and a GMRES iteration solves every time row's block)
             getrs, = get_lapack_funcs(("getrs",), (np.zeros((1, 1)),))
@@ -411,6 +421,8 @@ class FocSystem:
             x, rnorm, self.iterations = _gmres_left(self.matvec, prec, b, x, r, atol, restart, maxiter, max_steps=maxiter)
         else:
             x, rnorm, self.iterations = _gmres_left(self.matvec, prec, b, x, r, atol, restart, -(-maxiter // restart))
+        if self.solver.foc_free:
+            cache[self.agent.name] = (blocks, hit[1], self.iterations) if reuse else (blocks, self.iterations, self.iterations)
         resid = rnorm / bn
         atol /= 10.0 * bn                               # the check below: 10 times the tolerance, relative to b
         self.residual = resid
@@ -545,6 +557,7 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
             and profile is not None and profile.get(agent.name) is not None:
         prox = (solver._risk_prox, profile[agent.name])         # the retry of a risk-averse solve (SpectralFiniteSolver._risk_solve)
     system = FocSystem(solver, agent, rowops, projops, resp, foc, Zpass, phi_past, tilt, shift, prox)
+    system.fresh_preconditioner = want_decomp
     gamma, iters = system.solve(solver._last_gamma.get(agent.name))
     if solver.foc_free or tilt is not None:
         solver._last_gamma[agent.name] = gamma
@@ -593,6 +606,23 @@ def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None
 
 
 def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
+    """_curvature_form's check, deferred to the first read of its numbers when the loss form is positive semidefinite
+    (EngineBase._lazy_curvature: the check passes by that certificate; a risk-averse agent's form is then the bound
+    "entropic").  The deferred form keeps only the operators it reads (the responses, the row operators and the loss
+    atoms), not the best response's whole system."""
+    if not solver._curvature_certified(agent):
+        return _curvature_form(solver, agent, system)
+    from types import SimpleNamespace
+    held = SimpleNamespace(nU=system.nU, nR=system.nR, Nm=system.Nm, nG=system.nG, resp=system.resp, rowops=system.rowops,
+                           foc=system.foc, tilt=None, shift=None)
+    held.world_of = lambda gamma: FocSystem.world_of(held, gamma)             # the Lanczos branch's operator (_form_matvec)
+    averse = system.tilt is not None or getattr(system, "shift", None) is not None
+    out = solver._lazy_curvature(agent, lambda: _curvature_form(solver, agent, held, averse=averse, psd=True),
+                                 {"bound": "entropic"} if averse else None)
+    return out
+
+
+def _curvature_form(solver, agent: Agent, system: FocSystem, averse: bool = False, psd: bool = False) -> Optional[dict]:
     """The second-order check (EngineBase._second_order's contract) on the operators: the form M = T' G T on
     the kept strategy, T the strategy -> world map (RowOps then RespOps), G the loss form (the atoms' kernels
     under Q and the sparse mass; a past's initial columns under the point form of the line s = 0, the time
@@ -607,7 +637,12 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
     V = None
     if n <= solver.SECOND_ORDER_DENSE:
         Mfull = symmetrize(_dense_form(solver, agent, system, idx))
-        if system.tilt is None and getattr(system, "shift", None) is None:
+        ext = psd_extremes(Mfull) if psd and n >= PSD_EXTREMES_MIN else None     # a certified form (Curvature), large
+        if ext is None and psd and n >= PSD_EXTREMES_MIN:
+            Mfull = symmetrize(_dense_form(solver, agent, system, idx))       # its Cholesky failed (and consumed it)
+        if ext is not None:
+            (lo, hi), Mfull = ext, None
+        elif not averse and system.tilt is None and getattr(system, "shift", None) is None:
             # LAPACK's syevd on the form itself (numpy's eigvalsh copies it: n^2 more at the peak); the directions are
             # asked of it only for a risk-averse agent's probe, below
             from scipy.linalg import eigh
@@ -615,7 +650,8 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
             Mfull = None
         else:
             w = np.linalg.eigvalsh(Mfull)
-        lo, hi = float(w[0]), float(w[-1])
+        if ext is None:
+            lo, hi = float(w[0]), float(w[-1])
     else:
         matvec = _form_matvec(solver, agent, system, idx)
         res = solver._lanczos_extremes(lambda v: matvec(v)[:, 0], n)
@@ -624,7 +660,7 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
         lo, hi = res["lo"], res["hi"]
     scale = max(abs(lo), abs(hi), 1e-300)
     out = {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -solver.SECOND_ORDER_TOL * scale), "converged": True}
-    if system.tilt is not None or getattr(system, "shift", None) is not None:
+    if averse or system.tilt is not None or getattr(system, "shift", None) is not None:
         # the entropic cost's curvature along a change d of the strategy is E^Q[C''] + theta Var^Q(C') >= E^Q[C''] =
         # tr(S B_d) >= tr(B_d) = E[C''], the form above, when the loss Hessian is positive semidefinite (B_d >= 0 and
         # S = (I - theta K)^-1 >= I): the expected cost's curvature is then a lower bound of the objective's

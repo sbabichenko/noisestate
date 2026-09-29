@@ -119,6 +119,13 @@ computed.
   at the window, and on coarse panels the discrete strategies find a little curvature of either
   sign there (the Chapter 5 example sits at -3e-5 with 6 nodes per panel); the value is reported
   in `res.second_order` and `to_dict()` either way.
+  When the agent's loss is convex (its Q, and a terminal loss's, positive semidefinite; the quadrature
+  masses are), the form is positive semidefinite whatever the responses are, so the check passes by that
+  certificate: the solve does not build the form, and `min` and `max` are computed on first read (of
+  those keys, of the record as a whole, of `res.diagnostics.rows`, `to_dict()` or the summary of a
+  failed check), by the same computation and to the same values.  The verdicts (`statuses`,
+  `assess()`, `status`) need no numbers and leave them unmade.  The form was the cubic part of the
+  checks: 2.5 s of eigenvalues alone at 4032 unknowns, and the memory peak of the large finite solves.
   A windowed stationary objective omits the flows past the edge that read the strategy within the
   last lag, so a cross term between a control and lagged quantities can look indefinite there.  When
   the check finds a negative direction it re-evaluates that direction, zero-extended, on a window

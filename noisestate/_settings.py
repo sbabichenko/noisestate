@@ -65,7 +65,7 @@ class Settings:
     refine_kernel_tol: float = 1e-5     # refine(): relative kernel change below which the grid is resolved
     stability_k: int = 2                # stability(): eigenvalues of largest modulus asked of Arnoldi
     stability_eps: float = 1e-6         # stability(): finite-difference step of the best-response Jacobian, relative to the strategy
-    stability_tol: float = 1e-3         # stability(): ARPACK tolerance
+    stability_tol: float = 1e-3         # stability(): Arnoldi stops at 1e-3 of this on the dominant Ritz pairs' relative residual
     stability_max_evaluations: int = 200    # stability(): rounds of best responses at most, Arnoldi and power iteration together
     stability_fallback: int = 30        # stability(): of those, the rounds kept for the power iteration when Arnoldi does not settle
 

@@ -27,6 +27,125 @@ def _is_eye(M: np.ndarray) -> bool:
     return M.ndim == 2 and M.shape[1] == n and np.count_nonzero(M) == n and bool(np.all(np.diagonal(M) == 1.0))
 
 
+def _psd(M, rtol: float = 1e-12) -> bool:
+    """Whether the symmetric part of M is positive semidefinite up to rtol of its largest entry (None or empty: yes)."""
+    if M is None or np.asarray(M).size == 0:
+        return True
+    M = np.asarray(M, dtype=float)
+    return bool(np.linalg.eigvalsh(0.5 * (M + M.T))[0] >= -rtol * max(1.0, float(np.abs(M).max())))
+
+
+PSD_EXTREMES_MIN = 2500     # psd_extremes: the dimension from which a certified form's extremes come from its Cholesky, not eigh
+
+
+def psd_extremes(M: np.ndarray):
+    """(lo, hi), the extreme eigenvalues of a symmetric positive semidefinite M (a certified second-order form, Curvature):
+    hi by Lanczos on M, then lo as 1 / the largest eigenvalue of M^-1 by Lanczos on M's Cholesky factor, made in place
+    (M is destroyed; no second n x n array, where eigh's tridiagonal reduction is 4/3 n^3 against the Cholesky's n^3 / 3:
+    2.5 -> 0.96 s at 4032 unknowns, the lowest eigenvalue the same to 1e-21 of the largest).  None when the Cholesky
+    fails (a form singular to rounding): the caller rebuilds it for eigh."""
+    from scipy.linalg import solve_triangular
+    from scipy.linalg.lapack import dpotrf
+    from scipy.sparse.linalg import LinearOperator, eigsh
+    n = M.shape[0]
+    v0 = np.random.default_rng(0).standard_normal(n)
+    hi = float(eigsh(LinearOperator((n, n), matvec=lambda v: M @ v, dtype=float), k=1, which="LA", tol=1e-13, v0=v0,
+                     return_eigenvectors=False)[0])
+    C, info = dpotrf(M, lower=1, clean=0, overwrite_a=1)
+    if info != 0:
+        return None
+
+    def inv(v):
+        y = solve_triangular(C, v, lower=True, check_finite=False)
+        return solve_triangular(C, y, lower=True, trans="T", check_finite=False)
+    mu = float(eigsh(LinearOperator((n, n), matvec=inv, dtype=float), k=1, which="LA", tol=1e-12, v0=v0,
+                     return_eigenvectors=False)[0])
+    return 1.0 / mu, hi
+
+
+class Curvature(dict):
+    """res.second_order[agent]: {"min", "max", "ok", "converged"} (and "bound", "edge", ... where a check adds them), the
+    second-order check of the agent's best response.
+
+    When the agent's loss form is positive semidefinite (Q, and a terminal loss's, under a Gram mass with nonnegative
+    weights: EngineBase._curvature_certified), the form M = T' G T is positive semidefinite whatever the responses T are,
+    so its lowest eigenvalue is >= 0 and the check passes by that certificate: "ok" and "converged" are True without the
+    form.  The form and its extreme eigenvalues ("min", "max") are then computed on first read of either (or of the
+    whole record: iterating it, dict(...), to_dict()), by the same dense computation the eager check runs, so the values
+    are those it would have reported.  A solve builds no form for such an agent unless something reads the numbers: the
+    form was the cubic part of the diagnostics (n^3 in the strategy dimension: 7 s at 4032 unknowns and 45 s at 7920 on
+    the finite engine, and the memory peak of the large finite solves).  `pending` says whether they are still to come.
+    The fill holds the operators the form needs (the best response's responses and row operators at the equilibrium),
+    and releases them once it has run."""
+    __slots__ = ("_fill",)
+    _LAZY = frozenset({"min", "max"})
+
+    def __init__(self, known: dict, fill):
+        dict.__init__(self, known)
+        self._fill = fill
+
+    @property
+    def pending(self) -> bool:
+        return self._fill is not None
+
+    def _force(self) -> None:
+        fill = self._fill
+        if fill is not None:
+            self._fill = None
+            dict.update(self, fill())
+
+    def __getitem__(self, key):
+        if self._fill is not None and key in self._LAZY:
+            self._force()
+        return dict.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        if self._fill is not None and key in self._LAZY:
+            self._force()
+        return dict.get(self, key, default)
+
+    def __contains__(self, key):
+        return key in self._LAZY or dict.__contains__(self, key) if self._fill is not None else dict.__contains__(self, key)
+
+    def __iter__(self):                  # overriding it also routes dict(...) and {**...} through keys()/__getitem__
+        self._force()
+        return dict.__iter__(self)
+
+    def keys(self):
+        self._force()
+        return dict.keys(self)
+
+    def items(self):
+        self._force()
+        return dict.items(self)
+
+    def values(self):
+        self._force()
+        return dict.values(self)
+
+    def __len__(self):
+        self._force()
+        return dict.__len__(self)
+
+    def __eq__(self, other):
+        self._force()
+        return dict.__eq__(self, other)
+
+    __hash__ = None
+
+    def __repr__(self):
+        self._force()
+        return dict.__repr__(self)
+
+    def copy(self):
+        self._force()
+        return dict(dict.items(self))
+
+    def __reduce__(self):
+        self._force()
+        return (dict, (dict(dict.items(self)),))
+
+
 _FORM_COLUMNS = 256        # dense_curvature_form: the columns a loss form is applied to, and of M made, at once
 
 
@@ -496,6 +615,35 @@ class EngineBase(MeanLayer):
         shape, zero where _identified masks a node, and takes the result as the best-response map
         the fixed point iterates on."""
         raise NotImplementedError
+
+    def _curvature_certified(self, agent: Agent) -> bool:
+        """Whether the agent's second-order form is positive semidefinite by construction: its loss's Q (and a terminal
+        loss's) is, and so is every mass the form weighs them with (_mass_forms_psd, the engine's), with a positive
+        second_order_tol (a negative one asks for a positive margin, which only the form can show).  Then M = T' G T >= 0
+        for any responses T and the check passes; the numbers come on demand (Curvature)."""
+        if not self.SECOND_ORDER_TOL > 0:
+            return False
+        atoms, Q, _ = self.c.loss[agent.name]
+        QT = ((getattr(self.c, "terminal", None) or {}).get(agent.name) or (None, None, None))[1]
+        return _psd(Q) and _psd(QT) and self._mass_forms_psd(agent)
+
+    def _mass_forms_psd(self, agent: Agent) -> bool:
+        """Hook: whether the masses the engine's second-order form weighs the loss with are positive semidefinite (the
+        stationary Gram mass is; an engine with quadrature weights checks their signs)."""
+        return True
+
+    def _lazy_curvature(self, agent: Agent, compute, known: Optional[dict] = None):
+        """The second-order check: compute() now, or, for a certified agent (_curvature_certified), a Curvature whose
+        min/max compute() fills on first read (the loss forms it caches are released after it)."""
+        if not self._curvature_certified(agent):
+            return compute()
+
+        def fill():
+            try:
+                return compute()
+            finally:
+                self._loss_forms.clear()
+        return Curvature({"ok": True, "converged": True, **(known or {})}, fill)
 
     def _shared_second_order(self, agent: Agent, compute) -> dict:
         """The agent's second-order check, compute() unless its tie representative's is cached (tied agents

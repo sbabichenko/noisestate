@@ -110,7 +110,9 @@ def _radius_when_the_window_fails(res, asked: bool) -> None:
     """
     if asked or getattr(res, "stability_report", None) is not None:
         return
-    if not res.converged or not any(d["name"] == "window" and d["ok"] is False for d in res.diagnostics.rows):
+    # the raw rows (names and verdicts): res.diagnostics.rows would resolve every row's value, a deferred second-order
+    # check's form with them (engine.Curvature), which this needs no part of
+    if not res.converged or not any(d["name"] == "window" and d["ok"] is False for d in res._check_rows()):
         return
     try:
         res.stability()

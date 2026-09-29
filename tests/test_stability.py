@@ -87,3 +87,32 @@ def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
     assert report(good) is None                                 # a window that passes pays nothing
     shipped = ns.solve(example_path("ch3_two_player"))           # window 3: flagged, but a truncation
     assert report(shipped) is not None and report(shipped).radius < 1.0
+
+
+def test_the_arnoldi_finds_a_cluster_of_equal_moduli():
+    """stability()'s eigensolver (results._arnoldi_dominant) against numpy's eig: on a generic matrix it stops early with
+    the dominant pair to 1e-9, and on one whose four largest eigenvalues share a modulus (Chapter 6's opaque market's
+    Jacobian, on which ARPACK ran out of budget and the power iteration's fallback read 3.5% high) it runs to the
+    Krylov space's dimension and returns that modulus."""
+    import numpy as np
+    from noisestate.results import _arnoldi_dominant
+    rng = np.random.default_rng(5)
+    n = 60
+    A = rng.standard_normal((n, n)) / np.sqrt(n)
+    lam = np.linalg.eigvals(A); lam = lam[np.argsort(-np.abs(lam))]
+    count = [0]
+    def mv(x):
+        count[0] += 1
+        return A @ x
+    v = rng.standard_normal(n)
+    got = _arnoldi_dominant(mv, v, A @ v, 2, 1e-9)
+    assert abs(np.abs(got).max() - np.abs(lam[0])) < 1e-9 and count[0] < n
+    th = np.exp(1j * np.array([0.3, -0.3, 2.0, -2.0]))
+    Q, _ = np.linalg.qr(rng.standard_normal((n, n)))
+    blocks = np.zeros((n, n))
+    for i, t in enumerate(th[::2]):
+        blocks[2 * i:2 * i + 2, 2 * i:2 * i + 2] = 1.08 * np.array([[t.real, -t.imag], [t.imag, t.real]])
+    blocks[4:, 4:] = np.diag(np.linspace(-0.9, 0.9, n - 4))
+    B = Q @ blocks @ Q.T
+    got = _arnoldi_dominant(lambda x: B @ x, v, B @ v, 2, 1e-6)
+    assert abs(np.abs(got).max() - 1.08) < 1e-9

@@ -257,6 +257,35 @@ def test_stationary_kyle_operators():
     assert errs[1][0] < 2e-4 * abs(C0) and errs[1][1] < 2e-4 * abs(dC), (errs, C0, dC)
 
 
+@pytest.mark.parametrize("which", ["kyle", "signal"])
+def test_the_graph_projector_is_the_qr_projector(which):
+    """Sigma (the part of a shock path the agent has not seen) by the pivoted graph of the information's span
+    (StationaryTilt._graph: a Toeplitz resolvent and a small Cholesky) against the orthonormal basis of its QR, on both
+    lattices: the same projector to rounding, idempotent, and it annihilates the basis's columns."""
+    from noisestate.stationary import StationarySolver
+    from noisestate.stationary_risk import StationaryTilt
+    m0, m1, agent = ((kyle_stationary(0.0), kyle_stationary(1.0), "trader1") if which == "kyle"
+                     else (lq(0.0, "signal", 16), lq(0.5, "signal", 16), "p1"))
+    r = ns.solve(m0, diagnostics=False)
+    sol = StationarySolver(m1)
+    a = [x for x in m1.agents if x.name == agent][0]
+    tl = StationaryTilt(sol, a, r.maps, 1.0)
+    rng = np.random.default_rng(3)
+    for h in tl.hs:
+        lat = tl._lattice(h)
+        gr = tl._graph(lat)
+        assert gr is not None and gr["K0"].size == (1 if which == "kyle" else 0)     # Kyle's order flow: a pure-noise row
+        G = rng.standard_normal((tl.nW, lat["Nu"]))
+        S = tl._sigma(lat, G)
+        Qp = tl._info_basis(lat, full=False)
+        gp = G[:, :lat["Na"] + 1].ravel()
+        ref = G.copy(); ref[:, :lat["Na"] + 1] -= (Qp @ (Qp.T @ gp)).reshape(tl.nW, -1)
+        assert np.abs(S - ref).max() < 1e-12 * np.abs(ref).max()
+        assert np.abs(tl._sigma(lat, S) - S).max() < 1e-12 * np.abs(S).max()
+        B = np.zeros((tl.nW, lat["Nu"])); B[:, :lat["Na"] + 1] = Qp[:, 7].reshape(tl.nW, -1)
+        assert np.abs(tl._sigma(lat, B)).max() < 1e-12
+
+
 def test_discounted_wealth_integral_matches_the_kyle_reference():
     """Kyle-Back with a random-walk value on a finite horizon, discounted (rho 0.5): the insider's wealth written as the
     fundamental-valued flow plus the integral -sigma_V int e^{-rho t} Q dW_V (which no terminal form can write with a
