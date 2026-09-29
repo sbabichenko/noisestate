@@ -83,9 +83,9 @@ values and without a solve; a notebook cell shows the same content as HTML.
 | `horizon.settle` | number or expression | kind transition only, in place of `T` (exactly one): the settle tolerance T is found for by the march in T ([transitions.md](transitions.md)) |  |
 | `numerics` | object | how the model is solved: the engine, the grid, the fixed point's options, the settings |  |
 | `numerics.engine` | `stationary` \| `spectral` | default from horizon.kind: stationary -> stationary, else spectral | `stationary` for kind stationary, else `spectral` |
-| `numerics.nodes` | integer >= 2 | nodes per panel (stationary) or per side of each piece (spectral); default 16 | 16 (12 from the CLI's `transition`) |
+| `numerics.nodes` | integer >= 2 | nodes per panel (stationary) or per side of each piece (spectral); a stationary model that gives none of `nodes`, `unit_range`, `breakpoints` has its panels and nodes chosen automatically ([method.md](method.md), age panels) | 16; stationary: automatic (12 from the CLI's `transition`) |
 | `numerics.unit` | number or expression | the panel unit: every lag and delay must be a multiple of it | the smallest lag |
-| `numerics.unit_range` | number or expression | the age (stationary) or time (spectral) up to which the panels are unit panels | the window |
+| `numerics.unit_range` | number or expression | the age (stationary) or time (spectral) up to which the panels are unit panels (an expert's override on a stationary model: the automatic panels need none) | stationary: automatic; spectral: the window |
 | `numerics.breakpoints` | list of number or expression | an explicit panel sequence from 0 to the window | the lags' multiples closed under every lag and delay |
 | `numerics.continuation_nodes` | integer >= 2 | a transition's stationary continuation solved at this many nodes | `nodes` |
 | `numerics.tol` | number or expression | the fixed point's tolerance (default 1e-10 stationary, 1e-8 finite) | 1e-10 stationary, 1e-8 finite |

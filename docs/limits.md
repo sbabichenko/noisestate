@@ -230,7 +230,13 @@ off, so a kernel read with a lag d jumps at L - d (2.3e-6 of the peak on the pri
 L - tau = 23.5), and that line lay inside the last geometric panel beyond `unit_range`, an error no node count removes.
 The geometric panels are now cut at L - d for every lag d (one panel more on that market): the error falls with the
 nodes, 3.6e-7, 1.6e-7, 7.0e-8 and 6.9e-9 at 8, 10, 12 and 14, and the shipped 8-node example passes the check (its
-cost moves from 4.5271471 to 4.5271409, the 12- and 14-node values being 4.5271408).
+cost moves from 4.5271471 to 4.5271409, the 12- and 14-node values being 4.5271408).  The lags were still resampled on
+the geometric panels, which bounded the whole solution by the tail's resolution (2e-6 in the unit panels against a
+uniform reference whose representation error is 6e-12); the exact shifts (method.md) remove that, and the automatic
+panels cut on the unit lattice, where the window's edge read at the lags breaks the kernels (L - 2 tau held a six-unit
+window's market at 3e-5 inside a panel whatever its nodes, and Chapter 5's orders at 2e-7 of their peak at ages 22-23,
+where the last wide panel's tail read 7e-8): the automatic panels cut at L - tau and L - 2 tau, and Chapter 5's market is
+2.6e-8 from its uniform reference in one round at 132 nodes.
 The stationary engine's risk-averse agents (consistent planning) break down where theta times the conditional
 cost's largest eigenvalue reaches 1.  The continuation in theta follows the finite engine's steps past its 0.5 step (a jump
 from 0.5 to 1 landed the one-agent signal model at theta 1 on a spurious fixed point past the breakdown; the steps reach

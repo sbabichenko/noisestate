@@ -541,7 +541,12 @@ in [docs/guards.md](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/gua
 **Resolution.**  The representation error of the action kernels on the seen rows above 1e-6 prints
 `UNDER-RESOLVED (representation error 1.3e-05: raise numerics.nodes)`.  `solve(..., refine=True)` or
 `res.refine()` re-solves at 1.5 times the nodes and reports the change of every cost and kernel, with
-`resolved=False` when either moves more than its tolerance.
+`resolved=False` when either moves more than its tolerance.  A stationary model whose `numerics` give none of
+`nodes`, `unit_range` and `breakpoints` has its age panels chosen for it: unit panels through its lags, then panels
+growing geometrically, refined where the kernels' Chebyshev tails are above `settings.auto_grid_tol` (1e-7);
+`res.panels` says what was chosen and how, `res.numerics` holds the grid (a solve with it reproduces the result), and
+any of the three fields given is an expert's grid, solved as given.  Lags need not be aligned with the panels: the
+stationary engine reads a kernel at a lag exactly on any panels.
 
 **Window.**  On the stationary engine a kernel still moving by more than 2% of its peak over the last
 tenth of the window prints `WINDOW TOO SHORT (a kernel still moves by 4.1% of its peak over the last

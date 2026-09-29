@@ -442,6 +442,32 @@ dropping the least recently used grids beyond that.
   `tests/test_exact_delay.py`) the cost agrees to 7e-11 and the kernels to 6e-6 at 16 nodes per
   panel, the representation error is 3e-13, the action is exactly zero below the delay, and the
   costs are identical to eight digits between 12 and 24 nodes at a fixed window.
+* Exact shifts (stationary engine).  A kernel read at a lag s is f(a - s): a piecewise polynomial on the panels moved by
+  s.  On panels aligned with the lag (every breakpoint plus s a breakpoint: unit panels, a delayed row's closure) the
+  resampling matrix `shift(s)` is exact; on a geometric tail it interpolates a function that breaks inside a panel, an
+  error no number of nodes removes, and it polluted the whole solution (Chapter 5's market on its shipped grid: 2e-6 in
+  the unit panels against a uniform reference, the representation error's floor, and at 12 or more firms a first-order
+  condition of condition number 5e10 and a map noise floor that stalled the fixed point).  Where some lag is not aligned,
+  the engine carries every lag as an argument of its operators instead (`grid.py`, exact shifts): a row reads each primary
+  at a shift (`row_terms`), the convolutions, correlations, masses and the states' propagators split their Gauss
+  quadratures at the shifted breakpoints, the spike responses keep a map read at a lag (an observer seeing an excluded
+  control through a lagged atom) as a kernel of that shift, and the first-order-condition kernel is a sum over shift
+  classes, each projected on the rows by its own correlation.  The discrete problem is then the continuous one on
+  piecewise-polynomial kernels, and the error is the panels' own resolution: Chapter 5's market on its automatic 132
+  nodes is 2.6e-8 from a 576-node uniform reference in the kernels and 3e-10 in the cost (the shipped 168-node grid,
+  resampled: 1.9e-6 and 2.6e-8; the former default 224 nodes: 8.4e-8),
+  the second-order form on the strategies read within the window is positive definite with the bespoke solver's
+  condition number, and 12 and 24 firms converge in 49 and 50 evaluations.  Instant observations, level rows, monitored
+  deviations and risk-averse agents keep the resampling (their operators are not written for shifted kernels; no model of
+  the suite has them with lags), which is exact on aligned panels.
+* Automatic age panels (stationary engine, `age_panels.py`).  A model whose numerics give none of `nodes`, `unit_range`
+  and `breakpoints` is solved on panels chosen from its lags: unit panels through the largest lag and two units, then
+  panels growing by 1.5 cut on the unit lattice (the multiples of the unit from 0 and back from the window's edge, where
+  the kernels break) and at L - tau, L - 2 tau, 12 nodes; one panel of 16 nodes without lags.  The result is checked by the Chebyshev tails of its
+  kernels per panel, and a grid above `auto_grid_tol` has its offending panels cut at the lattice point nearest their
+  middle (two more nodes on every panel where no cut helps) and is re-solved from its maps, within `auto_panels_max`
+  and `auto_panels_memory`; `res.panels` records the route, the grid, the tails and the history, and `res.numerics` the
+  grid used.  Any of the three fields given is the expert's grid, solved as given (on exact shifts where it needs them).
 * Costs are integrated with exact Gram matrices, so a converged best response is optimal against
   every feasible perturbation to round-off; `tests/test_properties.py` checks this on both engines
   without any reference solution, together with the equivalence of the two iteration variables
