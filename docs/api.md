@@ -174,11 +174,12 @@ means something is.
 | `res.require_converged()` | returns `res`, or raises `ConvergenceError`. Convergence only |
 | `res.require_ok(policy=Policy.PUBLICATION)` | returns `res`, or raises. **Every required, applicable check must have PASSED** |
 | `res.refine(factor=1.5)` | a `Refinement` carrying the finer `Result` in full |
+| `res.check_window(factor=1.5)` | stationary: a `WindowCheck`, the costs re-solved on a window 1.5 times as long (`window_check.cost_change`); the publication policy's `window cost` check, which `require_ok()` measures |
 | `res.panels` | a finite horizon without lags: how its time panels were found (`route`, `rates`, `history`, `resolved`, `suggested`, `stopped`; [limits.md](limits.md), time scales) |
 | `res.sharpen(breakpoints=None, **solve_kw)` | the model re-solved on `res.panels["suggested"]` (or the breakpoints given), started from `res`: the step after a budget warning, or after a fast one-panel answer (`settings.auto_panels_max = 0`) |
 | `res.stability(untied=True, policy=…)` | a `Stability` — see below |
 
-`Policy.PUBLICATION` requires `converged`, `resolution`, `window`, `second_order`, `settled`;
+`Policy.PUBLICATION` requires `converged`, `resolution`, `window`, `window cost`, `second_order`, `settled` (and a transition's `past window`, `continuation window`);
 `Policy.EXPLORATORY` requires only `converged` and must be requested explicitly.
 
 **Exceptions are siblings, not nested:**
