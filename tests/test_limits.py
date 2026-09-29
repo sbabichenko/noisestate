@@ -62,7 +62,8 @@ def test_a_long_horizon_is_graded_to_the_closed_form():
     assert abs(res.costs["a"] / lqg_cost(10.0) - 1) < 1e-8
     assert max(res.representation_error.values()) <= 1e-6 and res.diagnostics.statuses["resolution"] is ns.Status.PASSED
     again = ns.solve(lqg(10.0), {"breakpoints": res.numerics.breakpoints})
-    assert again.costs == res.costs
+    assert again.costs.keys() == res.costs.keys()                # the same grid: equal to rounding (the last bit moves
+    assert all(abs(again.costs[a] - c) <= 1e-12 * abs(c) for a, c in res.costs.items())   # with the BLAS thread count)
 
 
 def test_explicit_breakpoints_are_never_regraded():
