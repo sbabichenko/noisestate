@@ -33,6 +33,15 @@
   error of 0.2 to 0.9 at every node count; the corners of such an agent's projection now carry the point condition they
   had with a past, and the one-agent model is exact to 1e-12 (the finite Chapter 6 market at gamma 0.1 moves by 8e-5
   to its converged value).  Every other model is bit-identical.  Found by the randomized campaign (extras/fuzz).
+- An instant observer best-responds in the passive world closed under its own instant reaction (the map off, the
+  reaction on), and its action is reported as map part plus reaction.  Before, the reaction was switched off with the
+  map, so the best response was the best function of its rows alone and left a remainder no map represents when the
+  seen level carries information beyond the rows (representation error 0.37; the two iteration variables settled on two
+  different fixed points, neither the equilibrium).  Stationary and finite now agree with an independent discrete
+  reference; the FOC operator keeps the agent's own atoms where a monitored response carries its own instant reaction
+  (foc_residual 3.9e-2 -> 2.5e-12).  Chapter 6's markets, whose quote is in the trader's rows, move by at most 1e-10.
+- Ties: a single tie group whose agents differ by the names of public states (a ring where each player sees its
+  neighbour's state) is tied by a verified cyclic relabelling (`symmetry.find_cyclic_symmetry`) instead of refused.
 
 ### Added
 
@@ -40,6 +49,10 @@
   discrete brute-force reference, the one-agent closed form, cross-engine checks, invariances and self-consistency under
   one rule (correct within the stated accuracy, or say so); `tests/test_fuzz.py` (a smoke set in the fast suite, the
   campaign under NOISESTATE_SLOW) and `extras/fuzz/campaign.py` for larger campaigns with repros.
+- `Result.check_window(factor=1.5)`: re-solves a stationary model on a 1.5x longer window and reports the relative cost
+  change as the `window cost` check (`settings.window_cost_tol`, 1e-6).  It is part of `Policy.PUBLICATION`, SKIPPED
+  until measured, and measured by `require_ok()` and `--require-ok`; the kernel-tail `window` check alone let a result
+  be 5e-4 off in cost.
 - A finite horizon long against the model's time scales is re-cut automatically (`noisestate/time_panels.py`): a model with
   no `numerics.breakpoints`, no lags and no past window or continuation is solved on its one panel first, as before, and
   when that fails the resolution check by more than nodes fix (representation error above 5e-4) or is singular, it is
