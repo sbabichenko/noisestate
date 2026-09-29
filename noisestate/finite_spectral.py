@@ -575,13 +575,13 @@ class SpectralFiniteSolver(SpectralMeans, MonitoredDeviations, EngineBase):
         return {a.name: self.maps_from_world(a, Z, self._map_part(a, Z, actions[a.name])) for a in self.model.agents}
 
     # ------------------------------------------------------- instant observations and monitored deviations
-    #  The iteration is monitoring.py's (MonitoredDeviations), as on the stationary engine; the pieces here: a spike of a control draws the
-    #  instant reactions of the agents seeing its level (c.composite); for an origin i with privy players, the seed
-    #  world W_i = Z0_i + sum_v C_v D^{v<-i}, the privy players' maps off in Z0_i, C_v the response operator of v's
-    #  spike (here a two-time kernel: the response at t to a spike at the node's shock time, RespOps' path), the
-    #  kernels D^{v<-i}(t, s) fixed by the privy players' first-order conditions on W_i at every node; the deviating
-    #  player's own first-order condition sees its frozen spike answered by the privy players as the blip seeds it
-    #  decomposes into (Lemma 6.6), and the path is built with the ordinary spike responses.
+    #  The iteration is monitoring.py's (MonitoredDeviations), as on the stationary engine; the pieces here: a spike
+    #  of a control draws the instant reactions of the agents seeing its level (c.composite); for an origin i with
+    #  privy players, the seed world W_i = Z0_i + sum_v C_v D^{v<-i}, the privy players' maps off in Z0_i, C_v the
+    #  response operator of v's spike (here a two-time kernel: the response at t to a spike at the node's shock time,
+    #  RespOps' path), the kernels D^{v<-i}(t, s) fixed by the privy players' first-order conditions on W_i at every
+    #  node; the deviating player's own first-order condition sees its frozen spike answered by the privy players as
+    #  the blip seeds it decomposes into (Lemma 6.6), and the path is built with the ordinary spike responses.
 
     def _spikes(self, c, maps, agent: Agent, excluded=None, own_frozen: bool = True):
         """(Zpass (n_prim N, ncol), R (n_prim N, nU)): the closed loop with `excluded` (default the agent) off, and

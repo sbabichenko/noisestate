@@ -52,11 +52,10 @@ def _build(model: Model, numerics=None, *, verbose: bool = False, past=None, con
         if past is not None or continuation is not None:
             raise TypeError("past= and continuation= belong to a finite horizon or a transition (the spectral engine), not the stationary one")
     else:
-        if num.engine == "spectral":
-            if past is not None:
-                kw["past"] = past
-            if continuation is not None:
-                kw["continuation"] = continuation
+        if past is not None:
+            kw["past"] = past
+        if continuation is not None:
+            kw["continuation"] = continuation
     return ENGINE_CLASSES[num.engine](model, **kw), num
 
 
