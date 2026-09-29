@@ -4,6 +4,13 @@
 
 ### Changed
 
+- `examples/ch4_kyle_back.yaml` ships on a window of 12 (was 8), where it passes every publication check: on 8 the
+  `window cost` check (a solve on 1.5 L) moved the trader's profit by 6.5e-5 (0.820818 against 0.820871) and
+  `require_ok()` refused the example the README prints in full; on 12 it moves it by 8e-8.  The trader's cost is
+  now -0.820871150 (the market maker's, which omits V^2 and grows with the window, -9.8835).  The Python form in
+  `examples/expr_examples.py` follows; tests that compare with records made on 8 (the C++ references, Chapter 6's
+  competitive corner, the undiscounted artefact) pin the window of 8 themselves.
+
 - A model with instant observations (Chapter 6's markets) iterates on sequential best responses
   (Gauss-Seidel, `settings.best_responses`, default "auto"; "sequential" and "simultaneous" force either): the agents
   answer in the model's order, each against the profile the agents before it have answered, the origins of monitored

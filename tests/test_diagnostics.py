@@ -123,18 +123,19 @@ def test_the_discount_does_not_take_the_second_order_check_away():
     kb = ns.solve(example("ch4_kyle_back"), {"nodes": 20})
     assert kb.model.horizon.discount > 0 and kb.model.horizon.kind == "stationary"
     assert kb.diagnostics.statuses["second_order"] is Status.PASSED
-    #  the flagship example passes every check but the costs' window at its shipped L = 8: a window of 12 moves the
-    #  trader's cost by 6.5e-5 (the publication policy's `window cost`, measured by require_ok); on L = 12 it is acceptable
-    blocking = {b.check for b in kb.diagnostics.assess().blocking}
-    assert blocking == {"window cost"}
+    #  the flagship example passes every check at its shipped L = 12, the costs' window included (the publication
+    #  policy's `window cost`, measured by require_ok: a window of 18 moves the trader's cost by 8e-8); on L = 8, where
+    #  it shipped before, a window of 12 moves it by 6.5e-5 and require_ok refuses it
+    assert {b.check for b in kb.diagnostics.assess().blocking} == {"window cost"}          # skipped until measured
+    assert kb.require_ok() is kb and kb.window_check.cost_change < 1e-6
+    short = ns.solve(example("ch4_kyle_back").with_stationary(8.0), {"nodes": 20})
     with pytest.raises(ns.DiagnosticsError, match="WINDOW TOO SHORT FOR THE COSTS"):
-        kb.require_ok()
-    longer = ns.solve(example("ch4_kyle_back").with_stationary(12.0), {"nodes": 20})
-    assert longer.require_ok() is longer and longer.window_check.cost_change < 1e-6
-    #  and the SIGN of the curvature -- the verdict -- does not move with the discount
+        short.require_ok()
+    #  and the SIGN of the curvature -- the verdict -- does not move with the discount (on the window of 8 this record was
+    #  made on: near rho = 0 the undiscounted problem has no solution, and on 12 its window artefact is not a minimum)
     verdicts = {}
     for rho in (1e-9, 0.1, 0.5, 1.0):
-        res = ns.solve(example("ch4_kyle_back").with_params(rho=rho), {"nodes": 16})
+        res = ns.solve(example("ch4_kyle_back").with_stationary(8.0).with_params(rho=rho), {"nodes": 16})
         verdicts[rho] = {a: d["ok"] for a, d in res.second_order.items()}
         assert all(d["min"] > 0 for d in res.second_order.values()), f"rho={rho}: {res.second_order}"
     assert all(v == verdicts[1e-9] for v in verdicts.values()), verdicts

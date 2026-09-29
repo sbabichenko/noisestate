@@ -24,7 +24,7 @@ CASES = [("ch4_N24_L8_e0.2_r0_q1_g1.json", 0.0, False), ("ch4_N24_L8_e0.2_r0.5_q
 def test_ch4_matches_kb_spectral_q(fname, rho, two):
     ref = ns.read_json(os.path.join(SP, fname)) if fname else None
     d = ns.load(os.path.join(HERE, "..", "examples", "ch4_kyle_back.yaml")).to_dict()
-    d["params"]["rho"] = rho
+    d["params"]["rho"] = rho; d["horizon"]["window"] = 8.0            # the references' L8
     if two:
         d = two_trader(d)
     res = ns.solve(ns.Model.from_dict(d))

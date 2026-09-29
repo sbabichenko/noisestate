@@ -199,7 +199,7 @@ def test_stationary_consistent_planning_matches_the_reference(stat_ref, obs, nod
 
 def kyle_stationary(theta=0.0, nodes=16, wealth=True):
     d = ns.load(ns.example("ch4_kyle_back")).to_dict()
-    d["numerics"]["nodes"] = nodes
+    d["numerics"]["nodes"] = nodes; d["horizon"]["window"] = 8.0         # the window these records were made on
     if wealth:
         d["states"]["Q1"] = {"drift": {"D1": 1.0}, "noise": {}}
         d["agents"]["trader1"]["integrals"] = [["-sigma_V", "Q1", "wV"]]

@@ -104,7 +104,7 @@ def test_two_agents_between_open_loop_and_closed_loop_nash():
 def test_examples_unchanged_and_means_zero_without_a_driver():
     """No linear term and no constant drift: every mean is exactly zero, with no solve, and the costs are what they were."""
     for f, costs in (("ch3_two_player.yaml", {"player1": 0.42895400568415, "player2": 0.498143327906243}),
-                     ("ch4_kyle_back.yaml", {"market_maker": -5.88370453385775, "trader1": -0.820818198321814})):
+                     ("ch4_kyle_back.yaml", {"market_maker": -9.883485143225153, "trader1": -0.8208711497505051})):
         res = ns.solve(os.path.join(EX, f)).require_converged()
         assert all(abs(res.costs[k] - v) < 1e-12 for k, v in costs.items())
         assert all(v == 0.0 for v in res.means.values()) and set(res.model.state_names + res.model.control_names) <= set(res.means)

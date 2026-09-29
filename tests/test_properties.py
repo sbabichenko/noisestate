@@ -23,6 +23,7 @@ def _feasible_perturbation(S, agent, Zpass, rng):
 
 def test_stationary_best_response_is_optimal_kyle_back():
     d = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict(); d["params"]["rho"] = 0.0   # the flow loss is the objective only at rho = 0
+    d["horizon"]["window"] = 8.0                               # undiscounted, the fixed point is the window's (reached on 8)
     S = StationarySolver(ns.Model.from_dict(d)); res = S.solve().require_converged()
     assert (res.diagnostics.statuses["resolution"] is Status.PASSED) and max(res.representation_error.values()) < 1e-9     # well-resolved reference models
     a = S.model.agents[1]; c = S.c; nW = c.nW

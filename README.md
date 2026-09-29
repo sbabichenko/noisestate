@@ -335,7 +335,7 @@ agents:
       flow: sigma_Z dwZ                         # sees the flow net of its own orders
     loss: -D1 V + D1 P + eps D1^2
 horizon:
-  window: 8.0
+  window: 12.0
   discount: rho
 numerics: {nodes: 24}
 ```

@@ -81,6 +81,7 @@ def test_numeric_export_is_loadable_and_equivalent():
 
 def test_window_tail_ignores_random_walk_states_and_flags_the_undiscounted_kyle_back():
     kb = ns.load(os.path.join(EX, "ch4_kyle_back.yaml")).to_dict(); kb["params"]["rho"] = 0.0
+    kb["horizon"]["window"] = 8.0                                            # the window this record was made on
     bad = ns.solve(kb)
     assert "WINDOW TOO SHORT" in bad.summary()                               # rho = 0: the average-cost artefact
     diagnostic = next(d for d in bad.to_dict()["diagnostics"] if d["name"] == "window")

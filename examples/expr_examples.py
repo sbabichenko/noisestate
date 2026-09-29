@@ -59,7 +59,7 @@ def ch4_kyle_back() -> ns.Model:
     trader1 = ns.Agent("trader1", controls=D1,
                        observes={"y1": (gamma1 * V - gamma1 * P) * dt + dw1, "flow": sigma_Z * dwZ},
                        loss=-D1 * V + D1 * P + eps * D1**2)
-    return ns.Game(V, [market_maker, trader1], window=8.0, discount=rho, name="ch4_kyle_back", nodes=24)
+    return ns.Game(V, [market_maker, trader1], window=12.0, discount=rho, name="ch4_kyle_back", nodes=24)
 
 
 def ch5_cycle_market(N: int = 3) -> ns.Model:

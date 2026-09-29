@@ -107,7 +107,8 @@ computed.
   0.66 on 16, at 12, 24 and 48 nodes.  There is no number to quote, which is the point; an earlier
   version of this line pinned two of them.  The example ships with `rho: 0.5`, where the profit is
   0.820818, 0.820871 and 0.820871 on windows of 8, 16 and 32: a discount makes the problem
-  well posed and the answer stops depending on the truncation.
+  well posed and the answer stops depending on the truncation.  It ships on a window of 12, where
+  the `window cost` check (a solve on 1.5 L) moves the profit by 8e-8; on 8 it moved it by 6.5e-5.
 * Every stationary result, at any discount, and every finite-horizon result carry
   `res.second_order[agent]`: the agent's objective is a quadratic form in its strategy, computed
   exactly on the feasible strategies from the cost's own Gram matrix, and its smallest eigenvalue
