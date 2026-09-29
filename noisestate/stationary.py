@@ -1825,14 +1825,47 @@ class StationarySolver(MonitoredDeviations, EngineBase):
 
     def _diagnostics(self, res) -> None:
         """The first-order-condition decomposition, the second-order check and the representation error of
-        every agent's best response at the equilibrium: direct solves (the fixed point's kept factorisations released
-        first, none kept for these one-off best responses: _foc_gamma, _project)."""
+        every agent's best response at the equilibrium.  A cyclically symmetric tie at symmetric maps (the closed loop's
+        own condition for its mode solve; risk-neutral, unmonitored): the followers' are the representative's relabelled
+        along the cycle -- a follower t steps on is the representative's problem with every name moved t steps, so its
+        FOC kernels are the representative's on the moved channels and its curvature and representation error are the
+        representative's -- instead of a best response each."""
         self.__dict__.pop("_foc_lu", None); self.__dict__.pop("_proj_chol", None)
-        self._reuse_off = True
+        self._reuse_off = True                  # direct solves, no factors kept, for these one-off best responses
         try:
-            self._fill_diagnostics(res)
+            self._diagnostics_inner(res)
         finally:
             self._reuse_off = False
+
+    def _diagnostics_inner(self, res) -> None:
+        c = self.c; sym = c.sym
+        if (sym is None or c.instant_loads or c.levels or not c._maps_symmetric(res.maps)
+                or any(a.risk_aversion or a.monitors for a in self.model.agents)
+                or any(c.rep[f] != sym.agents[0] for f in sym.agents)):
+            self._fill_diagnostics(res)
+            return
+        rep = sym.agents[0]
+        self._fill_diagnostics(res, agents=[a.name for a in self.model.agents if a.name not in sym.agents[1:]])
+        ch = {w: i for i, w in enumerate(c.channels)}
+        names = sym.names
+        for t, f in enumerate(sym.agents[1:], start=1):
+            def step(x, t=t):                                       # a name moved t steps along the cycle
+                for _ in range(t):
+                    x = names.get(x, x)
+                return x
+            perm = np.array([ch[step(w)] for w in c.channels], dtype=np.intp)   # follower channel perm[k] carries rep's k
+            dec = {}
+            for u, d in res.foc[rep].items():
+                dd = {}
+                for key, K in d.items():
+                    out = np.empty_like(K); out[:, perm] = K
+                    dd[key] = out
+                dec[step(u)] = dd
+            res.foc[f] = dec
+            if rep in res.second_order:
+                res.second_order[f] = res.second_order[rep]
+            res.representation_error[f] = res.representation_error[rep]
+            self._diagnostics_extra(res, next(a for a in self.model.agents if a.name == f))
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
         """Stationary flow loss per unit time of the agent in the world Z (exact Gram quadrature): the
