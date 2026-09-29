@@ -46,6 +46,42 @@ from typing import Dict, Optional
 import numpy as np
 
 
+def _staircase_q(A: np.ndarray, reach: np.ndarray, bs: Optional[int] = None) -> np.ndarray:
+    """The orthonormal factor Q (n, k = min(n, q)) of the Householder QR of A (n, q) whose column j is zero below row
+    reach[j] (nondecreasing): a blocked QR whose reflectors and updates touch only the rows a panel's columns reach
+    (LAPACK dgeqrf on the panel, dormqr on the trailing columns up to k, then Q by applying the panels backwards to the
+    identity), a fraction of the dense QR's work on a staircase (the information basis's time-ordered rows and columns:
+    about 1/4 on Chapter 3's model, 1/7 on Kyle-Back's).  The same basis as numpy.linalg.qr's in exact arithmetic (up to
+    the columns' signs, which the projector Q Q' does not see)."""
+    from scipy.linalg.lapack import dgeqrf, dormqr
+    n, q = A.shape
+    k = min(n, q)
+    if bs is None:                                  # panels of 32 columns on a staircase of slope about 1 (as many rows as
+        bs = 32 if reach[k - 1] <= 1.25 * k else 64     # columns per step), 64 on a steeper one (measured: dormqr's speed)
+    A = np.asfortranarray(A[:, :k])
+    end = np.minimum(n, np.maximum.accumulate(np.maximum(np.asarray(reach[:k]), np.arange(1, k + 1))))
+    panels = []
+    for j0 in range(0, k, bs):
+        j1 = min(k, j0 + bs); r1 = int(end[j1 - 1])
+        qr_, tau, _, info = dgeqrf(A[j0:r1, j0:j1])
+        if info != 0:
+            raise ValueError(f"the information basis's QR failed (dgeqrf info {info})")
+        if j1 < k:
+            cq, _, info = dormqr("L", "T", qr_, tau, A[j0:r1, j1:], lwork=max(1, (k - j1) * 64))
+            if info != 0:
+                raise ValueError(f"the information basis's QR failed (dormqr info {info})")
+            A[j0:r1, j1:] = cq
+        panels.append((j0, r1, qr_, tau))
+    Q = np.zeros((n, k), order="F")
+    Q[np.arange(k), np.arange(k)] = 1.0
+    for j0, r1, qr_, tau in reversed(panels):
+        cq, _, info = dormqr("L", "N", qr_, tau, Q[j0:r1, j0:], lwork=max(1, (k - j0) * 64))
+        if info != 0:
+            raise ValueError(f"the information basis's QR failed (dormqr info {info})")
+        Q[j0:r1, j0:] = cq
+    return Q
+
+
 class StationaryTilt:
     """What one best response of a risk-averse agent freezes at the profile: the atoms' lag kernels, the spike responses
     with and without the own reactions, and the lattice operators; shift() is Delta (nU, N, nW)."""
@@ -337,20 +373,31 @@ class StationaryTilt:
         if key not in self._qpast:
             Zpass = solver._spikes(c, self._maps, self.agent)[0]
             ytil, yinst = solver._passive_rows(self.agent, Zpass)
-            # column r Na + m: the step s = u_m = -L + m h of row r, h y_r at the ages (m - i) h of the u_i <= s, plus its
-            # point loadings at u_m
+            # column m nR + r: the step s = u_m = -L + m h of row r, h y_r at the ages (m - i) h of the u_i <= s, plus its point
+            # loadings at u_m; rows in time-major order (i nW + c), so the matrix is a staircase: column m reaches the rows of
+            # the steps i <= m only
+            nR = len(ytil)
             lag = np.arange(Na)[None, :] - np.arange(Na + 1)[:, None]                  # (i, m): m - i
             seen = lag >= 0
-            cols = []
+            A = np.zeros((Na + 1, nW, Na, nR))
             for r, y in enumerate(ytil):
                 if any(age != 0.0 for (_, age, _) in yinst[r]):
                     raise NotImplementedError("a risk-averse agent on the stationary engine with a delayed point loading on its rows")
                 hyl = h * (lat["I"] @ y[:, :nW])                                         # (Na + 1, nW) at the ages
-                V = np.where(seen[None], hyl.T[:, np.where(seen, lag, 0)], 0.0)          # (nW, Na + 1, Na)
+                A[:, :, :, r] = np.where(seen[:, None, :], hyl.T[:, np.where(seen, lag, 0)].transpose(1, 0, 2), 0.0)
                 for (k, age, w) in yinst[r]:
-                    V[k, np.arange(Na), np.arange(Na)] += w
-                cols.append(V.reshape(nW * (Na + 1), Na))
-            self._qpast[key] = np.linalg.qr(np.concatenate(cols, axis=1))[0]           # (nW (Na + 1), q) on the past block
+                    A[np.arange(Na), k, np.arange(Na), r] += w
+            n, q = nW * (Na + 1), nR * Na
+            if 2 * q >= n:
+                # at least half as many columns as rows (rows at least half the channels): the staircase QR, a fraction of
+                # the dense one's work (1/10 on Kyle-Back's insider); on a tall matrix (a row seeing many channels) the
+                # dense QR is as fast, and is kept (the panels' overhead)
+                reach = nW * (np.arange(q) // nR + 1)                                    # column m nR + r: rows of the steps <= m
+                Qt = _staircase_q(A.reshape(n, q), reach)                                # (n, min(n, q)), time-major rows
+                Qp = Qt.reshape(Na + 1, nW, -1).transpose(1, 0, 2).reshape(n, -1)
+            else:                                                                        # rows (c, i), columns r Na + m
+                Qp = np.linalg.qr(A.transpose(1, 0, 3, 2).reshape(n, q))[0]
+            self._qpast[key] = np.ascontiguousarray(Qp)                                  # (nW (Na + 1), q) on the past block
         Qp = self._qpast[key]
         if not full:
             return Qp
