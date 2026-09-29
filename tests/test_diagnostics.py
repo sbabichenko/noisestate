@@ -243,3 +243,32 @@ def test_compare_reports_the_dynamics_rather_than_deciding_them():
     #  a finite one, which carries no window check at all.
     quiet = example("ch1_two_player_finite")
     assert "not checked" in ns.compare({"a": quiet}, baseline="a").summary()
+
+
+@pytest.mark.parametrize("name", ["ch1_two_player_finite", "ch3_two_player"])
+def test_a_convex_loss_passes_the_second_order_check_without_its_form(name, monkeypatch):
+    """A positive semidefinite loss form makes the second-order form M = T' G T positive semidefinite for any responses:
+    the check passes by that certificate and its numbers (min, max) are made on first read (engine.Curvature).  The
+    verdicts every solve reads (statuses, status, the window guard, repr) leave them unmade; once read they are the
+    eager computation's to the bit, and the record is a plain dict to every copy of it."""
+    from noisestate.engine import Curvature, EngineBase
+    res = ns.solve(ns.example(name))
+    recs = list(res.second_order.values())
+    assert recs and all(isinstance(so, Curvature) and so.pending and so["ok"] and so["converged"] for so in recs)
+    res.diagnostics.statuses; res.diagnostics.assess(); res.status; repr(res); res.summary()
+    assert all(so.pending for so in recs)
+    assert res.diagnostics.statuses["second_order"] is Status.PASSED
+    monkeypatch.setattr(EngineBase, "_curvature_certified", lambda self, agent: False)
+    eager = ns.solve(ns.example(name)).second_order
+    for a, so in res.second_order.items():
+        assert not isinstance(eager[a], Curvature)
+        assert dict(so) == eager[a] and not so.pending
+    assert res.to_dict()["second_order"] == {a: dict(v) for a, v in eager.items()}
+
+
+def test_an_indefinite_loss_is_checked_on_its_form():
+    """Kyle's insider (-V D + P D + eps D^2: indefinite in (D, P, V)) gets the eager check; the market maker's loss (P^2 -
+    2 P V: indefinite too) likewise."""
+    from noisestate.engine import Curvature
+    res = ns.solve(ns.example("ch4_kyle_back"))
+    assert res.second_order and not any(isinstance(so, Curvature) for so in res.second_order.values())

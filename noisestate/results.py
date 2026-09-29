@@ -55,8 +55,21 @@ from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, RESIDUAL_NORM, RESIDUAL_TOLER
                           Assessment, Policy, Refinement, Stability, Status, WindowCheck, applicable, assess, classify,
                           verification)
 from .kernel import Kernel, check_coords
+from .engine import Curvature
 from .names import NameNotFound, unknown
 from .spec import Model
+
+
+class _Deferred:
+    """A check row's value or flag made on first read (_check_rows: a certified second-order check's numbers); resolved by
+    _diagnostic_record, which every public reader of the rows goes through."""
+    __slots__ = ("make",)
+
+    def __init__(self, make):
+        self.make = make
+
+    def __call__(self):
+        return self.make()
 
 
 class _StabilityBudget(Exception):
@@ -293,7 +306,7 @@ class Result:
     solver_class: object = None                # the engine that produced this result, with its options, so that
     solver_kw: dict = field(default_factory=dict)      # refine()/stability() rebuild the same solver
     solve_kw: dict = field(default_factory=dict)
-    second_order: Dict[str, dict] = field(default_factory=dict)   # agent -> {"min", "max", "ok"}: is the best response a minimum
+    second_order: Dict[str, dict] = field(default_factory=dict)   # agent -> {"min", "max", "ok"}: is the best response a minimum (engine.Curvature: min/max on first read for a convex loss)
     foc: Dict[str, dict] = field(default_factory=dict)            # agent -> control -> {"foc", "physical", "wedge"} kernels
     means: Dict[str, object] = field(default_factory=dict)        # quantity -> its mean, a float (stationary) or a path (finite); zero when nothing drives it
     mean_times: Optional[np.ndarray] = None                       # the time nodes of the mean paths (finite engines)
@@ -851,6 +864,8 @@ class Result:
         # embedded-curvature hook; this is the finite engines' answer, and it costs the refinement, not a solve.
         curvature = {}
         for name, here in (self.second_order or {}).items():
+            if isinstance(here, Curvature):
+                continue                                # certified by its loss form: no negative curvature to trend
             there = (fine.second_order or {}).get(name)
             if not (here and there) or here.get("min") is None or there.get("min") is None:
                 continue
@@ -983,10 +998,15 @@ class Result:
                 # window's embedded curvature does: the direction is the quadrature's, not a strategy
                 grid = (self.refinement.curvature if self.refinement else {}).get(a)
                 shrinks = bool(grid and grid["shrinking"])
-                row(f"second_order:{a}", so["min"], -self.settings.second_order_tol if self.solver_class is not None else None,
-                    so["ok"] or shrinks,
-                    f"NOT A MINIMUM (the best response of {a!r} is a saddle: its loss is not convex in its own strategy, "
-                    f"smallest curvature {so['min']:.1e} of the largest)", "the loss is not convex in the agent's own strategy")
+                # a check certified by its loss form (Curvature: ok by that, its numbers made on first read) carries its value
+                # and flag deferred, so the verdicts read here (statuses, assess, status, the window guard) build no form;
+                # _diagnostic_record resolves them, and every reader of the rows' values goes through it
+                flag = lambda so=so, a=a: (f"NOT A MINIMUM (the best response of {a!r} is a saddle: its loss is not convex in its own "
+                                           f"strategy, smallest curvature {so['min']:.1e} of the largest)")
+                pending = getattr(so, "pending", False)
+                row(f"second_order:{a}", _Deferred(lambda so=so: so["min"]) if pending else so["min"],
+                    -self.settings.second_order_tol if self.solver_class is not None else None,
+                    so["ok"] or shrinks, _Deferred(flag) if pending else flag(), "the loss is not convex in the agent's own strategy")
                 if so.get("edge"):
                     row(f"second_order_edge:{a}", so["min"], -self.settings.second_order_tol if self.solver_class is not None else None, None,
                         f"window edge: the curvature of {a!r} is negative ({so['min']:.1e}) on this window but positive "
@@ -1015,8 +1035,9 @@ class Result:
                 "naive best-response adjustment would not find this equilibrium")
         return rows
 
-    def _diagnostic_record(self, d: dict) -> dict:
-        """Add stable presentation and automation fields to an existing numerical check."""
+    def _diagnostic_record(self, d: dict, resolve: bool = True) -> dict:
+        """Add stable presentation and automation fields to an existing numerical check (resolve=False leaves a deferred
+        value or flag unmade: the summary, which prints those of the failed rows only)."""
         name = d["name"]
         root = name.split(":", 1)[0]
         category = ("solve" if root == "converged" else "equilibrium" if root.startswith("second_order") or root == "stability"
@@ -1046,7 +1067,7 @@ class Result:
             options["past_window"] = 2 * float((self.compiled.continuation_info or {})["window"])   # the continuation's is the past's
         elif name in ("resolution", "settle floor", "refinement"):
             options["nodes"] = max(int(self.numerics.nodes) + 2, int(np.ceil(1.5 * self.numerics.nodes)))
-        out = dict(d)
+        out = {k: (v() if resolve and isinstance(v, _Deferred) else v) for k, v in d.items()}
         out.update(code=name.lower().replace(":", "_").replace(" ", "_"), category=category,
                    severity="error" if d["ok"] is False else "info" if d["ok"] is None else "ok",
                    meaning=meanings.get(name, "A numerical or equilibrium check reported by the solver."),
@@ -1072,7 +1093,7 @@ class Result:
 
     def _diagnostic_summary(self, detailed: bool = False) -> str:
         """Compact grouped verdict, with full explanations when ``detailed`` is true."""
-        rows = [self._diagnostic_record(d) for d in self._check_rows()]
+        rows = [self._diagnostic_record(d, resolve=d["ok"] is False) for d in self._check_rows()]
         judged = [d for d in rows if d["ok"] is not None]
         failed = [d for d in judged if d["ok"] is False]
         lines = [f"Diagnostics: {len(failed)} failed, {len(judged) - len(failed)} passed"]

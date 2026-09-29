@@ -1025,6 +1025,11 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         out["decomp"] = dec
 
     def _second_order(self, agent: Agent, Resp, Gk, keep, maps=None) -> Optional[dict]:
+        """_curvature_form's check, deferred to the first read of its numbers when the loss form is positive semidefinite
+        (EngineBase._lazy_curvature: the check passes by that certificate)."""
+        return self._lazy_curvature(agent, lambda: self._curvature_form(agent, Resp, Gk, keep, maps))
+
+    def _curvature_form(self, agent: Agent, Resp, Gk, keep, maps=None) -> Optional[dict]:
         """Second-order condition of the best response: the agent's objective is a quadratic form in its
         strategy, and a first-order condition is a minimum only if that form is positive on the
         feasible strategies (those its rows can express).  The form is computed exactly from the

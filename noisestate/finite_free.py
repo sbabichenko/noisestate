@@ -593,6 +593,23 @@ def _decompose(solver, agent: Agent, out: dict, system: FocSystem, maps) -> None
 
 
 def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
+    """_curvature_form's check, deferred to the first read of its numbers when the loss form is positive semidefinite
+    (EngineBase._lazy_curvature: the check passes by that certificate; a risk-averse agent's form is then the bound
+    "entropic").  The deferred form keeps only the operators it reads (the responses, the row operators and the loss
+    atoms), not the best response's whole system."""
+    if not solver._curvature_certified(agent):
+        return _curvature_form(solver, agent, system)
+    from types import SimpleNamespace
+    held = SimpleNamespace(nU=system.nU, nR=system.nR, Nm=system.Nm, nG=system.nG, resp=system.resp, rowops=system.rowops,
+                           foc=system.foc, tilt=None, shift=None)
+    held.world_of = lambda gamma: FocSystem.world_of(held, gamma)             # the Lanczos branch's operator (_form_matvec)
+    averse = system.tilt is not None or getattr(system, "shift", None) is not None
+    out = solver._lazy_curvature(agent, lambda: _curvature_form(solver, agent, held, averse=averse),
+                                 {"bound": "entropic"} if averse else None)
+    return out
+
+
+def _curvature_form(solver, agent: Agent, system: FocSystem, averse: bool = False) -> Optional[dict]:
     """The second-order check (EngineBase._second_order's contract) on the operators: the form M = T' G T on
     the kept strategy, T the strategy -> world map (RowOps then RespOps), G the loss form (the atoms' kernels
     under Q and the sparse mass; a past's initial columns under the point form of the line s = 0, the time
@@ -607,7 +624,7 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
     V = None
     if n <= solver.SECOND_ORDER_DENSE:
         Mfull = symmetrize(_dense_form(solver, agent, system, idx))
-        if system.tilt is None and getattr(system, "shift", None) is None:
+        if not averse and system.tilt is None and getattr(system, "shift", None) is None:
             # LAPACK's syevd on the form itself (numpy's eigvalsh copies it: n^2 more at the peak); the directions are
             # asked of it only for a risk-averse agent's probe, below
             from scipy.linalg import eigh
@@ -624,7 +641,7 @@ def _second_order(solver, agent: Agent, system: FocSystem) -> Optional[dict]:
         lo, hi = res["lo"], res["hi"]
     scale = max(abs(lo), abs(hi), 1e-300)
     out = {"min": lo / scale, "max": hi / scale, "ok": bool(lo >= -solver.SECOND_ORDER_TOL * scale), "converged": True}
-    if system.tilt is not None or getattr(system, "shift", None) is not None:
+    if averse or system.tilt is not None or getattr(system, "shift", None) is not None:
         # the entropic cost's curvature along a change d of the strategy is E^Q[C''] + theta Var^Q(C') >= E^Q[C''] =
         # tr(S B_d) >= tr(B_d) = E[C''], the form above, when the loss Hessian is positive semidefinite (B_d >= 0 and
         # S = (I - theta K)^-1 >= I): the expected cost's curvature is then a lower bound of the objective's

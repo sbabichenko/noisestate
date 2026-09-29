@@ -376,6 +376,17 @@ class SpectralFiniteSolver(SpectralMeans, MonitoredDeviations, EngineBase):
         return np.concatenate(parts)
 
     # ------------------------------------------------ best-response pieces
+    def _mass_forms_psd(self, agent: Agent) -> bool:
+        """The second-order form's masses (EngineBase._curvature_certified): the kernels' Gram (positive Gauss weights) is
+        positive semidefinite; a past's initial-shock columns weigh the line s = 0 by the time quadrature, whose weights
+        (interpolatory) are checked for sign, as is a terminal loss's quadrature."""
+        c = self.c
+        if c.ncol > c.nW and np.any(c.time_mass(c.rho)[:c.Nd] < 0):
+            return False
+        if (c.terminal or {}).get(agent.name) and np.any(np.asarray(c.terminal_quadrature[1]) < 0):
+            return False
+        return True
+
     def _identified(self, agent: Agent) -> np.ndarray:
         """The map on a row observed with delay d is stored at the shifted time t' = t - d, so its nodes on
         the time panels above T - d belong to controls after the horizon and are read by nothing: those
