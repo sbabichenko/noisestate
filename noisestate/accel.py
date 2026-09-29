@@ -179,7 +179,9 @@ def solve_fixed_point(F, z0, tol: float = 1e-10, verbose: bool = False, damping:
             # inner_maxiter is not the budget of a step: inner_m bounds the fresh Krylov vectors (one
             # evaluation of F each); a step also re-multiplies the up to outer_k=10 directions carried from
             # earlier steps (store_outer_Av is False) and makes the line search's, 16 to 26 in all
-            z2 = newton_krylov(Fb, z, f_tol=tol * max(1.0, float(np.linalg.norm(z))), maxiter=max_newton,
+            # scipy's f_tol is on the max-norm of F; the residual here is its 2-norm (relative): the max-norm bound that
+            # implies it is 1/sqrt(n) of it (a polish that stopped at f_tol could otherwise end above tol, not converged)
+            z2 = newton_krylov(Fb, z, f_tol=tol * max(1.0, float(np.linalg.norm(z))) / np.sqrt(max(1, np.size(z))), maxiter=max_newton,
                                method="lgmres", inner_inner_m=inner_m)
             note = "newton polish: {n} evaluations, residual {r:.2e}"
         except NoConvergence as e:
