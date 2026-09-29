@@ -32,6 +32,7 @@ defaults are recorded in `res.numerics`, `res.solver_kw` and the payload's `opti
 | `resolution_tol` | 1e-6 | representation error above which a result is under-resolved (raise numerics.nodes) |
 | `auto_panels_max` | 8000 | spectral finite engine: unknowns up to which a one-panel horizon that fails the resolution check by more than nodes fix (or is singular) is re-solved on panels graded from both ends (`time_panels.py`); 0: never |
 | `window_tail_tol` | 0.02 | a kernel still moving by more of its peak over the last tenth of the window: window too short |
+| `window_cost_tol` | 1e-6 | publication: a longer window (`res.check_window()`, 1.5 L) moving an agent's cost by more than this, relative to the largest cost: window too short for the costs |
 | `settled_tol` | 1e-4 | a transition is settled when its maps on [T - L, T] are within this (relative to the map's peak) of the stationary continuation: the closed-loop decay per unit of t (1e-2 on Chapter 3), not the grid's floor |
 | `mean_zero` | 1e-12 | below this a mean is round-off (printed as an unsigned zero, not counted as driven) |
 | `refine_cost_tol` | 1e-6 | refine(): relative cost change below which the grid is resolved |

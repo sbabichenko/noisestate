@@ -92,6 +92,10 @@ CHECKS = {
     "resolution": lambda model: True,
     "second_order": lambda model: True,      # applies everywhere; see curvature_is_obtainable
     "window": _carries_own_lag_window,
+    #  The costs' own truncation: the flow loss beyond the window, extrapolated from its last tenths.  The kernel tail
+    #  (`window`, 2%) bounds the strategies' truncation and let costs 5e-4 off pass; publication asks for this too.
+    #  Not in MINIMUM: an equilibrium is verified by its strategies, a quoted cost by this.
+    "window cost": _carries_own_lag_window,
     #  A transition's two lag windows, named as the rows that carry them are named.  They were
     #  EMITTED as rows before and were not names any policy knew, so a failing past window printed
     #  PAST WINDOW TOO SHORT and could not block acceptance: emitted is not the same as known.
@@ -128,7 +132,7 @@ class Policy:
 
 
 Policy.PUBLICATION = Policy("publication",
-                            frozenset({"converged", "resolution", "window", "second_order", "settled",
+                            frozenset({"converged", "resolution", "window", "window cost", "second_order", "settled",
                                        "past window", "continuation window"}))
 Policy.EXPLORATORY = Policy("exploratory", frozenset({"converged"}))
 
@@ -315,6 +319,24 @@ def classify(eigenvalues, radius: float, method: str, adjustment: float = 0.5) -
     return {"full_response": full, "adjusted_response": adjusted,
             "adjusted_radius_bound": None if bound is None else float(bound),
             "adjustment": float(adjustment), "dominant_eigenvalue": dominant}
+
+
+@dataclass(frozen=True)
+class WindowCheck:
+    """What a longer window says about a stationary result's costs (Result.check_window), and the longer solve itself.
+    cost_change is one number on one scale, as Refinement's: the largest change of an agent's cost relative to the
+    largest cost, over the agents whose flow loss decays (`excluded` names the others, whose cost is the window's)."""
+    window: float                       # the longer window
+    cost_change: float
+    worst: Optional[str]                # the agent whose cost moved most
+    excluded: Tuple[str, ...]
+    converged: bool
+    ok: bool
+    longer: object = None               # the longer window's Result, in full
+
+    def to_dict(self) -> dict:
+        return {"window": self.window, "cost_change": self.cost_change, "worst": self.worst,
+                "excluded": list(self.excluded), "converged": self.converged, "ok": self.ok}
 
 
 @dataclass(frozen=True)

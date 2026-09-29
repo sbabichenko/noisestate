@@ -229,7 +229,7 @@ def payload_schema() -> dict:
                 "cost_kind": {"type": "string"},
                 "second_order": by_name({"type": "object"}),
                 "notes": {"type": "array", "items": {"type": "string"}},
-                "refinement": {"type": "object"}, "window_tail": {"type": "number"},
+                "refinement": {"type": "object"}, "window_check": {"type": "object"}, "window_tail": {"type": "number"},
                 #  verified is required because the evidence is the point: a payload that carried a
                 #  radius without saying whether the point is an equilibrium invited the reader to
                 #  treat the spectrum as equilibrium stability.

@@ -60,7 +60,7 @@ def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
     capsys.readouterr()
     assert main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--require-ok"]) == 1
     report = capsys.readouterr()
-    assert "Diagnostics: 1 failed" in report.out and "Numerics    FAIL — window" in report.out
+    assert "Diagnostics: 2 failed" in report.out and "Numerics    FAIL — window, window cost" in report.out
     assert "WINDOW TOO SHORT" not in report.out
     assert "failed diagnostic checks:" in report.err and "raise horizon.window" not in report.err
     assert main(["solve", os.path.join(EX, "ch3_two_player.yaml"), "--diagnostics"]) == 0
@@ -70,7 +70,7 @@ def test_require_ok_covers_the_guards_that_check_does_not(tmp_path, capsys):
     #  ch4_kyle_back among them, now that the discount no longer excludes its second-order check
     assert main(["solve", os.path.join(EX, "ch1_two_player_finite.yaml"), "--require-ok"]) == 0
     capsys.readouterr()
-    assert main(["solve", os.path.join(EX, "ch4_kyle_back.yaml"), "--require-ok"]) == 0
+    assert main(["solve", os.path.join(EX, "ch4_kyle_back.yaml"), "--window", "12", "--require-ok"]) == 0   # (at 8: window cost)
     capsys.readouterr()
 
 
@@ -102,5 +102,9 @@ def test_the_flagship_example_is_acceptable(capsys):
     """ch4_kyle_back is the model the README prints in full, and --require-ok refused it at every
     resolution: the second-order check was excluded at a positive discount, wrongly."""
     import noisestate as ns
-    assert main(["solve", ns.example("ch4_kyle_back"), "--nodes", "24", "--require-ok"]) == 0
+    #  on a window of 12: at the shipped 8 the costs' window check (publication) refuses it, a longer window moving the
+    #  trader's cost by 6.5e-5
+    assert main(["solve", ns.example("ch4_kyle_back"), "--nodes", "24", "--window", "12", "--require-ok"]) == 0
+    capsys.readouterr()
+    assert main(["solve", ns.example("ch4_kyle_back"), "--nodes", "24", "--require-ok"]) == 1
     capsys.readouterr()

@@ -119,7 +119,9 @@ The fields of `numerics.settings` are those of `noisestate.Settings`: [settings.
   states at T (a finite horizon, or a transition that ends at T), discounted by `e^{-rho T}`: it enters the first-order
   conditions as the adjoint's terminal condition `H^X_T = G^XX(T) X_T + G^X_T`.
 * **Ties.** `ties: [[firm0, firm1, firm2]]` makes the listed agents share one
-  strategy (a symmetric equilibrium): only the first is solved for.
+  strategy (a symmetric equilibrium): only the first is solved for.  The group is listed in cycle order; agents
+  whose states are public but move with the cycle (each player seeing its neighbour's state) are tied when the
+  relabelling taking each agent to the next leaves the model unchanged (checked by rebuilding the model under it).
 * **Horizon.** The economics of time, carrying **two lengths that are never the same quantity**:
   `window` is the lag-truncation length L (how far back a strategy may look) and `T` is the terminal
   time (when the game ends).  `stationary` has `discount` and `window`; `finite` has `T`;

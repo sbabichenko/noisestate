@@ -55,7 +55,7 @@ def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
 
     good = ns.solve(base.with_stationary(15.0).with_numerics(nodes=64))
     a = np.asarray(good.ages); K = np.asarray(good.kernel("X"))
-    assert good.diagnostics.assess().accepted and abs(good.costs["player1"] - 0.427295) < 1e-5
+    assert good.require_ok() is good and abs(good.costs["player1"] - 0.427295) < 1e-5     # a longer window moves it 1e-11
     assert np.abs(K[a > 0.95 * 15.0]).max() / np.abs(K).max() < 1e-6      # decayed by the edge
 
     spurious = ns.solve(base.with_stationary(18.0).with_numerics(nodes=64))

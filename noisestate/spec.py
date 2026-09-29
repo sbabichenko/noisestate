@@ -960,9 +960,24 @@ class Model:
             ag = [next(a for a in self.agents if a.name == n) for n in group]
             sigs = [self._agent_signature(a) for a in ag]
             for a, sig in zip(ag[1:], sigs[1:]):
-                if sig != sigs[0]:
+                if sig != sigs[0] and not self._cyclic_tie_verified():
                     raise ValueError(f"tied agents {group[0]} and {a.name} are not structurally identical "
                                      f"(same rows, losses and coefficients up to relabelling); untie them or fix the model")
+
+    def _cyclic_tie_verified(self) -> bool:
+        """Whether the model's one tie group, in its listed order, is a cycle of a relabelling that leaves the model
+        unchanged (symmetry.find_cyclic_symmetry: found by matching and verified by rebuilding every state and agent
+        under it).  The signature (_agent_signature) compares states two agents share by name, so a cycle that moves
+        public states -- each player seeing its neighbour's state, read by two players and so public -- differs by
+        name and was refused, though the relabelling carries every agent's problem onto the next one's; this is the
+        exact test those signatures stand in for."""
+        if len(self.ties) != 1:
+            return False
+        from .symmetry import find_cyclic_symmetry
+        try:
+            return find_cyclic_symmetry(self) is not None
+        except Exception:                    # a structure the matcher cannot read is not a verified symmetry
+            return False
 
     def _check_shock_names(self) -> None:
         """No shock is named so that 'd' + its name is another symbol: the equations form writes a shock's

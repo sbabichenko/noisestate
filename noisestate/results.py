@@ -52,7 +52,7 @@ from .accel import ConvergenceError, DiagnosticsError
 from ._settings import DEFAULT, Settings, tunable
 from .schema import PAYLOAD_VERSION      # the format's version lives with the format
 from .diagnostics import (CHECKS, DIAGNOSTIC_ONLY, RESIDUAL_NORM, RESIDUAL_TOLERANCE,
-                          Assessment, Policy, Refinement, Stability, Status, applicable, assess, classify,
+                          Assessment, Policy, Refinement, Stability, Status, WindowCheck, applicable, assess, classify,
                           verification)
 from .kernel import Kernel, check_coords
 from .names import NameNotFound, unknown
@@ -114,6 +114,8 @@ class Diagnostics:
                 out[check] = Status.UNSUPPORTED
             elif skipped_off and check in DIAGNOSTIC_ONLY:
                 out[check] = Status.SKIPPED
+            elif check == "window cost" and check not in emitted:
+                out[check] = Status.SKIPPED               # measured on request (check_window; require_ok runs it)
             elif check not in emitted or emitted[check] is None:
                 out[check] = Status.MISSING
             else:
@@ -125,7 +127,11 @@ class Diagnostics:
         for r in self._res._check_rows():
             if r["ok"] is False and r["flag"]:
                 detail.setdefault(r["name"].split(":", 1)[0], r["flag"])
-        return assess(self.statuses, policy, self._res.model, detail)
+        statuses = self.statuses
+        if statuses.get("window cost") is Status.SKIPPED:
+            detail["window cost"] = ("not measured: res.check_window() re-solves on a window half as long again (require_ok() "
+                                     "runs it)")
+        return assess(statuses, policy, self._res.model, detail)
 
     def summary(self, detailed: bool = False) -> str:
         return self._res._diagnostic_summary(detailed)
@@ -146,7 +152,7 @@ def _label(q) -> str:
 
 
 _NEAR_TOLERANCE = 10.0          # res.status "near tolerance": not converged, residual within this factor of the tolerance
-_SHORT = {"resolution": "under-resolved", "window": "window too short", "stability": "unstable",
+_SHORT = {"resolution": "under-resolved", "window": "window too short", "window cost": "window too short for the costs", "stability": "unstable",
           "refinement": "moves under refinement", "window_tail": "window tail", "representation": "under-resolved"}
 
 
@@ -281,6 +287,7 @@ class Result:
     representation_error: Dict[str, float] = field(default_factory=dict)   # agent -> relative residual; the resolution check
     representation_parts: Dict[str, Dict[str, float]] = field(default_factory=dict)   # agent -> where it sits (transition: interior / band tip / last window)
     refinement: Optional[object] = None        # filled by refine(): a Refinement, with the finer Result
+    window_check: Optional[object] = None      # filled by check_window() (stationary): a WindowCheck, with the longer window's Result
     solver_class: object = None                # the engine that produced this result, with its options, so that
     solver_kw: dict = field(default_factory=dict)      # refine()/stability() rebuild the same solver
     solve_kw: dict = field(default_factory=dict)
@@ -296,6 +303,7 @@ class Result:
     # the thresholds of the checks: aliases of the fields of self.settings (settings.py)
     RESOLUTION_TOL = tunable("resolution_tol")
     WINDOW_TAIL_TOL = tunable("window_tail_tol")
+    WINDOW_COST_TOL = tunable("window_cost_tol")
     MAP_CONVENTION = ""             # how maps[agent][u][row] is indexed, in words, for a consumer of to_dict()
 
     def map_axes(self, delay: float) -> dict:
@@ -415,6 +423,16 @@ class Result:
             raise ConvergenceError(f"{self.model.name}: residual {self.residual:.2e} ({self.message})")
         return self
 
+    def _measure_for(self, policy: Policy) -> None:
+        """Run the measurements `policy` needs and the solve does not make: the costs' window (check_window, one solve
+        on a longer window, warm-started) for a converged stationary result whose diagnostics ran, once.  require_ok()
+        and the command line's --require-ok call it; assess() does not (it reports the check `skipped`)."""
+        if ("window cost" in policy.applies(self.model) and self.window_check is None and self.converged
+                and self.solve_kw.get("diagnostics") is not False and "window cost" in self.supported_checks()
+                and self.model.horizon.kind == "stationary" and hasattr(self, "cost_tail")
+                and not all(v > self.WINDOW_TAIL_TOL for v in self.cost_tail.values())):
+            self.check_window()
+
     def require_ok(self, policy: Policy = Policy.PUBLICATION):
         """Return self, or raise when `policy`'s assessment is not accepted.
 
@@ -428,6 +446,7 @@ class Result:
             anything else blocked           -> DiagnosticsError
         Both carry the Assessment as .assessment; both are ResultValidationError.
         """
+        self._measure_for(policy)
         verdict = self.diagnostics.assess(policy)
         if verdict.accepted:
             return self
@@ -828,6 +847,54 @@ class Result:
     def _kernel_change(self, fine) -> float:
         raise NotImplementedError
 
+    def check_window(self, factor: float = 1.5, **solve_kw) -> "WindowCheck":
+        """The costs' truncation by the window, measured: re-solve the stationary model on a window `factor` times as
+        long, the grid extended past L by panels like the last one (the resolution on [0, L] unchanged) and started from
+        this equilibrium (its maps, zero beyond L), and report the largest change of an agent's cost relative to the
+        largest cost.  The kernel tail (`window`, 2% of a kernel's peak over the last tenth) bounds the strategies'
+        truncation and let costs 5e-4 off pass (the fuzz campaign; 6.5e-5 on the Kyle-Back example at L = 8); this is
+        the publication policy's `window cost` check, passed below window_cost_tol (require_ok() runs it when a
+        policy needs it).  An agent whose flow loss does not decay (the cost window row: its cost is the window's) is
+        left out and named.  Stored in self.window_check."""
+        if self.model.horizon.kind != "stationary":
+            raise ValueError("check_window() is for a stationary result: a transition's windows are its past's and its continuation's")
+        L = float(self.model.horizon.window); L2 = float(factor) * L
+        g = self.compiled.grid
+        bp = [float(b) for b in g.breakpoints]
+        w = bp[-1] - bp[-2]
+        ext = set(bp)
+        x = L
+        while x + w < L2 - 1e-9 * L2:
+            x += w; ext.add(round(x, 12))
+        ext.add(L2)
+        for lag in self.model.all_lags():                     # the new edge less each lag is a cut, as at L
+            if L < L2 - lag < L2:
+                ext.add(round(L2 - lag, 12))
+        model = self.model.with_stationary(L2).with_numerics(breakpoints=sorted(ext))
+        kw = {k: v for k, v in self.solve_kw.items()
+              if k not in ("start_from", "start_policy", "max_evaluations", "deadline", "diagnostics")}
+        kw.update(solve_kw)
+        kw.setdefault("diagnostics", False)
+        solver = self._make_solver(model)
+        try:
+            start = solver.interpolate_maps(self)
+            beyond = solver.c.grid.nodes > L * (1 + 1e-12)
+            start = {a: np.where(beyond[None, None, :], 0.0, v) for a, v in start.items()}
+            kw.setdefault("start_from", start)
+        except NotImplementedError:
+            pass
+        longer = solver.solve(**kw)
+        grows = sorted(a for a, v in self.cost_tail.items() if v > self.WINDOW_TAIL_TOL)
+        keep = [a for a in self.costs if a not in grows]
+        scale = max([1e-300] + [abs(self.costs[a]) for a in keep])
+        change = {a: abs(longer.costs[a] - self.costs[a]) / scale for a in keep}
+        worst = max(change, key=lambda a: change[a]) if change else None
+        cost_change = float(change[worst]) if change else 0.0
+        out = WindowCheck(window=L2, cost_change=cost_change, worst=worst, excluded=tuple(grows), converged=bool(longer.converged),
+                          ok=bool(longer.converged and cost_change <= self.WINDOW_COST_TOL), longer=longer)
+        self.window_check = out
+        return out
+
     REFINE_COST_TOL, REFINE_KERNEL_TOL = tunable("refine_cost_tol"), tunable("refine_kernel_tol")
 
     def _check_rows(self) -> List[dict]:
@@ -862,6 +929,17 @@ class Result:
             # reported, never required by a policy: a loss term in a quantity that never decays leaves the strategies
             # alone when it moves nothing the agent chooses (Chapter 4's market maker), only the cost is the window's
             grows = {a: v for a, v in self.cost_tail.items() if v > self.WINDOW_TAIL_TOL}
+            # required by publication (Policy.PUBLICATION's `window cost`): the costs' own truncation, MEASURED by a
+            # solve on a longer window (check_window; require_ok runs it); without it the check is SKIPPED, not passed
+            wc = getattr(self, "window_check", None)
+            if wc is None and self.costs and all(a in grows for a in self.costs):
+                row("window cost", 0.0, self.WINDOW_COST_TOL, True, "")      # every cost is the window's: nothing to bound
+            elif wc is not None:
+                row("window cost", wc.cost_change, self.WINDOW_COST_TOL, bool(wc.ok),
+                    f"WINDOW TOO SHORT FOR THE COSTS (a window of {wc.window:g} moves "
+                    + (f"{wc.worst}'s cost by {wc.cost_change:.1e} of the largest" if wc.converged else "nothing: its solve did not converge")
+                    + ("" if not wc.excluded else f"; {', '.join(wc.excluded)} left out, whose cost is the window's (cost window)")
+                    + "): raise horizon.window", "raise horizon.window")
             if grows:
                 share = max(grows.values())
                 row("cost window", share, self.WINDOW_TAIL_TOL, False,
@@ -923,6 +1001,7 @@ class Result:
             "resolution": "Whether the computed strategy is represented accurately on this grid.",
             "window": "Whether stationary kernels have stopped changing near the window boundary.",
             "cost window": "Whether each stationary flow cost has stopped accruing near the window boundary (reported, not required).",
+            "window cost": "Whether the stationary flow costs lost beyond the window, extrapolated from the last tenths, are negligible (publication).",
             "past window": "Whether the inherited stationary kernels have stopped changing near their boundary.",
             "continuation window": "Whether the stationary continuation kernels have stopped changing near their boundary.",
             "settled": "Whether transition strategies have reached the stationary continuation by the end of the horizon.",
@@ -930,7 +1009,7 @@ class Result:
             "stability": "Whether small strategy deviations shrink under naive best-response iteration.",
         }
         options = {}
-        if name == "window":
+        if name in ("window", "window cost"):
             options["window"] = 2 * float(self.model.horizon.window)
         elif name == "settled":
             #  the settled guard wants a longer TERMINAL TIME, not a longer lag window: under the
@@ -1197,6 +1276,8 @@ class Result:
         out["notes"] = self.model.notes
         if self.refinement:
             out["refinement"] = self.refinement.to_dict()      # the payload is data, not the object
+        if self.window_check is not None:
+            out["window_check"] = self.window_check.to_dict()
         tail = getattr(self, "window_tail", None)
         if tail is not None:
             out["window_tail"] = float(tail)

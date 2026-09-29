@@ -55,6 +55,7 @@ class Settings:
     resolution_tol: float = 1e-6        # representation error above which a result is under-resolved (raise numerics.nodes)
     auto_panels_max: int = 8000         # spectral finite engine: unknowns nU nR N up to which a one-panel horizon that fails the resolution check (or is singular) is re-solved on panels graded from both ends (time_panels.py); 0: never
     window_tail_tol: float = 0.02       # a kernel still moving by more of its peak over the last tenth of the window: window too short
+    window_cost_tol: float = 1e-6       # publication: an agent's flow loss beyond the window (its last tenths' geometric decay extrapolated), relative to the whole, above this: window too short for the costs (the kernel tail at 2% leaves costs up to 5e-4 off); refine_cost_tol's level
     settled_tol: float = 1e-4           # a transition is settled when its maps on [T - L, T] are within this (relative to the map's peak) of the stationary continuation: the closed-loop decay per unit of t (1e-2 on Chapter 3), not the grid's floor
     mean_zero: float = 1e-12            # below this a mean is round-off (printed as an unsigned zero, not counted as driven)
     refine_cost_tol: float = 1e-6       # refine(): relative cost change below which the grid is resolved

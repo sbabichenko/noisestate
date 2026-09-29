@@ -32,7 +32,7 @@ from scipy.linalg import get_lapack_funcs, lu_solve
 
 from .engine import dense_curvature_form, singular_system_message, symmetrize
 from .spec import Agent
-from .spectral_operators import FocOps, PanelRows, PathOp, ProjOps, RespOps, RowOps
+from .spectral_operators import FocOps, InstantResp, PanelRows, PathOp, ProjOps, RespOps, RowOps, instant_resp
 
 __all__ = ["FocSystem", "best_response", "reconstruction", "panel_rows",
            "PathOp", "RowOps", "ProjOps", "RespOps", "FocOps", "PanelRows"]
@@ -513,10 +513,14 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
         Roff = c.closed_loop(maps, excluded=agent.name, impulse_controls=agent.controls, own_frozen=False)[:, ncol:]
         Roff = solver._impulse_responses(agent, maps, Roff)
     Zpass = solver._passive_world(agent, maps, Zpass, R0)
+    resp = instant_resp(solver, agent, RespOps(solver, agent, R0))
+    if isinstance(resp, InstantResp):
+        # the agent's own instant reactions (h times the levels it sees) are part of its passive world: its map is off,
+        # the reaction its loss fixes is not; its best response is its map on the rows of that world
+        Zpass = resp.close(Zpass.reshape(nP, N, ncol)).reshape(nP * N, ncol)
     ytil, yinst = solver._passive_rows(agent, Zpass)
     rowops = RowOps(solver, agent, ytil, yinst)
     projops = ProjOps(solver, agent, ytil, yinst)
-    resp = RespOps(solver, agent, R0)
     fixed = getattr(solver, "_fixed_actions", {}).get(agent.name)
     if fixed is not None:
         # freeze_before: the agent's own actions on the fixed panels are known; their response joins the passive
@@ -550,13 +554,15 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
     for ui in range(nU):
         Zfull += resp.apply(ui, cact[ui])
     Zfull = Zfull.reshape(nP * N, ncol)
-    if c.cont is not None:                       # the action on the buffer (the frozen map's) is in the world, not in gamma
+    if c.cont is not None or isinstance(resp, InstantResp):
+        # the action on the buffer (the frozen map's) is in the world, not in gamma; so is an instant reaction
         cact = np.stack([Zfull[c.block(u)] for u in agent.controls])
     out = {"gamma": gamma, "action": cact, "Zfull": Zfull, "krylov": iters}
     system.Zfull = Zfull                          # the world a risk-averse agent's second-order probe differentiates J in
     if want_decomp:
         if R is not R0:
-            system.resp = RespOps(solver, agent, R)          # the second-order form is about deviations
+            # the second-order form is about deviations; a monitored R carries an instant observer's own reactions
+            system.resp = RespOps(solver, agent, R, keep_own=isinstance(resp, InstantResp))
         _decompose(solver, agent, out, system, maps)
         if phi_past is not None:
             for ui, u in enumerate(agent.controls):

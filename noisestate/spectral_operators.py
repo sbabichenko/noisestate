@@ -383,7 +383,8 @@ class RespOps:
     -> the world (nP, N, ...) it produces through the impulse responses R (nP N, nU), the own block the
     action itself (plus, with a continuation, the frozen reaction on the buffer)."""
 
-    def __init__(self, solver, agent: Agent, R: np.ndarray):
+    def __init__(self, solver, agent: Agent, R: np.ndarray, keep_own: bool = False):
+        """keep_own: R's own block is kept (the action plus it: an instant observer's own reactions in a monitored R)."""
         c = solver.c; g = c.g; self.c = c
         self.N, self.nP = c.N, len(c.prim)
         lp = c._path(("response",), r_lo=g.s, r_hi=g.t, point_fn=lambda k, r: (r, r - g.s[k]),
@@ -395,7 +396,7 @@ class RespOps:
         for ui, u in enumerate(agent.controls):
             own = c.prim.index(u)
             K = R[:, ui].reshape(self.nP, self.N).T.copy()
-            if c.cont is None:
+            if c.cont is None and not keep_own:
                 K[:, own] = 0.0
             ps = _nonzero_cols(K)
             op = PathOp(lp, K[:, ps]) if ps else None
@@ -440,6 +441,74 @@ class RespOps:
         return out
 
 
+class InstantResp:
+    """RespOps closed under the agent's own instant reactions (an agent with `instant` observations, compile.instant_loads):
+    its control v moves by sum_u h_vu times the level u it sees, a reaction its loss fixes and its map does not carry, so
+    the world of an action kernel C is Z = W + A x with W = base(C), A = [base_w] and x = (I - B A)^-1 B W, B the
+    loadings on the seen levels' blocks.  close(Z) closes a world computed with the agent's controls off (the passive
+    world); apply, dense and adjoint are RespOps' with the closure."""
+
+    def __init__(self, base: RespOps, pairs):
+        from scipy.linalg import lu_factor
+        self.base, self.pairs = base, pairs                 # pairs: (control index v, primary index of u, h)
+        self.N, self.nP = base.N, base.nP
+        self.nU = len(base.ops)
+        N, nU = self.N, self.nU
+        self._dense = [base.dense(wi) for wi in range(nU)]  # (nP N, N) each
+        BA = np.zeros((nU * N, nU * N))
+        for vi, p, h in pairs:
+            for wi in range(nU):
+                BA[vi * N:(vi + 1) * N, wi * N:(wi + 1) * N] += h * self._dense[wi][p * N:(p + 1) * N]
+        self.lu = lu_factor(np.eye(nU * N) - BA)
+
+    def _B(self, Z: np.ndarray) -> np.ndarray:
+        out = np.zeros((self.nU * self.N,) + Z.shape[2:])
+        for vi, p, h in self.pairs:
+            out[vi * self.N:(vi + 1) * self.N] += h * Z[p]
+        return out
+
+    def close(self, Z: np.ndarray) -> np.ndarray:
+        """The world Z (nP, N, ...) closed under the agent's instant reactions."""
+        from scipy.linalg import lu_solve
+        x = lu_solve(self.lu, self._B(Z).reshape(self.nU * self.N, -1))
+        out = Z.copy()
+        for wi in range(self.nU):
+            out += self.base.apply(wi, x[wi * self.N:(wi + 1) * self.N].reshape((self.N,) + Z.shape[2:]))
+        return out
+
+    def apply(self, ui: int, C: np.ndarray) -> np.ndarray:
+        return self.close(self.base.apply(ui, C))
+
+    def dense(self, ui: int, lo: int = 0, scratch: Optional[str] = None) -> np.ndarray:
+        from scipy.linalg import lu_solve
+        N, nP = self.N, self.nP
+        D = self._dense[ui]
+        x = lu_solve(self.lu, self._B(D.reshape(nP, N, N)))
+        out = D + sum(self._dense[wi] @ x[wi * N:(wi + 1) * N] for wi in range(self.nU))
+        if lo:
+            out = out.reshape(nP, N, N).copy(); out[:, :lo] = 0.0; out = out.reshape(nP * N, N)
+        return out
+
+    def adjoint(self, ui: int, Z: np.ndarray) -> np.ndarray:
+        """Resp_u^T Z for the closed response: base_u^T (Z + B^T (I - B A)^-T A^T Z)."""
+        from scipy.linalg import lu_solve
+        N = self.N
+        AtZ = np.concatenate([self.base.adjoint(wi, Z).reshape(N, -1) for wi in range(self.nU)])
+        y = lu_solve(self.lu, AtZ, trans=1)
+        Zt = Z.copy()
+        for vi, p, h in self.pairs:
+            Zt[p] += h * y[vi * N:(vi + 1) * N].reshape(Z.shape[1:])
+        return self.base.adjoint(ui, Zt)
+
+
+def instant_resp(solver, agent: Agent, resp: RespOps):
+    """RespOps closed under the agent's own instant reactions (InstantResp), or resp itself for an agent without any."""
+    c = solver.c
+    loads = c.instant_loads or {}
+    pairs = [(vi, c.prim.index(u), float(h)) for vi, v in enumerate(agent.controls) for u, h in loads.get(v, {}).items() if h]
+    return InstantResp(resp, pairs) if pairs else resp
+
+
 class FocOps:
     """The first-order-condition operators of an agent's controls as applications (EngineBase._foc_operators):
     a world (nP, N, ...) -> the loss atoms' kernels (the sparse atom reads), (Q zeta) per atom, and per
@@ -467,7 +536,12 @@ class FocOps:
                               if v != u and (v, 0.0) in self.atoms])
             cont, lags = None, []
             if not agent.myopic:
-                js = [j for j, (nm, lag) in enumerate(self.atoms) if not envelope or nm not in agent.controls]
+                # own atoms: with envelope=False (R holds the own later reactions), or where R carries the agent's own
+                # instant reactions (a player privy to it answers its spike and the agent reacts at once to the level it
+                # sees): a fixed reaction, not a choice the envelope drops
+                inst_own = bool(c.instant_loads) and any(np.any(R[c.block(v), ui]) for v in agent.controls)
+                js = [j for j, (nm, lag) in enumerate(self.atoms)
+                      if not envelope or nm not in agent.controls or (inst_own and np.any(R[c.block(nm), ui]))]
                 if js:
                     Rj = np.stack([self.AO[j][1] @ R[c.block(self.atoms[j][0]), ui] for j in js], axis=1)
                     keep = _nonzero_cols(Rj)

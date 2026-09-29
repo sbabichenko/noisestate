@@ -29,7 +29,11 @@ information is the history of its passive signal rows, which does not depend on
 its own strategy, so writing its control as kernels on those rows makes the
 per-date first-order condition (instantaneous derivative plus the discounted
 continuation through the physical state and through the other agents' reactions)
-affine in the unknown, and the best response is a single linear solve.  The raw
+affine in the unknown, and the best response is a single linear solve.  An agent with
+instant observations (`instant`) keeps its loss's reaction `h u` to the levels it sees in that passive world (its map
+is off, the reaction is not), so its best response is its map on the rows of a world where it reacts; with the reaction
+switched off too, the answer was the best function of the rows alone, which is the same only when the level is in the
+span of the agent's rows (Chapter 6's markets).  The raw
 strategy is recovered by projecting the resulting action kernel on the agent's
 closed-loop rows, and the equilibrium is the fixed point of the best-response map
 (all engines iterate on the action kernels with Tikhonov-regularised Anderson

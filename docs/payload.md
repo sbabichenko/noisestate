@@ -48,6 +48,7 @@ the optional ones appear when the engine or the options produced them.  `numeric
 | `second_order` | map of object | per agent: `min`, `max`, `ok`, `converged`, and `edge`/`embedded` when the negative direction was re-evaluated on a longer window |
 | `notes` | list of string | the model's notes (what the numbers are) |
 | `refinement` | object (optional) | with `--refine`: `cost_change`, `kernel_change`, `nodes`, `resolved`, `converged` |
+| `window_check` | object (optional) | stationary, once measured (`res.check_window()`, or `require_ok()` under the publication policy): `window` (the longer one), `cost_change` (the largest change of an agent's cost relative to the largest cost), `worst`, `excluded` (the agents whose cost is the window's), `converged`, `ok` |
 | `window_tail` | number (optional) | stationary: the largest change of a kernel over the last tenth of the window relative to its peak |
 | `stability` | object (optional) | with `--stability`: `radius`, `eigenvalues`, `method`, `stable`, `untied`, `evaluations`, and the evidence that makes the classification meaningful -- `fixed_point_residual`, `residual_norm`, `residual_tolerance`, `verified`, `unverified_reasons` -- plus `full_response`, `adjusted_response`, `adjusted_radius_bound`, `adjustment`.  A classification of an unverified point is withheld; the spectrum is reported either way |
 | `past` | object (optional) | a transition's past: its provenance (kind, model, params, window, nodes, costs, window tail; no kernels) |

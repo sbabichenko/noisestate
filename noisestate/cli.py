@@ -321,6 +321,8 @@ def _run(p, args) -> int:
     m = Model.from_dict(d, base_dir=base_dir)
     numerics = Numerics(nodes=args.nodes, engine=args.engine, tol=args.tol)
     res = _solve(m, numerics, verbose=args.verbose, refine=args.refine, stability=args.stability, **bounds)
+    if getattr(args, "require_ok", False):                 # the measurements the policy needs (the costs' window)
+        res._measure_for({"publication": Policy.PUBLICATION, "exploratory": Policy.EXPLORATORY}[getattr(args, "policy", "publication")])
     print(res.summary(diagnostics=False))
     print(res.diagnostics.summary(detailed=args.diagnostics))
     if args.out:

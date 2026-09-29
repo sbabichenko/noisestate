@@ -123,7 +123,14 @@ def test_the_discount_does_not_take_the_second_order_check_away():
     kb = ns.solve(example("ch4_kyle_back"), {"nodes": 20})
     assert kb.model.horizon.discount > 0 and kb.model.horizon.kind == "stationary"
     assert kb.diagnostics.statuses["second_order"] is Status.PASSED
-    assert kb.require_ok() is kb                       # the flagship example is acceptable
+    #  the flagship example passes every check but the costs' window at its shipped L = 8: a window of 12 moves the
+    #  trader's cost by 6.5e-5 (the publication policy's `window cost`, measured by require_ok); on L = 12 it is acceptable
+    blocking = {b.check for b in kb.diagnostics.assess().blocking}
+    assert blocking == {"window cost"}
+    with pytest.raises(ns.DiagnosticsError, match="WINDOW TOO SHORT FOR THE COSTS"):
+        kb.require_ok()
+    longer = ns.solve(example("ch4_kyle_back").with_stationary(12.0), {"nodes": 20})
+    assert longer.require_ok() is longer and longer.window_check.cost_change < 1e-6
     #  and the SIGN of the curvature -- the verdict -- does not move with the discount
     verdicts = {}
     for rho in (1e-9, 0.1, 0.5, 1.0):

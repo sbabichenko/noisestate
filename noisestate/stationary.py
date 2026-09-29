@@ -712,14 +712,18 @@ class StationarySolver(EngineBase):
                     blk += w * S
         return Gk, pre
 
-    def _response_operators(self, agent: Agent, R: np.ndarray):
+    def _response_operators(self, agent: Agent, R: np.ndarray, keep_own: bool = False):
         """Per control, the operator (n_prim N x N) giving the primary kernels' response to that
-        control's action kernel: Z = Zpass + Resp_u c_u, with the own block equal to the action."""
+        control's action kernel: Z = Zpass + Resp_u c_u, with the own block equal to the action (keep_own: the action
+        plus what R's own block carries, an instant observer's own reactions in a monitored R)."""
         c = self.c; N = c.N
         out = []
         for ui, u in enumerate(agent.controls):
             Cu = c.response(R[:, ui].reshape(len(c.prim), N), c.prim.index(u))
-            Cu[c.block(u)] = np.eye(N)
+            if keep_own:
+                Cu[c.block(u)] += np.eye(N)
+            else:
+                Cu[c.block(u)] = np.eye(N)
             for v, coef in (c.composite or {}).get(u, {}).items():   # an instant reaction moves with the action itself
                 if v != u:
                     Cu[c.block(v)] += coef * np.eye(N)
@@ -792,6 +796,13 @@ class StationarySolver(EngineBase):
                     M[cont] += CR[cont]
                 if not envelope and len(own):                       # the own later reactions (R with the own map on:
                     M[own] += CR[own]                               # stationary_risk); by default the envelope drops them
+                elif len(own) and c.instant_loads:
+                    # the agent's own instant reactions in R (a player privy to it answers its spike, and the agent reacts
+                    # at once to the level it sees): a fixed reaction, not a choice the envelope drops; its continuation
+                    # through the others' quantities is in R already, so its own atoms join it (the whole derivative)
+                    live = own[np.abs(Rj[:, own]).max(axis=0) > 0.0]
+                    if len(live):
+                        M[live] += CR[live]
                 for j, name, lag in lead:
                     M[j] += self._lead_term(agent, R[:, ui], name, lag)
             MQ = np.dot(QT, Mf)                                     # MQ[i] = sum_j Q[j, i] M_j (tensordot's product)
@@ -1068,6 +1079,16 @@ class StationarySolver(EngineBase):
         # through their response kernels (the monitored R; R0 itself without monitoring)
         R = self._impulse_responses(agent, maps, R0)
         Zpass = self._passive_world(agent, maps, Zpass, R0)
+        Resp0 = self._response_operators(agent, R0)
+        close = self._instant_closure(agent, Resp0)
+        if close is not None:
+            # the agent's own instant reactions (h times the levels it sees) are part of its passive world: its map is
+            # off, the reaction the loss fixes is not; a best response is its map on the rows of that world
+            Zpass = close(Zpass)
+            Resp0 = [close(Rv) for Rv in Resp0]
+        # the deviations' responses: the monitored R carries the agent's own instant reactions to what the privy players
+        # answer (their seed worlds close it), its own block among them
+        Resp = Resp0 if R is R0 else self._response_operators(agent, R, keep_own=close is not None)
         ytil, yinst = self._passive_rows(agent, Zpass)
         if c.levels and agent.name in c.levels:
             self._silent = getattr(self, "_silent", {})
@@ -1079,8 +1100,6 @@ class StationarySolver(EngineBase):
             Gk, Gpre = self._row_operator_parts(agent, ytil, yinst)
         else:                                                   # an overridden row operator: _foc_system builds its own
             Gk, Gpre = self._row_operator(agent, ytil, yinst), None
-        Resp0 = self._response_operators(agent, R0)
-        Resp = Resp0 if R is R0 else self._response_operators(agent, R)
         Fu = self._foc_operators(agent, R)
         # the FOC is affine in gamma: solve H (Fu (Zpass + sum_v Resp0_v Gk gamma_v)) = 0 for all controls
         shift = None
@@ -1097,12 +1116,43 @@ class StationarySolver(EngineBase):
         Zfull = Zpass.copy()
         for ui in range(nU):
             Zfull += Resp0[ui] @ cact[ui]
+        if close is not None:                                   # the action: the map's part and the instant reaction
+            cact = np.stack([Zfull[c.block(u)] for u in agent.controls])
         out = {"gamma": gamma, "action": cact, "Zfull": Zfull}
         if shift is not None:
             out["risk_shift"] = shift
         if want_decomp:
             self._decompose(agent, out, Fu, Resp, Gk, maps)
         return (self._project(agent, Zfull, self._map_part(agent, Zfull, cact)) if project else None), out
+
+    def _instant_closure(self, agent: Agent, Resp):
+        """For an agent with instant observations, the map Z -> Z' closing a world Z (computed with the agent's controls
+        off) under the agent's own instant reactions: its control v moves by sum_u h_vu Z'[u] (compile.instant_loads),
+        which moves the world through Resp_v, the response operators of its controls (the own block the action).
+        Z' = Z + A x, x = (I - B A)^-1 B Z, with A = [Resp_v] and B the loadings on the seen levels.  None without
+        instant loadings (the world is closed already)."""
+        c = self.c; N = c.N
+        loads = c.instant_loads or {}
+        pairs = [(vi, u, h) for vi, v in enumerate(agent.controls) for u, h in loads.get(v, {}).items() if h]
+        if not pairs:
+            return None
+        nU = len(agent.controls)
+        BA = np.zeros((nU * N, nU * N))
+        for vi, u, h in pairs:
+            for wi in range(nU):
+                BA[vi * N:(vi + 1) * N, wi * N:(wi + 1) * N] += h * Resp[wi][c.block(u)]
+        lu = lu_factor(np.eye(nU * N) - BA)
+
+        def close(Z):
+            BZ = np.zeros((nU * N,) + Z.shape[1:])
+            for vi, u, h in pairs:
+                BZ[vi * N:(vi + 1) * N] += h * Z[c.block(u)]
+            x = lu_solve(lu, BZ)
+            out = Z.copy()
+            for wi in range(nU):
+                out += Resp[wi] @ x[wi * N:(wi + 1) * N]
+            return out
+        return close
 
     def _map_part(self, agent: Agent, Z: np.ndarray, actions: np.ndarray) -> np.ndarray:
         """The part of the agent's action kernels its map carries: the action less its instant loadings on the
