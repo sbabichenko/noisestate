@@ -56,8 +56,8 @@
   the past's included; the argument that a discount cannot change its sign holds only for a loss positive semidefinite
   pointwise, and a trader's is not.  Chapter 6's transparent market (gamma 0.1, window 8): the trader read NOT A
   MINIMUM at -0.062 (the equilibrium is not even a critical point of that form's objective: slope 5.8e-2 along its
-  lowest direction, 2e-4 for the discounted objective); it is +0.0059, and the opaque market's trader +0.0058 (was
-  -0.054).  Checked against the discounted Riccati solution of one agent trading against its own transient impact:
+  lowest direction, 2e-4 for the discounted objective); it is +0.0059, and the same market's naive trader (not privy)
+  +0.0058 (was -0.054).  Checked against the discounted Riccati solution of one agent trading against its own transient impact:
   convex exactly when the weighted form is, where the unweighted form called the Riccati optimum a saddle.  Every
   stationary second-order value at rho > 0 moves (Kyle-Back's trader stays positive at every rho).
 
