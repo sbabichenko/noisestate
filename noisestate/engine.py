@@ -727,9 +727,9 @@ class EngineBase(MeanLayer):
         An engine that HAS these calls _fill_diagnostics below; the default stays a no-op so that an
         engine without a decomposition (the cell engine) inherits nothing it cannot honour."""
 
-    def _fill_diagnostics(self, res) -> None:
-        """One best response per agent at the equilibrium, recording its decomposition, its curvature
-        and its representation error.
+    def _fill_diagnostics(self, res, agents=None) -> None:
+        """One best response per agent at the equilibrium (those named in `agents`, default all), recording its
+        decomposition, its curvature and its representation error.
 
         Shared by the stationary and spectral engines, which had it twice, because the agent ORDER is
         an invariant and not a detail: a tied agent's representative must be evaluated before the
@@ -738,6 +738,8 @@ class EngineBase(MeanLayer):
         self._second_order_cache.clear()                               # the equilibrium's own check, not a stale one
         order = ([a for a in self.model.agents if self.c.rep[a.name] == a.name]
                  + [a for a in self.model.agents if self.c.rep[a.name] != a.name])
+        if agents is not None:
+            order = [a for a in order if a.name in agents]
         for a in order:
             g, out = self.best_response(a, res.maps, want_decomp=True)
             self._loss_forms.clear()              # its second-order check is done: the (n_prim N)^2 form is not kept

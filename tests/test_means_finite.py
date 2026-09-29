@@ -132,14 +132,15 @@ def test_targets_scale_the_means_and_leave_the_kernels_and_the_examples():
     """The means are linear in the targets and the mean cost quadratic (Jbar at target 2 is 4 x Jbar at target 1); the
     kernels and the variance part are identical to the bit, since the solve never sees the targets.  Without a driver
     every mean is exactly zero, with no solve, and the shipped finite examples' costs are what they were (identical to the
-    release before the means to every digit, the cell engine included)."""
+    release before the means to every digit, the cell engine included; re-pinned when the Anderson pruning moved them by
+    3e-10, within the solve's tolerance)."""
     r1 = ns.solve(ch1_targets(3.0, nodes=8)).require_converged(); r2 = ns.solve(ch1_targets(3.0, nodes=8, b=(2.0, -2.0))).require_converged()
     assert np.abs(r2.means["D1"] - 2 * r1.means["D1"]).max() < 1e-12 and abs(r2.cost_parts["player1"]["mean"] - 4 * r1.cost_parts["player1"]["mean"]) < 1e-12
     assert np.array_equal(r1.world, r2.world) and r1.cost_parts["player1"]["variance"] == r2.cost_parts["player1"]["variance"]
     off = engines.solver(ch1_targets(3.0, nodes=8)).solve(diagnostics=False)
     assert np.array_equal(off.means["D1"], r1.means["D1"]) and off.costs == r1.costs and off.mean_times.shape == (8,)
-    for f, costs in (("ch1_two_player_finite.yaml", {"player1": 0.396905768985999, "player2": 0.396905768985999}),
-                     ("ch1_delayed_finite.yaml", {"player1": 0.4838242662682089, "player2": 0.476678011994978})):
+    for f, costs in (("ch1_two_player_finite.yaml", {"player1": 0.39690576909663333, "player2": 0.39690576909663333}),
+                     ("ch1_delayed_finite.yaml", {"player1": 0.4838242662811114, "player2": 0.4766780119920971})):
         res = ns.solve(os.path.join(EX, f)).require_converged()
         assert all(abs(res.costs[k] - v) < 1e-14 for k, v in costs.items())
         assert all(np.array_equal(v, np.zeros(len(res.mean_times))) for v in res.means.values()) and set(res.model.control_names) <= set(res.means)

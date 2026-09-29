@@ -32,6 +32,17 @@ from numpy.lib.stride_tricks import as_strided
 from numpy.polynomial import legendre
 
 
+_GAUSS: dict = {}
+
+
+def _leggauss(m: int):
+    """legendre.leggauss(m), made once per m."""
+    hit = _GAUSS.get(m)
+    if hit is None:
+        hit = _GAUSS[m] = legendre.leggauss(m)
+    return hit
+
+
 def cheb_lobatto(n: int, lo: float, hi: float) -> np.ndarray:
     k = np.arange(n)
     return lo + 0.5 * (hi - lo) * (1.0 - np.cos(np.pi * k / (n - 1)))
@@ -292,7 +303,7 @@ class AgeGrid:
         """(N, N): the values at the nodes of a kernel of class cls (shift(s) with the rows outside [lo, hi] zero, a
         node on a bound reading the inside only from its own side): exact point values on any panels."""
         s, lo, hi = self.shift_class(cls)
-        S = self.shift(s)
+        S = self.shift_cached(s)
         if self.is_natural((s, lo, hi)):
             return S
         memo = self.__dict__.setdefault("_sample_class", {})
@@ -308,21 +319,28 @@ class AgeGrid:
     def _conv_rows_shifted(self, cls, ks) -> np.ndarray:
         """(len(ks), N, N): T[a, i, j] = int_0^a l_i(b) y_j(a - b) db at the nodes a = nodes[ks], y_j the basis kernel of
         class cls = (s, lo, hi): l_j(a - b - s) for a - b in [lo, hi].  The convolution of a kernel with one of class
-        cls; at the class 0 it is _conv_rows (the same pieces and points)."""
+        cls; at the class 0 it is _conv_rows (the same pieces and points).  Every node's quadrature points are read in
+        two interpolations, then one product per node."""
         s, lo, hi = self.shift_class(cls)
+        ks = list(ks)
         T = np.zeros((len(ks), self.N, self.N))
         bp = list(self.breakpoints)
         m = self.n + 2
-        for t, k in enumerate(ks):
+        xs_all, ws_all, ys_all, seg = [], [], [], [0]
+        for k in ks:
             a = self.nodes[k]
             b0, b1 = max(0.0, a - hi), min(a, a - lo)
-            if b1 - b0 <= 1e-14:
-                continue
-            cuts = bp + [a - s - b for b in bp]
-            xs, ws = self._gauss_pieces(b0, b1, cuts, m)
-            Li = self.interp(xs, side=+1)              # l_i(b)
-            Lj = self.interp(a - s - xs, side=-1)      # l_j(a - s - b): approach from the left
-            T[t] = (Li * ws[:, None]).T @ Lj
+            if b1 - b0 > 1e-14:
+                xs, ws = self._gauss_pieces(b0, b1, bp + [a - s - b for b in bp], m)
+                xs_all.append(xs); ws_all.append(ws); ys_all.append(a - s - xs)
+            seg.append(seg[-1] + (len(xs_all[-1]) if b1 - b0 > 1e-14 else 0))
+        if not xs_all:
+            return T
+        Li = self.interp(np.concatenate(xs_all), side=+1) * np.concatenate(ws_all)[:, None]     # w l_i(b)
+        Lj = self.interp(np.concatenate(ys_all), side=-1)                                          # l_j(a - s - b), from the left
+        for t in range(len(ks)):
+            if seg[t + 1] > seg[t]:
+                T[t] = Li[seg[t]:seg[t + 1]].T @ Lj[seg[t]:seg[t + 1]]
         return T
 
     def _conv_flat_shifted(self, cls, left: bool) -> np.ndarray:
@@ -362,23 +380,30 @@ class AgeGrid:
 
     def _corr_rows_shifted(self, rho: float, cw, cz) -> np.ndarray:
         """(N, N, N): T[a, i, j] = int_0^{L-a} e^{-rho x} w_i(x) z_j(a + x) dx, w_i the basis kernel of class cw and z_j of
-        class cz: the correlation of a kernel of class cw with one of class cz.  At the classes 0 it is _corr_rows."""
+        class cz: the correlation of a kernel of class cw with one of class cz.  At the classes 0 it is _corr_rows.
+        Every node's quadrature points are read in two interpolations, then one product per node."""
         sw, lw, hw = self.shift_class(cw)
         sz, lz, hz = self.shift_class(cz)
         T = np.zeros((self.N, self.N, self.N))
         bp = list(self.breakpoints)
         m = self.n + 2
         L = self.L
+        xw_all, ws_all, xz_all, seg = [], [], [], [0]
         for k in range(self.N):
             a = self.nodes[k]
             lo, hi = max(0.0, lw, lz - a), min(L - a, hw, hz - a)
-            if hi - lo <= 1e-14:
-                continue
-            cuts = [b + sw for b in bp] + [b + sz - a for b in bp]
-            xs, ws = self._gauss_pieces(lo, hi, cuts, m)
-            Li = self.interp(xs - sw, side=+1)
-            Lj = self.interp(a + xs - sz, side=+1)
-            T[k] = (Li * (ws * np.exp(-rho * xs))[:, None]).T @ Lj
+            n_k = 0
+            if hi - lo > 1e-14:
+                xs, ws = self._gauss_pieces(lo, hi, [b + sw for b in bp] + [b + sz - a for b in bp], m)
+                xw_all.append(xs - sw); ws_all.append(ws * np.exp(-rho * xs)); xz_all.append(a + xs - sz); n_k = len(xs)
+            seg.append(seg[-1] + n_k)
+        if not xw_all:
+            return T
+        Li = self.interp(np.concatenate(xw_all), side=+1) * np.concatenate(ws_all)[:, None]
+        Lj = self.interp(np.concatenate(xz_all), side=+1)
+        for k in range(self.N):
+            if seg[k + 1] > seg[k]:
+                T[k] = Li[seg[k]:seg[k + 1]].T @ Lj[seg[k]:seg[k + 1]]
         return T
 
     def corr_ops_shifted(self, W: np.ndarray, rho: float, cw, cz) -> np.ndarray:
@@ -516,13 +541,10 @@ class AgeGrid:
     # ------------------------------------------------------------ tensors
     def _gauss_pieces(self, lo: float, hi: float, cuts, m: int):
         """Gauss–Legendre points/weights on [lo, hi] split at the cuts inside it."""
-        edges = sorted(set([lo, hi] + [c for c in cuts if lo + 1e-13 < c < hi - 1e-13]))
-        xg, wg = legendre.leggauss(m)
-        xs, ws = [], []
-        for e0, e1 in zip(edges[:-1], edges[1:]):
-            xs.append(0.5 * (e1 - e0) * xg + 0.5 * (e0 + e1))
-            ws.append(0.5 * (e1 - e0) * wg)
-        return np.concatenate(xs), np.concatenate(ws)
+        edges = np.array(sorted(set([lo, hi] + [c for c in cuts if lo + 1e-13 < c < hi - 1e-13])))
+        xg, wg = _leggauss(m)
+        e0, e1 = edges[:-1, None], edges[1:, None]
+        return (0.5 * (e1 - e0) * xg + 0.5 * (e0 + e1)).ravel(), (0.5 * (e1 - e0) * wg).ravel()
 
     def _conv_rows(self, ks) -> np.ndarray:
         """conv_tensor rows of the nodes ks: T[a, i, j] = int_0^a l_i(b) l_j(a - b) db, (len(ks), N, N)."""

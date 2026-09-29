@@ -40,16 +40,55 @@ EXACT_SHIFTS = "auto"      # "auto": exact-shift operators where a lag is not al
                            # (the resampling reference, kept while the exact path is validated)
 
 
-def _lu_solve(lu, b: np.ndarray) -> np.ndarray:
+def _lu_solve(lu, b: np.ndarray, trans: int = 0) -> np.ndarray:
     """scipy.linalg.lu_solve(lu, b), its finiteness check included, straight on LAPACK's getrs: the same routine without
     the wrapper's layers, which cost more than the solve at the closed loop's sizes (thousands of calls in a
     monitored market's solve)."""
     b = np.asarray_chkfinite(b)
     getrs, = sla.get_lapack_funcs(("getrs",), (lu[0], b))
-    x, info = getrs(lu[0], lu[1], b)
+    x, info = getrs(lu[0], lu[1], b, trans=trans)
     if info != 0:
         raise ValueError(f"illegal value in {-info}th argument of internal getrs")
     return x
+
+
+def _pgmres(A, Minv, b: np.ndarray, tol: float, maxit: int, x0=None):
+    """(x, iterations) with ||b - A x|| <= tol ||b||, by GMRES right-preconditioned with Minv (a fixed preconditioner,
+    so x = x0 + Minv(V y)), classical Gram-Schmidt with one reorthogonalisation; restarted from the true residual while
+    the budget of maxit iterations lasts.  (None, maxit) when the tolerance is not reached."""
+    n = b.size; nb = float(np.linalg.norm(b))
+    if nb == 0.0:
+        return np.zeros(n), 0
+    if x0 is None:
+        x, r = np.zeros(n), b.copy()
+    else:
+        x = np.array(x0, dtype=float); r = b - A(x)
+    its = 0
+    while its < maxit:
+        beta = float(np.linalg.norm(r))
+        if beta <= tol * nb:
+            return x, its
+        m = maxit - its
+        V = np.empty((m + 1, n)); H = np.zeros((m + 1, m))
+        V[0] = r / beta
+        k = 0
+        for j in range(m):
+            w = A(Minv(V[j]))
+            h = V[:j + 1] @ w; w -= h @ V[:j + 1]
+            h2 = V[:j + 1] @ w; w -= h2 @ V[:j + 1]
+            H[:j + 1, j] = h + h2
+            H[j + 1, j] = hn = float(np.linalg.norm(w))
+            k = j + 1
+            e1 = np.zeros(j + 2); e1[0] = beta
+            y, *_ = np.linalg.lstsq(H[:j + 2, :j + 1], e1, rcond=None)
+            est = float(np.linalg.norm(e1 - H[:j + 2, :j + 1] @ y))
+            if hn == 0.0 or est <= 0.5 * tol * nb:
+                break
+            V[j + 1] = w / hn
+        its += k
+        x = x + Minv(y @ V[:k])
+        r = b - A(x)
+    return (x, its) if float(np.linalg.norm(r)) <= tol * nb else (None, its)
 
 
 _LOWER: Dict[int, np.ndarray] = {}
@@ -470,6 +509,24 @@ class Compiled(CompiledBase):
         blocks, deltas = hit
         return blocks, {k: list(v) for k, v in deltas.items()}
 
+    def row_deltas(self, agent: str, r: int, excluded: set) -> Dict[str, List[Tuple[float, float]]]:
+        """row_blocks' instantaneous entries alone (no operators to build): cached per (agent, row, excluded controls),
+        without row_blocks' memory cap (a few tuples per row), returned as fresh lists."""
+        memo = self.__dict__.setdefault("_row_deltas", {})
+        key = (agent, r, frozenset(excluded))
+        hit = memo.get(key)
+        if hit is None:
+            name, drift, E, delay = self.rows[agent][r]
+            hit = {}
+            for (n, l), c in drift.items():
+                if n in excluded:
+                    hit.setdefault(n, []).append((delay + l, c))
+            for k, ch in enumerate(self.channels):
+                if E[k] != 0.0:
+                    hit.setdefault(ch, []).append((delay, E[k]))
+            memo[key] = hit
+        return {k: list(v) for k, v in hit.items()}
+
     def _row_blocks(self, agent: str, r: int, excluded: set):
         name, drift, E, delay = self.rows[agent][r]
         S = self.shift(delay)
@@ -544,21 +601,46 @@ class Compiled(CompiledBase):
         """The map-independent part of the closed loop, per set of excluded controls: with the states
         eliminated, Z_X = W Z_U + G B_X where G = (I - P U_X)^{-1} carries the lagged-state feedback
         and W = G P U_U the controls' effect on the states.  Cached: only the control rows of the
-        closed loop depend on the strategies, so each solve is of size n_controls N, not n_prim N."""
+        closed loop depend on the strategies, so each solve is of size n_controls N, not n_prim N.
+        P U is assembled from the blocks the state inputs name (U is zero elsewhere): with no lagged-state input G is the
+        identity (lu None, nothing factored), and with no control input W is zero (None, _elim_wzero)."""
         key = excl
         if key not in self._elim:
-            nX, N, n = self.nX, self.N, len(self.prim) * self.N
-            perm = np.arange(nX * N).reshape(N, nX).T.reshape(-1)     # prim index -> (node, comp) index
-            P0X = self.P0[perm]
-            PU = self._state_inputs_operator(excl)
-            k = nX * N                                   # I - P U_X built F-ordered and factored in place (no eye, no copy):
-            A = np.subtract(0.0, PU[:, :k], order="F")    # 0 - x off the diagonal and 1 - x on it, the entries eye - x has
-            A[np.arange(k), np.arange(k)] = 1.0 - PU[np.arange(k), np.arange(k)]
-            lu = lu_factor(A, overwrite_a=True)
-            del A
-            W = lu_solve(lu, PU[:, k:])
+            nX, N = self.nX, self.N
+            k = nX * N
+            perm = np.arange(k).reshape(N, nX).T.reshape(-1)          # prim index -> (node, comp) index
+            PX, P0X = self.Pin[perm], self.P0[perm]
+            PUb: Dict[str, np.ndarray] = {}                            # P U by the primary it reads: (nX N, N) blocks
+            for i, (nm, lag), c in self.state_inputs:
+                if nm in excl:
+                    continue
+                if self.exact and lag != 0:                            # the lag's own propagator: exact on any panels
+                    blk = c * self.prop_shifted(lag)[:, i::nX]
+                else:
+                    blk = PX[:, i::nX] @ (c * self.shift(lag))
+                PUb[nm] = PUb[nm] + blk if nm in PUb else blk
+            states = set(self.model.state_names)
+            lu = None
+            if any(nm in states for nm in PUb):
+                A = np.zeros((k, k), order="F")                    # I - P U_X
+                for nm, blk in PUb.items():
+                    if nm in states:
+                        A[:, self.block(nm)] -= blk
+                A[np.arange(k), np.arange(k)] += 1.0
+                lu = lu_factor(A, overwrite_a=True)
+                del A
+            W = None
+            if any(nm not in states for nm in PUb):
+                PUU = np.zeros((k, self.nU * N))
+                for nm, blk in PUb.items():
+                    if nm not in states:
+                        sl = self.block(nm)
+                        PUU[:, sl.start - k:sl.stop - k] += blk
+                W = PUU if lu is None else lu_solve(lu, PUU)
+                if not W.any():
+                    W = None
             self._elim[key] = (lu, W, P0X, perm)
-            self._elim_wzero[key] = not W.any()          # no state driven by a control: the products with W are skipped
+            self._elim_wzero[key] = W is None            # no state driven by a control: the products with W are skipped
         return self._elim[key]
 
     def closed_loop(self, maps: Dict[str, np.ndarray], excluded: Optional[str] = None,
@@ -635,14 +717,14 @@ class Compiled(CompiledBase):
                             continue
                         v = np.zeros(nX); v[i] = c
                         Bx[:, col] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
-                hit = (Bx, _lu_solve(lu, Bx))
+                hit = (Bx, Bx.copy() if lu is None else _lu_solve(lu, Bx))
                 if len(self._state_forcing) < 64:
                     self._state_forcing[skey] = hit
             B[:nxs] = hit[0]
             GB = hit[1]
             if IMG is not None and IMG[:nxs].any():
                 B[:nxs] = B[:nxs] + IMG[:nxs]
-                GB = GB + _lu_solve(lu, IMG[:nxs])
+                GB = GB + (IMG[:nxs] if lu is None else _lu_solve(lu, IMG[:nxs]))
         if IMG is not None:
             B[nxs:] += IMG[nxs:]
         # control rows: the strategies
@@ -686,8 +768,12 @@ class Compiled(CompiledBase):
         Z = np.zeros((n, ncol))
         if nX:
             MUX, MUU = MU[:, :nxs], MU[:, nxs:]
-            Z[nxs:] = np.linalg.solve(np.eye(nU * N) - MUU - MUX @ W, B[nxs:] + MUX @ GB)
-            Z[:nxs] = W @ Z[nxs:] + GB
+            if W is None:
+                Z[nxs:] = np.linalg.solve(np.eye(nU * N) - MUU, B[nxs:] + MUX @ GB)
+                Z[:nxs] = GB
+            else:
+                Z[nxs:] = np.linalg.solve(np.eye(nU * N) - MUU - MUX @ W, B[nxs:] + MUX @ GB)
+                Z[:nxs] = W @ Z[nxs:] + GB
         else:
             Z[:] = np.linalg.solve(np.eye(nU * N) - MU, B)
         return self._with_deltas(Z, D, split)
@@ -740,7 +826,7 @@ class Compiled(CompiledBase):
         filling the instantaneous entries of B on the way (regular=False: only those entries)."""
         N = self.N; n = len(self.prim) * N
         owner = {u: a for a in self.model.agents for u in a.controls}
-        MU = np.zeros((len(controls) * N, n))
+        MU = np.zeros((len(controls) * N, n)) if regular else None       # the instantaneous entries alone: no operator
         for i, u in enumerate(controls):
             a = owner[u]; ui = a.controls.index(u); g = maps[a.name]
             rows_here = slice(i * N, (i + 1) * N); bl = self.block(u)
@@ -752,62 +838,161 @@ class Compiled(CompiledBase):
                 continue
             Cs = self.grid.conv_ops_left(g[ui].T) if regular else None       # the rows' maps at once
             for r in range(len(a.signals)):
-                blocks, deltas = self.row_blocks(a.name, r, excl)
                 gur = g[ui, r]
                 if regular:
+                    blocks, deltas = self.row_blocks(a.name, r, excl)
                     C = Cs[r]
                     for nm, op in blocks.items():
                         MU[rows_here, self.block(nm)] += C @ op
+                else:
+                    deltas = self.row_deltas(a.name, r, excl)
                 self._add_point_columns(B, bl, deltas, gur, impulse_controls)
         return MU
+
+    def _woodbury_cheaper(self, m: int, r: int, nf: int, nex: int, ncol: int) -> bool:
+        """Whether the passive world's Woodbury correction on the mode solves (m/2 + 1 complex LUs of r N, their solves
+        with ncol + nex N right-hand sides, the capacitance) costs fewer flops than the direct real LU of the other agents'
+        rows ((nU - nex) N): the direct solve wins on short cycles (Chapter 5's three firms), the correction from about
+        six (measured: 8.1 vs 12.6 ms at six firms, 19 vs 69 at twelve)."""
+        N = self.N; rn = r * N + nf; ke = nex * N; no = (self.nU - nex) * N
+        modes = m // 2 + 1
+        wood = modes * (4 * (2 / 3) * rn ** 3 + 4 * 2 * rn ** 2 * (ncol + ke)) + 2 * self.nU * N * ke * (ke + 2 * ncol)
+        direct = (2 / 3) * no ** 3 + 2 * no ** 2 * ncol
+        return wood < direct
 
     def closed_loop_symmetric(self, maps, excluded=None, impulse_controls=(), split: bool = False):
         """closed_loop for a cyclically symmetric model with symmetric maps: the reduced control-row
         operator commutes with the cyclic relabelling, so in the Fourier basis over the cycle it is
         block diagonal, one block per mode, built from the representative agent's rows alone.
-        Switching one agent off (the passive world) breaks the symmetry: the others' rows, the representative's with
-        their columns shifted, are then one real system on the remaining controls, solved directly."""
+        Switching one agent off (the passive world) breaks the symmetry by a low-rank change of that agent's rows,
+        applied with the Woodbury identity on top of the symmetric solve (the mode blocks' inverses on its orbits' columns:
+        |its controls| N right-hand sides per mode).  The transforms over the cycle are FFTs over the member axis."""
         st = self._mode_structure(); m, omega = st["m"], st["omega"]
-        nX, N = self.nX, self.N; n = len(self.prim) * N; nxs = nX * N
+        nX, nU, N = self.nX, self.nU, self.N; n = len(self.prim) * N; nxs = nX * N
         ncol = self.nW + len(impulse_controls)
         ex_agent = self.model.agents[[a.name for a in self.model.agents].index(excluded)] if excluded else None
         D, IMG = self._deltas_for(maps, excluded, impulse_controls)
         B = np.zeros((n, ncol))
         lu, W, P0X, perm = self._state_elimination(frozenset())          # the symmetric world: nobody excluded
         wzero = self._elim_wzero[frozenset()]
-        for k in range(self.nW):
-            B[:nxs, k] += P0X @ self.sigma[:, k]
-        for j, u in enumerate(impulse_controls):
-            for i, (nm, lag), c in self.state_inputs:
-                if nm == u:
-                    v = np.zeros(nX); v[i] = c
-                    B[:nxs, self.nW + j] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
-        if IMG is not None:
-            B += IMG                                                     # what the lagged point observations drive
-        GB = _lu_solve(lu, B[:nxs])
+        # the exogenous states' forcing and its elimination G B_X: map-independent, once per impulse set
+        skey = ("sym", tuple(impulse_controls))
+        hit = self._state_forcing.get(skey)
+        if hit is None:
+            Bx = np.zeros((nxs, ncol))
+            for k in range(self.nW):
+                Bx[:, k] += P0X @ self.sigma[:, k]
+            for j, u in enumerate(impulse_controls):
+                for i, (nm, lag), c in self.state_inputs:
+                    if nm == u:
+                        v = np.zeros(nX); v[i] = c
+                        Bx[:, self.nW + j] += (P0X @ v) if lag == 0 else (self.grid.jump_injector(self.A, lag)[perm] @ v)
+            hit = (Bx, Bx.copy() if lu is None else _lu_solve(lu, Bx))
+            if len(self._state_forcing) < 64:
+                self._state_forcing[skey] = hit
+        B[:nxs] = hit[0]
+        GB = hit[1]
+        if IMG is not None:                                              # what the lagged point observations drive
+            B += IMG
+            GB = GB + (IMG[:nxs] if lu is None else _lu_solve(lu, IMG[:nxs]))
         corb, cols, csl, fcols, perms, cperms = st["corb"], st["cols"], st["csl"], st["fcols"], st["perms"], st["cperms"]
         # representative rows of the reduced operator (states eliminated): R = MUU + MUX W
         rep_controls = [o[0] for o in corb] + [u for u in self.model.control_names if all(u not in o for o in corb)]
-        Bsym = np.zeros((n, ncol))
-        MU_rep = self._control_rows(maps, rep_controls, frozenset(), impulse_controls, Bsym)
+        MU_rep = self._control_rows(maps, rep_controls, frozenset(), impulse_controls, np.zeros((n, ncol)))
         R_rep = MU_rep[:, nxs:] if wzero else MU_rep[:, nxs:] + MU_rep[:, :nxs] @ W       # (n_rep N, nU N)
         # every control's instantaneous entries (with the excluded agent's controls as impulses, which is
         # how the others' reactions to its impulse enter): cheap, no regular part
         all_controls = self.model.control_names
         excl = frozenset(ex_agent.controls) if ex_agent else frozenset()
         self._control_rows(maps, all_controls, excl, impulse_controls, B, regular=False)
-        # right-hand side rows: the representative's state rows applied to the states shifted by s
+        # right-hand side rows: the representative's state rows applied to the states shifted by s, through the states it
+        # reads only (its rows' nonzero columns: its own and its neighbours' states), every shift in one product
         rhs = B[nxs:].copy(); MUX_rep = MU_rep[:, :nxs]
-        for j, o in enumerate(corb):
-            for sh in range(m):
-                rhs[csl[j][sh]] += MUX_rep[j * N:(j + 1) * N] @ GB[perms[sh]]
-        if fcols.size:
-            rhs[fcols] += MUX_rep[len(corb) * N:] @ GB
         r = len(corb); nf = fcols.size
-        if ex_agent is not None:
-            # one agent switched off (the passive world): its controls are zero and the others' rows, the representative's
-            # with their columns shifted along the cycle, form one real system on the remaining controls, solved directly
-            # (a Woodbury correction on the mode solves took nW + |its controls| N complex right-hand sides)
+        nzc = np.where(MUX_rep.any(axis=0))[0]
+        if nzc.size:
+            Pm = np.stack(perms)[:, nzc]                                        # (m, |nzc|): the read states at every shift
+            for j in range(r):
+                T = np.matmul(MUX_rep[j * N:(j + 1) * N, nzc], GB[Pm])          # (m, N, ncol)
+                for sh in range(m):
+                    rhs[csl[j][sh]] += T[sh]
+            if nf:
+                rhs[fcols] += MUX_rep[r * N:][:, nzc] @ GB[nzc]
+        # the orbits' rows gathered member by member: idx[j, sh] the nodes of orbit j's member sh in the control block
+        idx = np.array([[cols[j][sh] for sh in range(m)] for j in range(r)])            # (r, m, N)
+        sq = np.sqrt(m)
+        # mode blocks: the operator is block circulant over the cycle, so the discrete Fourier transform over the members
+        # block-diagonalises it; modes k and m - k are complex conjugates (the operator and the right-hand sides are real),
+        # so only k <= m/2 is factorised and solved (rfft / irfft over the member axis)
+        kmax = m // 2
+        Rj = R_rep[:r * N][:, idx.reshape(-1)].reshape(r * N, r, m, N)                   # [(i, a), j, d, b]
+        Rf = np.conj(np.fft.rfft(Rj, axis=2))                                           # sum_d omega^{dk} R[., j, d, .]
+        blocks = []
+        for k in range(kmax + 1):
+            Ak = Rf[:, :, k, :].reshape(r * N, r * N)
+            if k == 0 and nf:
+                Ak = np.block([[Ak, sq * R_rep[:r * N][:, fcols]],
+                               [sq * R_rep[r * N:][:, idx[:, 0].reshape(-1)], R_rep[r * N:][:, fcols]]])
+            Ak = -Ak
+            Ak[np.arange(Ak.shape[0]), np.arange(Ak.shape[0])] += 1.0
+            blocks.append(lu_factor(Ak, overwrite_a=True, check_finite=False))
+
+        def solve_sym(rhs_u):
+            """(I - R) Z_U = rhs_u for the symmetric operator, by modes k <= m/2 and their conjugates."""
+            nc = rhs_u.shape[1]
+            X = rhs_u[idx.reshape(-1)].reshape(r, m, N, nc)
+            Xf = np.fft.rfft(X, axis=1) / sq                                            # (r, kmax + 1, N, nc)
+            Zf = np.empty_like(Xf)
+            fixed_out = None
+            for k in range(kmax + 1):
+                bk = Xf[:, k].reshape(r * N, nc)
+                if k == 0 and nf:
+                    bk = np.concatenate([bk, rhs_u[fcols].astype(complex)])
+                zk = _lu_solve(blocks[k], bk)
+                if k == 0 and nf:
+                    fixed_out = zk[r * N:].real
+                    zk = zk[:r * N]
+                Zf[:, k] = zk.reshape(r, N, nc)
+            out = np.zeros_like(rhs_u)
+            out[idx.reshape(-1)] = (np.fft.irfft(Zf, n=m, axis=1) * sq).reshape(r * m * N, nc)
+            if nf:
+                out[fcols] = fixed_out
+            return out
+        if ex_agent is None:
+            ZU = solve_sym(rhs)
+        elif all(u in st["member"] for u in ex_agent.controls) and self._woodbury_cheaper(m, r, nf, len(ex_agent.controls), ncol):
+            # Woodbury: the excluded agent's control rows become identity rows (its strategy off): (I - R + E0 R0) Z = rhs with
+            # R0 its rows of R and E0 their unit columns.  The mode solves of E0 are the mode blocks' inverses on its orbits'
+            # columns, phased by its place on the cycle; the correction's capacitance is |its controls| N square
+            rows0 = np.concatenate([np.arange(all_controls.index(u) * N, (all_controls.index(u) + 1) * N) for u in ex_agent.controls])
+            R0 = np.zeros((rows0.size, nU * N))                                  # the excluded agent's rows of the symmetric
+            for i, u in enumerate(ex_agent.controls):                             # operator: the representative's, columns shifted
+                j, sh = st["member"][u]; R0[i * N:(i + 1) * N] = R_rep[j * N:(j + 1) * N][:, cperms[(-sh) % m]]
+            rhs_ex = rhs.copy(); rhs_ex[rows0] = 0.0                                # B rows of the excluded agent are zero
+            Yb = solve_sym(rhs_ex)
+            Ef = np.zeros((r, kmax + 1, N, rows0.size), dtype=complex)            # the mode transform of E0
+            for i, u in enumerate(ex_agent.controls):
+                j, sh = st["member"][u]
+                Ef[j, :, np.arange(N), i * N + np.arange(N)] = (omega ** (-sh * np.arange(kmax + 1)))[None, :] / sq
+            Zf = np.empty_like(Ef)
+            for k in range(kmax + 1):
+                bk = Ef[:, k].reshape(r * N, rows0.size)
+                if k == 0 and nf:
+                    bk = np.concatenate([bk, np.zeros((nf, rows0.size), dtype=complex)])
+                    Zf[:, k] = _lu_solve(blocks[k], bk)[:r * N].reshape(r, N, rows0.size)
+                    fixed_e = _lu_solve(blocks[k], bk)[r * N:].real
+                else:
+                    Zf[:, k] = _lu_solve(blocks[k], bk).reshape(r, N, rows0.size)
+            Ye = np.zeros((nU * N, rows0.size))
+            Ye[idx.reshape(-1)] = (np.fft.irfft(Zf, n=m, axis=1) * sq).reshape(r * m * N, rows0.size)
+            if nf:
+                Ye[fcols] = fixed_e
+            cap = np.eye(rows0.size) + R0 @ Ye
+            ZU = Yb - Ye @ np.linalg.solve(cap, R0 @ Yb)
+            ZU[rows0] = 0.0
+        else:
+            # a short cycle (the direct solve is cheaper), or an excluded agent outside the cycle's orbits: the other agents'
+            # rows, the representative's with their columns shifted, as one real system, solved directly
             others = [u for u in all_controls if u not in ex_agent.controls]
             idx_o = np.concatenate([np.arange(all_controls.index(u) * N, (all_controls.index(u) + 1) * N) for u in others])
             fixed = [x for x in rep_controls if x not in st["member"]]
@@ -823,46 +1008,6 @@ class Compiled(CompiledBase):
             Aoo[np.arange(idx_o.size), np.arange(idx_o.size)] += 1.0
             ZU = np.zeros_like(rhs)
             ZU[idx_o] = _lu_solve(lu_factor(Aoo, overwrite_a=True, check_finite=False), rhs[idx_o])
-            Z = np.zeros((n, ncol)); Z[nxs:] = ZU; Z[:nxs] = GB if wzero else W @ ZU + GB
-            return self._with_deltas(Z, D, split)
-        # mode blocks
-        # modes k and m - k are complex conjugates (the operator and the right-hand sides are real), so only
-        # k <= m/2 is factorised and solved; the conjugate mode's contribution is the conjugate's
-        kmax = m // 2
-        blocks = []
-        for k in range(kmax + 1):
-            Ak = np.zeros((r * N + (nf if k == 0 else 0),) * 2, dtype=complex)
-            for i in range(r):
-                for j in range(r):
-                    for d in range(m):
-                        Ak[i * N:(i + 1) * N, j * N:(j + 1) * N] += (omega ** (d * k)) * R_rep[i * N:(i + 1) * N, csl[j][d]]
-            if k == 0 and nf:
-                for i in range(r):
-                    Ak[i * N:(i + 1) * N, r * N:] += np.sqrt(m) * R_rep[i * N:(i + 1) * N][:, fcols]
-                    Ak[r * N:, i * N:(i + 1) * N] += np.sqrt(m) * R_rep[r * N:][:, cols[i][0]]
-                Ak[r * N:, r * N:] += R_rep[r * N:][:, fcols]
-            blocks.append(lu_factor(np.eye(Ak.shape[0]) - Ak))
-
-        def solve_sym(rhs_u):
-            """(I - R) Z_U = rhs_u for the symmetric operator, by modes k <= m/2 and their conjugates."""
-            out = np.zeros_like(rhs_u)
-            for k in range(kmax + 1):
-                size = r * N + (nf if k == 0 else 0)
-                bk = np.zeros((size, rhs_u.shape[1]), dtype=complex)
-                for j in range(r):
-                    for sh in range(m):
-                        bk[j * N:(j + 1) * N] += (omega ** (-sh * k)) * rhs_u[csl[j][sh]] / np.sqrt(m)
-                if k == 0 and nf:
-                    bk[r * N:] = rhs_u[fcols]
-                zk = _lu_solve(blocks[k], bk)
-                weight = 1.0 if (k == 0 or 2 * k == m) else 2.0                  # the pair (k, m - k) or a self-conjugate mode
-                for j in range(r):
-                    for sh in range(m):
-                        out[csl[j][sh]] += weight * ((omega ** (sh * k)) * zk[j * N:(j + 1) * N]).real / np.sqrt(m)
-                if k == 0 and nf:
-                    out[fcols] += zk[r * N:].real
-            return out
-        ZU = solve_sym(rhs)
         Z = np.zeros((n, ncol)); Z[nxs:] = ZU; Z[:nxs] = GB if wzero else W @ ZU + GB
         return self._with_deltas(Z, D, split)
 
@@ -1304,7 +1449,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         products over those blocks are skipped (c.causal_chunks; the stationary Compiled declares them)."""
         return self.c.causal_chunks()
 
-    def _foc_system(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu, shift=None, Gk=None, Gpre=None):
+    def _foc_system(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu, shift=None, Gk=None, Gpre=None, lazy: bool = False, Gfull=None):
         """The first-order-condition system Amat gamma = -bvec on the passive rows,
         Amat[u, v] = sum_k H_k (Fu_u Resp_v) G_k, bvec[u] = sum_k H_k (Fu_u Zpass)_k, with G_k the row
         operator and H_k the projection operator of channel k.  Both split into a regular part (the
@@ -1315,15 +1460,22 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         the instantaneous terms are added block by block.  Identical to the dense assembly to round-off.
         Gk, when given, is _row_operator's result on the same rows and Gpre its blocks' regular parts where it added
         instantaneous entries (_row_operator_parts): the convolution operators this would build again (the same call
-        on the same kernels) are read from them instead; Gpre is emptied once read."""
+        on the same kernels) are read from them instead; Gpre is emptied once read.
+        With lazy=True returns (assemble, bvec, matvec) instead: assemble() builds Amat, matvec(gamma) is Amat @ gamma
+        from the factors (Gfull, the whole row operator (nW, N, nR N), applied to every channel at once), which the
+        best response's Krylov solve uses without Amat (_foc_gamma)."""
+        if Fu and isinstance(Fu[0], dict):                                     # the exact-shift path's classes
+            return self._foc_system_x(agent, rows, inst, Zpass, Resp, Fu, shift, Gk, Gpre, lazy=lazy, Gfull=Gfull)
         c = self.c; N = c.N; nR, nU = len(rows), len(Fu)
         sup, groups = self._row_support(agent, rows)
         delay = [c.rows[agent.name][r][3] for r in range(nR)]
         Rn = np.where(sup.any(axis=1))[0]; Kn = np.where(sup.any(axis=0))[0]
         nRn, nKn = len(Rn), len(Kn)
         kpos = {int(k): i for i, k in enumerate(Kn)}
-        # regular parts: Hs[(ri, a), (j, ki)] and Gs[a, (ki, ri, j)]
-        Hs = np.zeros((nRn, N, N, nKn)); Gs = np.zeros((N, nKn, nRn, N))
+        # regular parts: Hs[(ri, a), (j, ki)] and Gs[a, (ki, ri, j)]; with the row operator given, Gs is read from it when
+        # Amat is assembled (lazy: only then)
+        Hs = np.zeros((nRn, N, N, nKn)); Gs = np.zeros((N, nKn, nRn, N)) if Gk is None else None
+        read = []                                                               # (ri, k) of the row operator's blocks
         for d, rs in groups.items():
             pairs = [(ri, int(k)) for ri, r in enumerate(Rn) if r in rs for k in np.where(sup[r])[0]]
             if not pairs:
@@ -1336,17 +1488,24 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 Hs[ri, :, :, kpos[k]] = Hp[:, i, :]
                 if Gk is None:
                     Gs[:, kpos[k], ri, :] = Gp[i]
-                else:                                                           # the row operator's block: the same product
-                    r = int(Rn[ri])
-                    Gs[:, kpos[k], ri, :] = Gpre[(r, k)] if (r, k) in Gpre else Gk[k][:, r * N:(r + 1) * N]
+                else:
+                    read.append((ri, k))
             del Y, Hp                                                           # (N pairs N) arrays: not held through the assembly
             Gp = None
-        if Gpre:
-            Gpre.clear()                                                        # read into Gs: not held through the assembly
-        Hs = Hs.reshape(nRn * N, N * nKn); Gs = Gs.reshape(N, nKn * nRn * N)
+
+        def regular_G():
+            """Gs from the row operator's blocks (the same product), the regular parts where it added instantaneous entries."""
+            G = np.zeros((N, nKn, nRn, N))
+            for ri, k in read:
+                r = int(Rn[ri])
+                G[:, kpos[k], ri, :] = Gpre[(r, k)] if (r, k) in Gpre else Gk[k][:, r * N:(r + 1) * N]
+            if Gpre:
+                Gpre.clear()                                                    # read into Gs: not held through the assembly
+            return G.reshape(N, nKn * nRn * N)
+        Hs = Hs.reshape(nRn * N, N * nKn)
+        if Gs is not None:
+            Gs = Gs.reshape(N, nKn * nRn * N)
         chunks = self._causal_chunks() if nKn else []
-        Hc = [np.ascontiguousarray(Hs.reshape(nRn, N, N * nKn)[:, lo:hi, lo * nKn:]).reshape(nRn * (hi - lo), (N - lo) * nKn)
-              for lo, hi in chunks]                                             # rows of ages in the chunk, columns of nodes not younger
         # instantaneous entries: (row, channel, weighted shift on the row operator, on the projection); a shift that is the
         # identity (an undelayed row's own noise) is applied as the scaling by its weight, which is what the product gives
         ent = []
@@ -1358,34 +1517,65 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         rmul = lambda X, S, w: X * w if w is not None else X @ S            # X @ S with S = w I
         lmul = lambda S, w, X: w * X if w is not None else S @ X            # S @ X with S = w I
         nG = nU * nR * N
-        Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
-        A6 = Amat.reshape(nU, nR, N, nU, nR, N); B3 = bvec.reshape(nU, nR, N)
+        Hs3 = Hs.reshape(nRn * N, N, nKn)
+
+        def project(phi, out):
+            """out (nR, N) += H phi for a FOC kernel phi (N, nW): the regular rows and the instantaneous entries."""
+            if nKn:
+                out[Rn] += (Hs @ phi[:, Kn].reshape(-1)).reshape(nRn, N)
+            for (r, k, Sg, Sh, wg, wh) in ent:
+                out[r] += lmul(Sh, wh, phi[:, k])
+        bvec = np.zeros(nG); B3 = bvec.reshape(nU, nR, N)
         for ui in range(nU):
             phi = Fu[ui] @ Zpass                                                # (N, nW): the FOC of the passive world
             if shift is not None:
                 phi = phi + shift[ui]                                           # a risk-averse agent's frozen correction
-            if nKn:
-                B3[ui][Rn] += (Hs @ phi[:, Kn].reshape(-1)).reshape(nRn, N)
-            for (r, k, Sg, Sh, wg, wh) in ent:
-                B3[ui, r] += lmul(Sh, wh, phi[:, k])
-            for vi in range(nU):
-                FR = Fu[ui] @ Resp[vi]
-                FRG = (FR @ Gs).reshape(N, nKn, nRn * N) if nKn else None      # [(j, ki), (ri, j')]
-                for (lo, hi), H_ in zip(chunks, Hc):
-                    T = (H_ @ FRG[lo:].reshape((N - lo) * nKn, nRn * N)).reshape(nRn, hi - lo, nRn, N)
-                    for ri, r in enumerate(Rn):
-                        A6[ui, r, lo:hi, vi][:, Rn, :] += T[ri]
-                for (r, k, Sg, Sh, wg, wh) in ent:
-                    if k in kpos:                                               # the channel also has regular kernels
-                        ki = kpos[k]
-                        X = (Hs.reshape(nRn * N, N, nKn)[:, :, ki] @ rmul(FR, Sg, wg)).reshape(nRn, N, N)     # H_reg FR G_inst
-                        for ri, rr in enumerate(Rn):
-                            A6[ui, rr, :, vi, r] += X[ri]
-                        A6[ui, r, :, vi][:, Rn, :] += lmul(Sh, wh, FRG[:, ki, :]).reshape(N, nRn, N)        # H_inst FR G_reg
-                    for (r2, k2, Sg2, Sh2, wg2, wh2) in ent:
-                        if k2 == k:
-                            A6[ui, r, :, vi, r2] += lmul(Sh, wh, rmul(FR, Sg2, wg2))                       # H_inst FR G_inst
-        return Amat, bvec
+            project(phi, B3[ui])
+        FR = [[Fu[ui] @ Resp[vi] for vi in range(nU)] for ui in range(nU)]
+
+        def assemble():
+            Gs_ = Gs if Gs is not None else regular_G()
+            Hc = [np.ascontiguousarray(Hs.reshape(nRn, N, N * nKn)[:, lo:hi, lo * nKn:]).reshape(nRn * (hi - lo), (N - lo) * nKn)
+                  for lo, hi in chunks]                                         # rows of ages in the chunk, columns of nodes not younger
+            Amat = np.zeros((nG, nG))
+            A6 = Amat.reshape(nU, nR, N, nU, nR, N)
+            for ui in range(nU):
+                for vi in range(nU):
+                    FRuv = FR[ui][vi]
+                    FRG = (FRuv @ Gs_).reshape(N, nKn, nRn * N) if nKn else None     # [(j, ki), (ri, j')]
+                    for (lo, hi), H_ in zip(chunks, Hc):
+                        T = (H_ @ FRG[lo:].reshape((N - lo) * nKn, nRn * N)).reshape(nRn, hi - lo, nRn, N)
+                        for ri, r in enumerate(Rn):
+                            A6[ui, r, lo:hi, vi][:, Rn, :] += T[ri]
+                    for (r, k, Sg, Sh, wg, wh) in ent:
+                        if k in kpos:                                               # the channel also has regular kernels
+                            ki = kpos[k]
+                            X = (Hs3[:, :, ki] @ rmul(FRuv, Sg, wg)).reshape(nRn, N, N)     # H_reg FR G_inst
+                            for ri, rr in enumerate(Rn):
+                                A6[ui, rr, :, vi, r] += X[ri]
+                            A6[ui, r, :, vi][:, Rn, :] += lmul(Sh, wh, FRG[:, ki, :]).reshape(N, nRn, N)        # H_inst FR G_reg
+                        for (r2, k2, Sg2, Sh2, wg2, wh2) in ent:
+                            if k2 == k:
+                                A6[ui, r, :, vi, r2] += lmul(Sh, wh, rmul(FRuv, Sg2, wg2))                       # H_inst FR G_inst
+            return Amat
+        if not lazy:
+            return assemble(), bvec
+        nWk = Gfull.shape[0]
+        Gfull = Gfull.reshape(-1, nR * N)
+
+        def matvec(gamma):
+            """Amat @ gamma without Amat: sum_k H_k (sum_v FR_uv (G_k gamma_v)), the row operator Gk applied to every
+            channel at once (its regular and instantaneous parts together, as Amat's four terms)."""
+            g3 = gamma.reshape(nU, nR * N)
+            C = (Gfull @ g3.T).reshape(nWk, N, nU)                               # (k, node, v): the action kernels
+            out = np.zeros(nG); O3 = out.reshape(nU, nR, N)
+            for ui in range(nU):
+                phi = FR[ui][0] @ C[:, :, 0].T
+                for vi in range(1, nU):
+                    phi += FR[ui][vi] @ C[:, :, vi].T
+                project(phi, O3[ui])
+            return out
+        return assemble, bvec, matvec
 
     def _shift_is_eye(self, S: np.ndarray) -> bool:
         """_is_eye of one of the compiled model's cached shifts (the same array every call), remembered per array."""
@@ -1450,9 +1640,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             tl = StationaryTilt(self, agent, maps, th)
             shift = tl.shift()
             self._risk_info[agent.name] = {"richardson_gap": tl.richardson_gap, "gmres_residual": max(r for (_, r) in tl.gmres)}
-        Amat, bvec = self._foc_system(agent, ytil, yinst, Zpass, Resp0, Fu, shift, None if Gpre is None else Gk, Gpre)
-        gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
-        del Amat, bvec                                          # (nU nR N)^2: not kept through the diagnostics
+        gamma = self._foc_gamma(agent, ytil, yinst, Zpass, Resp0, Fu, shift, Gk, Gpre).reshape(nU, nR, N)
         cact = np.stack([(Gk @ gamma[ui].reshape(-1)).T for ui in range(nU)])
         Zfull = Zpass.copy()
         for ui in range(nU):
@@ -1655,23 +1843,31 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                         cont.append(j)
                         if lag < 0:
                             leads[j] = self._lead_kernel(agent, (R0[:, ui], {s: Rs[:, ui] for s, Rs in RD.items()}), name, lag)
-            # the continuation operators of every (atom j, lag of atom i) pair, one batched correlation per pair of classes
-            CR: Dict[tuple, np.ndarray] = {}
-            if cont:
-                lis = sorted({li for (_, li) in atms})
-                parts = {}                                            # class of the response part -> [(j, column)]
-                for j in cont:
-                    name, lj = atms[j]; bj = c.block(name)
-                    parts.setdefault(g.shift_class(lj), []).append((j, R0[bj, ui]))
-                    for s, Rs in RD.items():
-                        if Rs[bj, ui].any():
-                            parts.setdefault(g.compose(lj, s), []).append((j, Rs[bj, ui]))
-                for cw, lst in parts.items():
-                    W = np.stack([col for _, col in lst], axis=1)
-                    for li in lis:
-                        ops = g.corr_ops_shifted(W, rho, cw, li)
-                        for (j, _), M in zip(lst, ops):
-                            CR[(j, li)] = CR[(j, li)] + M if (j, li) in CR else M
+            # the continuation: atom i's kernel (its primary read at l_i) correlated with sum_j Q_ji R_j, R_j atom j's response
+            # (its primary's R read at l_j; the parts of R read at s at l_j + s): the Q-weighted responses per class of the
+            # response part, one correlation of all atoms of a lag per class
+            Wc: Dict[tuple, np.ndarray] = {}                            # response class -> (N, na): column i = sum_j Q_ji R_j
+            for j in cont:
+                name, lj = atms[j]; bj = c.block(name)
+                qj = Q[j]
+                if not qj.any():
+                    continue
+                parts = [(g.shift_class(lj), R0[bj, ui])] + [(g.compose(lj, s), Rs[bj, ui]) for s, Rs in RD.items() if Rs[bj, ui].any()]
+                for cw, col in parts:
+                    if cw not in Wc:
+                        Wc[cw] = np.zeros((N, na))
+                    Wc[cw] += np.outer(col, qj)
+            by_lag: Dict[float, list] = {}
+            for i, (pn, li) in enumerate(atms):
+                by_lag.setdefault(li, []).append(i)
+            for cw, W in Wc.items():
+                for li, ii in by_lag.items():
+                    cols = [i for i in ii if W[:, i].any()]
+                    if not cols:
+                        continue
+                    ops = g.corr_ops_shifted(W[:, cols], rho, cw, li)
+                    for i, M in zip(cols, ops):
+                        row(zero).add(c.index[atms[i][0]], M)
             for i, (pn, li) in enumerate(atms):
                 p = c.index[pn]
                 for j in range(na):
@@ -1680,8 +1876,6 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                         continue
                     for outer, w in scal.get(j, ()):
                         row(g.compose(outer, li)).add_eye(p, qji * w)
-                    if (j, li) in CR:
-                        row(zero).add(p, qji * CR[(j, li)])
                     if j in leads:
                         row(zero).add(p, qji * g.conv_ops_left_shifted(leads[j][:, None], li)[0])
             for cls in [k for k in F if k != zero and g.aligned(k)]:  # aligned: resampled into class 0, exactly
@@ -1715,35 +1909,38 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             out += X if cls == (0.0, 0.0, g.L) else g.sample_class(cls) @ X
         return out
 
-    def _foc_system_x(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu, shift=None, Gk=None, Gpre=None):
+    def _foc_system_x(self, agent: Agent, rows, inst, Zpass: np.ndarray, Resp, Fu, shift=None, Gk=None, Gpre=None,
+                      lazy: bool = False, Gfull=None):
         """_foc_system on the exact path: Amat[u, v] = sum over the channels k of (sum over the classes K of the FOC kernel
         of H_k^K Fu_u^K Resp_v) G_k and bvec[u] = sum H_k^K (Fu_u^K Zpass)_k, with H^K the projection of a kernel of class
         K on the rows (a correlation with every class of the row, and the instantaneous entries read at the class's
         shift).  The classes enter the first product only: P = sum_K H^K (Fu^K Resp_v), (rows' nodes, channel, N), then
         one product with the row operators G over (channel, action node).  Both products skip what causality zeroes (a
         correlation from a node reads only later ones, where the class does not reach back; the row operators read map
-        nodes no older than the action).  Gk and Gpre as _foc_system's."""
+        nodes no older than the action).  Gk and Gpre as _foc_system's; lazy=True returns (assemble, bvec, matvec) as
+        _foc_system does (the Krylov solve on a frozen factorisation, _foc_gamma)."""
         c = self.c; g = c.grid; N = c.N; nR, nU = len(rows), len(Fu); nW = c.nW
         sup = np.stack([np.any([y[t][:, :nW].any(axis=0) for t in y], axis=0) for y in rows]) if rows else np.zeros((0, nW), dtype=bool)
-        delay = [c.rows[agent.name][r][3] for r in range(nR)]
         Rn = np.where(sup.any(axis=1))[0]; Kn = np.where(sup.any(axis=0))[0]
         nRn, nKn = len(Rn), len(Kn)
         kpos = {int(k): i for i, k in enumerate(Kn)}
         if Gk is None:
             Gk, Gpre = self._row_operator_parts_x(agent, rows, inst)
+        if Gpre:
+            Gpre.clear()                                                    # the row operator is read whole below
         zero = g.shift_class(0.0)
-        # G2[(ki, x), (r, b)]: every channel's row operator, action node x, map node b of row r (all rows: the instantaneous
-        # blocks of rows without a regular part are in it too)
-        G2 = np.ascontiguousarray(Gk[Kn].reshape(nKn * N, nR * N)) if nKn else np.zeros((0, nR * N))
-        # the projections: per class H[(ri, b, ki), j] (rows' map nodes and channel, the FOC kernel's node) and the
+        # the projections: per class H[(ri, b), (ki, j)] (rows' map nodes; channel, the FOC kernel's node) and the
         # instantaneous entries (r, k, (N, N) read of the class at the row's age, weight)
         classes = sorted({cls for F in Fu for cls in F} | ({zero} if shift is not None else set()), key=lambda x: (x != zero, x))
         chunks_x = c.causal_chunks(target=max(4, c.grid.P)) if nKn else []     # every panel a chunk
+        row_classes = sorted({t for r in Rn for t in rows[r]})
+        pairs_t = {t: [(ri, int(k)) for ri, r in enumerate(Rn) if t in rows[r] for k in np.where(rows[r][t][:, :nW].any(axis=0))[0]]
+                   for t in row_classes}
         H, ent_h, chunks = {}, {}, {}
         for cls in classes:
             Hs = np.zeros((nRn, N, nKn, N))
-            for t in sorted({t for r in Rn for t in rows[r]}):
-                pairs = [(ri, int(k)) for ri, r in enumerate(Rn) if t in rows[r] for k in np.where(rows[r][t][:, :nW].any(axis=0))[0]]
+            for t in row_classes:
+                pairs = pairs_t[t]
                 if not pairs:
                     continue
                 Hc = g.corr_ops_shifted(np.stack([rows[Rn[ri]][t][:, k] for ri, k in pairs], axis=1), 0.0, t, cls)   # (pair, b, j)
@@ -1755,50 +1952,77 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             nzj = [np.flatnonzero(Hs[:, lo:hi].any(axis=(0, 1, 2))) for lo, hi in chunks_x]
             H[cls], chunks[cls] = Hs, [(lo, hi, int(j[0]) if j.size else N) for (lo, hi), j in zip(chunks_x, nzj)]
             ent_h[cls] = [(r, k, g.sample_class(g.compose(-age, cls)), w) for r in range(nR) for (k, age, w) in inst[r]]
+
+        def project(cls, phi, out):
+            """out (nR, N) += H^cls phi for a FOC kernel phi (N, nW) of the class: the regular rows and the instantaneous entries."""
+            if nKn:
+                out[Rn] += (H[cls].reshape(nRn * N, nKn * N) @ np.ascontiguousarray(phi[:, Kn].T).reshape(-1)).reshape(nRn, N)
+            for (r, k, Sh, w) in ent_h[cls]:
+                out[r] += w * (Sh @ phi[:, k])
         nG = nU * nR * N
-        Amat = np.zeros((nG, nG)); bvec = np.zeros(nG)
-        A6 = Amat.reshape(nU, nR, N, nU, nR, N); B3 = bvec.reshape(nU, nR, N)
-        gch = c.causal_chunks(target=max(4, c.grid.P // 2)) if nKn else []
+        bvec = np.zeros(nG); B3 = bvec.reshape(nU, nR, N)
         for ui in range(nU):
-            # the right-hand side: the projection of the passive world's FOC kernel
             for cls in classes:
                 F = Fu[ui].get(cls)
                 if F is None and not (shift is not None and cls == zero):
                     continue
                 phi = F @ Zpass if F is not None else np.zeros((N, Zpass.shape[1]))
                 if shift is not None and cls == zero:
-                    phi = phi + shift[ui]
-                if nKn:
-                    B3[ui][Rn] += np.einsum("rbkj,jk->rb", H[cls], phi[:, Kn])
-                for (r, k, Sh, w) in ent_h[cls]:
-                    B3[ui, r] += w * (Sh @ phi[:, k])
-            for vi in range(nU):
-                # P[(ri, b), (ki, x)] = sum_K sum_j H^K[(ri, b, ki), j] (Fu^K Resp_v)[j, x]; E[r, b, x] the instantaneous
-                # projections' part, sum_K w Sh^K (Fu^K Resp_v) on row r (one per row and channel)
-                P = np.zeros((nRn, N, nKn, N))
-                E: Dict[tuple, np.ndarray] = {}
-                for cls, F in Fu[ui].items():
-                    FR = F @ Resp[vi]                                                           # (N, N)
-                    for lo, hi, j0 in chunks[cls]:
-                        if j0 < N:
-                            Hb = H[cls][:, lo:hi, :, j0:]                                       # (nRn, hi-lo, nKn, N-j0)
-                            P[:, lo:hi] += (Hb.reshape(-1, N - j0) @ FR[j0:]).reshape(nRn, hi - lo, nKn, N)
-                    for (r, k, Sh, w) in ent_h[cls]:
-                        X = w * (Sh @ FR)
-                        E[(r, k)] = E[(r, k)] + X if (r, k) in E else X
-                P2 = P.reshape(nRn * N, nKn * N)
-                # the regular projections through the row operators, causally: map nodes b' of a chunk read action nodes x >= lo
-                for lo, hi in gch:
-                    cols = np.concatenate([np.arange(r * N + lo, r * N + hi) for r in range(nR)])
-                    xs = np.concatenate([np.arange(ki * N + lo, (ki + 1) * N) for ki in range(nKn)])
-                    T = P2[:, xs] @ G2[np.ix_(xs, cols)]                                         # (nRn N, nR (hi - lo))
-                    T = T.reshape(nRn, N, nR, hi - lo)
-                    for ri, r in enumerate(Rn):
-                        A6[ui, r, :, vi, :, lo:hi] += T[ri]
-                # the instantaneous projections E through every row operator of their channel
-                for (r, k), X in E.items():
-                    A6[ui, r, :, vi] += (X @ Gk[k]).reshape(N, nR, N)
-        return Amat, bvec
+                    phi = phi + shift[ui]                                   # a risk-averse agent's frozen correction
+                project(cls, phi, B3[ui])
+        FR = {(ui, vi, cls): F @ Resp[vi] for ui in range(nU) for cls, F in Fu[ui].items() for vi in range(nU)}
+
+        def assemble():
+            # G2[(ki, x), (r, b)]: every channel's row operator (its regular and instantaneous parts), action node x, map
+            # node b of row r
+            G2 = np.ascontiguousarray(Gk[Kn].reshape(nKn * N, nR * N)) if nKn else np.zeros((0, nR * N))
+            gch = c.causal_chunks(target=max(4, c.grid.P // 2)) if nKn else []
+            Amat = np.zeros((nG, nG))
+            A6 = Amat.reshape(nU, nR, N, nU, nR, N)
+            for ui in range(nU):
+                for vi in range(nU):
+                    # P[(ri, b), (ki, x)] = sum_K sum_j H^K[(ri, b, ki), j] (Fu^K Resp_v)[j, x]; E[r, b, x] the instantaneous
+                    # projections' part, sum_K w Sh^K (Fu^K Resp_v) on row r (one per row and channel)
+                    P = np.zeros((nRn, N, nKn, N))
+                    E: Dict[tuple, np.ndarray] = {}
+                    for cls in Fu[ui]:
+                        FRc = FR[(ui, vi, cls)]                                              # (N, N)
+                        for lo, hi, j0 in chunks[cls]:
+                            if j0 < N:
+                                Hb = H[cls][:, lo:hi, :, j0:]                                   # (nRn, hi-lo, nKn, N-j0)
+                                P[:, lo:hi] += (Hb.reshape(-1, N - j0) @ FRc[j0:]).reshape(nRn, hi - lo, nKn, N)
+                        for (r, k, Sh, w) in ent_h[cls]:
+                            X = w * (Sh @ FRc)
+                            E[(r, k)] = E[(r, k)] + X if (r, k) in E else X
+                    P2 = P.reshape(nRn * N, nKn * N)
+                    # through the row operators, causally: map nodes b' of a chunk read action nodes x >= lo
+                    for lo, hi in gch:
+                        cols = np.concatenate([np.arange(r * N + lo, r * N + hi) for r in range(nR)])
+                        xs = np.concatenate([np.arange(ki * N + lo, (ki + 1) * N) for ki in range(nKn)])
+                        T = (P2[:, xs] @ G2[np.ix_(xs, cols)]).reshape(nRn, N, nR, hi - lo)
+                        for ri, r in enumerate(Rn):
+                            A6[ui, r, :, vi, :, lo:hi] += T[ri]
+                    for (r, k), X in E.items():                                     # the instantaneous projections
+                        A6[ui, r, :, vi] += (X @ Gk[k]).reshape(N, nR, N)
+            return Amat
+        if not lazy:
+            return assemble(), bvec
+        nWk = Gk.shape[0]
+        Gflat = Gk.reshape(-1, nR * N)
+
+        def matvec(gamma):
+            """Amat @ gamma without Amat: the action kernels of gamma (every channel at once), their FOC kernels per class,
+            and those kernels' projections."""
+            C = (Gflat @ gamma.reshape(nU, nR * N).T).reshape(nWk, N, nU)        # (k, node, v)
+            out = np.zeros(nG); O3 = out.reshape(nU, nR, N)
+            for ui in range(nU):
+                for cls in Fu[ui]:
+                    phi = FR[(ui, 0, cls)] @ C[:, :, 0].T
+                    for vi in range(1, nU):
+                        phi += FR[(ui, vi, cls)] @ C[:, :, vi].T
+                    project(cls, phi, O3[ui])
+            return out
+        return assemble, bvec, matvec
 
     def _best_response_x(self, agent: Agent, maps: Dict[str, np.ndarray], want_decomp: bool = False, project: bool = True):
         """best_response on the exact path (no instant observations, monitoring or risk aversion there)."""
@@ -1810,9 +2034,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         ytil, yinst = self._seen_rows_x(agent, Zpass, set(agent.controls))
         Gk, Gpre = self._row_operator_parts_x(agent, ytil, yinst)
         Fu = self._foc_operators_x(agent, (R0, RD))
-        Amat, bvec = self._foc_system_x(agent, ytil, yinst, Zpass, Resp0, Fu, None, Gk, Gpre)
-        gamma = self._solve_foc(agent, Amat, bvec).reshape(nU, nR, N)
-        del Amat, bvec
+        gamma = self._foc_gamma(agent, ytil, yinst, Zpass, Resp0, Fu, None, Gk, Gpre).reshape(nU, nR, N)
         cact = np.stack([(Gk @ gamma[ui].reshape(-1)).T for ui in range(nU)])
         Zfull = Zpass.copy()
         for ui in range(nU):
@@ -1970,6 +2192,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
     RISK_EDGE = 1e-3                    # 1 - theta mu_max (the finite engine's rule), and a step within this of it short of the
     RISK_MAX_STEPS = 40                 # model's theta, or past this many steps, ends the path there: RiskBreakdown(reached)
     RISK_HALVINGS = 3                   # steps whose fixed point is past the breakdown are halved at most this many times in all
+    RISK_JUMP = 0.5                     # from the risk-neutral equilibrium straight to the model's theta when theta mu_max there, estimated at it, is at most this
     RISK_STEP_EVALUATIONS = 100         # evaluations of a step between those of RISK_STEPS, unless solve() was bounded
     ENTROPIC_LATTICE = (40, 80, 160)    # lattice steps (L / these) of the date-0 continuation's entropic cost (res.risk) ...
     ENTROPIC_STEP = 0.2                 # ... the coarsest capped at this (and the others in proportion): windows above 8
@@ -2037,6 +2260,18 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 if not res.converged or last:
                     break
                 maps, good = res.maps, sc
+                if not sc and steps and self.RISK_JUMP > 0:
+                    # the breakdown measure at the model's theta estimated at the risk-neutral equilibrium (theta mu_max scales
+                    # with theta; one lattice, the coarsest): well inside the breakdown, straight to the model's theta, the
+                    # intermediate steps being warm starts only
+                    from .stationary_risk import StationaryTilt
+                    try:
+                        est = max(StationaryTilt(self, a, res.maps, float(a.risk_aversion)).cond_excess(self.entropic_steps(self.c.grid.L)[0])[1]
+                                  for a in averse)
+                    except (ValueError, np.linalg.LinAlgError):
+                        est = float("inf")
+                    if np.isfinite(est) and est <= self.RISK_JUMP:
+                        steps = [1.0]
                 if sc:
                     # the next step: the model's theta while the breakdown measure there, estimated at this step's equilibrium
                     # (theta mu_max scales with theta), is at most RISK_STEP; else a step closing RISK_GAIN of the gap to the
@@ -2086,6 +2321,35 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         # and a chunk's part of the Gram is one symmetric rank-k update (dsyrk on the sqrt(W)-scaled block) on the
         # map nodes up to the chunk's top age on every row: the same sums as the full product without its zero terms
         from scipy.linalg.blas import dsyrk
+        rhs = Bk.reshape(nW * N, nR * N).T @ (actions * W[None, :, None]).transpose(2, 1, 0).reshape(nW * N, nU)   # column ui: sum_k Bk' W actions[ui, :, k]
+        if not keep.all():
+            rhs = rhs[keep]
+        reuse = nR * N >= self.PROJ_REUSE_MIN and not getattr(self, "_reuse_off", False)
+        memo = self.__dict__.setdefault("_proj_chol", {})
+        hit = memo.get(agent.name) if reuse else None
+        if hit is not None and not hit[2] and np.array_equal(hit[0], keep):
+            # the Gram changes with the iterate's step: Krylov on its matvec (two products with the row operator, the
+            # ridge from its diagonal, the Gram's trace), preconditioned by the Cholesky factor of the last one built
+            B2 = Bk.reshape(nW * N, nR * N)
+            if not keep.all():
+                B2 = B2[:, keep]
+            Wr = np.tile(W, nW)
+            ridge = self.settings.stationary_map_ridge * float(np.einsum("i,ij,ij->", Wr, B2, B2)) / B2.shape[1]
+            A = lambda v: B2.T @ (Wr * (B2 @ v)) + ridge * v
+            cf = hit[1]
+            g = np.zeros((nU, nR * N)); ok = True; worst = 0
+            for ui in range(nU):
+                x, its = _pgmres(A, lambda v: sla.cho_solve(cf, v, check_finite=False), rhs[:, ui], self.FOC_KRYLOV_TOL,
+                                 self.FOC_KRYLOV_MAXIT, hit[3][ui])
+                if x is None:
+                    ok = False
+                    break
+                g[ui, keep] = x; worst = max(worst, its)
+            if ok:
+                memo[agent.name] = (hit[0], cf, worst > self.FOC_REFRESH_ITS, g[:, keep])
+                return g.reshape(nU, nR, N)
+        memo.pop(agent.name, None)                                  # the old factor is not held through the new Gram
+        hit = cf = None
         sw = np.sqrt(W)
         B4 = Bk.reshape(nW, N, nR, N)
         Gram = np.zeros((nR * N, nR * N)); G4 = Gram.reshape(nR, N, nR, N)
@@ -2104,11 +2368,20 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             # the diagonal block: its strict lower triangle (zero) from the upper, which is triu(D) + triu(D)' - diag(D)
             # to the bit (x + 0 - 0 above, 0 + x below, 2d - d on the diagonal; the Gram, summed from zeros, holds no -0)
             np.copyto(Gram[i0:i1, i0:i1], Gram[i0:i1, i0:i1].T, where=_strict_lower(i1 - i0))
-        rhs = Bk.reshape(nW * N, nR * N).T @ (actions * W[None, :, None]).transpose(2, 1, 0).reshape(nW * N, nU)   # column ui: sum_k Bk' W actions[ui, :, k]
         if not keep.all():
-            Gram = Gram[np.ix_(keep, keep)]; rhs = rhs[keep]
+            Gram = Gram[np.ix_(keep, keep)]
         Gram.flat[::Gram.shape[0] + 1] += self.settings.stationary_map_ridge * np.trace(Gram) / Gram.shape[0]   # the ridge
         g = np.zeros((nU, nR * N))
+        if reuse:
+            try:
+                cf = sla.cho_factor(Gram.T, overwrite_a=True, check_finite=False)       # symmetric: F-ordered in place
+            except np.linalg.LinAlgError:
+                cf = None
+            if cf is not None:
+                g[:, keep] = sla.cho_solve(cf, rhs, check_finite=False).T
+                memo[agent.name] = (keep, cf, False, g[:, keep])            # the factor, and the maps: the next start
+                return g.reshape(nU, nR, N)
+            memo.pop(agent.name, None)
         g[:, keep] = np.linalg.solve(Gram, rhs).T                              # one factorisation for every control
         return g.reshape(nU, nR, N)
 
@@ -2202,6 +2475,66 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             raise ValueError(singular_system_message(agent.name)) from None
         return gamma
 
+    PROJ_REUSE_MIN = 400         # map nodes nR N from which the projection's Gram is solved the same way (_project)
+    FOC_REUSE_MIN = 600          # unknowns from which a best response's FOC system is solved by Krylov on a frozen factorisation
+    FOC_KRYLOV_TOL = 1e-14       # ... to this residual relative to the right-hand side (the direct solve's is about 5e-16)
+    FOC_KRYLOV_MAXIT = 30        # ... in at most this many iterations, else the system is built and factored afresh
+    FOC_REFRESH_ITS = 5          # ... and a solve that needed more than this many refactors at the next best response
+
+    def _foc_gamma(self, agent: Agent, rows, inst, Zpass, Resp, Fu, shift, Gk, Gpre) -> np.ndarray:
+        """gamma (nU nR N,) solving the best response's first-order conditions Amat gamma = -bvec (_foc_system).
+
+        Small systems: Amat is built and solved directly (_solve_foc).  From FOC_REUSE_MIN unknowns the fixed point's
+        consecutive systems differ by the iterate's step, so the LU of the last one built is kept per agent and the new
+        system is solved by GMRES preconditioned with it, on Amat's matvec from its factors (no Amat: the build is
+        O(N^3 nR^2 nW) and the factorisation O((nU nR N)^3), a matvec O(nW N nR N nU)).  Near the fixed point the
+        preconditioned operator is the identity to the outer residual and GMRES takes one to three iterations; far from it,
+        or when it does not reach FOC_KRYLOV_TOL within FOC_KRYLOV_MAXIT, the system is built and factored afresh (its
+        LU the next preconditioner).  The solution is the direct solve's to its rounding (the system's condition times
+        the tolerance), so the fixed point is the same to its tolerance.  A singular system is detected by the
+        factorisation, as before."""
+        c = self.c; N = c.N; nR, nU = len(rows), len(Fu)
+        nG = nU * nR * N
+        keep = np.tile(self._identified(agent), nU)
+        direct = (nG < self.FOC_REUSE_MIN or type(self)._row_operator is not StationarySolver._row_operator
+                  or getattr(self, "_reuse_off", False))
+        if direct:
+            Amat, bvec = self._foc_system(agent, rows, inst, Zpass, Resp, Fu, shift, None if Gpre is None else Gk, Gpre)
+            return self._solve_foc(agent, Amat, bvec)
+        assemble, bvec, matvec = self._foc_system(agent, rows, inst, Zpass, Resp, Fu, shift, Gk, Gpre, lazy=True, Gfull=Gk)
+        memo = self.__dict__.setdefault("_foc_lu", {})
+        hit = memo.get(agent.name)
+        gamma = np.zeros(nG)
+        rhs = -bvec[keep]
+        if hit is not None and not hit[2] and np.array_equal(hit[0], keep):
+            lu = hit[1]
+            if keep.all():
+                A = matvec
+            else:
+                def A(x):
+                    full = np.zeros(nG); full[keep] = x
+                    return matvec(full)[keep]
+            x, its = _pgmres(A, lambda v: _lu_solve(lu, v, trans=1), rhs, self.FOC_KRYLOV_TOL, self.FOC_KRYLOV_MAXIT, hit[3])
+            if x is not None:
+                memo[agent.name] = (hit[0], lu, its > self.FOC_REFRESH_ITS, x)  # stale past the threshold: the next refactors
+                gamma[keep] = x
+                return gamma
+        memo.pop(agent.name, None)                                  # the old factors are not held through the new ones
+        hit = lu = None
+        Amat = assemble()
+        Ak = Amat if keep.all() else Amat[np.ix_(keep, keep)]
+        del Amat
+        # factored as its transpose, which is the C-ordered array read F-ordered (in place, no copy): A x = b is the
+        # transposed solve with those factors
+        getrf, = sla.get_lapack_funcs(("getrf",), (Ak,))
+        lu, piv, info = getrf(Ak.T, overwrite_a=True)
+        del Ak
+        if info > 0 or not np.isfinite(lu).all():
+            raise ValueError(singular_system_message(agent.name))
+        gamma[keep] = x = _lu_solve((lu, piv), rhs, trans=1)
+        memo[agent.name] = (keep, (lu, piv), False, x)                     # the factors, and the solution: the next start
+        return gamma
+
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
         """Closed-loop primary kernels (n_prim N, nW) when every agent's action kernels (nU, N, nW) are
         given: the states follow from the propagator, no strategy maps needed."""
@@ -2260,8 +2593,47 @@ class StationarySolver(MonitoredDeviations, EngineBase):
 
     def _diagnostics(self, res) -> None:
         """The first-order-condition decomposition, the second-order check and the representation error of
-        every agent's best response at the equilibrium."""
-        self._fill_diagnostics(res)
+        every agent's best response at the equilibrium.  A cyclically symmetric tie at symmetric maps (the closed loop's
+        own condition for its mode solve; risk-neutral, unmonitored): the followers' are the representative's relabelled
+        along the cycle -- a follower t steps on is the representative's problem with every name moved t steps, so its
+        FOC kernels are the representative's on the moved channels and its curvature and representation error are the
+        representative's -- instead of a best response each."""
+        self.__dict__.pop("_foc_lu", None); self.__dict__.pop("_proj_chol", None)
+        self._reuse_off = True                  # direct solves, no factors kept, for these one-off best responses
+        try:
+            self._diagnostics_inner(res)
+        finally:
+            self._reuse_off = False
+
+    def _diagnostics_inner(self, res) -> None:
+        c = self.c; sym = c.sym
+        if (sym is None or c.instant_loads or c.levels or not c._maps_symmetric(res.maps)
+                or any(a.risk_aversion or a.monitors for a in self.model.agents)
+                or any(c.rep[f] != sym.agents[0] for f in sym.agents)):
+            self._fill_diagnostics(res)
+            return
+        rep = sym.agents[0]
+        self._fill_diagnostics(res, agents=[a.name for a in self.model.agents if a.name not in sym.agents[1:]])
+        ch = {w: i for i, w in enumerate(c.channels)}
+        names = sym.names
+        for t, f in enumerate(sym.agents[1:], start=1):
+            def step(x, t=t):                                       # a name moved t steps along the cycle
+                for _ in range(t):
+                    x = names.get(x, x)
+                return x
+            perm = np.array([ch[step(w)] for w in c.channels], dtype=np.intp)   # follower channel perm[k] carries rep's k
+            dec = {}
+            for u, d in res.foc[rep].items():
+                dd = {}
+                for key, K in d.items():
+                    out = np.empty_like(K); out[:, perm] = K
+                    dd[key] = out
+                dec[step(u)] = dd
+            res.foc[f] = dec
+            if rep in res.second_order:
+                res.second_order[f] = res.second_order[rep]
+            res.representation_error[f] = res.representation_error[rep]
+            self._diagnostics_extra(res, next(a for a in self.model.agents if a.name == f))
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
         """Stationary flow loss per unit time of the agent in the world Z (exact Gram quadrature): the
@@ -2304,7 +2676,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 Mx[i, i] = 1.0; pinned.append(i)                # a random walk with no inputs: its level is taken as 0
         return Mx, bx, pinned
 
-    def _mean_conditions(self, agent: Agent, maps: Dict[str, np.ndarray]):
+    def _mean_conditions_rows(self, agent: Agent, maps: Dict[str, np.ndarray]):
         """The agent's mean first-order conditions, one row per control.  With g = Q zbar + q on the loss atoms
         it is sum_j m_j g_j = 0: m_j = 1 on the control's current value, e^{-rho tau} on its own read at lag
         tau, and for every other atom the discounted DC gain int_0^inf e^{-rho a} R_j(a) da of the atom's
@@ -2468,4 +2840,41 @@ class StationarySolver(MonitoredDeviations, EngineBase):
 
     def _assemble_means(self, maps, **variant):
         self._mean_tails = {}
+        self._mean_rows = {}
         return super()._assemble_means(maps, **variant)
+
+    def _tie_step(self, agent: Agent, maps) -> Optional[Tuple[str, int]]:
+        """(representative, t) when `agent` is t steps along a cyclic tie from its representative and its problem is the
+        representative's relabelled (symmetric maps; risk-neutral, unmonitored, no instant observations: the conditions
+        of the relabelled diagnostics), else None."""
+        c = self.c; sym = c.sym
+        if (sym is None or agent.name not in sym.agents[1:] or c.instant_loads or c.levels or not c._maps_symmetric(maps)
+                or any(a.risk_aversion or a.monitors for a in self.model.agents) or any(c.rep[f] != sym.agents[0] for f in sym.agents)):
+            return None
+        return sym.agents[0], sym.agents.index(agent.name)
+
+    def _moved(self, name: str, t: int) -> str:
+        """A name moved t steps along the cycle."""
+        for _ in range(t):
+            name = self.c.sym.names.get(name, name)
+        return name
+
+    def _mean_conditions(self, agent: Agent, maps: Dict[str, np.ndarray]):
+        """The rows of _mean_conditions_rows; a tied follower's are its representative's with the primaries relabelled
+        along the cycle (its passive world, impulse responses and DC gains are the representative's moved), not its own
+        passive world: one per tie instead of one per agent."""
+        hit = self._tie_step(agent, maps)
+        memo = self.__dict__.setdefault("_mean_rows", {})
+        key = self._maps_key(maps) if self.c.sym is not None else None
+        if hit is None or memo.get(hit[0], (None,))[0] != key:
+            out = self._mean_conditions_rows(agent, maps)
+            memo[agent.name] = (key, out)
+            return out
+        rep, t = hit
+        Mu, bu = memo[rep][1]
+        c = self.c
+        cols = np.array([c.index[self._moved(nm, t)] for nm in c.prim])     # rep's primary p is the follower's cols[p]
+        Mf = np.zeros_like(Mu); Mf[:, cols] = Mu
+        if rep in self._mean_tails:
+            self._mean_tails[agent.name] = self._mean_tails[rep]
+        return Mf, bu.copy()
