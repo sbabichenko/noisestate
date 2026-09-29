@@ -44,6 +44,8 @@ class FocSystem:
     and the GMRES solve."""
 
     RISK_KRYLOV_REDUCTION = 1e-4    # a warm-started risk-averse solve stops at this fraction of its initial residual (solve)
+    PREC_GROWTH = 1.3               # the kept time-row preconditioner is rebuilt once GMRES takes more than this times its steps at the build (+2)
+    fresh_preconditioner = False    # set for a solve that must build its own (the equilibrium's decomposition)
 
     def __init__(self, solver, agent: Agent, rowops: RowOps, projops: ProjOps, resp: RespOps, foc: FocOps,
                  Zpass: np.ndarray, phi_past, tilt=None, shift=None, prox=None):
@@ -369,7 +371,15 @@ class FocSystem:
             lu = self.solver._factor_regular(self.agent, A0)
             prec = lambda r: lu_solve(lu, np.asarray(r, dtype=float).ravel(), check_finite=False)       # noqa: E731
         else:
-            blocks = self.preconditioner()
+            # the time-row blocks of the last best response of this agent while its GMRES count stays within PREC_GROWTH of
+            # the count they were built at (they move with the maps by the outer residual, and a warm start near the fixed
+            # point needs a few steps whatever): their build was 8-15% of a matrix-free finite solve.  A fresh build at a
+            # cold start, for the equilibrium's decomposition, and when the count grows; its condition test with it.
+            cache = self.solver.__dict__.setdefault("_prec_cache", {})
+            hit = cache.get(self.agent.name)
+            reuse = (hit is not None and x0 is not None and not self.fresh_preconditioner
+                     and hit[2] <= self.PREC_GROWTH * hit[1] + 2)
+            blocks = hit[0] if reuse else self.preconditioner()
             # LAPACK's getrs on each block's factors: what lu_solve calls, without its checks and wrappers (a few
             # microseconds a block, and a GMRES iteration solves every time row's block)
             getrs, = get_lapack_funcs(("getrs",), (np.zeros((1, 1)),))
@@ -411,6 +421,8 @@ class FocSystem:
             x, rnorm, self.iterations = _gmres_left(self.matvec, prec, b, x, r, atol, restart, maxiter, max_steps=maxiter)
         else:
             x, rnorm, self.iterations = _gmres_left(self.matvec, prec, b, x, r, atol, restart, -(-maxiter // restart))
+        if self.solver.foc_free:
+            cache[self.agent.name] = (blocks, hit[1], self.iterations) if reuse else (blocks, self.iterations, self.iterations)
         resid = rnorm / bn
         atol /= 10.0 * bn                               # the check below: 10 times the tolerance, relative to b
         self.residual = resid
@@ -545,6 +557,7 @@ def best_response(solver, agent: Agent, maps: Dict[str, np.ndarray], want_decomp
             and profile is not None and profile.get(agent.name) is not None:
         prox = (solver._risk_prox, profile[agent.name])         # the retry of a risk-averse solve (SpectralFiniteSolver._risk_solve)
     system = FocSystem(solver, agent, rowops, projops, resp, foc, Zpass, phi_past, tilt, shift, prox)
+    system.fresh_preconditioner = want_decomp
     gamma, iters = system.solve(solver._last_gamma.get(agent.name))
     if solver.foc_free or tilt is not None:
         solver._last_gamma[agent.name] = gamma

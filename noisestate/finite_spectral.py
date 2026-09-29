@@ -1108,6 +1108,7 @@ class SpectralFiniteSolver(SpectralMeans, MonitoredDeviations, EngineBase):
         # the best responses' GMRES warm starts are the failed attempt's last ones, wherever it wandered, and a warm-started
         # risk-averse solve stops at a fraction of its start's residual: from a wild one that is a loose answer
         self._last_gamma.clear()
+        self.__dict__.pop("_prec_cache", None)
         try:
             try:
                 res = super().solve(**args)
