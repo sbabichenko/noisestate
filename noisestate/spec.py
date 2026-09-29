@@ -299,7 +299,7 @@ class Model:
     definitions: List[Definition] = field(default_factory=list)
     ties: List[List[str]] = field(default_factory=list)      # groups of agents sharing one strategy
     params: Dict[str, float] = field(default_factory=dict)
-    numerics: object = None                                   # a Numerics: how the model is solved (nodes 16 unless given)
+    numerics: object = None                                   # a Numerics: how the model is solved (the fields given; nodes 16 when solved unless given)
     source: Optional[dict] = field(default=None, repr=False)  # the file structure with its expressions, if built from one
 
     def __init__(self, *args, **kwargs):
@@ -312,7 +312,7 @@ class Model:
         self.horizon = horizon if horizon is not None else Horizon()
         self.definitions = list(definitions or []); self.ties = list(ties or [])
         self.params = params if params is not None else {}
-        self.numerics = Numerics(nodes=16).merged(Numerics.of(numerics))
+        self.numerics = Numerics.of(numerics)                 # a field not given is None: the solve's default (Numerics.resolved)
         self.source = source
 
     @classmethod
@@ -427,6 +427,11 @@ class Model:
         """from_dict(d).  source is not carried: from_dict() rebuilds it from d, which is how with_params() keeps
         the parameter expressions intact."""
         return Model.from_dict(d)
+
+    def with_default_nodes(self) -> "Model":
+        """The model itself when its numerics give nodes, else the same with the default 16 (what an engine built on it
+        directly, not through solve(), runs with; solve() resolves the grid first, age_panels.py for a stationary model)."""
+        return self if self.numerics.nodes is not None else self.with_numerics(nodes=16)
 
     def with_numerics(self, numerics=None, **fields) -> "Model":
         """A new model with these numerics fields (a Numerics or dict, and/or keywords) laid over its own:
@@ -1073,9 +1078,9 @@ class Model:
         extent, unit_range within it, unit positive, breakpoints increasing from 0 to it, each length
         positive where the kind has one, discount non-negative, kind one of the three horizons."""
         hz = self.horizon
-        if self.numerics.nodes != int(self.numerics.nodes):
+        if self.numerics.nodes is not None and self.numerics.nodes != int(self.numerics.nodes):
             raise ValueError(f"numerics.nodes must be an integer, got {self.numerics.nodes!r}")
-        if self.numerics.nodes < 2:
+        if self.numerics.nodes is not None and self.numerics.nodes < 2:
             raise ValueError("numerics.nodes must be at least 2")
         if self.numerics.unit is not None and not self.numerics.unit > 0:
             raise ValueError("numerics.unit must be positive")
@@ -1236,7 +1241,10 @@ class Model:
             for k, v in numerics.items():
                 nout[k] = nsrc[k] if k in nsrc and same(nsrc[k], v) else v
             d["horizon"] = hout
-            d["numerics"] = nout
+            if nout:
+                d["numerics"] = nout
+            else:
+                d.pop("numerics", None)
             # a block whose fields were changed on the object since it was built is written as it now is
             # (numbers), so save() and describe() never show a stale source for what solve() would use
             live = self.to_dict(numeric=True)
@@ -1527,7 +1535,7 @@ class Model:
         from .numerics import Numerics
         try:
             numerics = Numerics(
-                engine=nm.get("engine"), nodes=nm.get("nodes", 16),
+                engine=nm.get("engine"), nodes=nm.get("nodes"),
                 breakpoints=[eval_coef(b, params) for b in nm["breakpoints"]] if nm.get("breakpoints") else None,
                 unit=eval_coef(nm["unit"], params) if nm.get("unit") is not None else None,
                 unit_range=eval_coef(nm["unit_range"], params) if nm.get("unit_range") is not None else None,
@@ -1569,7 +1577,7 @@ class Model:
         from types import MappingProxyType
         m = cls._of_fields(name=d.get("name", "model"), shocks=list(d.get("shocks") or []), states=states,
                 agents=agents, horizon=horizon, definitions=defs, ties=[list(g) for g in (d.get("ties") or [])],
-                params=MappingProxyType(params), source=copy.deepcopy(d), numerics=numerics)   # params read-only: see with_params()
+                params=MappingProxyType(params), source=_source_of(d), numerics=numerics)   # params read-only: see with_params()
         m.validate()                                           # structural errors first (its expansions also record
                                                                # the lag parameters, 'P@tau'); then the parameter check
         for k, v in (d.get("params") or {}).items():
@@ -1618,6 +1626,15 @@ def _horizon_length(hz: dict, kind: str, params, which: str):
                          + ("; horizon.window there is the continuation's lag-truncation length L"
                             if kind == "transition" else ""))
     return None if hz.get("T") is None else eval_coef(hz["T"], params)
+
+
+def _source_of(d: dict) -> dict:
+    """A model dict as kept for Model.source: a copy, without an empty numerics block (a model with no numerics given
+    writes none, so a saved and loaded model keeps the same source)."""
+    out = copy.deepcopy(d)
+    if isinstance(out.get("numerics"), dict) and not out["numerics"]:
+        del out["numerics"]
+    return out
 
 
 def _numerics_block(d: dict):

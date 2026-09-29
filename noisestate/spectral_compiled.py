@@ -177,7 +177,7 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
         past, continuation = self.past, self.cont
         R = self.model.numerics.unit_range
         if L is None:
-            self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), self.model.numerics.nodes, self.model.numerics.nodes)   # shared
+            self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), self.model.numerics.nodes or 16, self.model.numerics.nodes or 16)   # shared
         else:
             # the strip: one breakpoint sequence for time and age, the past grid's panels and L among them
             # (the old kernels kink on the past's panels, which then lie on piece edges), closed under the lags
@@ -208,9 +208,9 @@ class SpectralCompiled(TimeLineOps, ClosedLoopSources, CompiledBase):
                 bp = sorted(set(bp) | {round(self.T + b, 12) for b in bp if b <= L + 1e-12})
             bp = close_under_delays(bp, lags) if lags and not self.coarse else bp
             if continuation is not None:
-                self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), self.model.numerics.nodes, self.model.numerics.nodes, self.Tg, float(L), self.T)
+                self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), self.model.numerics.nodes or 16, self.model.numerics.nodes or 16, self.Tg, float(L), self.T)
             else:
-                self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), self.model.numerics.nodes, self.model.numerics.nodes, self.Tg, float(L))
+                self.g = triangle_grid(tuple(round(float(b), 12) for b in bp), self.model.numerics.nodes or 16, self.model.numerics.nodes or 16, self.Tg, float(L))
         self.N = self.g.N
         self.rho = float(hz.discount)
 

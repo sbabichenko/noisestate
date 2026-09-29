@@ -17,7 +17,7 @@ from .accel import ConvergenceError, DiagnosticsError, ResultValidationError
 from .risk import RiskBreakdown
 from ._settings import Settings
 from .results import Result
-from . import engines, time_panels
+from . import age_panels, engines, time_panels
 from .sweep import sweep, Sweep, SweepPoint
 from .comparison import compare, ComparisonResult, ScenarioResult
 from .diagnostics import Assessment, Policy, Status
@@ -262,6 +262,16 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
                              "start_from and start_policy do not apply")
         res = march_model(model, numerics, past=past, continuation=continuation, verbose=verbose, tol=tol, max_evaluations=max_evaluations,
                           deadline=deadline, progress=progress, diagnostics=diagnostics)
+        return _after_solve(res, refine, stability, diagnostics)
+    if past is None and continuation is None and age_panels.eligible(model, numerics):
+        # a stationary model with no grid given: its age panels chosen from its lags, then refined (age_panels.py)
+        base = Numerics.of(numerics)
+        kw = model.numerics.merged(base).solve_kw()
+        if tol is not None:
+            kw["tol"] = tol
+        run = dict(max_evaluations=max_evaluations, deadline=deadline, progress=progress, **kw)
+        res = age_panels.solve(model, base, start_from, start_policy, run, diagnostics, verbose=verbose,
+                               build=lambda m, n: engines._build(m, n, verbose=verbose))
         return _after_solve(res, refine, stability, diagnostics)
     S, num = engines._build(model, numerics, verbose=verbose, past=past, continuation=continuation)
     kw = num.solve_kw()

@@ -50,6 +50,7 @@ class SpectralFiniteSolver(SpectralMeans, MonitoredDeviations, EngineBase):
         on [T - L, T] are from the stationary ones.  Both are recorded in solver_kw, so refine() and
         stability() rebuild them.  With initial shocks the maps are (nU, nR, N + Nt): after each row's map
         nodes, the discrete weights on the row's point observation of the shocks, on the time nodes."""
+        model = model.with_default_nodes()
         hz = model.horizon
         if hz.kind == "transition":                    # the file's blocks, each overridden by its keyword
             if past is None:

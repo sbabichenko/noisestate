@@ -214,7 +214,7 @@ class Compiled(CompiledBase):
         delays = sorted({float(r[3]) for rr in self.rows.values() for r in rr if r[3] > 0})
         if delays:
             bp = close_under_delays(bp, delays)
-        self.grid = age_grid(tuple(round(float(b), 12) for b in bp), model.numerics.nodes)   # shared, with its operator caches
+        self.grid = age_grid(tuple(round(float(b), 12) for b in bp), model.numerics.nodes or 16)   # shared, with its operator caches
         self.N = self.grid.N
         self.rho = float(hz.discount)
         if self.rho > 0:
@@ -1085,6 +1085,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         if model.horizon.kind == "transition":
             raise ValueError(f"horizon.kind 'transition' ({model.name!r}) runs on the spectral finite engine only "
                              "(noisestate.solve routes it there; this engine has no past)")
+        model = model.with_default_nodes()
         super().__init__(model, verbose, settings=settings)
         self.c = Compiled(model, settings=self.settings)
         self.shapes = {a.name: (len(a.controls), len(a.signals), self.c.N) for a in model.agents}
