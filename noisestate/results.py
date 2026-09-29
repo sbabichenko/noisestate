@@ -72,8 +72,49 @@ class _Deferred:
         return self.make()
 
 
+def _arnoldi_dominant(matvec, v: np.ndarray, Jv: np.ndarray, k: int, tol: float) -> np.ndarray:
+    """The k eigenvalues of largest modulus of the operator `matvec` (n x n), by Arnoldi from v (Jv = matvec(v), made
+    already), stopping at the first step whose k dominant Ritz pairs have a relative residual |h_{m+1,m} y_m| / |theta|
+    below tol, or at an invariant subspace, or at m = n (then exact).  Ordered by increasing modulus, a conjugate pair's
+    positive imaginary part first.
+
+    Result.stability's eigensolver.  ARPACK (eigs, k = 2, ncv 20) checks convergence only after each cycle of 20
+    products, so it made 21-41 rounds of best responses where the dominant Ritz values had settled after 10-30 (the
+    stationary CARA models, Chapter 3, Kyle-Back), and on four eigenvalues of one modulus (Chapter 6's opaque market) it
+    ran out of budget and the power iteration reported a radius 3.5% off; this Arnoldi takes the Krylov space to its
+    dimension there (n = 72 rounds) and gets it.  Modified Gram-Schmidt twice (full reorthogonalisation: n is the size
+    of the strategies, tens to hundreds)."""
+    n = v.size
+    V = np.zeros((n, min(n, 400) + 1)); H = np.zeros((V.shape[1], V.shape[1] - 1))
+    nv = np.linalg.norm(v)
+    V[:, 0] = v / nv
+    w = Jv / nv
+    th = np.array([0.0])
+    for m in range(1, V.shape[1]):
+        if m > 1:
+            w = matvec(V[:, m - 1])
+        for _ in range(2):
+            hcol = V[:, :m].T @ w
+            w = w - V[:, :m] @ hcol
+            H[:m, m - 1] += hcol
+        H[m, m - 1] = beta = np.linalg.norm(w)
+        th, Y = np.linalg.eig(H[:m, :m])
+        order = np.argsort(-np.abs(th), kind="stable")
+        th, Y = th[order], Y[:, order]
+        kk = min(k, m)
+        scale = np.maximum(np.abs(th[:kk]), 1e-300)
+        done = beta <= 1e-12 * max(1.0, float(np.abs(H[:m + 1, :m]).max())) or m == n
+        if done or (m > k and np.all(beta * np.abs(Y[-1, :kk]) / np.linalg.norm(Y[:, :kk], axis=0) <= tol * scale)):
+            break
+        V[:, m] = w / beta
+    else:
+        raise ArithmeticError(f"Arnoldi did not settle in {V.shape[1] - 1} steps")
+    top = th[:min(k, th.size)]
+    return np.array(sorted(top, key=lambda z: (abs(z), -z.imag)))
+
+
 class _StabilityBudget(Exception):
-    """Raised by stability()'s matvec at its evaluation budget, so ARPACK unwinds to the fallback."""
+    """Raised by stability()'s matvec at its evaluation budget, so the Arnoldi unwinds to the fallback."""
 
 
 class Diagnostics:
@@ -1206,12 +1247,11 @@ class Result:
         equilibrium is one that adjustment dynamics would not find.  With untied=True (default) a
         tied model is assessed on the untied game, so asymmetric deviations are allowed.
         Returns {"radius", "eigenvalues", "stable", "evaluations", "untied", "method",
-        "fixed_point_residual"} (method is "arnoldi", "power iteration ..." when ARPACK did not settle or
+        "fixed_point_residual"} (method is "arnoldi", "power iteration ..." when the Arnoldi did not settle or
         was stopped, or "zero" for a single agent whose best response does not depend on itself); also
         stored in self.stability_report.  At most STABILITY_MAX_EVALUATIONS rounds of best responses are
         made (each matvec is one): the Arnoldi iteration is stopped STABILITY_FALLBACK short of that and
         the power iteration gets the rest, with "method" saying so."""
-        from scipy.sparse.linalg import LinearOperator, eigs
         k, eps, tol, max_evaluations = self.STABILITY_K, self.STABILITY_EPS, self.STABILITY_TOL, self.STABILITY_MAX_EVALUATIONS
         model = self.model
         if untied and model.ties:
@@ -1236,18 +1276,18 @@ class Result:
             return (S.pack(S.response_map(S.unpack(z0 + h * v))) - F0) / h
         n = z0.size
         kk = max(1, min(k, n - 2))
-        op = LinearOperator((n, n), matvec=matvec, dtype=float)
         rng = np.random.default_rng(0)
         v = rng.standard_normal(n); method = "arnoldi"
-        if np.linalg.norm(matvec(v)) <= 1e-12 * np.linalg.norm(v):
+        Jv = matvec(v)
+        if np.linalg.norm(Jv) <= 1e-12 * np.linalg.norm(v):
             vals = np.array([0.0]); method = "zero"          # a single agent: its best response does not depend on itself
         else:
-            cap[0] = max(count[0] + 1, max_evaluations - self.STABILITY_FALLBACK)      # ARPACK's maxiter counts restarts, not rounds
+            cap[0] = max(count[0] + 1, max_evaluations - self.STABILITY_FALLBACK)
             try:
-                vals = eigs(op, k=kk, which="LM", tol=tol, maxiter=max_evaluations, v0=v, return_eigenvectors=False)
+                vals = _arnoldi_dominant(matvec, v, Jv, kk, tol * 1e-3)
             except _StabilityBudget:
                 method = f"power iteration (arnoldi stopped at the evaluation budget of {max_evaluations})"
-            except Exception:                               # ARPACK did not settle: power iteration, and say so
+            except Exception:                               # Arnoldi failed: power iteration, and say so
                 method = "power iteration (arnoldi did not converge)"
             if method != "arnoldi":
                 steps = min(self.STABILITY_FALLBACK, max(1, max_evaluations - count[0])); cap[0] = count[0] + steps; lam = 0.0
