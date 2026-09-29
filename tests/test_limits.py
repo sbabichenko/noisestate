@@ -209,12 +209,16 @@ def test_the_window_edge_less_a_lag_is_a_cut_of_the_geometric_panels():
 
 @slow()
 def test_the_chapter_5_market_is_resolved_and_the_error_falls_with_nodes():
-    """The shipped example (8 nodes) passes the resolution check: 3.6e-7, 7.0e-8 at 12 nodes (1.3e-5 and 1.1e-6 before)."""
+    """The shipped example (no grid: the automatic age panels, 132 nodes) passes the resolution check at 2.1e-8, and on
+    its panels the error falls with the nodes: 6.0e-6 at 8, 3.1e-7 at 10, 2.1e-8 at 12 (the shipped 8-node grid of
+    16 unit panels, resampled, was at 3.6e-7 on 168 nodes; 1.3e-5 before the cuts at L - d)."""
     m = ns.load(ns.example("ch5_cycle_market"))
-    r8, r12 = ns.solve(m), ns.solve(m.with_numerics(nodes=12))
-    e8, e12 = max(r8.representation_error.values()), max(r12.representation_error.values())
-    assert e8 < 1e-6 and e12 < e8 / 3
-    assert abs(r8.costs["firm0"] - r12.costs["firm0"]) < 3e-7
+    r = ns.solve(m)
+    assert r.panels["resolved"] and r.compiled.N <= 140
+    r8 = ns.solve(m.with_numerics(breakpoints=r.panels["breakpoints"], nodes=8))
+    e8, e = max(r8.representation_error.values()), max(r.representation_error.values())
+    assert e < 1e-7 and e < e8 / 30
+    assert abs(r8.costs["firm0"] - r.costs["firm0"]) < 1e-8
 
 
 # ------------------------------------------------------------------------------------------------ stationary CARA
