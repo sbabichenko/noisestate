@@ -226,10 +226,20 @@ class StationaryTilt:
         Qz = np.einsum("ji,aic->ajc", self.Q, np.einsum("an,jnc->ajc", lat["I"], self.z))  # (Na + 1, m, nW), unhalved
         disc = np.exp(-self.rho * lat["ages"])
         fut = np.zeros((Na + 1, self.nW))
-        for ip in range(0, Na):
-            k = np.arange(ip, Na + 1)
-            w = h * disc[k]; w[0] *= 0.5; w[-1] *= 0.5
-            fut[ip] = np.einsum("k,kj,kjc->c", w, Rt[k], Qz[k - ip])
+        # fut[ip] = sum over k = ip .. Na and j of (w_ip(k) Rt[k, j]) Qz[k - ip, j, :], w_ip = h disc with its ends halved, for
+        # every ip at once: the terms in (k, j) order padded with zeros past Na, summed left to right (a running sum: the
+        # order and association of the einsum this was, one ip at a time, to the bit; + 0.0 as its sum from zero)
+        t = np.arange(Na + 1)
+        step = max(1, (2 << 20) // max(1, (Na + 1) * Rt.shape[1] * self.nW))        # ip a block at a time: <= 16 MB of terms
+        for i0 in range(0, Na, step):
+            ips = np.arange(i0, min(Na, i0 + step))
+            kk = ips[:, None] + t[None, :]                                               # (ip, t): k = ip + t
+            kc = np.minimum(kk, Na)
+            w = np.where(kk <= Na, h * disc[kc], 0.0)
+            w[:, 0] *= 0.5
+            w[np.arange(ips.size), Na - ips] *= 0.5                                      # k = Na
+            terms = (w[:, :, None] * Rt[kc])[:, :, :, None] * Qz[None]                   # (ip, t, j, c)
+            fut[ips] = np.cumsum(terms.reshape(ips.size, -1, self.nW), axis=1)[:, -1] + 0.0
         if self.mx:
             fut += np.exp(-self.rho * lat["ages"])[:, None] * (lat["Rxt"][ui] @ self.Lx)            # u = 0 .. L (0+ at u = 0)
             fut[Na] *= 0.5                                                               # u = L: the cut, half its value
