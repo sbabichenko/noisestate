@@ -233,31 +233,36 @@ class StationaryTilt:
             out[j] += sf.irfft(SG[cc] * Sz, f)[Na:Na + Nt]
         return h * out
 
-    def _At(self, lat, zt, B, key: str = "zt"):
-        """(A' b)_c(u_i) = sum_k z(tau_k - u_i)' b(tau_k) (the weights already in b), (nW, Nu): B (m, Nt); zt = lat[key]."""
-        from scipy import fft as sf
-        Nu = lat["Nu"]
-        f, S = self._spectra(lat, key, B.shape[1], True)
-        out = np.zeros((self.nW, Nu))
-        SB = {}
-        for (j, cc), Sz in S.items():
-            if j not in SB:
-                SB[j] = sf.rfft(B[j], f) if np.any(B[j]) else None
-            if SB[j] is not None:
-                out[cc] += sf.irfft(SB[j] * Sz, f)[:Nu]
-        return out
+    def _stacked(self, lat, keys, n_in: int, rev: bool):
+        """(f, the rfft at length f of every lag kernel of lat[k] for k in keys, stacked (sum of their atoms, nW, f // 2 + 1),
+        reversed for A'), made once per lattice: _K's convolutions as one transform per operand."""
+        memo = lat.setdefault("stacked", {})
+        mk = (tuple(keys), rev, n_in)
+        if mk not in memo:
+            from scipy import fft as sf
+            zt = np.concatenate([lat[k] for k in keys], axis=1)                          # (Na + 1, m (+ mx), nW)
+            f = sf.next_fast_len(n_in + lat["Na"], True)
+            memo[mk] = (f, sf.rfft((zt[::-1] if rev else zt).transpose(1, 2, 0), f, axis=-1))
+        return memo[mk]
 
     def _K(self, lat, G):
-        """K_0 g on the lattice, (nW, Nu)."""
-        Na, Nt = lat["Na"], lat["Nt"]
-        Ag = self._A(lat, lat["zt"], G)
-        out = self._At(lat, lat["zt"], lat["dtau"][None, :] * (self.Q @ Ag))
+        """K_0 g on the lattice, (nW, Nu): A g for the atoms and the integrals' atoms together, A' of both weighted, each
+        by transforming its operand once (the products summed over the kernels in frequency, one inverse per output
+        line: the same convolutions as _A / _At's, rounding-level different)."""
+        from scipy import fft as sf
+        h, Na, Nt, Nu = lat["h"], lat["Na"], lat["Nt"], lat["Nu"]
+        m = lat["zt"].shape[1]
+        keys = ("zt", "zxt") if self.mx else ("zt",)
+        f, SZ = self._stacked(lat, keys, G.shape[1], False)
+        AG = h * sf.irfft(np.einsum("jcf,cf->jf", SZ, sf.rfft(G, f, axis=-1)), f, axis=-1)[:, Na:Na + Nt]   # (m + mx, Nt)
+        B = lat["dtau"][None, :] * (self.Q @ AG[:m])
         if self.mx:
-            Gf = G[:, Na:Na + Nt]                                                        # g at u = tau >= 0
-            out += self._At(lat, lat["zxt"], lat["dtau"][None, :] * (self.Lx @ Gf), "zxt")
-            Axg = self._A(lat, lat["zxt"], G, "zxt")                                            # (mx, Nt)
+            B = np.concatenate([B, lat["dtau"][None, :] * (self.Lx @ G[:, Na:Na + Nt])])
+        f2, SZt = self._stacked(lat, keys, Nt, True)
+        out = sf.irfft(np.einsum("jcf,jf->cf", SZt, sf.rfft(B, f2, axis=-1)), f2, axis=-1)[:, :Nu]
+        if self.mx:
             ind = np.ones(Nt); ind[0] = 0.5                                              # 1_{u >= 0}, half at u = 0
-            out[:, Na:Na + Nt] += (ind * np.exp(-self.rho * lat["tau"]))[None, :] * (self.Lx.T @ Axg)
+            out[:, Na:Na + Nt] += (ind * np.exp(-self.rho * lat["tau"]))[None, :] * (self.Lx.T @ AG[m:])
         return out
 
     def _f(self, lat, ui: int):
