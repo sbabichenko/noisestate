@@ -261,7 +261,7 @@ class EngineBase(MeanLayer):
         pack, unpack         maps of the tie representatives <-> one vector [flat]     cells
         best_response        (raw map, {"gamma", "action", "Zfull", ...}) [abstract]  all three
         _representation_error  relative residual of the projection [abstract]         stationary, spectral
-        _impulse_responses   R with some observers' reactions removed [R]              none
+        _impulse_responses   R with the privy players responding [R]                   stationary, spectral (monitoring.py)
         _passive_world       Zpass adjusted [Zpass]                                    none
         _identified          mask of the map nodes that read something [all True]     stationary, spectral
         _project             raw maps reproducing action kernels [abstract]            stationary, spectral
@@ -294,7 +294,7 @@ class EngineBase(MeanLayer):
     ANDERSON_M = tunable("anderson_m")              # Anderson memory (settings.anderson_m)
     ACTIONS = True                  # whether the engine can iterate on action kernels
     MONITORING = False              # whether the engine solves the monitored deviations of Chapter 6 (agents' `monitors`)
-    RISK_SENSITIVE = False          # whether the engine solves risk-averse agents (risk_aversion > 0, the entropic objective): the spectral finite engine
+    RISK_SENSITIVE = False          # whether the engine solves risk-averse agents (risk_aversion > 0, the entropic objective): both engines, each with its limits
     FOC_RCOND = tunable("foc_rcond")    # a best-response system whose reciprocal condition estimate is below this is singular (settings)
     SECOND_ORDER_TOL = tunable("second_order_tol")      # curvature below which a negative value is window truncation (settings)
     SECOND_ORDER_DENSE = tunable("second_order_dense")  # strategy dimension up to which the form is built densely (settings)
@@ -441,9 +441,8 @@ class EngineBase(MeanLayer):
         return self._seen_rows(agent, Zpass, set(agent.controls))
 
     # ------------------------------------------------- best-response pieces
-    # ----------------------------------------------------- best response
     def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
-        """Hook (no engine overrides it): the responses R (n_prim N, nU) of the primary kernels
+        """Hook (monitoring.MonitoredDeviations overrides it for both engines): the responses R (n_prim N, nU) of the primary kernels
         to a unit impulse of each of the agent's controls, with the agent's own reaction switched
         off and every other agent reacting through `maps`.  Receives the columns closed_loop
         returned for `impulse_controls=agent.controls`; must return an array of the same shape.

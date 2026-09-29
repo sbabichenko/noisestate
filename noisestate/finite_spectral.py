@@ -20,6 +20,7 @@ import numpy as np
 from . import finite_free
 from .closed_loop import ClosedLoopRows
 from .engine import EngineBase
+from .monitoring import MonitoredDeviations
 from .past import Past
 from .results import TriangleResult, TransitionResult
 from ._settings import tunable
@@ -30,7 +31,7 @@ from .spectral_means import SpectralMeans
 __all__ = ["SpectralCompiled", "ClosedLoopRows", "SpectralFiniteSolver"]
 
 
-class SpectralFiniteSolver(SpectralMeans, EngineBase):
+class SpectralFiniteSolver(SpectralMeans, MonitoredDeviations, EngineBase):
     MONITORING = True                   # monitored deviations and instant observations, without a past (see __init__)
     RISK_SENSITIVE = True               # risk-averse agents (the entropic objective, risk.py): no past or initial shocks only (see __init__)
     RESULT = TriangleResult
@@ -163,13 +164,7 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
     def _finish(self, res) -> None:
         res.past = self.c.past
         res.continuation = self.c.cont
-        if any(len(self.model.privy(a.name)) > 1 for a in self.model.agents):
-            self._monitoring(res.maps)                  # the monitored kernels must be settled at the equilibrium
-            # settled to the solve's own tolerance (at least 1e-10): at a fine grid the kernels' rounding floor can
-            # sit just above 1e-10, and a solve converged to tol is not failed for it
-            if self._kernel_residual > max(1e-10, float(res.solve_kw.get("tol") or 0.0)):
-                res.converged = False
-                res.message += f"; the monitored response kernels did not settle at the equilibrium (residual {self._kernel_residual:.1e})"
+        self._require_settled(res)
         super()._finish(res)
         from .risk import RiskBreakdown
         for a in self.model.agents:
@@ -579,20 +574,8 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         Z = self.world_from_actions(actions)
         return {a.name: self.maps_from_world(a, Z, self._map_part(a, Z, actions[a.name])) for a in self.model.agents}
 
-    def _map_part(self, agent: Agent, Z: np.ndarray, actions: np.ndarray) -> np.ndarray:
-        """The part of the agent's action kernels its map carries: the action less its instant loadings on the
-        levels it sees (h times their kernels in Z), which the closed loop adds at the same node."""
-        loads = self.c.instant_loads or {}
-        if not any(u in loads for u in agent.controls):
-            return actions
-        out = np.array(actions, dtype=float, copy=True)
-        for ui, v in enumerate(agent.controls):
-            for u, h in loads.get(v, {}).items():
-                out[ui] -= h * Z[self.c.block(u)]
-        return out
-
     # ------------------------------------------------------- instant observations and monitored deviations
-    #  As on the stationary engine (stationary.py, the same algebra and conventions): a spike of a control draws the
+    #  The iteration is monitoring.py's (MonitoredDeviations), as on the stationary engine; the pieces here: a spike of a control draws the
     #  instant reactions of the agents seeing its level (c.composite); for an origin i with privy players, the seed
     #  world W_i = Z0_i + sum_v C_v D^{v<-i}, the privy players' maps off in Z0_i, C_v the response operator of v's
     #  spike (here a two-time kernel: the response at t to a spike at the node's shock time, RespOps' path), the
@@ -618,13 +601,6 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         from types import SimpleNamespace
         return finite_free.RespOps(self, SimpleNamespace(controls=[v]), col[:, None]).dense(0)
 
-    def _maps_key(self, maps) -> bytes:
-        import hashlib
-        h = hashlib.sha1()
-        for a in self.model.agents:
-            h.update(np.ascontiguousarray(maps[a.name]).tobytes())
-        return h.digest()
-
     def _seed_setup(self, maps, origin: str):
         """(ctrls, Z0, C) as on the stationary engine: the privy controls (origin's first), their spike columns with
         the privy players' maps off, and per privy control its response operator (n_prim N x N)."""
@@ -640,92 +616,30 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
         Z0 = np.stack([spike[v] for v in ctrls], axis=1)
         return ctrls, Z0, {v: self._resp_dense(v, spike[v]) for v in ctrls}
 
-    def _monitoring(self, maps, origins=None):
-        """({agent: R^mon}, {origin: W}) as on the stationary engine, on the triangle's nodes: the kernels from the
-        naive responses by the plain iteration, which stops at 1e-10 or once 10 rounds have not improved on the best
-        round, keeping it (it reaches rounding and then only wanders); _finish requires them settled at the
-        equilibrium.  The non-origin responders' rows are fixed within a call and built once."""
-        key = self._maps_key(maps)
-        if origins is None and getattr(self, "_monitored", None) is not None and self._monitored[0] == key:
-            self._kernel_residual = self._monitored[3]
-            return self._monitored[1], self._monitored[2]
+    def _monitor_focs(self, agent: Agent, maps, R: np.ndarray, origins, seed_consts) -> list:
+        """The agent's first-order-condition operators on the monitored responses R (MonitoredDeviations._monitoring),
+        dense (N x n_prim N) per control.  A risk-averse responder: f^xi_t(s) + theta <S f_t, K e_xi(s)> = 0, the
+        second term linear in the seed world through its atoms (risk.Tilt.seed_operator) plus the seed spike's own
+        point mass (seed_constant), which goes into seed_consts[(agent, control)] per origin it is privy to; the
+        derivation is in docs/method.md."""
         c = self.c; N = c.N
-        owner = {a.name: a for a in self.model.agents}
-        own = origins is None                           # the equilibrium's origins (cached), or ones asked for (the blip
-        if own:                                         # continuation of a deviator only it is privy to: results)
-            origins = [a.name for a in self.model.agents if len(self.model.privy(a.name)) > 1]
-        setup = {i: self._seed_setup(maps, i) for i in origins}
-        responders = {m for i in origins for m in self.model.privy(i)}
-        Rmon = {n: self._spikes(c, maps, owner[n])[1] for n in responders}
-        shapes = {i: (len(owner[i].controls), len(setup[i][0]), N) for i in origins}
-
         comp = c.composite or {}
-        seed_consts = {}                                # (responder, control) -> {origin: (N, nO)}: the seed spike's own terms
+        owner = {a.name: a for a in self.model.agents}
+        ops = finite_free.FocOps(self, agent, R)
+        out = [ops.dense(ui) for ui in range(len(agent.controls))]
+        tilt = self._tilt(agent, maps, ops, R) if agent.risk_aversion else None
+        if tilt is not None:
+            Zp = self._profile_world(maps).reshape(len(c.prim), N, c.ncol)
+            out = [out[ui] + tilt.seed_operator(ui, Zp) for ui in range(len(out))]
+            for ui in range(len(out)):
+                seed_consts[(agent.name, ui)] = {i: np.stack([tilt.seed_constant(ui, Zp, comp.get(u, {u: 1.0})) for u in owner[i].controls],
+                                                             axis=1) for i in origins if agent.name in self.model.privy(i)}
+        else:
+            for ui in range(len(out)):
+                seed_consts.pop((agent.name, ui), None)
+        return out
 
-        def foc(n):
-            ops = finite_free.FocOps(self, owner[n], Rmon[n])
-            out = [ops.dense(ui) for ui in range(len(owner[n].controls))]
-            tilt = self._tilt(owner[n], maps, ops, Rmon[n]) if owner[n].risk_aversion else None
-            if tilt is not None:
-                # a risk-averse responder: f^xi_t(s) + theta <S f_t, K e_xi(s)> = 0, the second term linear in the seed
-                # world through its atoms (risk.Tilt.seed_operator) plus the seed spike's own point mass (seed_constant);
-                # the derivation is in docs/method.md
-                Zp = self._profile_world(maps).reshape(len(c.prim), N, c.ncol)
-                out = [out[ui] + tilt.seed_operator(ui, Zp) for ui in range(len(out))]
-                for ui in range(len(out)):
-                    seed_consts[(n, ui)] = {i: np.stack([tilt.seed_constant(ui, Zp, comp.get(u, {u: 1.0})) for u in owner[i].controls],
-                                                        axis=1) for i in origins if n in self.model.privy(i)}
-            else:
-                for ui in range(len(out)):
-                    seed_consts.pop((n, ui), None)
-            return out
-        Fu = {n: foc(n) for n in responders if n not in origins}                    # fixed within the call
-        eqs = {i: [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))] for i in origins}
-        fixed = {}
-        for i in origins:
-            ctrls, Z0, C = setup[i]
-            for r, (n, ui) in enumerate(eqs[i]):
-                if n not in origins:
-                    fixed[(i, r)] = ([Fu[n][ui] @ C[v] for v in ctrls], Fu[n][ui] @ Z0[:, :shapes[i][0]])
-        D = {}
-        best = (np.inf, None, None); best_round = 0
-        for it in range(200):
-            Fu.update({n: foc(n) for n in responders if n in origins})
-            change = 0.0
-            for i in origins:
-                ctrls, Z0, C = setup[i]
-                nO, nC = shapes[i][0], len(ctrls)
-                A = np.empty((len(eqs[i]) * N, nC * N)); B = np.empty((len(eqs[i]) * N, nO))
-                for r, (n, ui) in enumerate(eqs[i]):
-                    rows = slice(r * N, (r + 1) * N)
-                    blocks, rhs = fixed[(i, r)] if (i, r) in fixed else ([Fu[n][ui] @ C[v] for v in ctrls], Fu[n][ui] @ Z0[:, :nO])
-                    for k, blk in enumerate(blocks):
-                        A[rows, k * N:(k + 1) * N] = blk
-                    B[rows] = -rhs
-                    if (n, ui) in seed_consts:
-                        B[rows] -= seed_consts[(n, ui)][i]
-                X = np.linalg.solve(A, B)                                           # one factorisation, every origin control
-                Di = X.T.reshape(shapes[i])
-                change = max(change, float(np.abs(Di - D[i]).max() / max(1e-300, np.abs(Di).max())) if i in D else np.inf)
-                D[i] = Di
-            for j in origins:
-                Rmon[j] = self._frozen_responses(setup[j], D[j], shapes[j][0])
-            if change < best[0]:
-                best = (change, dict(D), dict(Rmon)); best_round = it
-            if change < 1e-10 or it - best_round > 10:
-                break
-        change, D, Rmon = best
-        W = {}
-        for i in origins:
-            ctrls, Z0, C = setup[i]
-            X = D[i].reshape(shapes[i][0], -1).T
-            W[i] = Z0[:, :shapes[i][0]] + sum(C[v] @ X[k * N:(k + 1) * N] for k, v in enumerate(ctrls))
-        if own:
-            self._kernel_residual = float(change)
-            self._monitored = (key, Rmon, W, self._kernel_residual)
-        return Rmon, W
-
-    def _frozen_responses(self, setup, Dj: np.ndarray, own: int) -> np.ndarray:
+    def _frozen_responses(self, j: str, setup, Dj: np.ndarray, own: int) -> np.ndarray:
         """R^mon_j: the responses to a frozen spike of each of j's controls, the privy players reading it as the blip
         seeds sigma, sigma + D^{j<-j} * sigma = delta (a Volterra equation in the seed's time, the kernels composed
         along the response path), and responding to them.  The kernels are composed through one path operator; only
@@ -762,13 +676,6 @@ class SpectralFiniteSolver(SpectralMeans, EngineBase):
                 colv += C[v] @ x
             out[:, o] = colv
         return out
-
-    def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
-        """With a monitoring relation, the agent's spike responses with the players privy to its deviations
-        responding through their response kernels; without one, R."""
-        if len(self.model.privy(agent.name)) == 1:
-            return R
-        return self._monitoring(maps)[0][agent.name]
 
     def expected_cost(self, agent: Agent, Z: np.ndarray) -> float:
         """The variance part of the agent's discounted cost over [0, T] in the world Z (n_prim N, nW):

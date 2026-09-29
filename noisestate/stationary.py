@@ -28,6 +28,7 @@ from scipy.linalg import lu_factor, lu_solve
 from .grid import AgeGrid
 from .grid_cache import age_grid
 from .engine import EngineBase, _is_eye, dense_curvature_form, singular_system_message, symmetrize
+from .monitoring import MonitoredDeviations
 from .compile import CompiledBase, close_under_delays
 from .symmetry import find_cyclic_symmetry
 from .results import StationaryResult
@@ -612,9 +613,9 @@ class Compiled(CompiledBase):
 
 
 # ------------------------------------------------------------------- solver
-class StationarySolver(EngineBase):
+class StationarySolver(MonitoredDeviations, EngineBase):
     RESULT = StationaryResult
-    MONITORING = True                   # monitored deviations (Chapter 6): _impulse_responses below
+    MONITORING = True                   # monitored deviations (Chapter 6): monitoring.MonitoredDeviations
     RISK_SENSITIVE = True               # risk-averse agents under consistent planning (stationary_risk.py), see __init__
     TOL, DAMPING, MAX_NEWTON = 1e-10, 0.6, 60       # with Anderson memory 15 (0.3 was needed at memory 6 for Kyle-Back)
     #  The second-order verdict does not depend on the discount, so this engine can check a
@@ -1154,18 +1155,6 @@ class StationarySolver(EngineBase):
             return out
         return close
 
-    def _map_part(self, agent: Agent, Z: np.ndarray, actions: np.ndarray) -> np.ndarray:
-        """The part of the agent's action kernels its map carries: the action less its instant loadings on the
-        levels it sees (h times their kernels in Z), which the closed loop adds contemporaneously."""
-        loads = self.c.instant_loads or {}
-        if not any(u in loads for u in agent.controls):
-            return actions
-        out = np.array(actions, dtype=float, copy=True)
-        for ui, v in enumerate(agent.controls):
-            for u, h in loads.get(v, {}).items():
-                out[ui] -= h * Z[self.c.block(u)]
-        return out
-
     def _representation_error(self, agent: Agent, Zfull: np.ndarray, actions: np.ndarray, g: np.ndarray) -> float:
         """Relative residual of the best-response action kernels after projection on the agent's raw
         rows.  Zero in exact arithmetic; on the grid it measures how well products of kernels are
@@ -1181,19 +1170,7 @@ class StationarySolver(EngineBase):
         return worst
 
     # ------------------------------------------------------- monitored deviations (Chapter 6)
-    #  With a monitoring relation, a unit deviation seed of agent i (a control impulse) is resolved by the players
-    #  privy to it, P_i (i itself among them, which resumes play after the blip): they do not filter its effects
-    #  through their maps but respond through response kernels D^{v<-i}, one per privy control v, in the seed's age.
-    #  The naive players filter it as always.  By linearity the seed world is
-    #      W_i = Z0_i[:, i] + sum_v C_v D^{v<-i},
-    #  Z0_i the closed loop with every privy player's map off and an impulse column per privy control, C_v the
-    #  convolution with v's impulse column (and the identity on v's own block: v's kernel is D^{v<-i}).  Each privy
-    #  player j's first-order condition on W_i vanishes (Definition 6.3 (ii), sequential rationality), with j's
-    #  continuation through its own monitored impulse responses R_j^mon, the responses to a seed of j with j's own
-    #  reaction frozen (Lemma 6.6: the first-order condition is the same under the blip convention) and P_j \ {j}
-    #  responding through their kernels D^{.<-j}.  The kernels for different origins depend on each other through
-    #  R^mon, so they are found by iterating: kernels from the R^mon, R^mon from the kernels.  Every agent's best
-    #  response then uses its R^mon (Definition 6.3 (i)).
+    #  The iteration and its algebra are monitoring.py's (MonitoredDeviations); the pieces on the age grid follow.
 
     def _spikes(self, c, maps, agent: Agent, excluded=None):
         """(Zpass, R): the closed loop with `excluded` (default the agent) switched off, and the responses to a spike
@@ -1223,13 +1200,6 @@ class StationarySolver(EngineBase):
             self._spike_cache[1][ck] = (Zpass.copy(), R.copy())
         return Zpass, R
 
-    def _maps_key(self, maps) -> bytes:
-        import hashlib
-        h = hashlib.sha1()
-        for a in self.model.agents:
-            h.update(np.ascontiguousarray(maps[a.name]).tobytes())
-        return h.digest()
-
     def _seed_setup(self, maps, origin: str):
         """(ctrls, Z0, C): the privy controls (origin's first); Z0 (n_prim N, len(ctrls)), the closed loop with the
         privy players' maps off, whose columns are the spikes of the privy controls with the instant reactions each
@@ -1256,75 +1226,10 @@ class StationarySolver(EngineBase):
             C[v] = Cv
         return ctrls, Z0, C
 
-    def _monitoring(self, maps, origins=None):
-        """({agent: R^mon (n_prim N, nU)}, {origin: W (n_prim N, n origin controls)}) for the agents with privy
-        others, the response kernels found by the iteration described above, from the naive responses, to 1e-10
-        relative or until 10 rounds pass without improving on the best, which is kept (the plain iteration reaches
-        rounding and then only wanders).  (Starting from the previous call's kernels carried a trial point's kernels into the next
-        evaluation and broke the market of Chapter 6; Anderson on this iteration found other roots.  Neither is used.)"""
-        key = self._maps_key(maps)
-        if origins is None and self._monitored is not None and self._monitored[0] == key:
-            self._kernel_residual = self._monitored[3]
-            return self._monitored[1], self._monitored[2]
-        c = self.c; N = c.N
-        owner = {a.name: a for a in self.model.agents}
-        own = origins is None                           # the equilibrium's origins (cached), or ones asked for (the blip
-        if own:                                         # continuation of a deviator only it is privy to: results)
-            origins = [a.name for a in self.model.agents if len(self.model.privy(a.name)) > 1]
-        setup = {i: self._seed_setup(maps, i) for i in origins}
-        responders = {m for i in origins for m in self.model.privy(i)}
-        Rmon = {n: self._spikes(c, maps, owner[n])[1] for n in responders}      # the naive responses
-        shapes = {i: (len(owner[i].controls), len(setup[i][0]), N) for i in origins}
-        Fu = {n: self._foc_operators(owner[n], Rmon[n]) for n in responders if n not in origins}   # fixed within the call
-        eqs = {i: [(n, ui) for n in self.model.privy(i) for ui in range(len(owner[n].controls))] for i in origins}   # one FOC per privy control
-        # the rows of the non-origin responders are fixed within the call: their blocks of A and B once
-        fixed = {}
-        for i in origins:
-            ctrls, Z0, C = setup[i]
-            for r, (n, ui) in enumerate(eqs[i]):
-                if n not in origins:
-                    fixed[(i, r)] = ([Fu[n][ui] @ C[v] for v in ctrls], Fu[n][ui] @ Z0[:, :shapes[i][0]])
-        D = {}
-        change = np.inf
-        best = (np.inf, None, None)                     # (change, D, Rmon) of the best round
-        best_round = 0
-        for it in range(200):
-            Fu.update({n: self._foc_operators(owner[n], Rmon[n]) for n in responders if n in origins})
-            change = 0.0
-            for i in origins:
-                ctrls, Z0, C = setup[i]
-                nO, nC = shapes[i][0], len(ctrls)
-                A = np.empty((len(eqs[i]) * N, nC * N)); B = np.empty((len(eqs[i]) * N, nO))
-                for r, (n, ui) in enumerate(eqs[i]):
-                    rows = slice(r * N, (r + 1) * N)
-                    blocks, rhs = fixed[(i, r)] if (i, r) in fixed else ([Fu[n][ui] @ C[v] for v in ctrls], Fu[n][ui] @ Z0[:, :nO])
-                    for k, blk in enumerate(blocks):
-                        A[rows, k * N:(k + 1) * N] = blk
-                    B[rows] = -rhs
-                X = np.linalg.solve(A, B)                                           # one factorisation, every origin control
-                Di = X.T.reshape(shapes[i])
-                change = max(change, float(np.abs(Di - D[i]).max() / max(1e-300, np.abs(Di).max())) if i in D else np.inf)
-                D[i] = Di
-            for j in origins:
-                Rmon[j] = self._frozen_responses(j, setup[j], D[j], shapes[j][0])
-            if change < best[0]:
-                best = (change, dict(D), dict(Rmon)); best_round = it
-            # the iteration reaches rounding (about 1e-11) and then only wanders: stop at 1e-10, or once 10 rounds
-            # have not improved on the best, and keep the best round
-            if change < 1e-10 or it - best_round > 10:
-                break
-        change, D, Rmon = best
-        W = {}                                          # the seed worlds of the best round's kernels
-        for i in origins:
-            ctrls, Z0, C = setup[i]
-            X = D[i].reshape(shapes[i][0], -1).T
-            W[i] = Z0[:, :shapes[i][0]] + sum(C[v] @ X[k * N:(k + 1) * N] for k, v in enumerate(ctrls))
-        # at a trial point of the outer iteration far from the equilibrium the kernels may not settle; the best
-        # round is used there and its change kept, and _finish requires them settled at the equilibrium itself
-        if own:
-            self._kernel_residual = float(change)
-            self._monitored = (key, Rmon, W, self._kernel_residual)
-        return Rmon, W
+    def _monitor_focs(self, agent: Agent, maps, R: np.ndarray, origins, seed_consts) -> list:
+        """The agent's first-order-condition operators on the monitored responses R (MonitoredDeviations._monitoring);
+        no seed constants (a risk-averse agent with monitoring is refused here)."""
+        return self._foc_operators(agent, R)
 
     def _frozen_responses(self, j: str, setup, Dj: np.ndarray, own: int) -> np.ndarray:
         """R^mon_j (n_prim N, own): the responses to a frozen spike of each of j's controls, the players privy to j
@@ -1359,13 +1264,7 @@ class StationarySolver(EngineBase):
         """The base's, after requiring the monitored response kernels settled at the equilibrium's maps (at trial
         points of the fixed point they may not be, _monitoring): a result whose kernels did not settle is not
         converged."""
-        if any(len(self.model.privy(a.name)) > 1 for a in self.model.agents):
-            self._monitoring(res.maps)                  # the last evaluation's, when it was at these maps
-            # settled to the solve's own tolerance (at least 1e-10): at a fine grid the kernels' rounding floor can
-            # sit just above 1e-10, and a solve converged to tol is not failed for it
-            if self._kernel_residual > max(1e-10, float(res.solve_kw.get("tol") or 0.0)):
-                res.converged = False
-                res.message += f"; the monitored response kernels did not settle at the equilibrium (residual {self._kernel_residual:.1e})"
+        self._require_settled(res)
         super()._finish(res)
         for a in self.model.agents:
             if a.risk_aversion and self._risk_scale:
@@ -1498,13 +1397,6 @@ class StationarySolver(EngineBase):
         elif len(done) > len(self.RISK_STEPS):
             res.message = f"continuation in risk aversion, theta scaled by {', '.join(f'{s:.3g}' for s in done)}: " + res.message
         return res
-
-    def _impulse_responses(self, agent: Agent, maps, R: np.ndarray) -> np.ndarray:
-        """With a monitoring relation, the agent's impulse responses with the players privy to its deviations
-        responding through their response kernels (Chapter 6); without one, R."""
-        if len(self.model.privy(agent.name)) == 1:
-            return R
-        return self._monitoring(maps)[0][agent.name]
 
     def _lead_term(self, agent: Agent, Ru: np.ndarray, name: str, lag: float) -> np.ndarray:
         """(N, N) operator on the led atom's (Q zeta) kernel: the past-date term of a lead (see EngineBase)."""
