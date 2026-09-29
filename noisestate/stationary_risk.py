@@ -321,29 +321,117 @@ class StationaryTilt:
         out[:, :Na + 1] -= (Qp @ (Qp.T @ gp)).reshape(self.nW, Na + 1)
         return out
 
+    def _K_band(self, lat) -> np.ndarray:
+        """K_0 on the lattice (the operator _K applies) as a symmetric band matrix, its lower band in LAPACK's storage
+        ab[p - p', p'] (p >= p'), in time-major coordinates p = i nW + c (u_i, channel c).  K_0(u_i, u_i') is zero
+        beyond |i - i'| > Na (the atoms' lag kernels live on [0, L]), so the band holds every entry: for i' = i - d,
+
+            K[i, i - d] = h sum_a dtau(i - Na + a) zt[a]' Q zt[a + d]     (+ the integrals' dtau(i - Na) Lx' zxt[d], i >= Na)
+
+        (a the age of the later exposure; the sum over a for all rows i at once is one product with the Toeplitz matrix of
+        the discount weights), the same sums as _K's convolutions without their FFT round-off, Q symmetrised as the dense
+        form's 0.5 (K + K') did.  The band width is nW (2 Na + 1) - 1: what cond_excess needs to hold Sigma K Sigma too."""
+        from numpy.lib.stride_tricks import sliding_window_view
+        nW, h, Na, Nu = self.nW, lat["h"], lat["Na"], lat["Nu"]
+        n = nW * Nu
+        zt = lat["zt"]                                                                   # (Na + 1, m, nW)
+        Qs = 0.5 * (self.Q + self.Q.T)
+        ztQ = np.einsum("ajc,jk->akc", zt, Qs)
+        P = np.zeros((Na + 1, Na + 1, nW, nW))                                           # P[a, d] = zt[a]' Q zt[a + d]
+        for d in range(Na + 1):
+            P[:Na + 1 - d, d] = np.einsum("akc,ake->ace", ztQ[:Na + 1 - d], zt[d:])
+        ext = np.concatenate([np.zeros(Na), lat["dtau"], np.zeros(Na)])
+        T = np.ascontiguousarray(sliding_window_view(ext, Na + 1)[:Nu])                 # T[i, a] = dtau(i - Na + a)
+        Kl = (h * (T @ P.reshape(Na + 1, -1))).reshape(Nu, Na + 1, nW, nW)             # Kl[i, d] = the block K[i, i - d]
+        del P, T
+        if self.mx:
+            X = np.einsum("jc,dje->dce", self.Lx, lat["zxt"])                            # (Na + 1, nW, nW): Lx' zxt[d]
+            wk = lat["dtau"][:Nu - Na]                                                   # rows i = Na + k
+            Kl[Na:] += wk[:, None, None, None] * X[None]
+            Kl[Na:, 0] += wk[:, None, None] * X[0].T[None]                               # the diagonal block: X[0] + X[0]'
+        b = min(n - 1, nW * (2 * Na + 1) - 1)
+        ab = np.zeros((b + 1, n))
+        for d in range(Na + 1):
+            for cr in range(nW):
+                for cc in range(nW):
+                    o = d * nW + cr - cc
+                    if o < 0 or o > b:
+                        continue
+                    ab[o, cc::nW][:Nu - d] = Kl[d:, d, cr, cc]
+        return ab
+
+    @staticmethod
+    def _band_dense(ab, n2: int) -> np.ndarray:
+        """The leading n2 x n2 block of the symmetric band matrix ab (lower storage), dense."""
+        out = np.zeros((n2, n2))
+        idx = np.arange(n2)
+        for o in range(min(ab.shape[0], n2)):
+            out[idx[o:], idx[:n2 - o]] = ab[o, :n2 - o]
+        il = np.tril_indices(n2, -1)
+        out[il[1], il[0]] = out[il]
+        return out
+
     def cond_excess(self, h: float):
         """E[J_0 | F_0] - E C_0 averaged over the past, on the lattice of step h: with Pi the projector on the agent's
         information and Sigma = I - Pi, (theta / 2) tr(Pi K B K Pi) + (2 theta)^-1 sum (-log(1 - theta mu) - theta mu), mu the
         eigenvalues of Sigma K Sigma and B = Sigma (I - theta Sigma K Sigma)^-1 Sigma (the tilt of the unseen shocks given the
-        seen ones).  Returns (excess, the largest theta mu: the breakdown at 1)."""
+        seen ones).  Returns (excess, the largest theta mu: the breakdown at 1).
+
+        K is a band matrix in time-major coordinates (_K_band) and Pi lives on the past block (the first nW (Na + 1) of
+        them), so Sigma K Sigma differs from K only on its leading nW (2 Na + 1) block (the rows and columns K couples to
+        the past) and is a band matrix of that width: the sum over mu is -log det(I - theta Sigma K Sigma) - theta tr, the
+        determinant from its banded Cholesky factor C C'; the first term is (theta / 2) |C^-1 Sigma K Q|^2 (Q the basis of
+        Pi: tr(Q'K Sigma (I - theta Sigma K Sigma)^-1 Sigma K Q)); the largest mu by Lanczos on the band.  The same
+        quantities as the eigen-decomposition of the dense n x n form, O(n b^2) instead of O(n^3), no n x n matrix."""
+        from scipy.linalg import cholesky_banded
+        from scipy.linalg.blas import dsbmv
+        from scipy.linalg.lapack import dtbtrs
+        from scipy.sparse.linalg import LinearOperator, eigsh
         lat = self._lattice(h)
-        n = self.nW * lat["Nu"]
-        Km = np.empty((n, n)); E = np.zeros(n)
-        for j in range(n):
-            E[j] = 1.0
-            Km[:, j] = self._K(lat, E.reshape(self.nW, -1)).ravel()
-            E[j] = 0.0
-        K = 0.5 * (Km + Km.T)
-        Q = self._info_basis(lat)
-        S = np.eye(n) - Q @ Q.T
-        SKS = S @ K @ S
-        mu, V = np.linalg.eigh(0.5 * (SKS + SKS.T))
+        nW, Na, Nu = self.nW, lat["Na"], lat["Nu"]
+        n = nW * Nu
+        ab = self._K_band(lat)
+        b = ab.shape[0] - 1
+        n2, npst = b + 1, nW * (Na + 1)
+        Qp = self._info_basis(lat, full=False)
+        q = Qp.shape[1]
+        Qt = Qp.reshape(nW, Na + 1, q).transpose(1, 0, 2).reshape(npst, q)             # time-major rows
+        K2 = self._band_dense(ab, n2)
+        KQ = K2[:, :npst] @ Qt                                                           # (n2, q): K Q (zero below n2)
+        QKQ = Qt.T @ KQ[:npst]
+        B = K2
+        B[:npst] -= Qt @ KQ.T
+        B[:, :npst] -= KQ @ Qt.T
+        B[:npst, :npst] += Qt @ (QKQ @ Qt.T)
+        B = 0.5 * (B + B.T)                                                              # Sigma K Sigma's leading block
+        idx = np.arange(n2)
+        for o in range(n2):
+            ab[o, :n2 - o] = B[idx[o:], idx[:n2 - o]]
+        del K2, B
+        KQ[:npst] -= Qt @ QKQ                                                            # Sigma K Q
         th = self.theta
-        if th * mu.max() >= 1.0:
-            return float("inf"), float(th * mu.max())
-        KQ = K @ Q
-        SV = S @ V
-        Y = SV.T @ KQ                                                                    # (n, q)
-        term1 = 0.5 * th * float(np.sum((Y ** 2) / (1.0 - th * mu)[:, None]))
-        term2 = float(np.sum(-np.log1p(-th * mu) - th * mu) / (2.0 * th))
-        return term1 + term2, float(th * mu.max())
+        dg = th * ab[0]                                                                  # theta diag(Sigma K Sigma)
+        op = LinearOperator((n, n), matvec=lambda x: dsbmv(b, 1.0, ab, np.ravel(x), lower=1), dtype=float)
+        v0 = np.ones(n) / np.sqrt(n)
+        mu_max = float(eigsh(op, k=1, which="LA", v0=v0, return_eigenvectors=False, tol=0.0)[0])
+        if th * mu_max >= 1.0:
+            return float("inf"), float(th * mu_max)
+        ab *= -th
+        ab[0] += 1.0
+        try:
+            cb = cholesky_banded(ab, lower=True, overwrite_ab=True, check_finite=False)
+        except np.linalg.LinAlgError:
+            return float("inf"), float(th * mu_max)
+        # -log det(I - theta A) - theta tr A row by row without cancellation: with C C' = I - theta A, C_ii^2 = 1 - y_i,
+        # y_i = theta A_ii + s_i, s_i = sum_k<i C_ik^2, so the sum is sum_i (-log(1 - y_i) - y_i) + s_i, every part >= 0
+        s = np.zeros(n)
+        for o in range(1, b + 1):
+            s[o:] += cb[o, :n - o] ** 2
+        y_d = dg + s
+        rhs = np.zeros((n, q)); rhs[:n2] = KQ
+        y, info = dtbtrs(cb, rhs, uplo="L", overwrite_b=1)
+        if info != 0:
+            raise ValueError(f"the date-0 entropic cost's triangular solve failed (dtbtrs info {info})")
+        term1 = 0.5 * th * float(np.sum(y ** 2))
+        term2 = float(np.sum(-np.log1p(-y_d) - y_d) + np.sum(s)) / (2.0 * th)
+        return term1 + term2, float(th * mu_max)
