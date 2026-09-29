@@ -7,13 +7,14 @@ it names the lags' common unit) gets its panels here; any of the three given is 
 
 1. A priori (prior).  Without lags or delays: one panel [0, L] at 16 nodes, the engine's default.  With lags: unit panels
    (width the unit u, by default the smallest lag) through max(the largest lag, UNIT_SPAN u), then panels growing by GROWTH
-   (1.5), cut at L - lag for every lag (the kernels are cut off at L, so a read at a lag jumps at L - lag), at AUTO_NODES
-   (10) nodes; with a delayed row the panels are rounded to the unit lattice (they are closed under the delay).  The
-   exact-shift path (stationary.EXACT_SHIFTS) makes such panels as good as the kernels' smoothness allows:
+   (1.5), cut at L - lag for every lag and at L - j u for j up to EDGE_UNITS (the kernels are cut off at L, so a read at a
+   lag, or at a sum of lags, breaks at L less it), at AUTO_NODES (12) nodes, every cut snapped to the unit lattice (the multiples of u from 0 and back from L, where the kernels break:
+   a lag's echoes and the window's edge read at the lags; a delayed row's panels, closed under the delay, stay whole
+   units).  The exact-shift path (stationary.EXACT_SHIFTS) makes such panels as good as the kernels' smoothness allows:
    a lag is an argument of the quadratures, not a resampling, so nothing needs the unit panels beyond the lags themselves
-   (Chapter 5's market: unit panels through 2 tau, growth 1.5, 10 nodes, N = 100, kernels 2.3e-7 from a 576-node uniform
-   reference and the cost 1.3e-10, where the shipped 168 nodes on 16 unit panels resampled were 1.9e-6 and 2.6e-8; growth 2
-   left the tail's panels at 2.7e-6).  A model whose lags the exact path does not carry (instant observations, level rows,
+   (Chapter 5's market: unit panels through 2 tau, growth 1.5 on the lattice, 12 nodes, N = 132, kernels 2.6e-8 from a
+   576-node uniform reference and the cost 3.2e-10 in one round, where the former default, 224 nodes resampled, was at
+   8.4e-8 and the shipped 168 nodes at 1.9e-6 and 2.6e-8; growth 2 left the tail's panels at 2.7e-6).  A model whose lags the exact path does not carry (instant observations, level rows,
    monitoring, risk aversion: stationary.Compiled._exact_mode) keeps the engine's former defaults, unit panels through
    eight units then doubling, at 16 nodes: resampled shifts need the unit panels.
 
@@ -21,9 +22,9 @@ it names the lags' common unit) gets its panels here; any of the three given is 
    primary on every shock -- is expanded in Chebyshev polynomials on every panel, and the panel's indicator is the largest
    of |c_{n-2}| + |c_{n-1}| over the kernels, relative to the kernel's peak over all ages and shocks.  It tracks the error
    against a uniform reference within a few times on Chapter 5's grids (it overstates it where the coefficients decay
-   fast).  A result whose largest indicator is at most settings.auto_grid_tol (1e-6) is accepted.  Otherwise the panels
-   above it are bisected (the unit panels are not cut: they carry the lags, and a transition reads a past's panels on the
-   unit lattice), or where that cannot help -- only unit panels above it, a model on the resampling path (bisected panels
+   fast).  A result whose largest indicator is at most settings.auto_grid_tol (1e-7) is accepted.  Otherwise the panels
+   above it are cut in two at the lattice point nearest their middle (a panel of one unit is not cut: the lags' panels,
+   and a transition reads a past's panels on the unit lattice), or where that cannot help -- only unit panels above it, a model on the resampling path (bisected panels
    would not be aligned with the lags) or with a delayed row (its panels are closed under the delay, which splits a cut
    off the unit lattice below the unit) -- every panel gets two more nodes; the model is solved again from the last maps
    interpolated onto the new grid, at most MAX_ROUNDS times.
@@ -47,9 +48,11 @@ import numpy as np
 
 UNIT_SPAN = 2           # unit panels through at least this many units (and every lag)
 GROWTH = 1.5            # the panels beyond grow by this factor (2 left Chapter 5's tail at 2.7e-6 where 1.5 is at 2.3e-7)
-AUTO_NODES = 10         # nodes per panel of the a priori grid of a model with lags
+AUTO_NODES = 12         # nodes per panel of the a priori grid of a model with lags (10 left Chapter 5's first panel at 7.5e-7)
 PLAIN_NODES = 16        # ... of one without (one panel on [0, L], the engine's default)
 MAX_ROUNDS = 3          # refinement rounds at most
+EDGE_UNITS = 2          # cuts at L - j u for j up to this: the window's edge read at the lags and at their sums (Chapter 5's
+                        # orders kinked at L - 2 tau inside the last panel, 2e-7 of their peak where its tail read 7e-8)
 RESAMPLED_UNIT_RANGE = 8    # a model on the resampling path: unit panels through this many units (the former default)
 
 
@@ -89,11 +92,23 @@ def prior(model, unit: Optional[float] = None) -> Tuple[List[float], int]:
         return [float(b) for b in AgeGrid.breakpoints_from_delays(L, lags, u, min(L, RESAMPLED_UNIT_RANGE * u))], PLAIN_NODES
     k = int(np.ceil(max(max(lags), UNIT_SPAN * u) / u - 1e-9))
     bp = [float(b) for b in AgeGrid.breakpoints_from_delays(L, lags, u, min(L, k * u), growth=GROWTH)]
-    if any(r.delay for a in model.agents for r in a.signals):
-        # a delayed row's panels are closed under its delay (stationary.Compiled: the map's panels must be the action's
-        # shifted), which cuts a panel off the unit lattice into pieces below the unit: the panels on the lattice
-        bp = sorted({round(round(b / u) * u, 12) for b in bp[:-1]} | {L})
-    return bp, AUTO_NODES
+    # every cut on the unit lattice (the multiples of u from 0 and back from L): the kernels break there -- a lag's echoes
+    # k u, and the window's edge read at the lags, L - k u (on a window of 6 the kink at L - 2 tau inside a panel held a
+    # Chapter 5 market at 3e-5 whatever its nodes) -- and a delayed row's panels, closed under the delay, stay whole units
+    lat = _lattice(u, L)
+    bp = {_snap(b, lat) for b in bp}
+    bp |= {round(L - j * u, 12) for j in range(1, EDGE_UNITS + 1) if L - j * u > k * u + 1e-9}
+    return sorted(bp), AUTO_NODES
+
+
+def _lattice(u: float, L: float) -> np.ndarray:
+    """The unit lattice of the window: the multiples of u from 0 and back from L, within [0, L]."""
+    k = int(np.floor(L / u + 1e-9))
+    return np.unique(np.round(np.concatenate([np.arange(k + 1) * u, L - np.arange(k + 1) * u, [L]]), 12))
+
+
+def _snap(b: float, lat: np.ndarray) -> float:
+    return float(lat[np.argmin(np.abs(lat - b))])
 
 
 def suggest(model, numerics=None) -> Optional[dict]:
@@ -152,16 +167,22 @@ def _budget_ok(model, bp, nodes, settings) -> bool:
     return MEMORY_BASE + MEMORY_PER * sum(s * s for s in sizes) <= settings.auto_panels_memory
 
 
-def _next_grid(bp, nodes, tl, tol, unit, exact) -> Tuple[List[float], int]:
-    """The next round's grid: the panels whose tail is above tol bisected (not below the unit's width), or on the
-    resampling path two more nodes everywhere."""
+def _next_grid(bp, nodes, tl, tol, unit, exact, L) -> Tuple[List[float], int]:
+    """The next round's grid: the panels whose tail is above tol cut in two on the unit lattice point nearest their middle
+    (a panel of one unit is not cut), or on the resampling path, or where no panel above tol can be cut, two more nodes
+    everywhere."""
     if not exact:
         return list(bp), nodes + 2
+    lat = _lattice(unit, L) if unit else None
     out = [bp[0]]
-    w_min = unit if unit else 0.0                                  # the unit panels stay: the lags' multiples (a past's reads)
     for p, (lo, hi) in enumerate(zip(bp[:-1], bp[1:])):
-        if tl[p] > tol and hi - lo > w_min + 1e-12:
-            out.append(round(0.5 * (lo + hi), 12))
+        if tl[p] > tol:
+            mid = 0.5 * (lo + hi)
+            if lat is not None:
+                inside = lat[(lat > lo + 1e-9) & (lat < hi - 1e-9)]
+                mid = float(inside[np.argmin(np.abs(inside - mid))]) if inside.size else None
+            if mid is not None:
+                out.append(round(mid, 12))
         out.append(hi)
     if len(out) == len(bp):                                          # nothing left to cut: more nodes
         return list(bp), nodes + 2
@@ -208,7 +229,7 @@ def solve(model, numerics, start_from, start_policy, run: dict, diagnostics: boo
         ok = bool(tl.max() <= tol)
         if ok or not res.converged:
             break
-        nbp, nn = _next_grid(bp, nodes, tl, tol, unit, exact)
+        nbp, nn = _next_grid(bp, nodes, tl, tol, unit, exact, float(model.horizon.extent))
         if not _budget_ok(model, nbp, nn, S.settings):
             info["suggested"] = nbp if nn == nodes else None
             info["suggested_nodes"] = nn

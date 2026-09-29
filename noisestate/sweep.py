@@ -21,7 +21,7 @@ from .spec import Model
 from .numerics import Numerics
 from .past import Past
 from .results import TriangleResult
-from . import engines
+from . import age_panels, engines
 from .engines import default_start
 
 
@@ -158,6 +158,7 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], n
     solver_kw = {k: v for k, v in (("past", past), ("continuation", continuation)) if v is not None}
     built: List[dict] = []
     prev = prev2 = None
+    chosen = None                                   # the automatic grid of the first point (age_panels), kept for the rest
     values = list(values)
     for i, v in enumerate(values):
         try:
@@ -167,7 +168,22 @@ def sweep(model: Union[str, dict, Model], param: str, values: Iterable[float], n
             else:
                 d.setdefault("params", {})[param] = float(v)
             m = Model.from_dict(d)
-            S, num = engines._build(m, numerics, **solver_kw)
+            if not solver_kw and age_panels.eligible(m, numerics) and (chosen is None or param in HORIZON_LENGTHS):
+                # no grid given: the first point's age panels chosen automatically (age_panels.py) and kept for the
+                # rest, one grid for the warm starts along the sweep (a sweep over the window chooses at every point)
+                t0 = time.time()
+                kw = {**Numerics.of(numerics).solve_kw(), **options}
+                res = age_panels.solve(m, Numerics.of(numerics), None, kw.pop("start_policy", None), kw,
+                                       kw.pop("diagnostics", True), build=lambda mm, nn: engines._build(mm, nn))
+                chosen = Numerics(breakpoints=res.panels["breakpoints"], nodes=res.panels["nodes"])
+                built.append(dict(param=param, value=float(v), result=res, seconds=time.time() - t0,
+                                  evaluations=int(res.evaluations), converged=bool(res.converged), change=None))
+                if verbose:
+                    print(f"{param} = {v:g}: {'ok' if res.converged else 'NOT converged'} in {res.evaluations} evaluations, "
+                          f"{time.time()-t0:.1f}s (age panels: N = {res.compiled.N})", flush=True)
+                prev2, prev = prev, res
+                continue
+            S, num = engines._build(m, numerics if chosen is None else Numerics.of(numerics).merged(chosen), **solver_kw)
             t0 = time.time()
             start_from = None
             if prev is not None and not S.same_grid(prev.compiled) and hasattr(S, "warm_maps_from"):
