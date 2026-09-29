@@ -20,7 +20,7 @@ import numpy as np
 from . import finite_free
 from .closed_loop import ClosedLoopRows
 from .engine import EngineBase
-from .monitoring import MonitoredDeviations
+from .monitoring import MonitoredDeviations, compose_spikes, spike_controls
 from .past import Past
 from .results import TriangleResult, TransitionResult
 from ._settings import tunable
@@ -587,12 +587,11 @@ class SpectralFiniteSolver(SpectralMeans, MonitoredDeviations, EngineBase):
         """(Zpass (n_prim N, ncol), R (n_prim N, nU)): the closed loop with `excluded` (default the agent) off, and
         the responses to a spike of each of the agent's controls with the instant reactions it draws."""
         comp = c.composite or {}
-        extra = [v for u in agent.controls for v in comp.get(u, {u: 1.0}) if v not in agent.controls]
-        ctrls = list(agent.controls) + list(dict.fromkeys(extra))
+        ctrls = spike_controls(agent.controls, comp)
         Zp = c.closed_loop(maps, excluded=agent.name if excluded is None else excluded, impulse_controls=ctrls,
                            own_frozen=own_frozen)
-        cols = Zp[:, c.ncol:]; k = {v: i for i, v in enumerate(ctrls)}
-        R = np.stack([sum(coef * cols[:, k[v]] for v, coef in comp.get(u, {u: 1.0}).items()) for u in agent.controls], axis=1)
+        spike = compose_spikes(Zp[:, c.ncol:], ctrls, agent.controls, comp)
+        R = np.stack([spike[u] for u in agent.controls], axis=1)
         return Zp[:, :c.ncol], R
 
     def _resp_dense(self, v: str, col: np.ndarray) -> np.ndarray:
@@ -609,10 +608,8 @@ class SpectralFiniteSolver(SpectralMeans, MonitoredDeviations, EngineBase):
         owner = {a.name: a for a in self.model.agents}
         P = self.model.privy(origin)
         ctrls = [u for n in P for u in owner[n].controls]
-        need = list(dict.fromkeys(ctrls + [w for v in ctrls for w in comp.get(v, {v: 1.0})]))
-        cols = c.closed_loop(maps, excluded=tuple(P), impulse_controls=need)[:, c.ncol:]
-        k = {v: i for i, v in enumerate(need)}
-        spike = {v: sum(coef * cols[:, k[w]] for w, coef in comp.get(v, {v: 1.0}).items()) for v in ctrls}
+        need = spike_controls(ctrls, comp)
+        spike = compose_spikes(c.closed_loop(maps, excluded=tuple(P), impulse_controls=need)[:, c.ncol:], need, ctrls, comp)
         Z0 = np.stack([spike[v] for v in ctrls], axis=1)
         return ctrls, Z0, {v: self._resp_dense(v, spike[v]) for v in ctrls}
 

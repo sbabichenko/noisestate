@@ -28,7 +28,7 @@ from scipy.linalg import lu_factor, lu_solve
 from .grid import AgeGrid
 from .grid_cache import age_grid
 from .engine import EngineBase, _is_eye, dense_curvature_form, singular_system_message, symmetrize
-from .monitoring import MonitoredDeviations
+from .monitoring import MonitoredDeviations, compose_spikes, spike_controls
 from .compile import CompiledBase, close_under_delays
 from .symmetry import find_cyclic_symmetry
 from .results import StationaryResult
@@ -1190,11 +1190,10 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             if hit is not None:
                 return hit[0].copy(), hit[1].copy()
         comp = c.composite or {}
-        extra = [v for u in agent.controls for v in comp.get(u, {u: 1.0}) if v not in agent.controls]
-        ctrls = list(agent.controls) + list(dict.fromkeys(extra))
+        ctrls = spike_controls(agent.controls, comp)
         Zp = c.closed_loop(maps, excluded=agent.name if excluded is None else excluded, impulse_controls=ctrls)
-        cols = Zp[:, c.nW:]; k = {v: i for i, v in enumerate(ctrls)}
-        R = np.stack([sum(coef * cols[:, k[v]] for v, coef in comp.get(u, {u: 1.0}).items()) for u in agent.controls], axis=1)
+        spike = compose_spikes(Zp[:, c.nW:], ctrls, agent.controls, comp)
+        R = np.stack([spike[u] for u in agent.controls], axis=1)
         Zpass = Zp[:, :c.nW]
         if ck is not None:
             self._spike_cache[1][ck] = (Zpass.copy(), R.copy())
@@ -1211,10 +1210,8 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         owner = {a.name: a for a in self.model.agents}
         P = self.model.privy(origin)
         ctrls = [u for n in P for u in owner[n].controls]
-        need = list(dict.fromkeys(ctrls + [w for v in ctrls for w in comp.get(v, {v: 1.0})]))
-        cols = c.closed_loop(maps, excluded=tuple(P), impulse_controls=need)[:, c.nW:]
-        k = {v: i for i, v in enumerate(need)}
-        spike = {v: sum(coef * cols[:, k[w]] for w, coef in comp.get(v, {v: 1.0}).items()) for v in ctrls}
+        need = spike_controls(ctrls, comp)
+        spike = compose_spikes(c.closed_loop(maps, excluded=tuple(P), impulse_controls=need)[:, c.nW:], need, ctrls, comp)
         Z0 = np.stack([spike[v] for v in ctrls], axis=1)
         C = {}
         for v in ctrls:

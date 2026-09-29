@@ -25,6 +25,9 @@ The iteration (_monitoring) is written once here; the engines supply the grid's 
                                                the agent's first-order-condition operators (N x n_prim N) per
                                                control; a risk-averse one also fills seed_consts
     _frozen_responses(j, setup, Dj, own)       R^mon_j from j's kernels (a Volterra equation in the seed's time)
+
+spike_controls and compose_spikes build a control's spike with the instant reactions it draws (a trader seeing the
+quote's level trades at once), which _spikes and _seed_setup of both engines use.
 """
 from __future__ import annotations
 
@@ -34,6 +37,19 @@ from typing import Dict
 import numpy as np
 
 from .spec import Agent
+
+
+def spike_controls(ctrls, comp) -> list:
+    """The controls whose impulse columns the spikes of `ctrls` need: ctrls, then the instant reactions each draws
+    (comp: control -> {control: coefficient}, the compiled model's composite; a control absent from it draws none)."""
+    return list(dict.fromkeys(list(ctrls) + [w for v in ctrls for w in comp.get(v, {v: 1.0})]))
+
+
+def compose_spikes(cols: np.ndarray, need: list, ctrls, comp) -> Dict[str, np.ndarray]:
+    """Each control's spike with the instant reactions it draws, {v: column}, from the impulse columns `cols` of the
+    controls `need` (spike_controls)."""
+    k = {v: i for i, v in enumerate(need)}
+    return {v: sum(coef * cols[:, k[w]] for w, coef in comp.get(v, {v: 1.0}).items()) for v in ctrls}
 
 
 class MonitoredDeviations:
