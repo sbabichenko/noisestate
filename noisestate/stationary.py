@@ -48,15 +48,18 @@ def _lu_solve(lu, b: np.ndarray, trans: int = 0) -> np.ndarray:
     return x
 
 
-def _pgmres(A, Minv, b: np.ndarray, tol: float, maxit: int):
+def _pgmres(A, Minv, b: np.ndarray, tol: float, maxit: int, x0=None):
     """(x, iterations) with ||b - A x|| <= tol ||b||, by GMRES right-preconditioned with Minv (a fixed preconditioner,
-    so x = Minv(V y)), classical Gram-Schmidt with one reorthogonalisation; restarted from the true residual while the
-    budget of maxit iterations lasts.  (None, maxit) when the tolerance is not reached."""
+    so x = x0 + Minv(V y)), classical Gram-Schmidt with one reorthogonalisation; restarted from the true residual while
+    the budget of maxit iterations lasts.  (None, maxit) when the tolerance is not reached."""
     n = b.size; nb = float(np.linalg.norm(b))
-    x = np.zeros(n)
     if nb == 0.0:
-        return x, 0
-    its, r = 0, b.copy()
+        return np.zeros(n), 0
+    if x0 is None:
+        x, r = np.zeros(n), b.copy()
+    else:
+        x = np.array(x0, dtype=float); r = b - A(x)
+    its = 0
     while its < maxit:
         beta = float(np.linalg.norm(r))
         if beta <= tol * nb:
@@ -1588,14 +1591,13 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             g = np.zeros((nU, nR * N)); ok = True; worst = 0
             for ui in range(nU):
                 x, its = _pgmres(A, lambda v: sla.cho_solve(cf, v, check_finite=False), rhs[:, ui], self.FOC_KRYLOV_TOL,
-                                 self.FOC_KRYLOV_MAXIT)
+                                 self.FOC_KRYLOV_MAXIT, hit[3][ui])
                 if x is None:
                     ok = False
                     break
                 g[ui, keep] = x; worst = max(worst, its)
             if ok:
-                if worst > self.FOC_REFRESH_ITS:
-                    memo[agent.name] = (hit[0], cf, True)
+                memo[agent.name] = (hit[0], cf, worst > self.FOC_REFRESH_ITS, g[:, keep])
                 return g.reshape(nU, nR, N)
         memo.pop(agent.name, None)                                  # the old factor is not held through the new Gram
         hit = cf = None
@@ -1627,8 +1629,8 @@ class StationarySolver(MonitoredDeviations, EngineBase):
             except np.linalg.LinAlgError:
                 cf = None
             if cf is not None:
-                memo[agent.name] = (keep, cf, False)
                 g[:, keep] = sla.cho_solve(cf, rhs, check_finite=False).T
+                memo[agent.name] = (keep, cf, False, g[:, keep])            # the factor, and the maps: the next start
                 return g.reshape(nU, nR, N)
             memo.pop(agent.name, None)
         g[:, keep] = np.linalg.solve(Gram, rhs).T                              # one factorisation for every control
@@ -1757,10 +1759,9 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 def A(x):
                     full = np.zeros(nG); full[keep] = x
                     return matvec(full)[keep]
-            x, its = _pgmres(A, lambda v: _lu_solve(lu, v, trans=1), rhs, self.FOC_KRYLOV_TOL, self.FOC_KRYLOV_MAXIT)
+            x, its = _pgmres(A, lambda v: _lu_solve(lu, v, trans=1), rhs, self.FOC_KRYLOV_TOL, self.FOC_KRYLOV_MAXIT, hit[3])
             if x is not None:
-                if its > self.FOC_REFRESH_ITS:
-                    memo[agent.name] = (hit[0], lu, True)                   # stale: the next best response refactors
+                memo[agent.name] = (hit[0], lu, its > self.FOC_REFRESH_ITS, x)  # stale past the threshold: the next refactors
                 gamma[keep] = x
                 return gamma
         memo.pop(agent.name, None)                                  # the old factors are not held through the new ones
@@ -1775,8 +1776,8 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         del Ak
         if info > 0 or not np.isfinite(lu).all():
             raise ValueError(singular_system_message(agent.name))
-        memo[agent.name] = (keep, (lu, piv), False)
-        gamma[keep] = _lu_solve((lu, piv), rhs, trans=1)
+        gamma[keep] = x = _lu_solve((lu, piv), rhs, trans=1)
+        memo[agent.name] = (keep, (lu, piv), False, x)                     # the factors, and the solution: the next start
         return gamma
 
     def world_from_actions(self, actions: Dict[str, np.ndarray]) -> np.ndarray:
