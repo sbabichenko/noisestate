@@ -117,7 +117,6 @@ def time_scales(model) -> Optional[dict]:
 
 
 def _time_scales(model) -> Optional[dict]:
-    from scipy.linalg import solve_continuous_are
     if model.all_lags():
         return None
     defs = {d.name: d.expr for d in model.definitions}
@@ -162,7 +161,7 @@ def _time_scales(model) -> Optional[dict]:
                     Ri = np.linalg.inv(R)
                     Af = A - G @ E.T @ Ri @ C
                     Qf = G @ (np.eye(len(W)) - E.T @ Ri @ E) @ G.T
-                    S = solve_continuous_are(Af.T, C.T, 0.5 * (Qf + Qf.T), R)
+                    S = _care(Af.T, C.T, 0.5 * (Qf + Qf.T), R)
                     out["filter"] += _abs_eigs(Af - S @ C.T @ Ri @ C)
                 except Exception:
                     pass
@@ -198,14 +197,38 @@ def _time_scales(model) -> Optional[dict]:
     return out
 
 
+def _care(A, B, Q, R, s=None):
+    """The stabilising solution of A'P + P A - (P B + s) R^-1 (B'P + s') + Q = 0: the stable invariant subspace of the
+    Hamiltonian by numpy's eig (tens of microseconds at these sizes, where scipy's QZ-based solver takes 0.4 ms and the
+    Nash iteration calls it dozens of times), checked by its residual; scipy's solver where that check fails."""
+    n = A.shape[0]
+    s = np.zeros_like(B) if s is None else s
+    Ri = np.linalg.inv(R)
+    Ah, Qh = A - B @ Ri @ s.T, Q - s @ Ri @ s.T
+    H = np.block([[Ah, -B @ Ri @ B.T], [-Qh, -Ah.T]])
+    try:
+        w, V = np.linalg.eig(H)
+        stable = np.argsort(w.real)[:n]
+        if np.all(w.real[stable] < 0) and np.sum(w.real < 0) == n:
+            U1, U2 = V[:n, stable], V[n:, stable]
+            P = np.real(U2 @ np.linalg.inv(U1))
+            P = 0.5 * (P + P.T)
+            res = A.T @ P + P @ A - (P @ B + s) @ Ri @ (B.T @ P + s.T) + Q
+            if np.abs(res).max() <= 1e-9 * max(1.0, np.abs(P).max(), np.abs(Q).max()):
+                return P
+    except np.linalg.LinAlgError:
+        pass
+    from scipy.linalg import solve_continuous_are
+    return solve_continuous_are(A, B, Q, R, s=s)
+
+
 def _solo_rates(A, players, rho):
     """Each agent's own regulator, the others' controls off: (closed-loop moduli, Riccati rates), or None."""
-    from scipy.linalg import solve_continuous_are
     n = A.shape[0]
     loop, ctrl = [], []
     for B, Q, N, R in players:
         try:
-            P = solve_continuous_are(A - 0.5 * rho * np.eye(n), B, Q, R, s=N)
+            P = _care(A - 0.5 * rho * np.eye(n), B, Q, R, s=N)
         except Exception:
             continue
         e = _abs_eigs(A - B @ np.linalg.solve(R, B.T @ P + N.T))
@@ -217,7 +240,6 @@ def _game_rates(A, players, rho, iters: int = 60):
     """The Nash feedback Riccati under full information: its fixed point by Gauss-Seidel over the agents' AREs, then the
     moduli of the coupled Riccati field's Jacobian there, halved (the rate k of a tanh(k (T - t)) terminal layer: sqrt(3/r)
     for two players pulling one integrator, 1/sqrt(r) for one), with the closed loop's; None when it does not settle."""
-    from scipy.linalg import solve_continuous_are
     n = A.shape[0]; m = len(players)
     Ar = A - 0.5 * rho * np.eye(n)
     K = [np.zeros((B.shape[1], n)) for B, *_ in players]
@@ -226,11 +248,11 @@ def _game_rates(A, players, rho, iters: int = 60):
         delta = 0.0
         for i, (B, Q, N, R) in enumerate(players):
             Ai = Ar - sum(players[j][0] @ K[j] for j in range(m) if j != i)
-            P[i] = solve_continuous_are(Ai, B, Q, R, s=N)
+            P[i] = _care(Ai, B, Q, R, s=N)
             Ki = np.linalg.solve(R, B.T @ P[i] + N.T)
             delta = max(delta, float(np.abs(Ki - K[i]).max()))
             K[i] = Ki
-        if delta <= 1e-10 * (1.0 + max(float(np.abs(k).max()) for k in K)):
+        if delta <= 1e-7 * (1.0 + max(float(np.abs(k).max()) for k in K)):    # rates to a few digits are all a panel needs
             break
     else:
         return None
@@ -300,7 +322,13 @@ def scale_breakpoints(T: float, scales: dict, nodes: int, target: float = PRIOR_
         while w > T * 2.0 ** -30 and end_tails(scales, w, nodes, START_WEIGHT)[end] > target:
             w /= 2.0
         return w
-    w0, wT = first(0), first(1)
+    return graded_from_ends(T, first(0), first(1))
+
+
+def graded_from_ends(T: float, w0: float, wT: float) -> List[float]:
+    """Panels of widths w0, 2 w0, 4 w0, ... from 0 and wT, 2 wT, ... from T, meeting where their widths match; a middle
+    panel shorter than half its wider neighbour is merged into it.  [0, T] when neither width is below T."""
+    T = float(T)
     if w0 >= T and wT >= T:
         return [0.0, T]
     m = 0.5 * (T + min(wT, T) - min(w0, T))
@@ -317,6 +345,26 @@ def scale_breakpoints(T: float, scales: dict, nodes: int, target: float = PRIOR_
     if hi - lo < 0.5 * max(wl, wr) and len(left) + len(right) > 3:
         (left if wl >= wr and len(left) > 1 else right).pop()
     return [float(b) for b in sorted({round(b, 12) for b in left + right})]
+
+
+def _fitted(T: float, wanted: List[float], scales: dict, nodes: int, budget) -> List[float]:
+    """The time-scale grid past the caps, coarsened: its end widths doubled, each end separately (w0 2^i, wT 2^j), and of
+    the grids that fit the one whose worse end tail (end_tails, as scale_breakpoints weighs it) is smallest, the finer on
+    a tie: the regulator with its noise x5 at T = 30 keeps its end width 1 and widens only the start's 0.5 -> 1."""
+    w0 = wanted[1] - wanted[0]
+    wT = wanted[-1] - wanted[-2]
+    best = None
+    for i in range(12):
+        for j in range(12):
+            a, b = w0 * 2 ** i, wT * 2 ** j
+            bp = graded_from_ends(T, a, b)
+            if len(bp) <= 2 or not budget.fits(bp):
+                continue
+            tail = max(end_tails(scales, min(a, T), nodes, START_WEIGHT)[0], end_tails(scales, min(b, T), nodes, START_WEIGHT)[1])
+            key = (tail, -budget.unknowns(bp))
+            if best is None or key < best[0]:
+                best = (key, bp)
+    return best[1] if best else [0.0, T]
 
 
 def suggest(model, numerics=None) -> Optional[List[float]]:
@@ -423,10 +471,7 @@ def solve(S0, num, start_from, start_policy, run: dict, diagnostics: bool, build
     budget = _Budget(S0)
     if start_from is None and pred > PRIOR_ABOVE and nodes >= PRIOR_MIN_NODES:
         wanted = scale_breakpoints(T, scales, nodes)
-        bp, target = wanted, PRIOR_TARGET
-        while len(bp) > 2 and not budget.fits(bp):
-            target *= 10.0                             # past the caps: wider end panels
-            bp = scale_breakpoints(T, scales, nodes, target)
+        bp = wanted if budget.fits(wanted) else _fitted(T, wanted, scales, nodes, budget)
         if len(bp) > 2:
             S, num1 = build(model, _with_bp(num, bp))
             if verbose:

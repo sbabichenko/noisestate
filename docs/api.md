@@ -174,6 +174,8 @@ means something is.
 | `res.require_converged()` | returns `res`, or raises `ConvergenceError`. Convergence only |
 | `res.require_ok(policy=Policy.PUBLICATION)` | returns `res`, or raises. **Every required, applicable check must have PASSED** |
 | `res.refine(factor=1.5)` | a `Refinement` carrying the finer `Result` in full |
+| `res.panels` | a finite horizon without lags: how its time panels were found (`route`, `rates`, `history`, `resolved`, `suggested`, `stopped`; [limits.md](limits.md), time scales) |
+| `res.sharpen(breakpoints=None, **solve_kw)` | the model re-solved on `res.panels["suggested"]` (or the breakpoints given), started from `res`: the step after a budget warning, or after a fast one-panel answer (`settings.auto_panels_max = 0`) |
 | `res.stability(untied=True, policy=…)` | a `Stability` — see below |
 
 `Policy.PUBLICATION` requires `converged`, `resolution`, `window`, `second_order`, `settled`;

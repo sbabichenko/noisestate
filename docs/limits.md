@@ -169,27 +169,51 @@ larger window from the previous holds the cost at 0.427295 through *L* = 24, wit
 
 **Time scales and long horizons.**  A finite horizon without lags is one panel: every kernel is a polynomial of
 `numerics.nodes` degree in each direction over [0, T].  A game whose own time scale is much shorter than T is not
-resolved there: the one-agent regulator of the tests (a filter and a feedback with rates of about 3) has its cost 0.13%
-off at T = 10 and 12 nodes, 190% off at T = 30, and its best-response system singular at T = 200 (raising nodes does not
-help: 24 and 40 fail as 12 does).  `solve()` now handles this itself (`noisestate/time_panels.py`): a model with no
-`numerics.breakpoints`, no lags or delays and no past window or continuation is solved on the one panel first, exactly as
-before, and when that fails the resolution check by more than more nodes fix (a representation error above 5e-4) or is
-singular, it is re-solved on panels cut at both ends and graded towards the middle (widths w, 2w, 4w, ... from 0 and
-from T: the kernels move fast only at small ages, at the start and at the end), w halved until the representation error
-passes.  T = 30 lands on `[0, 1, 3, 7, 23, 27, 29, 30]`: the cost to 5e-10 of the closed form with a representation
-error of 5.6e-7 (10 uniform panels gave 3e-6 and 8.4e-5), 12 s.  `res.numerics.breakpoints` records the grid (a solve
-with it reproduces the result) and `res.message` the path.  A first graded grid that does not cut the error tenfold is
-dropped and the one panel's result returned (a failure grading does not fix is not a time scale: Kyle-Back with a
-random-walk value the trader sees, at T = 1, stays at 0.8 whatever the panels).  The unknowns are bounded by
-`settings.auto_panels_max` (8000; 0 switches the grading off), and a trial at 4 nodes decides first whether grading
-cuts the error at all and more than doubling the nodes does (0.3 to 0.6 s; Chapter 1's game at 4 nodes is left to its
-nodes).  A model whose rates are many orders above 1/T (the regulator with its noise scaled by 1e8, or r = 1e-8) is
-singular on the trial's grid too, and the singular error, which says to rescale, is raised at once.  At T = 100 the
-regulator at 8 nodes grades to 15 panels and the cost to 2e-8 (55 s); at T = 200 the gradings finer than 9 panels are
-themselves singular (reciprocal condition 1e-14 with end panels of 1 against a middle one of 80), and the 9-panel grid is
-returned with the cost 0.8% off and a warning: rescale time there.  Sweeps (`ns.sweep`) and transitions keep their grids as given.  The second-order check of a large grid is the
-dense form up to `second_order_dense` (8000) unknowns, assembled from the sparse row operators: 10 uniform panels at 12
-nodes (7920 unknowns) now take 48 s and 2.9 GB for the whole solve, where Lanczos took 425 s and 5.8 GB.
+resolved there: the filter settles at the start in a Riccati layer (tanh of its rate), the value function turns at the
+end in another, and a polynomial on [0, T] cannot follow a layer of width 1/rate << T.  The one-agent regulator of the
+tests (rates of about 3) has its cost 0.13% off at T = 10 on 12 nodes and 190% off at T = 30 (raising nodes does not
+help); the tug of war of the website's wedge page at precision p = 1000 (a filter rate of 31.6 on T = 1) has its kernels
+5.6% off pointwise.  `solve()` handles this itself (`noisestate/time_panels.py`), for a model with no
+`numerics.breakpoints`, no lags or delays and no past window or continuation:
+
+1. *A grid from the time scales, before the first solve.*  The model's linear algebra gives its rates: every agent's
+   Kalman filter, the Nash feedback Riccati of the controls under full information (its relaxation rate: sqrt(3/r) for
+   two players pulling one integrator, where one alone has 1/sqrt(r)), the closed and open loops and the discount
+   (`time_panels.time_scales`).  A tanh layer of rate k has poles pi/(2k) off the real axis, which sets the Chebyshev
+   tail of a panel of width w beside it (`layer_tail`: 7.9e-4 predicted at w = 0.25 on the wedge's first panel, 8.8e-4
+   measured; 3.0e-2 on its one panel, 1.7e-2 measured).  When the one panel's predicted tail is above 1e-2 (at 8 nodes or
+   more), the first solve is on panels graded from both ends, first widths (powers of two) with a predicted tail of 3e-4
+   (the filters' layer at 0 counted three times: the shocks born in it carry it along the diagonal), doubling to the
+   middle: `[0, 1, 3, 7, 23, 27, 29, 30]` for the regulator at T = 30, `[0, 0.125, 0.375, 1]` for the wedge.
+   `time_panels.suggest(model)` returns that grid without solving.  Every other model is solved on its one panel first,
+   exactly as before: on the whole test suite and the benchmark every solve predicted above 1e-2 at 8 nodes or more
+   failed the check on one panel, and every model the one panel resolves keeps it, bit for bit.
+2. *Local refinement.*  When a result fails the resolution check, the check's own error at every node is read onto the
+   breakpoint intervals, and only the intervals above `resolution_tol` are bisected, the worst first, each solve
+   warm-started from the last one interpolated (a few evaluations where a cold start takes 18).  A one panel that fails
+   badly (above 5e-4, or singular) and whose failure a trial at 4 nodes finds grading cuts tenfold (not one more nodes
+   fix: Chapter 1's game at 4 nodes; nor one grading leaves: Kyle-Back with a random walk the trader sees) is refined the
+   same way from the time-scale grid: T = 5 lands on `[0, 1, 4, 5]` with the cost to 4e-9.
+3. *A budget.*  No automatic grid passes `settings.auto_panels_max` (4096 unknowns) or an estimated peak memory of
+   `settings.auto_panels_memory` (1536 MB; the estimate, 100 + 8e-5 sum over the answering agents of (nU nR N)^2, is
+   within 15% with the checks), and a refinement round's estimate, the best earlier result kept alive, is at most
+   `settings.auto_panels_growth` (4) times the first grid's.  Where the next round would pass it, the best result is
+   returned with a warning naming the breakpoints of the resolved answer and their cost; `res.panels["suggested"]`
+   holds them and `res.sharpen()` re-solves there from the result.  The wedge at p = 1000 refines once (864 -> 1440
+   unknowns: kernels to 5e-5 of the converged reference, the cost to 2e-9, 8 s and 0.7 GB, where the earlier version's
+   halving took 56 s and 3.7 GB for the same kernels) and warns that 1e-6 needs `[0, 0.125, 0.25, 0.375, 0.53125,
+   0.6875, 0.84375, 1]` (4032 unknowns, about 2.7 GB).
+
+`res.numerics.breakpoints` records the grid used (a solve with it reproduces the result), `res.message` how it was
+found, and `res.panels` the route (`"one panel"`, `"time scales"`, `"refined"`, or `"given"` for breakpoints passed in),
+the rates, the history of (panels, unknowns, representation error), `resolved`, `suggested` and why the refinement
+stopped.  `settings.auto_panels_max = 0` turns the automatic grids off; `res.panels["suggested"]` then still names the
+time-scale grid, which is the fast-then-sharp route of an interactive page: show the one panel's answer at once, then
+`res.sharpen()`.  A model whose rates are many orders of magnitude above 1/T (the regulator with its noise scaled by 1e8,
+or r = 1e-8) is singular on the one panel and on the trial's grid, and the singular error, which says to rescale time,
+is raised at once.  Sweeps (`ns.sweep`) and transitions keep their grids as given.  The second-order check of a large
+grid is the dense form up to `second_order_dense` (8000) unknowns, assembled from the sparse row operators: 10 uniform
+panels at 12 nodes (7920 unknowns) take 48 s and 2.9 GB for the whole solve, where Lanczos took 425 s and 5.8 GB.
 
 **A stationary cost that grows with the window.**  The window row asks whether a kernel still moves at L; a random-walk
 state passes it (its kernel is constant), yet a loss term in its level squared accrues the same amount at every age, so

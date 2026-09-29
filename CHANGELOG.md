@@ -53,13 +53,24 @@
   change as the `window cost` check (`settings.window_cost_tol`, 1e-6).  It is part of `Policy.PUBLICATION`, SKIPPED
   until measured, and measured by `require_ok()` and `--require-ok`; the kernel-tail `window` check alone let a result
   be 5e-4 off in cost.
-- A finite horizon long against the model's time scales is re-cut automatically (`noisestate/time_panels.py`): a model with
-  no `numerics.breakpoints`, no lags and no past window or continuation is solved on its one panel first, as before, and
-  when that fails the resolution check by more than nodes fix (representation error above 5e-4) or is singular, it is
-  re-solved on panels graded from both ends (w, 2w, 4w, ... from 0 and T), w halved until the check passes, within
-  `settings.auto_panels_max` (8000 unknowns). The one-agent regulator at T = 30 (190% off the closed form on one panel)
-  lands on `[0, 1, 3, 7, 23, 27, 29, 30]` with the cost to 5e-10. `res.numerics.breakpoints` records the grid; a first
-  graded grid that does not cut the error tenfold is dropped and the one panel's result returned.
+- A finite horizon long against the model's time scales is re-cut automatically (`noisestate/time_panels.py`), for a model
+  with no `numerics.breakpoints`, no lags and no past window or continuation. Before the first solve its rates are read
+  off its linear algebra (the agents' Kalman filters, the Nash feedback Riccati of their controls, the closed and open
+  loops, the discount; `time_panels.time_scales`), and when a tanh layer of those rates is predicted to leave a Chebyshev
+  tail above 1e-2 on the one panel (at 8 nodes or more) the first solve is on panels graded from both ends by them
+  (`time_panels.suggest`): the one-agent regulator at T = 30 (190% off the closed form on one panel) on
+  `[0, 1, 3, 7, 23, 27, 29, 30]`, the cost to 5e-10 in one solve. Every other model is solved on its one panel first,
+  bit-identical where it resolves; one that fails badly (above 5e-4, or singular, and a trial finds grading helps) is
+  refined. A result that fails the resolution check is refined locally: the intervals whose nodes carry a representation
+  error above the tolerance are bisected, the worst first, each round warm-started from the last. Within a budget:
+  `settings.auto_panels_max` (4096 unknowns, was 8000), `settings.auto_panels_memory` (1536 MB, estimated) and
+  `settings.auto_panels_growth` (4: a refinement round's estimated memory against the first grid's); past it the best
+  result is returned with a warning naming the breakpoints of the resolved answer, `res.panels["suggested"]`, and
+  `res.sharpen()` re-solves there from the result. `res.panels` records the route, rates, history and verdict. The
+  website's wedge at p = 1000, which the first version of this graded by halving in 56 s and 3.7 GB, takes 8 s and
+  0.7 GB for the same kernels (5e-5 of the converged reference, the cost to 2e-9) and warns that the check's 1e-6 needs
+  4032 unknowns; long-horizon regulators at p = 30, r = 0.01 or noise x5 take 5-30 s and at most 1.4 GB where they took up
+  to 99 s and 3.7 GB, their costs within 7e-7 of the closed forms.
 - `RowOps.sparse()`; the finite engine's second-order form is assembled from sparse row operators, the responses' identity
   blocks skipped and M built a column block at a time (`dense_curvature_form(sparse=True)`), and `second_order_dense`
   is 8000 (was 4000): T = 30 on 10 panels, 12 nodes (7920 unknowns), solve and checks 425 s / 5.8 GB -> 48 s / 2.9 GB,
