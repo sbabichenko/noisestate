@@ -58,7 +58,10 @@ def test_examples_solve_to_the_baseline(name):
 @pytest.mark.skipif(not os.environ.get("NOISESTATE_SLOW"), reason="ch5 (6 s) and the precision-change transition: NOISESTATE_SLOW=1")
 def test_slow_examples_solve_to_the_files():
     res = EXAMPLES["ch5_cycle_market"]().solve().require_converged()
-    for agent, cost in BASELINE["ch5_cycle_market"]["costs"].items():
+    # Compare the two front ends on this BLAS/thread configuration. Historical
+    # rounding across configurations is covered by test_baseline's tolerance.
+    file_result = ns.solve(os.path.join(EX, "ch5_cycle_market.yaml")).require_converged()
+    for agent, cost in file_result.costs.items():
         assert abs(res.costs[agent] - cost) <= 1e-14 * max(1.0, abs(cost))
     m = EXAMPLES["ch3_precision_change"](past=EXAMPLES["ch3_two_player"]())
     a = m.solve(); b = ns.solve(os.path.join(EX, "ch3_precision_change.yaml"))

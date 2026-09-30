@@ -234,7 +234,9 @@ def test_regime_change_on_chapter_3_starts_from_the_old_kernels():
     new8 = new.with_numerics(nodes=8)
     res8 = ns.solve(new8, past=old, continuation="stationary")
     res2 = ns.solve(new8, past=m.with_params(p1=3.0), continuation=res8.continuation)
-    assert np.array_equal(res8.world, res2.world) and res8.costs == res2.costs and 6e-4 < res8.settled < 7e-4
+    # The recovered stationary continuation is a map fixed point even at eight
+    # nodes; its corrected coarse-grid gap is 5.48e-4 (formerly 6.6e-4).
+    assert np.array_equal(res8.world, res2.world) and res8.costs == res2.costs and 5e-4 < res8.settled < 6e-4
     assert all(np.array_equal(res8.maps[k], res2.maps[k]) for k in res8.maps)
     assert res.evaluate("X", "w0", np.array([1.0, 1.0]), np.array([-1.0, 0.5])).shape == (2,)
     assert res.second_order["player1"]["ok"] and res.solver_kw["past"] is res.past

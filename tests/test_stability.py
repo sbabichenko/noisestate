@@ -90,6 +90,20 @@ def test_window_checks_do_not_request_stability(monkeypatch):
     assert calls == [requested] and requested.stability_report.radius < 1
 
 
+def test_coarse_stationary_continuations_are_map_fixed_points():
+    """Transition inputs need implementable stationary strategies too: the old
+    six-node action iterate had a 7e-4 best-response residual after recovery."""
+    import numpy as np
+    base = ns.load(example_path("ch3_two_player"))
+    for nodes in (6, 8, 12):
+        model = base.with_numerics(nodes=nodes)
+        result = ns.solve(model, diagnostics=False).require_converged()
+        solver = engines.stationary(model)
+        maps = solver.pack(result.maps)
+        error = np.linalg.norm(solver.pack(solver.response_map(result.maps)) - maps) / max(1., np.linalg.norm(maps))
+        assert error < 1e-10
+
+
 def test_the_arnoldi_finds_a_cluster_of_equal_moduli():
     """stability()'s eigensolver (results._arnoldi_dominant) against numpy's eig: on a generic matrix it stops early with
     the dominant pair to 1e-9, and on one whose four largest eigenvalues share a modulus (Chapter 6's opaque market's
