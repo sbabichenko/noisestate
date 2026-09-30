@@ -1,19 +1,26 @@
 # Changelog
 
-## Unreleased
+## 2.3.0 (2026-09-30)
 
-- A stationary risk report takes its lattice gap over every control of the agent. An unused last
-  control previously overwrote a nonzero gap with zero, hiding discretization error in the report.
+A check that stationary action solves recovered the strategies they report, the best-response stability calculation
+made opt-in, a corrected observation endpoint in stationary risk, and lower peak memory.
 
-- Scalar stationary risk information Grams are assembled in the factorization's column-major layout,
-  and cumulative-sum views are released before factoring. Three paired signal-game solves on a refined
-  risk lattice reduced median peak RSS from 604 to 512 MiB (15.2%), with the same 15 final-phase evaluations and
-  kernels/maps agreeing within 6.8e-14. Runtime changed from 13.76 to 13.30 seconds.
+### What a user will notice
 
-- Stationary risk corrections give the causal observation drift its trapezoidal half weight at age zero;
-  direct noise loadings retain full weight. The former full drift weight introduced first-order lattice
-  bias that the quadratic extrapolation did not remove. An independent Kalman covariance test now
-  converges quadratically; the graph shortcut and full QR projector agree.
+- `stability()` is no longer run by the window checks; it runs only when requested (`stability=True` or
+  `result.stability()`).  This is a change of default behaviour.
+- Small stability budgets are honoured strictly: a requested check needs at least two evaluations, and it no longer
+  overruns a tiny budget.
+- A stationary action solve that has not recovered its strategies is no longer reported as converged.  Chapter 3's
+  example at 64 nodes and window 18 reported player1's cost as 3.137 at a residual below 1e-10; it now converges to
+  0.4273, the value a direct map solve and continuation from a shorter window both give (docs/limits.md).
+- Stationary risk-averse answers move, by up to about 1e-3 at the default lattices, from the corrected causal
+  observation endpoint (a one-agent signal model at theta 1 near the
+  breakdown: theta mu_max 0.88645 -> 0.88693).
+- `res.risk[agent]["richardson_gap"]` is the largest gap over all of the agent's controls; an unused last control
+  reported zero before.
+
+### Changed
 
 - Stationary action solves now check that the recovered feedback actually reproduces the converged action
   kernels. If it does not, the solver finishes in map coordinates within the original evaluation and time
@@ -26,12 +33,22 @@
   product. A requested check needs at least two evaluations. The fallback reuses the first product, so
   disabling additional fallback rounds cannot produce a fabricated zero radius. Arnoldi storage is bounded
   by the available product budget as well as the strategy dimension.
-- Large shifted-operator quadratures contract directly into panel blocks, avoiding a temporary outer product
-  at every integration point. The vectorized path remains for small quadratures; direct contraction starts
-  when that temporary would exceed 64 MiB. The represented operators agree to round-off.
+- Stationary risk corrections give the causal observation drift its trapezoidal half weight at age zero;
+  direct noise loadings retain full weight. The former full drift weight introduced first-order lattice
+  bias that the quadratic extrapolation did not remove. An independent Kalman covariance test now
+  converges quadratically; the graph shortcut and full QR projector agree.
+- A stationary risk report takes its lattice gap over every control of the agent. An unused last
+  control previously overwrote a nonzero gap with zero, hiding discretization error in the report.
 - Exact stationary first-order-condition assembly fills its final matrix layout directly and releases each
   control pair's temporary before the next. Three paired twelve-firm Chapter 5 solves reduced median peak
   RSS from 2,966 to 2,557 MiB with unchanged iteration counts, costs and residuals; runtime stayed about 143 s.
+- Scalar stationary risk information Grams are assembled in the factorization's column-major layout,
+  and cumulative-sum views are released before factoring. Three paired signal-game solves on a refined
+  risk lattice reduced median peak RSS from 604 to 512 MiB (15.2%), with the same 15 final-phase evaluations and
+  kernels/maps agreeing within 6.8e-14. Runtime changed from 13.76 to 13.30 seconds.
+- Large shifted-operator quadratures contract directly into panel blocks, avoiding a temporary outer product
+  at every integration point. The vectorized path remains for small quadratures; direct contraction starts
+  when that temporary would exceed 64 MiB. The represented operators agree to round-off.
 
 ## 2.2.0 (2026-09-29)
 
