@@ -43,7 +43,7 @@ defaults are recorded in `res.numerics`, `res.solver_kw` and the payload's `opti
 | `stability_k` | 2 | stability(): eigenvalues of largest modulus asked of Arnoldi |
 | `stability_eps` | 1e-6 | stability(): finite-difference step of the best-response Jacobian, relative to the strategy |
 | `stability_tol` | 1e-3 | stability(): Arnoldi stops when the dominant Ritz pairs' relative residual is below 1e-3 of it |
-| `stability_max_evaluations` | 200 | stability(): rounds of best responses at most, Arnoldi and power iteration together |
+| `stability_max_evaluations` | 200 | stability(): rounds of best responses at most, including the base response, Arnoldi and power iteration together; at least 2 when stability is requested |
 | `stability_fallback` | 30 | stability(): of those, the rounds kept for the power iteration when Arnoldi does not settle |
 
 ## Groups

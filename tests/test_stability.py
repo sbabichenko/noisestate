@@ -131,3 +131,51 @@ def test_the_arnoldi_finds_a_cluster_of_equal_moduli():
     B = Q @ blocks @ Q.T
     got = _arnoldi_dominant(lambda x: B @ x, v, B @ v, 2, 1e-6)
     assert abs(np.abs(got).max() - 1.08) < 1e-9
+
+
+def test_stability_respects_small_budgets_and_reuses_first_product(monkeypatch):
+    """Count actual best responses: the old small-budget path spent at least four,
+    and fallback=0 could report a fabricated zero radius when Arnoldi stopped."""
+    import pytest
+    from dataclasses import replace
+    result = ns.solve(example_path('ch3_two_player'), diagnostics=False).require_converged()
+    make_solver = result._make_solver
+    calls = []
+    def counted_solver(model):
+        solver = make_solver(model)
+        response = solver.response_map
+        def counted(maps):
+            calls.append(1)
+            return response(maps)
+        solver.response_map = counted
+        return solver
+    monkeypatch.setattr(result, '_make_solver', counted_solver)
+    for budget, fallback in ((2, 30), (3, 30), (4, 30), (5, 30), (2, 0), (3, 0), (8, 1), (8, 100)):
+        result.settings = replace(result.settings, stability_max_evaluations=budget, stability_fallback=fallback)
+        calls.clear()
+        report = result.stability()
+        assert report.evaluations == len(calls) <= budget
+        assert report.radius > 0
+    for budget in (0, 1):
+        result.settings = replace(result.settings, stability_max_evaluations=budget)
+        calls.clear()
+        with pytest.raises(ValueError, match='at least 2'):
+            result.stability()
+        assert not calls
+
+
+def test_arnoldi_memory_follows_product_budget(monkeypatch):
+    import numpy as np
+    from noisestate.results import _arnoldi_dominant
+    allocated = []
+    zeros = np.zeros
+    def record(shape, *args, **kwargs):
+        allocated.append(shape)
+        return zeros(shape, *args, **kwargs)
+    monkeypatch.setattr(np, 'zeros', record)
+    v = np.arange(1., 1001.)
+    # A one-dimensional invariant space needs just the supplied product.
+    values = _arnoldi_dominant(lambda _: (_ for _ in ()).throw(AssertionError('extra product')), v, .5*v, 2, 1e-8, 1)
+    np.testing.assert_allclose(values, [.5])
+    assert (1000, 2) in allocated
+    assert all(not isinstance(s, tuple) or s[0] != 1000 or s[1] <= 2 for s in allocated)

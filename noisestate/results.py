@@ -72,7 +72,7 @@ class _Deferred:
         return self.make()
 
 
-def _arnoldi_dominant(matvec, v: np.ndarray, Jv: np.ndarray, k: int, tol: float) -> np.ndarray:
+def _arnoldi_dominant(matvec, v: np.ndarray, Jv: np.ndarray, k: int, tol: float, max_steps: int = 400) -> np.ndarray:
     """The k eigenvalues of largest modulus of the operator `matvec` (n x n), by Arnoldi from v (Jv = matvec(v), made
     already), stopping at the first step whose k dominant Ritz pairs have a relative residual |h_{m+1,m} y_m| / |theta|
     below tol, or at an invariant subspace, or at m = n (then exact).  Ordered by increasing modulus, a conjugate pair's
@@ -85,7 +85,7 @@ def _arnoldi_dominant(matvec, v: np.ndarray, Jv: np.ndarray, k: int, tol: float)
     dimension there (n = 72 rounds) and gets it.  Modified Gram-Schmidt twice (full reorthogonalisation: n is the size
     of the strategies, tens to hundreds)."""
     n = v.size
-    V = np.zeros((n, min(n, 400) + 1)); H = np.zeros((V.shape[1], V.shape[1] - 1))
+    V = np.zeros((n, min(n, 400, max_steps) + 1)); H = np.zeros((V.shape[1], V.shape[1] - 1))
     nv = np.linalg.norm(v)
     V[:, 0] = v / nv
     w = Jv / nv
@@ -1253,6 +1253,8 @@ class Result:
         made (each matvec is one): the Arnoldi iteration is stopped STABILITY_FALLBACK short of that and
         the power iteration gets the rest, with "method" saying so."""
         k, eps, tol, max_evaluations = self.STABILITY_K, self.STABILITY_EPS, self.STABILITY_TOL, self.STABILITY_MAX_EVALUATIONS
+        if max_evaluations < 2:
+            raise ValueError("stability_max_evaluations must be at least 2 (the base response and one Jacobian product)")
         model = self.model
         if untied and model.ties:
             d = model.to_dict(); d["ties"] = []
@@ -1262,7 +1264,7 @@ class Result:
         z0 = S.pack(maps)
         F0 = S.pack(S.response_map(S.unpack(z0)))
         scale = max(1.0, float(np.linalg.norm(z0)))
-        count = [1]; cap = [None]                            # rounds made (F0 is one); the count at which matvec stops
+        count = [1]; cap = [max_evaluations]                 # rounds made (F0 is one); the count at which matvec stops
 
         def matvec(v):
             v = np.asarray(v, dtype=float).ravel()
@@ -1282,15 +1284,19 @@ class Result:
         if np.linalg.norm(Jv) <= 1e-12 * np.linalg.norm(v):
             vals = np.array([0.0]); method = "zero"          # a single agent: its best response does not depend on itself
         else:
-            cap[0] = max(count[0] + 1, max_evaluations - self.STABILITY_FALLBACK)
+            cap[0] = max(count[0], max_evaluations - self.STABILITY_FALLBACK)
             try:
-                vals = _arnoldi_dominant(matvec, v, Jv, kk, tol * 1e-3)
+                vals = _arnoldi_dominant(matvec, v, Jv, kk, tol * 1e-3, cap[0] - count[0] + 1)
             except _StabilityBudget:
                 method = f"power iteration (arnoldi stopped at the evaluation budget of {max_evaluations})"
             except Exception:                               # Arnoldi failed: power iteration, and say so
-                method = "power iteration (arnoldi did not converge)"
+                method = (f"power iteration (arnoldi stopped at the evaluation budget of {max_evaluations})"
+                          if count[0] >= cap[0] else "power iteration (arnoldi did not converge)")
             if method != "arnoldi":
-                steps = min(self.STABILITY_FALLBACK, max(1, max_evaluations - count[0])); cap[0] = count[0] + steps; lam = 0.0
+                steps = min(self.STABILITY_FALLBACK, max_evaluations - count[0]); cap[0] = count[0] + steps
+                # The first product is already paid for, including when no budget remains.
+                lam = np.linalg.norm(Jv) / np.linalg.norm(v)
+                v = Jv / np.linalg.norm(Jv)
                 for _ in range(steps):
                     w = matvec(v); nw = np.linalg.norm(w)
                     lam = nw / np.linalg.norm(v)
@@ -1910,5 +1916,4 @@ class TransitionResult(TriangleResult):
             lines.append(f"  with the tail past T at the closed-loop rate (factor per window from the {self.excess_tail['source']}: "
                          + ", ".join(f"{k}={v:.2e}" for k, v in f.items()) + "): " + ", ".join(f"{k}={v:+.6f}" for k, v in self.excess_costs_total.items()))
         return "\n".join(lines)
-
 
