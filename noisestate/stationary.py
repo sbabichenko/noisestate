@@ -1993,8 +1993,12 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         def assemble():
             # G3[(x, ki), (b, r)]: every channel's row operator (its regular and instantaneous parts), action node x, map
             # node b of row r, ordered so that a chunk's rows (x >= lo) and columns (b in the chunk) are slices
-            G3 = (np.ascontiguousarray(Gk[Kn].reshape(nKn, N, nR, N).transpose(1, 0, 3, 2)).reshape(N * nKn, N * nR)
-                  if nKn else np.zeros((0, nR * N)))
+            # Fill the destination directly: fancy indexing then transposing
+            # would hold two additional copies of the complete row operator.
+            G3 = np.empty((N, nKn, N, nR))
+            for ki, k in enumerate(Kn):
+                G3[:, ki] = Gk[k].reshape(N, nR, N).transpose(0, 2, 1)
+            G3 = G3.reshape(N * nKn, N * nR)
             gch = c.causal_chunks(target=max(4, c.grid.P // 2)) if nKn else []
             Amat = np.zeros((nG, nG))
             A6 = Amat.reshape(nU, nR, N, nU, nR, N)
@@ -2002,18 +2006,20 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                 for vi in range(nU):
                     # P[(ri, b), (ki, x)] = sum_K sum_j H^K[(ri, b, ki), j] (Fu^K Resp_v)[j, x]; E[r, b, x] the instantaneous
                     # projections' part, sum_K w Sh^K (Fu^K Resp_v) on row r (one per row and channel)
-                    P = np.zeros((nRn, N, nKn, N))
+                    # Store (ri, b, x, ki), the order used by the final product,
+                    # so flattening P needs no second full projection array.
+                    P = np.zeros((nRn, N, N, nKn))
                     E: Dict[tuple, np.ndarray] = {}
                     for cls in Fu[ui]:
                         FRc = FR[(ui, vi, cls)]                                              # (N, N)
                         for lo, hi, j0 in chunks[cls]:
                             if j0 < N:
                                 Hb = H[cls][:, lo:hi, :, j0:]                                   # (nRn, hi-lo, nKn, N-j0)
-                                P[:, lo:hi] += (Hb.reshape(-1, N - j0) @ FRc[j0:]).reshape(nRn, hi - lo, nKn, N)
+                                P[:, lo:hi] += (Hb.reshape(-1, N - j0) @ FRc[j0:]).reshape(nRn, hi - lo, nKn, N).transpose(0, 1, 3, 2)
                         for (r, k, Sh, w) in ent_h[cls]:
                             X = w * (Sh @ FRc)
                             E[(r, k)] = E[(r, k)] + X if (r, k) in E else X
-                    P2 = np.ascontiguousarray(P.transpose(0, 1, 3, 2)).reshape(nRn * N, N * nKn)      # [(ri, b), (x, ki)]
+                    P2 = P.reshape(nRn * N, N * nKn)      # [(ri, b), (x, ki)]
                     # through the row operators, causally: map nodes b' of a chunk read action nodes x >= lo
                     for lo, hi in gch:
                         T = (P2[:, lo * nKn:] @ G3[lo * nKn:, lo * nR:hi * nR]).reshape(nRn, N, hi - lo, nR)
@@ -2021,6 +2027,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                             A6[ui, r, :, vi, :, lo:hi] += T[ri].transpose(0, 2, 1)
                     for (r, k), X in E.items():                                     # the instantaneous projections
                         A6[ui, r, :, vi] += (X @ Gk[k]).reshape(N, nR, N)
+                    del P2, P                         # release before allocating the next control pair
             return Amat
         if not lazy:
             return assemble(), bvec
