@@ -165,6 +165,7 @@
 <header class="measure">
   <p class="eyebrow">noisestate · best-response dynamics</p>
   <h1>Reading stability off the first-order condition</h1>
+  <p><strong>Correction, September 30, 2026.</strong> The window-18 profile below is not an equilibrium. A direct best response reveals an order-one profitable deviation: the old action iteration converged, but its recovered strategies did not reproduce that world. The historical spectra are retained as measurements at those profiles, not evidence of a second Nash equilibrium. The solver now checks strategy recovery and finishes in maps when needed.</p>
   <p class="standfirst">The spectral radius the solver reports is not a new object. It is <em>the ratio of cross-curvature to own curvature</em>, and it falls out of the FOC you already write down.</p>
 
   <div class="thesis">
@@ -240,7 +241,7 @@
     ρ(<span class="m">J</span>) <span class="op">=</span> √ ρ(
     <span class="m">H</span><sub>11</sub><sup>−1</sup><span class="m">H</span><sub>12</sub>
     <span class="m">H</span><sub>22</sub><sup>−1</sup><span class="m">H</span><sub>21</sub> )
-    <span class="note">Verified to six digits on both branches below: 0.434208 against 0.434208, and 1.161319 against 1.161319.</span>
+    <span class="note">Verified to six digits at both profiles below: 0.434208 against 0.434208, and 1.161319 against 1.161319.</span>
   </div>
 
   <p>The ± pairing is not a curiosity — it is the visible signature of the zero diagonal, and you can see it in the spectra.</p>
@@ -258,7 +259,7 @@
       </div>
       <div class="plane">
         <h4>Window 18 <span class="verdict bad">unstable</span></h4>
-        <p class="sub">ρ = 1.1613 · cost 3.1352 · a second branch</p>
+        <p class="sub">ρ = 1.1613 · cost 3.1352 · historical non-equilibrium profile</p>
         <svg viewBox="0 0 260 260" width="100%" height="auto" role="img" aria-label="Eigenvalues at window 18, with a conjugate pair outside the unit circle">
           <g id="p2"></g>
         </svg>
@@ -288,7 +289,7 @@
         </thead>
         <tbody>
           <tr><td>3</td><td class="num">2.69e−03</td><td class="num">5.84e−04</td><td>yes</td><td class="num">0.4342</td><td style="color:var(--stable);font-weight:600">equilibrium</td></tr>
-          <tr><td>18</td><td class="num">3.76e−05</td><td class="num">9.86e−06</td><td>yes</td><td class="num">1.1613</td><td style="color:var(--unstable);font-weight:600">second branch</td></tr>
+          <tr><td>18</td><td class="num">3.76e−05</td><td class="num">9.86e−06</td><td>yes</td><td class="num">1.1613</td><td style="color:var(--unstable);font-weight:600">not an equilibrium</td></tr>
         </tbody>
       </table>
     </div>
@@ -297,11 +298,11 @@
 </section>
 
 <section class="measure">
-  <p>At window 18 <strong>each agent's own problem is still strictly convex</strong>. The FOC holds, the second-order condition holds: it is a genuine Nash equilibrium of the truncated game. What fails is the interaction. The own curvatures have collapsed by two orders of magnitude while the cross terms have not, so <span class="m">D</span><sup>−1</sup><span class="m">O</span> runs past 1. Each player is nearly indifferent along some direction, which makes them hypersensitive to the other.</p>
+  <p>At window 18 the own-curvature check passes, but the recovered strategy profile does not satisfy the first-order condition. The small residual belonged to the action-coordinate iteration. Projection into observation maps changed its closed loop enough to produce a different world.</p>
 
   <div class="callout">
     <span class="tag">The consequence</span>
-    <p>The second-order check only ever looks at <span class="m">D</span>. The radius looks at <span class="m">D</span><sup>−1</sup><span class="m">O</span>. They answer genuinely different questions, and the spurious long-window branch is precisely a case where the first passes and the second fails — which is why neither alone identifies it, and why the two flags are now reported together.</p>
+    <p>Own curvature and best-response stability answer different questions. Neither replaces checking that the returned strategies are mutual best responses. An unstable best-response radius can also occur at a genuine equilibrium; it does not by itself establish a numerical failure.</p>
   </div>
 
   <h2><span class="n">5</span>Half of it is already in the code</h2>

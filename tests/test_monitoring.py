@@ -133,8 +133,10 @@ def test_with_no_inventory_cost_the_strategic_market_maker_is_competitive(transp
     the market is Chapter 4's (examples/ch4_kyle_back.yaml at the same eps and rho): the trader's cost -0.82082 and the
     price's kernel on the noise trades to 1e-6.  Counting the trader's reaction to the quote twice -- in its map, where
     the flow already carries the quote, and again as the instant loading -- gave 0.58 for the price's first response."""
-    kb = ns.solve(ns.load(ns.example("ch4_kyle_back")).with_stationary(8.0).with_numerics(nodes=16))   # the market's window
-    res = ns.solve(market(0.0, transparent)).require_converged()
+    # Compare on a resolved grid. At 16 nodes the action-to-map projection error is
+    # larger than this equivalence test's tolerance; strategy recovery exposes it.
+    kb = ns.solve(ns.load(ns.example("ch4_kyle_back")).with_stationary(8.0).with_numerics(nodes=24))
+    res = ns.solve(market(0.0, transparent).with_numerics(nodes=24)).require_converged()
     assert res.costs["trader"] == pytest.approx(kb.costs["trader1"], abs=1e-6)
     a = np.array([0.0, 1.0, 3.0])
     assert np.abs(res.kernel("P", "wZ").at(a) - kb.kernel("P", "wZ").at(a)).max() < 1e-6

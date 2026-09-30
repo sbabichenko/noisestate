@@ -44,49 +44,50 @@ def test_a_shrinking_negative_curvature_is_the_grid_not_a_saddle():
     assert any(d["name"] == "second_order_grid:trader1" and d["ok"] for d in r.diagnostics.rows)
 
 
-def test_a_long_window_finds_a_second_branch_that_only_the_guard_refuses():
-    """docs/limits.md, "a stationary window much longer than the kernel's support".  ch3_two_player at
-    64 nodes solves the equilibrium up to L = 15 (the state kernel decays to 3e-08 of its peak, cost
-    0.4273); at L = 18 the solve still converges to its tolerance, onto a fixed point of the truncated
-    problem whose kernel has not decayed at the edge and whose cost is seven times larger.  check()
-    passes on it because it did converge -- only the window guard, and so require_ok(), refuses it."""
-    import numpy as np, pytest, noisestate as ns
+def test_long_window_action_recovery_reaches_an_equilibrium():
+    """The former L=18 'branch' had O(1) profitable deviations despite a 1e-10
+    action residual. Recovery must agree with a direct map solve, even without diagnostics."""
+    import numpy as np
     base = ns.load(example_path("ch3_two_player"))
-
-    good = ns.solve(base.with_stationary(15.0).with_numerics(nodes=64))
-    a = np.asarray(good.ages); K = np.asarray(good.kernel("X"))
-    assert good.require_ok() is good and abs(good.costs["player1"] - 0.427295) < 1e-5     # a longer window moves it 1e-11
-    assert np.abs(K[a > 0.95 * 15.0]).max() / np.abs(K).max() < 1e-6      # decayed by the edge
-
-    spurious = ns.solve(base.with_stationary(18.0).with_numerics(nodes=64))
-    assert spurious.converged and spurious.require_converged() is spurious            # it really did converge
-    assert spurious.costs["player1"] > 3.0                                # and to the wrong thing
-    Ks = np.asarray(spurious.kernel("X")); asp = np.asarray(spurious.ages)
-    assert np.abs(Ks[asp > 0.95 * 18.0]).max() / np.abs(Ks).max() > 0.5   # a closed loop that does not stabilise
-    assert not spurious.diagnostics.assess().accepted and any("WINDOW TOO SHORT" in f for f in spurious.diagnostics.flags)
-    #  a guard failure is NOT a convergence failure: the solve converged.  The two are siblings,
-    #  so `except ConvergenceError` must not catch this one.
-    assert not issubclass(ns.DiagnosticsError, ns.ConvergenceError)
-    assert issubclass(ns.DiagnosticsError, ns.ResultValidationError)
-    with pytest.raises(ns.DiagnosticsError, match="converged, but"):
-        spurious.require_ok()
-
-    # both fixed points exist at L = 18: a cold start lands on the spurious one, and continuation in
-    # the window reaches the equilibrium.  What separates them is best-response stability -- Anderson
-    # and the Newton polish are root finders and will sit on a fixed point naive adjustment would flee.
     wider = base.with_stationary(18.0).with_numerics(nodes=64)
-    warm = ns.solve(wider, start_from=engines.stationary(wider).interpolate_maps(good)).require_ok()
-    assert abs(warm.costs["player1"] - 0.427295) < 1e-5
-    assert warm.stability().radius < 0.9 < 1.0 < spurious.stability().radius
+    reference = ns.solve(wider, variable="maps", diagnostics=False).require_converged()
+    log = []
+    recovered = ns.solve(wider, diagnostics=False, progress=log.append).require_converged()
+    assert "map recovery" in recovered.message
+    assert abs(recovered.costs["player1"] - 0.427294931719) < 1e-10
+    assert abs(recovered.costs["player1"] - reference.costs["player1"]) < 1e-10
+    solver = engines.stationary(wider)
+    g = solver.pack(recovered.maps)
+    assert np.linalg.norm(solver.pack(solver.response_map(recovered.maps)) - g) / max(1, np.linalg.norm(g)) < 1e-10
+    assert [x["evaluation"] for x in log] == list(range(1, recovered.evaluations + 1))
+    assert log[-1]["phase"].startswith("maps ")
+    assert all(x["seconds"] <= y["seconds"] for x, y in zip(log, log[1:]))
+    assert abs(log[-1]["residual"] - recovered.residual) < 1e-15
 
-    # the radius is computed unasked where it discriminates: the window guard failing is the only place
-    # it is worth its best responses, and there it separates a branch from a truncation
-    report = lambda r: getattr(r, "stability_report", None)     # only set once stability() has run
-    assert report(spurious) is not None and report(spurious).radius > 1.0
-    assert "UNSTABLE" in spurious.summary() and "WINDOW TOO SHORT" in spurious.summary()
-    assert report(good) is None                                 # a window that passes pays nothing
-    shipped = ns.solve(example_path("ch3_two_player"))           # window 3: flagged, but a truncation
-    assert report(shipped) is not None and report(shipped).radius < 1.0
+    # Insufficient recovery budget is a convergence failure, even though the action
+    # iteration reached its tolerance. No uncounted best responses or fresh budget.
+    action_evals = next(x["evaluation"] for x in log if x["phase"].startswith("maps ")) - 1
+    for budget in (action_evals, action_evals + 2):
+        events = []
+        short = ns.solve(wider, max_evaluations=budget, diagnostics=False, progress=events.append)
+        assert not short.converged and short.evaluations == len(events) == budget
+        assert "action recovery error" in short.message and "evaluation budget" in short.message
+        assert short.residual > 1e-8
+
+
+def test_window_checks_do_not_request_stability(monkeypatch):
+    """A spectral radius is expensive and does not certify equilibrium or window accuracy."""
+    original = ns.Result.stability
+    calls = []
+    def counted(self, **kw):
+        calls.append(self)
+        return original(self, **kw)
+    monkeypatch.setattr(ns.Result, "stability", counted)
+    result = ns.solve(example_path("ch3_two_player"))
+    assert result.diagnostics.statuses["window"] is Status.FAILED
+    assert not calls and getattr(result, "stability_report", None) is None
+    requested = ns.solve(example_path("ch3_two_player"), stability=True)
+    assert calls == [requested] and requested.stability_report.radius < 1
 
 
 def test_the_arnoldi_finds_a_cluster_of_equal_moduli():

@@ -97,43 +97,13 @@ def example(name: str) -> str:
     return path
 
 
-def _radius_when_the_window_fails(res, asked: bool) -> None:
-    """Compute the best-response spectral radius when the window guard fires, even unasked.
-
-    A stationary window longer than the kernel's support can hold a second fixed point, and Anderson
-    with a Newton polish is a root finder: it will sit on one that naive best-response adjustment would
-    flee (deliberately -- the Kyle-Back equilibrium is unstable and genuine).  What identifies a
-    spurious branch is an unstable radius *together with* a kernel that has not decayed at the window's
-    edge, so the radius is only informative where the window check has already failed; there it is
-    worth the best responses it costs (docs/limits.md).  A stability report that fails is not fatal:
-    the flag it would have carried is simply absent.
-    """
-    if asked or getattr(res, "stability_report", None) is not None:
-        return
-    # the raw rows (names and verdicts): res.diagnostics.rows would resolve every row's value, a deferred second-order
-    # check's form with them (engine.Curvature), which this needs no part of
-    if not res.converged or not any(d["name"] == "window" and d["ok"] is False for d in res._check_rows()):
-        return
-    try:
-        res.stability()
-    except Exception:                      # an unavailable radius must not fail a solve that converged
-        pass
-
-
 def _after_solve(res, refine: bool, stability: bool, diagnostics: bool):
-    """What every solve does once it has a result, whichever branch produced it.
-
-    solve() returns down two paths -- the march in T for a transition with horizon.settle, and the
-    ordinary engine solve -- and both ran this same block.  The order matters and is not obvious:
-    refine() and stability() are what the caller asked for, and the unasked radius comes last so it
-    can see that stability() has already run rather than computing it twice.
-    """
+    """Run the explicitly requested refinement and stability analysis on every solve path.
+    Best-response stability is not an equilibrium certificate or a window-convergence test."""
     if refine:
         res.refine()
     if stability:
         res.stability()
-    if diagnostics:
-        _radius_when_the_window_fails(res, stability)
     return res
 
 
@@ -212,8 +182,7 @@ def solve(model, numerics=None, *, start_from=None, start_policy=None, tol=None,
     caller could not tell which was used.  tol (over the numerics'), max_evaluations and deadline (the bounds; past
     either the best iterate is returned not converged), progress (a callable on {"evaluation", "residual",
     "phase", "seconds"} after every evaluation), diagnostics (False skips the checks at the end), refine (re-solve
-    on a finer grid and report the change, res.refinement), stability (add res.stability(); it is also
-    computed unasked when the window guard fails, where an unstable radius marks a spurious branch), verbose;
+    on a finer grid and report the change, res.refinement), stability (add res.stability() when explicitly requested), verbose;
     continue_from ({parameter: value}): reach the model by continuation in those parameters, from the values given
     (where the model solves from a cold start, a competitive or cost-free corner) to its own, each point starting from
     the last one's maps, the step halved where a point does not converge; the path is res.continued ([(fraction,

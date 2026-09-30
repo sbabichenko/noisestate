@@ -1,10 +1,7 @@
-"""The Chapter 3 game's spurious long-window branch: the table and the figure of docs/limits.md.
+"""Compare cold and continued Chapter 3 solves on long stationary windows.
 
-A stationary window much longer than the kernel's support can admit a second fixed point of the
-truncated problem.  Up to L = 15 the solve finds the equilibrium; from L = 18 it converges to its
-tolerance and to something else, whose kernel has not decayed by the window's edge -- a closed loop
-that does not stabilise the state -- and whose cost is seven times the right one.  res.require_converged() passes
-on it; only the window guard, and so res.require_ok(), refuses it.
+The historical 'second branch' was false action-coordinate convergence. The
+solver now verifies strategy recovery and finishes in maps when needed.
 
     python extras/tools/ch3_long_window_branch.py [out.png]
 """
@@ -39,7 +36,7 @@ def main(out=None):
         if r.converged and not r.diagnostics.assess().accepted:
             try:
                 r.require_ok()
-            except ns.ConvergenceError as exc:
+            except ns.ResultValidationError as exc:
                 print(f"{'':7} require_ok() refuses it: {str(exc)[:88]}")
     print()
     print("the same windows, each warm-started from the previous (continuation in L):")
@@ -54,10 +51,10 @@ def main(out=None):
         if r.converged:
             prev = r
     print()
-    print("what separates the branches is best-response stability, not the residual:")
+    print("best-response stability of the recovered equilibria:")
     for label, kw in (("the equilibrium (warm)", {"start_from": engines.stationary(
                            ns.load(MODEL).with_stationary(18.0).with_numerics(nodes=NODES)).interpolate_maps(prev)}),
-                      ("the branch a cold start finds", {})):
+                      ("the recovered cold start", {})):
         m18 = ns.load(MODEL).with_stationary(18.0).with_numerics(nodes=NODES)
         r = ns.solve(m18, **kw)
         st = r.stability()

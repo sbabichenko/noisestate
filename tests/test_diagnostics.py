@@ -238,11 +238,8 @@ def test_compare_reports_the_dynamics_rather_than_deciding_them():
     assert dyn["fixed_point_residual"] is not None            # the evidence it used to drop
     assert "not verified" in study.summary()                  # distinct from "not checked"
 
-    #  "not checked" is the third case: stability never ran.  A model whose window guard fails has
-    #  its radius computed unasked (noisestate._radius_when_the_window_fails), so the model here is
-    #  a finite one, which carries no window check at all.
-    quiet = example("ch1_two_player_finite")
-    assert "not checked" in ns.compare({"a": quiet}, baseline="a").summary()
+    # "not checked" is the third case, including a stationary window whose guard fails.
+    assert "not checked" in ns.compare({"a": m}, baseline="a").summary()
 
 
 @pytest.mark.parametrize("name", ["ch1_two_player_finite", "ch3_two_player"])

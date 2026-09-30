@@ -2222,6 +2222,12 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         scale = max(1, int(np.ceil(L / (cls.ENTROPIC_STEP * cls.ENTROPIC_LATTICE[0]) - 1e-9)))
         return [L / (scale * na) for na in cls.ENTROPIC_LATTICE]
 
+    def _action_recovery_error(self, maps, actions) -> float:
+        closed = self.actions_from_maps(maps)
+        errors = [float(np.linalg.norm(closed[name] - action) / max(1.0, np.linalg.norm(action)))
+                  for name, action in actions.items()]
+        return max(errors, default=0.0) if all(np.isfinite(e) for e in errors) else float("inf")
+
     def solve(self, start_from=None, **kw):
         """EngineBase.solve; with risk-averse agents and no start, by continuation in risk aversion: the risk-neutral
         equilibrium first (theta scaled by 0, the risk-neutral path), then theta scaled up (RISK_STEPS), each step started

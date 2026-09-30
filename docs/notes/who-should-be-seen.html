@@ -506,8 +506,8 @@
   tail stops decaying (ratio 1.85 against 0.38), the solve stops converging, and cost grows with the window
   rather than settling &mdash; an undiscounted tug-of-war over an integrator has unbounded average cost. Every
   cheap-effort result above is therefore finite-horizon.</p>
-  <p>The &sigma;<sub>f</sub> = 0.25 row has &rho; &gt; 1 and has not had the warm-start check that
-  distinguishes a second branch from the equilibrium, so treat it as indicative. And an earlier version of
+  <p>The &sigma;<sub>f</sub> = 0.25 row has &rho; &gt; 1 and has not had a direct strategy-recovery and window-convergence check, so treat it as indicative.
+  A best-response radius above one does not itself distinguish a genuine equilibrium from numerical error. And an earlier version of
   the comparison in section&nbsp;6 was wrong: effort costs were passed as a Python default argument, so two
   different regimes returned byte-identical numbers. That impossibility is what exposed it; the table above
   is after the fix.</p>

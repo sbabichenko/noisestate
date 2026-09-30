@@ -824,6 +824,45 @@ class EngineBase(MeanLayer):
         if free is not None:
             full = z0.copy(); full[free] = z; z = full
         maps = self.maps_from_actions(unpack(z)) if variable == "actions" else unpack(z)
+        actions = unpack(z) if variable == "actions" else None
+        if actions is not None:
+            recovery_error = self._action_recovery_error(maps, actions)
+            # An action fixed point need not survive projection to implementable strategies: a tiny
+            # projection error can be amplified by the recovered feedback loop.  The stationary engine
+            # checks that loop, even for diagnostics=False, and finishes in maps if recovery is inaccurate.
+            if recovery_error > max(tol, 1e-8) or not np.isfinite(recovery_error):
+                message += f"; action recovery error {recovery_error:.2e}"
+                converged = False
+                resid = max(resid, recovery_error)
+                remaining = None if max_evaluations is None else max_evaluations - evals[0]
+                if remaining is not None and remaining <= 0:
+                    message += f"; stopped at the evaluation budget (max_evaluations={max_evaluations})"
+                elif deadline is not None and time.time() - t0 >= deadline:
+                    message += f"; stopped at the deadline ({deadline:g} s)"
+                else:
+                    before = evals[0]
+                    m0 = self.pack(maps)
+                    mf = self.free_mask("maps")
+
+                    def map_residual(x):
+                        evals[0] += 1
+                        full = x if mf is None else m0.copy()
+                        if mf is not None:
+                            full[mf] = x
+                        r = self.pack(self.response_map(self.unpack(full))) - full
+                        return r if mf is None else r[mf]
+
+                    mz, resid, _, converged, note = solve_fixed_point(
+                        map_residual, m0 if mf is None else m0[mf], tol=tol, verbose=self.verbose,
+                        damping=damping, anderson_iters=st.anderson_iters, max_newton=max_newton,
+                        M=memory, reg=st.anderson_reg, inner_m=st.newton_inner_m,
+                        max_evaluations=remaining, deadline=deadline, t0=t0,
+                        progress=None if progress is None else lambda info: progress({
+                            **info, "evaluation": before + info["evaluation"], "phase": "maps " + info["phase"]}))
+                    if mf is not None:
+                        full = m0.copy(); full[mf] = mz; mz = full
+                    maps, actions = self.unpack(mz), None
+                    message += "; map recovery: " + note
         if coarse_evals:
             message = f"coarse start: {coarse_evals} evaluations at {self._coarse_nodes} nodes; " + message
         solve_kw = {"tol": tol, "damping": damping, "max_newton": max_newton, "variable": variable, "start_policy": start_policy,
@@ -835,11 +874,16 @@ class EngineBase(MeanLayer):
         t1 = time.time()
         res = self._result(maps, converged=converged, residual=resid, evaluations=evals[0], message=message,
                            solve_kw=solve_kw, diagnostics=diagnostics,
-                           actions=unpack(z) if variable == "actions" else None)
+                           actions=actions)
         res.seconds = time.time() - t0            # the diagnostics of _finish are part of the solve's time
         if self.verbose:
             print(f"  -- done in {res.seconds:.2f}s (checks {res.seconds - (t1 - t0):.2f}s): {res!r}", flush=True)
         return res
+
+    def _action_recovery_error(self, maps, actions) -> float:
+        """Engine hook: relative mismatch between an action iterate and its recovered feedback loop.
+        The stationary engine checks this because a long window can amplify projection roundoff."""
+        return 0.0
 
     def _result(self, maps, *, converged: bool, residual: float, evaluations: int, message: str, solve_kw: dict,
                 diagnostics: bool = True, actions=None):
