@@ -244,10 +244,11 @@ def test_the_entropic_lattice_steps_are_capped():
 @slow()
 def test_stationary_risk_aversion_near_the_breakdown_is_reached_in_steps():
     """theta 1: the path 0, 0.5, 1 jumped onto a spurious fixed point past the breakdown (theta mu_max 8.95, reported not
-    converged); with the finite engine's steps (0.783, 0.942, 1) it reaches the equilibrium, theta mu_max 0.886 (25 s)."""
+    converged); with the finite engine's steps (0.783, 0.941, 1) it reaches the equilibrium, theta mu_max 0.887 (25 s; the step was 0.942 before
+    the causal observation endpoint correction e75e702 moved theta mu_max 0.88645 -> 0.88693)."""
     res = ns.solve(lq_signal(1.0), diagnostics=False)
     assert res.converged and 0.85 < res.risk["p1"]["theta_mu_max"] < 0.92
-    assert "theta scaled by 0, 0.5, 0.783, 0.942, 1" in res.message
+    assert "theta scaled by 0, 0.5, 0.783, 0.941, 1" in res.message
 
 
 @slow()
