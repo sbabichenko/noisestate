@@ -4,6 +4,29 @@
 
 ### Changed
 
+- Exact shifts on the stationary engine, and its age panels chosen automatically.  A kernel read at a lag was resampled
+  onto the panels, exact only where they are aligned with the lag; on a geometric tail it interpolated a function that
+  breaks inside a panel, and the error polluted the whole solution (Chapter 5's market on its shipped grid: 1.9e-6 of a
+  kernel's peak, 2e-6 in its unit panels, against a 576-node uniform reference; at 12 and 24 firms a first-order system
+  of condition number 5e10 whose map noise stalled the fixed point).  Where a lag is not aligned, every lag is now an
+  argument of the operators (the convolutions, correlations, masses and the states' propagators split their quadratures
+  at the shifted breakpoints; the shifted tensors are held as their n x n blocks per node and panel pair), the spike
+  responses keep a map read at a lag as a kernel of that shift, and the first-order condition is a sum over shift
+  classes.  On aligned panels nothing changes (both agree to 1e-14 there).  12 and 24 firms converge (50 evaluations,
+  condition 2.9e8), and the second-order form on the strategies read within the window is positive definite with the
+  bespoke solver's condition number.  Instant observations, level rows, monitoring and risk aversion keep the
+  resampling (no test model has them with lags) and warn where their panels are not aligned.
+- A stationary model whose numerics give none of `nodes`, `unit_range`, `breakpoints` has its panels chosen
+  (`age_panels.py`): unit panels through its lags, then growing by 1.5 on the unit lattice, cut at L - tau and L - 2 tau,
+  12 nodes, checked by the kernels' Chebyshev tails per panel against `settings.auto_grid_tol` (1e-7, new) and cut
+  where they fail; `res.panels` records it, `res.numerics` holds the grid, `sweep()` keeps its first point's grid.
+  `Model.numerics.nodes` is None when not given (a solve resolves it; an engine built directly takes 16).  Chapter 5's
+  example ships without a grid: 132 nodes in one round, 3.9 s against 4.5 s for the shipped 168 nodes (2 threads, the
+  checks included), its kernels 2.6e-8 and its cost 3e-10 from the uniform reference against 1.9e-6 and 2.6e-8; the
+  former default (no numerics) was 224 nodes and 10.7 s at 8.4e-8.  At the shipped grid's accuracy the exact shifts
+  need 88 nodes, 1.8 s.  On the suite's 84 lagged stationary models the automatic grid meets its target on fewer nodes
+  than the former defaults; on an expert's long unit range the exact path costs more than the resampling did (Chapter
+  5 on 16 unit panels at 8 nodes: 5.9 s against 4.5 s).
 - Faster and leaner, same results.  Stationary risk-averse agents: the date-0 entropic cost (`res.risk`) no longer builds
   or eigen-decomposes the n x n form of K_0 on the lattice (n = 7365 on Chapter 3's game): K_0 is block tridiagonal in
   time-ordered coordinates and Sigma K Sigma differs from it on the first two blocks only, so the cost is read off a
@@ -33,6 +56,13 @@
   64 -> 21 s and 1.4 GB -> 655 MB.  Maps move by at most 1.1e-8 (norm, relative) on the finite engines (tol 1e-8) and
   4.3e-10 on the stationary (tol 1e-10), costs by at most 5e-9; every check's verdict is unchanged.  The test record
   (tests/refs/baseline_0.4) and four cost pins were re-recorded.
+
+### Fixed
+
+- The stationary lead term (a loss's cross term with a quantity read ahead, `D X@-2`): its past-date convolution set both
+  copies of the node at the lead's end, the next panel's first node carrying the response's value at 0, and every such
+  model converged as n^-2 just past the lead (a one-agent target model's control 2.3e-3 of its peak at 16 nodes; the
+  C++ port's stat_misc cost 6e-5 off).  The upper copy reads the right limit, zero: 16 and 24 nodes agree to 2e-13.
 
 ## 2.1.0 (2026-09-29)
 
