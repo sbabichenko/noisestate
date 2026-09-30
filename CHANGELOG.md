@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Stationary risk corrections give the causal observation drift its trapezoidal half weight at age zero;
+  direct noise loadings retain full weight. The former full drift weight introduced first-order lattice
+  bias that the quadratic extrapolation did not remove. An independent Kalman covariance test now
+  converges quadratically; the graph shortcut and full QR projector agree.
+
 - Stationary action solves now check that the recovered feedback actually reproduces the converged action
   kernels. If it does not, the solver finishes in map coordinates within the original evaluation and time
   budget. This fixes apparent convergence to strategies with profitable deviations, including Chapter 3

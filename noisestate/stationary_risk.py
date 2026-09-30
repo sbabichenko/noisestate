@@ -417,7 +417,9 @@ class StationaryTilt:
             for r, y in enumerate(ytil):
                 if any(age != 0.0 for (_, age, _) in yinst[r]):
                     raise NotImplementedError("a risk-averse agent on the stationary engine with a delayed point loading on its rows")
-                hyls.append(h * (lat["I"] @ y[:, :nW]))                                  # (Na + 1, nW) at the ages
+                hyl = h * (lat["I"] @ y[:, :nW])                                        # (Na + 1, nW) at the ages
+                hyl[0] *= 0.5                     # causal drift integral's endpoint; point loadings below stay whole
+                hyls.append(hyl)
             if 2 * q >= n:
                 # at least half as many columns as rows (rows at least half the channels): with the rows in time order
                 # (i nW + c) and the columns by step (m nR + r) the matrix is a staircase, column m reaching the rows of the
@@ -495,6 +497,7 @@ class StationaryTilt:
             if any(age != 0.0 for (_, age, _) in yinst[r]):
                 raise NotImplementedError("a risk-averse agent on the stationary engine with a delayed point loading on its rows")
             a[:, :, r] = h * (lat["I"][:Na] @ y[:, :nW])
+            a[0, :, r] *= 0.5                     # same trapezoidal drift endpoint as _info_basis
             for (k, age, w) in yinst[r]:
                 a[0, k, r] += w
         if not np.all(np.isfinite(a)):
