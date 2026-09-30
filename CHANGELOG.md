@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## 2.2.0 (2026-09-29)
+
+Exact shifts and automatic age panels on the stationary engine, a fix for lead terms, and faster risk-averse and
+large finite solves.
+
+### What a user will notice
+
+- A stationary model whose numerics give none of `nodes`, `unit_range`, `breakpoints` now has its age panels chosen
+  and checked automatically (`res.panels`).  `Model.numerics.nodes` is None when not given (it was filled with 16); a
+  solve resolves it.  New setting: `settings.auto_grid_tol` (1e-7).
+- Chapter 5's example ships without a grid and passes its checks (it was under-resolved); under the publication policy
+  its `window cost` check fails narrowly (1.2e-6 against 1e-6).
+- `check_window()` and `require_ok()` work on models whose numerics give breakpoints (they raised before).
+- Lags the panels are not aligned with are read exactly; results of such models move towards their converged values
+  (Chapter 5's market on its shipped grid by up to 1.9e-6 of a kernel's peak).
+- Models with a lead cross term (`D X@-2`, like the C++ port's stat_misc) move: their results were off by an n^-2 error
+  just past the lead.
+- `stability()` no longer uses ARPACK: `settings.stability_tol` is now its own Arnoldi's stopping rule (1e-3 of it on
+  the dominant Ritz pairs' relative residual), and the radius it reports can change where the dominant eigenvalues
+  share a modulus (Chapter 6's opaque market 1.1196 ->
+  1.0813).
+- A second-order check that passes by its certificate computes its `min` and `max` when first read.
+- Everything else is faster with the same results, or results moving within each solve's tolerance.
 
 ### Changed
 
@@ -56,6 +78,27 @@
   64 -> 21 s and 1.4 GB -> 655 MB.  Maps move by at most 1.1e-8 (norm, relative) on the finite engines (tol 1e-8) and
   4.3e-10 on the stationary (tol 1e-10), costs by at most 5e-9; every check's verdict is unchanged.  The test record
   (tests/refs/baseline_0.4) and four cost pins were re-recorded.
+- Faster risk-averse and large finite solves, results the same or within each solve's tolerance.  The stationary risk
+  correction projects off an agent's information through a pivoted graph instead of a QR (the information basis is
+  block Toeplitz, so the projector needs a Cholesky of a small Gram matrix whose entries are lagged partial sums; a
+  steep graph falls back to the QR), takes a pure-noise row's channel out of the graph, builds f_0's future part as one
+  Hankel product per atom and K_0 g with one transform per operand: Kyle-Back's insider on wealth (the C++ port's
+  stat_cara_kyle) 16.8 -> 2.75 s and 214 -> 138 MB, the signal game 4.8 -> 1.4 s (3.4x), Chapter 3 with theta 0.3
+  3.0 -> 1.8 s; at window 16, 97.9 s / 591 MB -> 10.8 s / 243 MB.  Against the QR projector 1e-15 relative; maps move by
+  4e-14, costs by 8e-15.  The second-order check passes a convex loss (Q, a terminal loss and the quadrature masses
+  positive semidefinite) by its certificate and returns an `engine.Curvature`, whose `min` and `max` are made on first
+  read by the same computation (equal to the eager values to the bit); a certified form of 2500 unknowns or more takes
+  them from Lanczos and its Cholesky instead of eigh.  Chapter 1's regulator at T = 30 with 12 nodes (4032 unknowns)
+  15.0 -> 7.2 s, 2.9 s more if min and max are read.  The finite first-order Krylov solve keeps an agent's time-row
+  preconditioner across its best responses while GMRES stays within 1.3 times the steps it took when it was built
+  (costs move by 1.5e-13 at most, maps by 1.1e-8 of a peak, within the finite tolerance).  `stability()` runs its own
+  Arnoldi, which checks the dominant Ritz pairs after every step and stops at 1e-3 of `stability_tol` on their
+  relative residual, instead of ARPACK, which checked only after each cycle of 20 products (each a round of best
+  responses): Chapter 3's stationary game 23 -> 11 rounds, Chapter 6's opaque market 200 -> 54.  Interleaved medians of
+  3 at 2 threads (a loaded machine): the benchmark 36.3 -> 33.1 s (Chapter 1's delayed game 0.86 -> 0.60 s, the finite
+  regulator of tests/test_limits 2.95 -> 2.19 s, the delayed game with risk aversion 0.5 at 8 nodes 2.55 -> 2.01 s,
+  Chapter 6's opaque market 0.50 -> 0.36 s),
+  the stationary risk-averse cases together 25.1 -> 6.5 s.  Every check's verdict is unchanged.
 
 ### Fixed
 
@@ -63,6 +106,14 @@
   copies of the node at the lead's end, the next panel's first node carrying the response's value at 0, and every such
   model converged as n^-2 just past the lead (a one-agent target model's control 2.3e-3 of its peak at 16 nodes; the
   C++ port's stat_misc cost 6e-5 off).  The upper copy reads the right limit, zero: 16 and 24 nodes agree to 2e-13.
+- The stability radius where the dominant eigenvalues share a modulus: Chapter 6's opaque market has four of modulus
+  1.0813; ARPACK ran out of its budget and the power iteration reported 1.1196.  The Arnoldi reports 1.0813 (method
+  "arnoldi").  Elsewhere the radius agrees with a dense finite-difference Jacobian to 3e-7 relative (Kyle-Back
+  0.98891946 against 0.98891916; ARPACK gave 0.98892244).
+- `check_window()` (and so `require_ok()` under the publication policy) refused every model whose numerics give
+  breakpoints, which includes every model solved on automatic age panels: it lengthened the window before the grid,
+  and breakpoints ending at the old window failed validation in between.  The two now change together.  The
+  second-order check's re-evaluation on a longer window had the same fault and was silently skipped on such models.
 
 ## 2.1.0 (2026-09-29)
 
