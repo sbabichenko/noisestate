@@ -67,3 +67,17 @@ def test_convolution_and_correlation():
 def test_breakpoints_from_delays():
     bp = AgeGrid.breakpoints_from_delays(24.0, [0.5])
     assert bp[:3] == [0.0, 0.5, 1.0] and bp[-1] == 24.0 and abs(bp[8] - 4.0) < 1e-12
+
+
+def test_large_shifted_correlation_matches_exponential_integral():
+    """A large quadrature must not materialize every point's n-by-n outer product.
+    Validate the resulting batched operator against its independent integral."""
+    g = AgeGrid(AgeGrid.breakpoints_from_delays(64., [.5], .5, 1., growth=1.5), 24)
+    a, shift, rho = g.nodes, .3, .2
+    w, z = np.exp(-.4*a), np.exp(-.7*a)
+    got = g.corr_ops_shifted(np.column_stack([w, 2*w]), rho, shift, 0.) @ z
+    rate = rho+.4+.7
+    exact = np.zeros(g.N)
+    keep = g.L-a > shift
+    exact[keep] = np.exp(-.7*a[keep]+.4*shift)*(np.exp(-rate*shift)-np.exp(-rate*(g.L-a[keep])))/rate
+    np.testing.assert_allclose(got, np.stack([exact,2*exact]), atol=1e-11)

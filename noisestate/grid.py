@@ -379,7 +379,40 @@ class AgeGrid:
             R[sel] = self._bary_rows(x[sel], self.nodes[q * self.n:(q + 1) * self.n])
         return np.where(inside, p, -1), R
 
+    _PIECE_OUTER_BYTES = 64 * 1024**2
+
     def _pieces(self, points):
+        # Keep the vectorized path for small quadratures. Above 64 MiB of
+        # temporary outer products, direct panel contractions are faster and
+        # keep memory proportional to the point reads and final blocks.
+        if sum(len(x) for x, y, w, sx, sy in points) * self.n**2 * 8 > self._PIECE_OUTER_BYTES:
+            return self._pieces_blockwise(points)
+        return self._pieces_outer(points)
+
+    def _pieces_blockwise(self, points):
+        """Reduce quadrature directly into panel blocks, without a Q*n*n temporary.
+
+        Resolving a weak oscillation can require thousands of integration points;
+        their outer products would dwarf the final operator. Matrix products per
+        panel pair keep storage proportional to Q*n and the finished blocks.
+        """
+        rows, pu_all, pv_all, blocks = [], [], [], []
+        for a, (x, y, weights, sx, sy) in enumerate(points):
+            if not len(x):
+                continue
+            pu, U = self._local_reads(x, sx)
+            pv, V = self._local_reads(y, sy)
+            keep = (pu >= 0) & (pv >= 0)
+            pu, pv, U, V, weights = pu[keep], pv[keep], U[keep], V[keep], weights[keep]
+            keys = pu * self.P + pv
+            for key in np.unique(keys):
+                select = keys == key
+                blocks.append((U[select] * weights[select, None]).T @ V[select])
+                rows.append(a); pu_all.append(key // self.P); pv_all.append(key % self.P)
+        return _Pieces(self.n, self.P, self.N, np.asarray(rows, int), np.asarray(pu_all, int),
+                       np.asarray(pv_all, int), np.asarray(blocks).reshape(-1, self.n, self.n))
+
+    def _pieces_outer(self, points):
         """The block form of a tensor T[a, i, j] = sum_q w_q u_i(x_q) v_j(y_q) built from its quadrature: `points` gives per
         node a (ascending) the arrays (x, y, w, side_x, side_y); every Gauss piece lies in one panel pu of the u side and one
         pv of the v side, so T is the sum over the groups (a, pu, pv) of the n x n blocks K = sum w U' V.  Returns _Pieces."""
