@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Scalar stationary risk information Grams are assembled in the factorization's column-major layout,
+  and cumulative-sum views are released before factoring. Three paired signal-game solves on a refined
+  risk lattice reduced median peak RSS from 604 to 512 MiB (15.2%), with the same 15 iterations and
+  kernels/maps agreeing within 6.8e-14. Runtime changed from 13.76 to 13.30 seconds.
+
 - Stationary risk corrections give the causal observation drift its trapezoidal half weight at age zero;
   direct noise loadings retain full weight. The former full drift weight introduced first-order lattice
   bias that the quadratic extrapolation did not remove. An independent Kalman covariance test now

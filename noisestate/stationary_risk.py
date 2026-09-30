@@ -572,17 +572,27 @@ class StationaryTilt:
         k = nF if comp else nR
         # the lower triangle only (the Cholesky reads no other): block (i + d, i) is block (i, i + d)', S[d, Na - 1 - d - i]
         # (complement) or S[d, i] (primal), written one block diagonal at a time through the flat (Na Na, k, k) view
-        G5 = np.zeros((Na, Na, k, k))
-        flat = G5.reshape(Na * Na, k, k)
-        for d in range(Na):
-            vals = S[d, Na - 1 - d::-1] if comp else S[d, :Na - d]
-            flat[d * Na::Na + 1][:Na - d] = vals.transpose(0, 2, 1)
-        del S
-        Gm = G5.transpose(0, 2, 1, 3).reshape(Na * k, Na * k)
-        del G5, flat
+        if k == 1:
+            # Scalar blocks can be filled directly in LAPACK's column-major
+            # layout, so its Cholesky does not need a second dense matrix.
+            Gm = np.zeros((Na, Na), order="F")
+            flat = Gm.ravel(order="F")
+            for d in range(Na):
+                vals = S[d, Na - 1 - d::-1] if comp else S[d, :Na - d]
+                flat[d::Na + 1][:Na - d] = vals[:, 0, 0]
+            del flat, vals, S
+        else:
+            G5 = np.zeros((Na, Na, k, k))
+            flat = G5.reshape(Na * Na, k, k)
+            for d in range(Na):
+                vals = S[d, Na - 1 - d::-1] if comp else S[d, :Na - d]
+                flat[d * Na::Na + 1][:Na - d] = vals.transpose(0, 2, 1)
+            del vals, S
+            Gm = G5.transpose(0, 2, 1, 3).reshape(Na * k, Na * k)
+            del G5, flat
         Gm[np.diag_indices_from(Gm)] += 1.0
         try:
-            Lc = cholesky(Gm, lower=True, check_finite=False)
+            Lc = cholesky(Gm, lower=True, overwrite_a=True, check_finite=False)
         except np.linalg.LinAlgError:
             return None
         out = {"K0": np.array(K0, dtype=int), "P": P, "F": F, "X": X, "L": Lc, "comp": comp, "Na": Na}

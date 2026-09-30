@@ -41,3 +41,30 @@ def test_signal_information_covariance_converges_quadratically(length):
     assert errors[1] < .28*errors[0]
     assert errors[2] < .28*errors[1]
     assert errors[2] < (8e-5 if length==1 else 1e-8)
+
+
+@pytest.mark.parametrize("channels,rows", [(3,1),(3,2),(4,2)])
+def test_information_graph_matches_qr_for_scalar_and_block_grams(channels, rows):
+    """Exercise the primal/complement scalar Grams and the non-scalar fallback."""
+    observes={"y0": "(X + .3 Z) dt + dw1"}
+    if rows==2:
+        observes["y1"]="(.2 X + Z) dt + dw2"
+    model=ns.Model.from_dict(dict(
+        shocks=[f"w{k}" for k in range(channels)],
+        states={"X":"D dt + dw0", "Z": ".3 D dt + " + ("dw3" if channels==4 else ".7 dw2")},
+        agents={"p":dict(controls="D",observes=observes,loss="X^2 + Z^2 + D^2",risk_aversion=.1)},
+        horizon=dict(window=2.,discount=.5),numerics=dict(nodes=12),
+    ))
+    solver=ns.engines.solver(model)
+    maps={name:np.zeros(shape) for name,shape in solver.shapes.items()}
+    tilt=StationaryTilt(solver,model.agents[0],maps,.1)
+    lattice=tilt._lattice(.05)
+    rng=np.random.default_rng(93026)
+    loading=rng.standard_normal((channels,lattice["Nu"]))
+    assert tilt._graph(lattice) is not None
+    unseen=tilt._sigma(lattice,loading)
+    q=tilt._info_basis(lattice,full=False)
+    past=loading[:,:lattice["Na"]+1].ravel()
+    expected=past-q@(q.T@past)
+    np.testing.assert_allclose(unseen[:,:lattice["Na"]+1].ravel(),expected,rtol=0,atol=3e-12)
+    np.testing.assert_allclose(tilt._sigma(lattice,unseen),unseen,rtol=0,atol=3e-12)
