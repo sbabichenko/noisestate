@@ -16,6 +16,9 @@
 - Large shifted-operator quadratures contract directly into panel blocks, avoiding a temporary outer product
   at every integration point. The vectorized path remains for small quadratures; direct contraction starts
   when that temporary would exceed 64 MiB. The represented operators agree to round-off.
+- Exact stationary first-order-condition assembly fills its final matrix layout directly and releases each
+  control pair's temporary before the next. Three paired twelve-firm Chapter 5 solves reduced median peak
+  RSS from 2,966 to 2,557 MiB with unchanged iteration counts, costs and residuals; runtime stayed about 143 s.
 
 ## 2.2.0 (2026-09-29)
 
