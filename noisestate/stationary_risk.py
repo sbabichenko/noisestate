@@ -393,10 +393,11 @@ class StationaryTilt:
     def shift(self) -> np.ndarray:
         """Delta (nU, N, nW) = (phi^on - phi^off) + theta K_0 S f_0^on (Richardson over the two lattices)."""
         out = []
+        self.richardson_gap = 0.0
         for ui in range(len(self.agent.controls)):
             d1, d2 = (self.risk_part(ui, h) for h in self.hs)
             out.append(self.phi_on[ui] - self.phi_off[ui] + (4.0 * d2 - d1) / 3.0)
-            self.richardson_gap = float(np.abs(d2 - d1).max())
+            self.richardson_gap = max(self.richardson_gap, float(np.abs(d2 - d1).max()))
         return np.stack(out)
 
     # ------------------------------------------------------------------ the entropic cost of the date-0 continuation

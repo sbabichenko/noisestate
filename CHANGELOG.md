@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A stationary risk report takes its lattice gap over every control of the agent. An unused last
+  control previously overwrote a nonzero gap with zero, hiding discretization error in the report.
+
 - Scalar stationary risk information Grams are assembled in the factorization's column-major layout,
   and cumulative-sum views are released before factoring. Three paired signal-game solves on a refined
   risk lattice reduced median peak RSS from 604 to 512 MiB (15.2%), with the same 15 iterations and
