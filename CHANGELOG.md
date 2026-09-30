@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Stationary action solves now check that the recovered feedback actually reproduces the converged action
+  kernels. If it does not, the solver finishes in map coordinates within the original evaluation and time
+  budget. This fixes apparent convergence to strategies with profitable deviations, including Chapter 3
+  at a long window and coarse stationary continuations used by transitions. Failure to finish the recovery
+  is reported as nonconvergence.
+- Window checks no longer launch an unrequested best-response stability calculation. Use `stability=True`
+  or `result.stability()` when that spectrum is wanted.
+- Stability checks respect small evaluation budgets, including the initial response and first Jacobian
+  product. A requested check needs at least two evaluations. The fallback reuses the first product, so
+  disabling additional fallback rounds cannot produce a fabricated zero radius. Arnoldi storage is bounded
+  by the available product budget as well as the strategy dimension.
+- Large shifted-operator quadratures contract directly into panel blocks, avoiding a temporary outer product
+  at every integration point. The vectorized path remains for small quadratures; direct contraction starts
+  when that temporary would exceed 64 MiB. The represented operators agree to round-off.
+
 ## 2.2.0 (2026-09-29)
 
 Exact shifts and automatic age panels on the stationary engine, a fix for lead terms, and faster risk-averse and
