@@ -109,18 +109,18 @@ def _ch5_short(window=6.0, nodes=6, unit_range=6.0):
     return ns.Model.from_dict(d)
 
 
-def _solve(model, mode, **kw):
-    old = st.EXACT_SHIFTS
+def _solve(model, exact, **kw):
+    old = st.Compiled.FORCE_EXACT
     try:
-        st.EXACT_SHIFTS = mode; grid_cache.clear()
+        st.Compiled.FORCE_EXACT = exact; grid_cache.clear()
         return ns.solve(model, **kw)
     finally:
-        st.EXACT_SHIFTS = old; grid_cache.clear()
+        st.Compiled.FORCE_EXACT = old; grid_cache.clear()
 
 
 def test_exact_path_equals_resampling_on_aligned_panels():
     m = _ch5_short(window=4.0, nodes=5, unit_range=4.0)
-    r0, r1 = _solve(m, "never", diagnostics=False), _solve(m, "always", diagnostics=False)
+    r0, r1 = _solve(m, False, diagnostics=False), _solve(m, True, diagnostics=False)
     assert not r0.compiled.exact and r1.compiled.exact
     assert np.abs(r1.world - r0.world).max() < 1e-12 * np.abs(r0.world).max()
     assert abs(r1.costs["firm0"] - r0.costs["firm0"]) < 1e-12 * abs(r0.costs["firm0"])

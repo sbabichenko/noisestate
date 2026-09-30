@@ -35,6 +35,49 @@ from numpy.polynomial import legendre
 _GAUSS: dict = {}
 
 
+class _Pieces:
+    """A tensor T[a, i, j] (N, N, N) on the panels in block form: its nonzero n x n blocks K[g] at (node a[g], panel pu[g] of
+    i, panel pv[g] of j), the groups sorted by (a, pu, pv).  A shifted convolution or correlation has about 2 P blocks per
+    node (the quadrature's pieces), N P n^2 numbers against the dense N^3, and its products with a kernel batch read
+    those.  on_u(Y): the operators (m, N, N) with C[a, i] = sum_j T[a, i, j] Y[j] (Y contracted on the v side); on_v(W):
+    C[a, j] = sum_i W[i] T[a, i, j]."""
+
+    def __init__(self, n: int, P: int, N: int, a, pu, pv, K):
+        self.n, self.P, self.N = n, P, N
+        self.a, self.pu, self.pv, self.K = a, pu, pv, np.ascontiguousarray(K)
+        self._seg = {}
+
+    def _segments(self, side: str):
+        """(order, starts, rows, panels): the groups ordered by (a, output panel) and the starts of their runs."""
+        hit = self._seg.get(side)
+        if hit is None:
+            out = self.pu if side == "u" else self.pv
+            key = self.a * self.P + out
+            order = np.argsort(key, kind="stable")
+            ks = key[order]
+            starts = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]]) if ks.size else np.zeros(0, int)
+            Ko = np.ascontiguousarray(self.K[order] if side == "u" else self.K[order].transpose(0, 2, 1))
+            inp = (self.pv if side == "u" else self.pu)[order]
+            hit = self._seg[side] = (Ko, inp, starts, self.a[order][starts], out[order][starts])
+        return hit
+
+    def _apply(self, X: np.ndarray, side: str) -> np.ndarray:
+        n, P, N = self.n, self.P, self.N
+        m = X.shape[1]
+        out = np.zeros((N, P, n, m))
+        if self.K.shape[0]:
+            Ko, inp, starts, rows, panels = self._segments(side)
+            Z = np.matmul(Ko, X.reshape(P, n, m)[inp])                          # every block on its input panel
+            out[rows, panels] = np.add.reduceat(Z, starts, axis=0)             # summed per output block
+        return np.ascontiguousarray(out.reshape(N, N, m).transpose(2, 0, 1))
+
+    def on_u(self, Y: np.ndarray) -> np.ndarray:
+        return self._apply(Y, "u")
+
+    def on_v(self, W: np.ndarray) -> np.ndarray:
+        return self._apply(W, "v")
+
+
 def _leggauss(m: int):
     """legendre.leggauss(m), made once per m."""
     hit = _GAUSS.get(m)
@@ -316,110 +359,119 @@ class AgeGrid:
             memo[(s, lo, hi)] = hit
         return hit
 
-    def _conv_rows_shifted(self, cls, ks) -> np.ndarray:
-        """(len(ks), N, N): T[a, i, j] = int_0^a l_i(b) y_j(a - b) db at the nodes a = nodes[ks], y_j the basis kernel of
-        class cls = (s, lo, hi): l_j(a - b - s) for a - b in [lo, hi].  The convolution of a kernel with one of class
-        cls; at the class 0 it is _conv_rows (the same pieces and points).  Every node's quadrature points are read in
-        two interpolations, then one product per node."""
-        s, lo, hi = self.shift_class(cls)
-        ks = list(ks)
-        T = np.zeros((len(ks), self.N, self.N))
-        bp = list(self.breakpoints)
-        m = self.n + 2
-        xs_all, ws_all, ys_all, seg = [], [], [], [0]
-        for k in ks:
-            a = self.nodes[k]
-            b0, b1 = max(0.0, a - hi), min(a, a - lo)
-            if b1 - b0 > 1e-14:
-                xs, ws = self._gauss_pieces(b0, b1, bp + [a - s - b for b in bp], m)
-                xs_all.append(xs); ws_all.append(ws); ys_all.append(a - s - xs)
-            seg.append(seg[-1] + (len(xs_all[-1]) if b1 - b0 > 1e-14 else 0))
-        if not xs_all:
-            return T
-        Li = self.interp(np.concatenate(xs_all), side=+1) * np.concatenate(ws_all)[:, None]     # w l_i(b)
-        Lj = self.interp(np.concatenate(ys_all), side=-1)                                          # l_j(a - s - b), from the left
-        for t in range(len(ks)):
-            if seg[t + 1] > seg[t]:
-                T[t] = Li[seg[t]:seg[t + 1]].T @ Lj[seg[t]:seg[t + 1]]
-        return T
+    @property
+    def _zero_compact(self) -> bool:
+        """Whether the shifted operators take the class 0 from the uniform panels' compact form (conv_ops, corr_ops): when
+        those panels hold most of the nodes; on a geometric grid the compact form's dense tail slab is the whole tensor,
+        and the block form is the cheaper one."""
+        return self._compact and 2 * self.uniform_panels * self.n >= self.N
 
-    def _conv_flat_shifted(self, cls, left: bool) -> np.ndarray:
-        """The shifted convolution tensor flattened for a product: [(a, i), j] (the class-cls kernel's side j contracted)
-        or, left=True, [(a, j), i] (the unshifted kernel's side i contracted).  Cached per class."""
+    def _local_reads(self, x: np.ndarray, side: int):
+        """(panel index (Q,), local barycentric rows (Q, n)): the reads of the points x on the panels (zero outside [0, L],
+        where the panel index is -1)."""
+        x = np.asarray(x, dtype=float)
+        eps = 1e-14 * max(1.0, self.L)
+        inside = (x >= -eps) & (x <= self.L + eps)
+        p = self.panel_index(np.clip(x, 0.0, self.L), side)
+        R = np.zeros((len(x), self.n))
+        for q in np.unique(p[inside]):
+            sel = np.where(inside & (p == q))[0]
+            R[sel] = self._bary_rows(x[sel], self.nodes[q * self.n:(q + 1) * self.n])
+        return np.where(inside, p, -1), R
+
+    def _pieces(self, points):
+        """The block form of a tensor T[a, i, j] = sum_q w_q u_i(x_q) v_j(y_q) built from its quadrature: `points` gives per
+        node a (ascending) the arrays (x, y, w, side_x, side_y); every Gauss piece lies in one panel pu of the u side and one
+        pv of the v side, so T is the sum over the groups (a, pu, pv) of the n x n blocks K = sum w U' V.  Returns _Pieces."""
+        A, X, Y, W, SX, SY = [], [], [], [], [], []
+        for a, (x, y, w, sx, sy) in enumerate(points):
+            if len(x):
+                A.append(np.full(len(x), a)); X.append(x); Y.append(y); W.append(w); SX.append(np.full(len(x), sx)); SY.append(np.full(len(x), sy))
+        n, P = self.n, self.P
+        if not A:
+            return _Pieces(n, P, self.N, np.zeros(0, int), np.zeros(0, int), np.zeros(0, int), np.zeros((0, n, n)))
+        A, X, Y, W = np.concatenate(A), np.concatenate(X), np.concatenate(Y), np.concatenate(W)
+        SX, SY = np.concatenate(SX), np.concatenate(SY)
+        pu = np.zeros(len(X), int); U = np.zeros((len(X), n)); pv = np.zeros(len(X), int); V = np.zeros((len(X), n))
+        for sd in (+1, -1):
+            s = SX == sd
+            if s.any():
+                pu[s], U[s] = self._local_reads(X[s], sd)
+            s = SY == sd
+            if s.any():
+                pv[s], V[s] = self._local_reads(Y[s], sd)
+        ok = (pu >= 0) & (pv >= 0)
+        A, pu, pv, U, V, W = A[ok], pu[ok], pv[ok], U[ok], V[ok], W[ok]
+        key = (A * P + pu) * P + pv
+        order = np.argsort(key, kind="stable")
+        key, A, pu, pv, U, V, W = key[order], A[order], pu[order], pv[order], U[order], V[order], W[order]
+        starts = np.flatnonzero(np.r_[True, key[1:] != key[:-1]])
+        K = np.add.reduceat((U * W[:, None])[:, :, None] * V[:, None, :], starts, axis=0)          # (G, n, n)
+        return _Pieces(n, P, self.N, A[starts], pu[starts], pv[starts], K)
+
+    def _conv_pieces(self, cls) -> "_Pieces":
+        """The shifted convolution T[a, i, j] = int_0^a l_i(b) y_j(a - b) db, y_j the basis kernel of class cls, in block form
+        (u = i at b, read from the right; v = j at a - s - b, from the left).  Cached per class."""
         cls = self.shift_class(cls)
-        key = (cls, left)
-        memo = self.__dict__.setdefault("_conv_shift", {})
-        hit = memo.get(key)
+        memo = self.__dict__.setdefault("_conv_piece", {})
+        hit = memo.get(cls)
         if hit is None:
-            N = self.N
-            other = memo.get((cls, not left))
-            if other is None:
-                T = self._conv_rows_shifted(cls, range(N))                                      # [a, i, j]
-            else:
-                T = other.reshape(N, N, N)                     # [a, i, j] when the other is the right layout, [a, j, i] when left
-                T = T if left else T.transpose(0, 2, 1)
-            hit = memo[key] = np.ascontiguousarray(T.transpose(0, 2, 1) if left else T).reshape(N * N, N)
+            s, lo, hi = cls
+            bp = list(self.breakpoints); m = self.n + 2
+            pts = []
+            for k in range(self.N):
+                a = self.nodes[k]
+                b0, b1 = max(0.0, a - hi), min(a, a - lo)
+                if b1 - b0 <= 1e-14:
+                    pts.append((np.zeros(0), np.zeros(0), np.zeros(0), +1, -1)); continue
+                xs, ws = self._gauss_pieces(b0, b1, bp + [a - s - b for b in bp], m)
+                pts.append((xs, a - s - xs, ws, +1, -1))
+            hit = memo[cls] = self._pieces(pts)
         return hit
 
     def conv_ops_shifted(self, Y: np.ndarray, cls) -> np.ndarray:
         """(m, N, N): conv_ops for the m kernels Y (N, m) of class cls: (C g)(a) = int_0^a g(b) y(a - b - s) db over a - b in
         [lo, hi]."""
         cls = self.shift_class(cls)
-        if cls == (0.0, 0.0, self.L):
+        if cls == (0.0, 0.0, self.L) and self._zero_compact:
             return self.conv_ops(Y)
-        Y = np.asarray(Y, dtype=float); N = self.N
-        return (self._conv_flat_shifted(cls, False) @ Y).reshape(N, N, -1).transpose(2, 0, 1)
+        return self._conv_pieces(cls).on_u(np.asarray(Y, dtype=float))
 
     def conv_ops_left_shifted(self, G: np.ndarray, cls) -> np.ndarray:
         """(m, N, N): conv_ops_left on a kernel of class cls: (C y)(a) = int_0^a g(b) y(a - b - s) db for the m fixed g (N, m)."""
         cls = self.shift_class(cls)
-        if cls == (0.0, 0.0, self.L):
+        if cls == (0.0, 0.0, self.L) and self._zero_compact:
             return self.conv_ops_left(G)
-        G = np.asarray(G, dtype=float); N = self.N
-        return (self._conv_flat_shifted(cls, True) @ G).reshape(N, N, -1).transpose(2, 0, 1)
+        return self._conv_pieces(cls).on_v(np.asarray(G, dtype=float))
 
-    def _corr_rows_shifted(self, rho: float, cw, cz) -> np.ndarray:
-        """(N, N, N): T[a, i, j] = int_0^{L-a} e^{-rho x} w_i(x) z_j(a + x) dx, w_i the basis kernel of class cw and z_j of
-        class cz: the correlation of a kernel of class cw with one of class cz.  At the classes 0 it is _corr_rows.
-        Every node's quadrature points are read in two interpolations, then one product per node."""
-        sw, lw, hw = self.shift_class(cw)
-        sz, lz, hz = self.shift_class(cz)
-        T = np.zeros((self.N, self.N, self.N))
-        bp = list(self.breakpoints)
-        m = self.n + 2
-        L = self.L
-        xw_all, ws_all, xz_all, seg = [], [], [], [0]
-        for k in range(self.N):
-            a = self.nodes[k]
-            lo, hi = max(0.0, lw, lz - a), min(L - a, hw, hz - a)
-            n_k = 0
-            if hi - lo > 1e-14:
+    def _corr_pieces(self, rho: float, cw, cz) -> "_Pieces":
+        """The correlation T[a, i, j] = int_0^{L-a} e^{-rho x} w_i(x) z_j(a + x) dx of a class-cw kernel (u = i) with a class-cz
+        one (v = j), in block form.  Cached per (rho, cw, cz)."""
+        cw, cz = self.shift_class(cw), self.shift_class(cz)
+        key = (float(rho), cw, cz)
+        memo = self.__dict__.setdefault("_corr_piece", {})
+        hit = memo.get(key)
+        if hit is None:
+            (sw, lw, hw), (sz, lz, hz) = cw, cz
+            bp = list(self.breakpoints); m = self.n + 2; L = self.L
+            pts = []
+            for k in range(self.N):
+                a = self.nodes[k]
+                lo, hi = max(0.0, lw, lz - a), min(L - a, hw, hz - a)
+                if hi - lo <= 1e-14:
+                    pts.append((np.zeros(0), np.zeros(0), np.zeros(0), +1, +1)); continue
                 xs, ws = self._gauss_pieces(lo, hi, [b + sw for b in bp] + [b + sz - a for b in bp], m)
-                xw_all.append(xs - sw); ws_all.append(ws * np.exp(-rho * xs)); xz_all.append(a + xs - sz); n_k = len(xs)
-            seg.append(seg[-1] + n_k)
-        if not xw_all:
-            return T
-        Li = self.interp(np.concatenate(xw_all), side=+1) * np.concatenate(ws_all)[:, None]
-        Lj = self.interp(np.concatenate(xz_all), side=+1)
-        for k in range(self.N):
-            if seg[k + 1] > seg[k]:
-                T[k] = Li[seg[k]:seg[k + 1]].T @ Lj[seg[k]:seg[k + 1]]
-        return T
+                pts.append((xs - sw, a + xs - sz, ws * np.exp(-float(rho) * xs), +1, +1))
+            hit = memo[key] = self._pieces(pts)
+        return hit
 
     def corr_ops_shifted(self, W: np.ndarray, rho: float, cw, cz) -> np.ndarray:
         """(m, N, N): corr_ops for the m kernels W (N, m) of class cw acting on a kernel z of class cz:
         (C z)(a) = int_0^{L-a} e^{-rho x} w(x - sw) z(a + x - sz) dx within both classes' bounds.  Cached per (rho, cw, cz)."""
         cw, cz = self.shift_class(cw), self.shift_class(cz)
-        if cw == (0.0, 0.0, self.L) and cz == (0.0, 0.0, self.L):
+        if cw == (0.0, 0.0, self.L) and cz == (0.0, 0.0, self.L) and self._zero_compact:
             return self.corr_ops(W, rho)
-        key = (float(rho), cw, cz)
-        memo = self.__dict__.setdefault("_corr_shift", {})
-        flat = memo.get(key)
-        if flat is None:
-            T = self._corr_rows_shifted(float(rho), cw, cz)
-            flat = memo[key] = np.ascontiguousarray(T.transpose(0, 2, 1)).reshape(self.N * self.N, self.N)   # [(a, j), i]
-        W = np.asarray(W, dtype=float); N = self.N
-        return (flat @ W).reshape(N, N, -1).transpose(2, 0, 1)
+        return self._corr_pieces(rho, cw, cz).on_v(np.asarray(W, dtype=float))
 
     def mass_shifted(self, c1, c2) -> np.ndarray:
         """(N, N): M[i, j] = int_0^L u_i(a) v_j(a) da, u_i the basis kernel of class c1 and v_j of class c2: the Gram of a

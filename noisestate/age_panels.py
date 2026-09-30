@@ -10,7 +10,7 @@ it names the lags' common unit) gets its panels here; any of the three given is 
    (1.5), cut at L - lag for every lag and at L - j u for j up to EDGE_UNITS (the kernels are cut off at L, so a read at a
    lag, or at a sum of lags, breaks at L less it), at AUTO_NODES (12) nodes, every cut snapped to the unit lattice (the multiples of u from 0 and back from L, where the kernels break:
    a lag's echoes and the window's edge read at the lags; a delayed row's panels, closed under the delay, stay whole
-   units).  The exact-shift path (stationary.EXACT_SHIFTS) makes such panels as good as the kernels' smoothness allows:
+   units).  The exact-shift path (stationary.Compiled.exact) makes such panels as good as the kernels' smoothness allows:
    a lag is an argument of the quadratures, not a resampling, so nothing needs the unit panels beyond the lags themselves
    (Chapter 5's market: unit panels through 2 tau, growth 1.5 on the lattice, 12 nodes, N = 132, kernels 2.6e-8 from a
    576-node uniform reference and the cost 3.2e-10 in one round, where the former default, 224 nodes resampled, was at
@@ -30,7 +30,8 @@ it names the lags' common unit) gets its panels here; any of the three given is 
    interpolated onto the new grid, at most MAX_ROUNDS times.
 
 3. The budget is time_panels': no automatic grid passes settings.auto_panels_max unknowns (nU nR N of the largest agent)
-   or an estimated peak memory of settings.auto_panels_memory MB.  Where the next round would pass it, the best result so
+   or an estimated peak memory of settings.auto_panels_memory MB (time_panels' estimate over the answering agents, a
+   tie's representative once, plus the exact-shift path's dense tensors, about 12 N^3 doubles).  Where the next round would pass it, the best result so
    far is returned with res.panels["resolved"] False and res.panels["suggested"] the breakpoints of that next round, which
    res.sharpen() solves.
 
@@ -70,9 +71,6 @@ def eligible(model, numerics) -> bool:
 
 def _exact_capable(model) -> bool:
     """Whether the model's lags run on the exact-shift path (stationary.Compiled._exact_mode's feature test)."""
-    from . import stationary as st
-    if st.EXACT_SHIFTS == "never":
-        return False
     if any(a.instant or a.risk_aversion or a.integrals for a in model.agents):
         return False
     if any(r.level for a in model.agents for r in a.signals):
@@ -157,14 +155,18 @@ def tails(res) -> np.ndarray:
     return out
 
 
-def _budget_ok(model, bp, nodes, settings) -> bool:
-    """Whether the grid fits time_panels' budget (unknowns nU nR N of the largest agent, the estimated peak memory)."""
+def _budget_ok(model, bp, nodes, settings, exact: bool = False) -> bool:
+    """Whether the grid fits time_panels' budget: the unknowns nU nR N of the largest agent, and the estimated peak memory,
+    time_panels' per answering agent (a tie answers once, by its representative) plus, on the exact-shift path, the
+    shifted operators' dense tensors (about a dozen of N^3 doubles: 560 MB at N = 180)."""
     from .time_panels import MEMORY_BASE, MEMORY_PER
     N = (len(bp) - 1) * nodes
-    sizes = [len(a.controls) * len(a.signals) * N for a in model.agents]
+    tied = {n for g in model.ties for n in g[1:]}
+    sizes = [len(a.controls) * len(a.signals) * N for a in model.agents if a.name not in tied]
     if max(sizes, default=0) > settings.auto_panels_max:
         return False
-    return MEMORY_BASE + MEMORY_PER * sum(s * s for s in sizes) <= settings.auto_panels_memory
+    tensors = 12 * 8e-6 * N ** 3 if exact else 0.0
+    return MEMORY_BASE + MEMORY_PER * sum(s * s for s in sizes) + tensors <= settings.auto_panels_memory
 
 
 def _next_grid(bp, nodes, tl, tol, unit, exact, L) -> Tuple[List[float], int]:
@@ -230,7 +232,7 @@ def solve(model, numerics, start_from, start_policy, run: dict, diagnostics: boo
         if ok or not res.converged:
             break
         nbp, nn = _next_grid(bp, nodes, tl, tol, unit, exact, float(model.horizon.extent))
-        if not _budget_ok(model, nbp, nn, S.settings):
+        if not _budget_ok(model, nbp, nn, S.settings, bool(getattr(S.c, 'exact', False))):
             info["suggested"] = nbp if nn == nodes else None
             info["suggested_nodes"] = nn
             break

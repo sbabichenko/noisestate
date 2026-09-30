@@ -36,10 +36,6 @@ from ._settings import Settings, tunable
 from .spec import Agent, Atom, Model
 
 
-EXACT_SHIFTS = "auto"      # "auto": exact-shift operators where a lag is not aligned with the panels; "always"; "never"
-                           # (the resampling reference, kept while the exact path is validated)
-
-
 def _lu_solve(lu, b: np.ndarray, trans: int = 0) -> np.ndarray:
     """scipy.linalg.lu_solve(lu, b), its finiteness check included, straight on LAPACK's getrs: the same routine without
     the wrapper's layers, which cost more than the solve at the closed loop's sizes (thousands of calls in a
@@ -245,27 +241,27 @@ class Compiled(CompiledBase):
     #  kernels of that shift (closed_loop(..., deltas=True)).  Where every shift is aligned (uniform panels, the
     #  panels closed under the delays) the resampling is exact and the engine runs as it always did.
 
+    FORCE_EXACT = False        # the exact-shift operators on aligned panels too (tests: both ways agree there to rounding)
+
     def _exact_mode(self, model: Model) -> bool:
-        """Whether this model runs on the exact-shift operators: EXACT_SHIFTS "auto" when some lag or delay is not aligned
-        with the panels, "always" whenever the model is supported (a check on aligned panels, where both paths agree),
-        "never" not at all (the resampling reference).  Instant observations, level rows, monitored deviations and
-        risk-averse agents run on the resampling path (their operators are not written for shifted kernels yet)."""
-        mode = EXACT_SHIFTS
-        if mode == "never" or not model.all_lags():
+        """Whether this model runs on the exact-shift operators: when some lag or delay is not aligned with the panels (or
+        FORCE_EXACT).  On aligned panels a lag's resampling is exact and the engine keeps its classic operators, which agree
+        with the exact ones to rounding.  Instant observations, level rows, monitored deviations and risk-averse agents keep
+        the resampling (their operators are not written for shifted kernels yet; no model of the tests has them with lags),
+        and say so where their panels are not aligned with a lag."""
+        if not model.all_lags():
             return False
         if (self.instant_loads or self.levels or any(a.risk_aversion for a in model.agents) or any(a.integrals for a in model.agents)
                 or any(len(model.privy(a.name)) > 1 for a in model.agents)):
             bad = [l for l in model.all_lags() if not (self.grid.aligned(l) and self.grid.aligned(-l))]
-            if bad and mode != "never":
+            if bad:
                 warnings.warn(f"{model.name}: the lag(s) {bad} are not aligned with the panels, and a model with instant "
                               "observations, level rows, monitored deviations or risk-averse agents reads them by resampling "
                               "(no exact shifts there yet): a kernel's break at a lag inside a panel is an error no node count "
                               "removes; unit panels through the window (numerics.unit_range = the window) read them exactly",
                               stacklevel=3)
             return False
-        if mode == "always":
-            return True
-        return any(not self.grid.aligned(s) for l in model.all_lags() for s in (l, -l))
+        return self.FORCE_EXACT or any(not self.grid.aligned(s) for l in model.all_lags() for s in (l, -l))
 
     def unaligned(self, s: float) -> bool:
         """Whether a read at the shift s is carried as a kernel of that shift (the exact path, s not aligned)."""
@@ -1767,7 +1763,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         c = self.c; N = c.N; nP = len(c.prim)
         out = []
         for ui, u in enumerate(agent.controls):
-            Cu = c.grid.conv_ops(R0[:, ui].reshape(nP, N).T).reshape(nP * N, N)
+            Cu = c.grid.conv_ops_shifted(R0[:, ui].reshape(nP, N).T, 0.0).reshape(nP * N, N)
             for s, Rs in RD.items():
                 Cu += c.grid.conv_ops_shifted(Rs[:, ui].reshape(nP, N).T, s).reshape(nP * N, N)
             Cu[c.block(u)] = np.eye(N)
@@ -1995,9 +1991,10 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         FR = {(ui, vi, cls): F @ Resp[vi] for ui in range(nU) for cls, F in Fu[ui].items() for vi in range(nU)}
 
         def assemble():
-            # G2[(ki, x), (r, b)]: every channel's row operator (its regular and instantaneous parts), action node x, map
-            # node b of row r
-            G2 = np.ascontiguousarray(Gk[Kn].reshape(nKn * N, nR * N)) if nKn else np.zeros((0, nR * N))
+            # G3[(x, ki), (b, r)]: every channel's row operator (its regular and instantaneous parts), action node x, map
+            # node b of row r, ordered so that a chunk's rows (x >= lo) and columns (b in the chunk) are slices
+            G3 = (np.ascontiguousarray(Gk[Kn].reshape(nKn, N, nR, N).transpose(1, 0, 3, 2)).reshape(N * nKn, N * nR)
+                  if nKn else np.zeros((0, nR * N)))
             gch = c.causal_chunks(target=max(4, c.grid.P // 2)) if nKn else []
             Amat = np.zeros((nG, nG))
             A6 = Amat.reshape(nU, nR, N, nU, nR, N)
@@ -2016,14 +2013,12 @@ class StationarySolver(MonitoredDeviations, EngineBase):
                         for (r, k, Sh, w) in ent_h[cls]:
                             X = w * (Sh @ FRc)
                             E[(r, k)] = E[(r, k)] + X if (r, k) in E else X
-                    P2 = P.reshape(nRn * N, nKn * N)
+                    P2 = np.ascontiguousarray(P.transpose(0, 1, 3, 2)).reshape(nRn * N, N * nKn)      # [(ri, b), (x, ki)]
                     # through the row operators, causally: map nodes b' of a chunk read action nodes x >= lo
                     for lo, hi in gch:
-                        cols = np.concatenate([np.arange(r * N + lo, r * N + hi) for r in range(nR)])
-                        xs = np.concatenate([np.arange(ki * N + lo, (ki + 1) * N) for ki in range(nKn)])
-                        T = (P2[:, xs] @ G2[np.ix_(xs, cols)]).reshape(nRn, N, nR, hi - lo)
+                        T = (P2[:, lo * nKn:] @ G3[lo * nKn:, lo * nR:hi * nR]).reshape(nRn, N, hi - lo, nR)
                         for ri, r in enumerate(Rn):
-                            A6[ui, r, :, vi, :, lo:hi] += T[ri]
+                            A6[ui, r, :, vi, :, lo:hi] += T[ri].transpose(0, 2, 1)
                     for (r, k), X in E.items():                                     # the instantaneous projections
                         A6[ui, r, :, vi] += (X @ Gk[k]).reshape(N, nR, N)
             return Amat
