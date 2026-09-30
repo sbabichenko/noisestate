@@ -31,7 +31,7 @@ it names the lags' common unit) gets its panels here; any of the three given is 
 
 3. The budget is time_panels': no automatic grid passes settings.auto_panels_max unknowns (nU nR N of the largest agent)
    or an estimated peak memory of settings.auto_panels_memory MB (time_panels' estimate over the answering agents, a
-   tie's representative once, plus the exact-shift path's dense tensors, about 12 N^3 doubles).  Where the next round would pass it, the best result so
+   tie's representative once).  Where the next round would pass it, the best result so
    far is returned with res.panels["resolved"] False and res.panels["suggested"] the breakpoints of that next round, which
    res.sharpen() solves.
 
@@ -155,18 +155,16 @@ def tails(res) -> np.ndarray:
     return out
 
 
-def _budget_ok(model, bp, nodes, settings, exact: bool = False) -> bool:
+def _budget_ok(model, bp, nodes, settings) -> bool:
     """Whether the grid fits time_panels' budget: the unknowns nU nR N of the largest agent, and the estimated peak memory,
-    time_panels' per answering agent (a tie answers once, by its representative) plus, on the exact-shift path, the
-    shifted operators' dense tensors (about a dozen of N^3 doubles: 560 MB at N = 180)."""
+    time_panels' over the answering agents (a tie answers once, by its representative)."""
     from .time_panels import MEMORY_BASE, MEMORY_PER
     N = (len(bp) - 1) * nodes
     tied = {n for g in model.ties for n in g[1:]}
     sizes = [len(a.controls) * len(a.signals) * N for a in model.agents if a.name not in tied]
     if max(sizes, default=0) > settings.auto_panels_max:
         return False
-    tensors = 12 * 8e-6 * N ** 3 if exact else 0.0
-    return MEMORY_BASE + MEMORY_PER * sum(s * s for s in sizes) + tensors <= settings.auto_panels_memory
+    return MEMORY_BASE + MEMORY_PER * sum(s * s for s in sizes) <= settings.auto_panels_memory
 
 
 def _next_grid(bp, nodes, tl, tol, unit, exact, L) -> Tuple[List[float], int]:
@@ -232,7 +230,7 @@ def solve(model, numerics, start_from, start_policy, run: dict, diagnostics: boo
         if ok or not res.converged:
             break
         nbp, nn = _next_grid(bp, nodes, tl, tol, unit, exact, float(model.horizon.extent))
-        if not _budget_ok(model, nbp, nn, S.settings, bool(getattr(S.c, 'exact', False))):
+        if not _budget_ok(model, nbp, nn, S.settings):
             info["suggested"] = nbp if nn == nodes else None
             info["suggested_nodes"] = nn
             break
