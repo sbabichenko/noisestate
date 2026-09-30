@@ -945,7 +945,7 @@ class Result:
         for lag in self.model.all_lags():                     # the new edge less each lag is a cut, as at L
             if L < L2 - lag < L2:
                 ext.add(round(L2 - lag, 12))
-        model = self.model.with_stationary(L2).with_numerics(breakpoints=sorted(ext))
+        model = self.model._with_window_grid(L2, sorted(ext))
         kw = {k: v for k, v in self.solve_kw.items()
               if k not in ("start_from", "start_policy", "max_evaluations", "deadline", "diagnostics")}
         kw.update(solve_kw)

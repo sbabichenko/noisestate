@@ -57,3 +57,15 @@ def test_turning_the_diagnostics_off_measures_nothing():
     with pytest.raises(ns.DiagnosticsError):
         res.require_ok()
     assert res.window_check is None and res.diagnostics.statuses["window cost"] is Status.SKIPPED
+
+
+def test_a_grid_given_by_breakpoints_is_extended_with_the_window():
+    """A model whose numerics give breakpoints (as every model solved on automatic age panels carries them) was refused
+    by check_window(): the window was lengthened before the grid, and breakpoints ending at the old window failed
+    validation in between."""
+    d = dict(LQG, numerics={"nodes": 12, "breakpoints": [0.0, 1.0, 2.0, 4.0, 8.0]})
+    res = ns.solve(ns.Model.from_dict(d)).require_converged()
+    wc = res.check_window()
+    assert wc.window == 12.0 and wc.converged
+    assert list(wc.longer.model.numerics.breakpoints)[:5] == [0.0, 1.0, 2.0, 4.0, 8.0]
+    assert wc.longer.model.numerics.breakpoints[-1] == 12.0

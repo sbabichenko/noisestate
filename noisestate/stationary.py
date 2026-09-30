@@ -2418,7 +2418,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         ext = c.grid.L + 2.0 * max(lags)
         bp = [float(b) for b in c.grid.breakpoints] + [ext]
         try:
-            S2 = type(self)(self.model._patch_horizon(window=ext).with_numerics(breakpoints=bp), **self.solver_kw)
+            S2 = type(self)(self.model._with_window_grid(ext, bp), **self.solver_kw)
         except Exception:
             return None
         c2 = S2.c; N2 = c2.N; g2 = c2.grid
@@ -2831,7 +2831,7 @@ class StationarySolver(MonitoredDeviations, EngineBase):
         while bp[-1] < top - 1e-12:
             bp.append(bp[-1] + width)
         if len(bp) > len(g.breakpoints):
-            S2 = type(self)(self.model._patch_horizon(window=bp[-1]).with_numerics(breakpoints=bp), **self.solver_kw)
+            S2 = type(self)(self.model._with_window_grid(bp[-1], bp), **self.solver_kw)
             c2 = S2.c; g2 = c2.grid
             sides = g2.node_sides(); I = np.zeros((g2.N, g.N))
             for sd in (+1, -1):

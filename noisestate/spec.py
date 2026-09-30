@@ -428,6 +428,16 @@ class Model:
         the parameter expressions intact."""
         return Model.from_dict(d)
 
+    def _with_window_grid(self, window: float, breakpoints) -> "Model":
+        """Internal: the stationary window and numerics.breakpoints changed together.  One after the other fails in
+        between whenever the model's numerics give breakpoints (they must end at the horizon's extent), which a model
+        solved on automatic age panels always does."""
+        from .numerics import Numerics
+        d = self.to_dict(); d.setdefault("horizon", {})
+        d["horizon"]["window"] = float(window)
+        d["numerics"] = self.numerics.merged(Numerics.of({"breakpoints": [float(b) for b in breakpoints]})).to_dict()
+        return self._rebuilt(d)
+
     def with_default_nodes(self) -> "Model":
         """The model itself when its numerics give nodes, else the same with the default 16 (what an engine built on it
         directly, not through solve(), runs with; solve() resolves the grid first, age_panels.py for a stationary model)."""

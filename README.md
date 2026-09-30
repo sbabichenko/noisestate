@@ -251,7 +251,7 @@ its own file.  Use the table to choose a model and interpret its default outcome
 | `ch3_two_player` | the same tracking game with no end date | stationary | **window too short** -- the dissertation's own window; `with_stationary(9.0)` clears it |
 | `ch4_kyle_back` | an informed trader against a market maker who prices order flow | stationary, discounted | accepted |
 | `kyle_back_prior` | the same, started from a prior on the fundamental | transition | **not a minimum** -- attributed to a discretisation artifact; see the [example's notes](https://github.com/sbabichenko/noisestate/blob/HEAD/examples/kyle_back_prior.yaml) |
-| `ch5_cycle_market` | a ring of firms buying and selling with a delivery lag | stationary | **under-resolved** -- increasing resolution can be expensive; see the [example's notes](https://github.com/sbabichenko/noisestate/blob/HEAD/examples/ch5_cycle_market.yaml) |
+| `ch5_cycle_market` | a ring of firms buying and selling with a delivery lag | stationary | checks pass; `require_ok()` refuses it narrowly: **window too short for the costs** (a window of 36 moves a firm's cost by 1.2e-6 of the largest, against 1e-6) |
 | `ch3_precision_change` | a regime change: one player's precision jumps | transition | **several** -- see the [transition walkthrough](https://github.com/sbabichenko/noisestate/blob/HEAD/docs/transitions.md) for interpretation |
 
 `ns.example(name)` gives the path and `ns.load(...)` the model, as above.
