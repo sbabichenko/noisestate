@@ -125,3 +125,21 @@ def test_exact_path_equals_resampling_on_aligned_panels():
     assert np.abs(r1.world - r0.world).max() < 1e-12 * np.abs(r0.world).max()
     assert abs(r1.costs["firm0"] - r0.costs["firm0"]) < 1e-12 * abs(r0.costs["firm0"])
     assert r1.evaluations == r0.evaluations
+
+
+def test_automatic_age_panels_on_a_lagged_model():
+    """No grid in the numerics: the panels are chosen (unit panels through the lags, then growing on the unit lattice, cut
+    at L - tau and L - 2 tau), the result says so and carries the grid; any grid field given is the expert's, unchanged."""
+    from make_ch5_cycle_market import build
+    d = build(N=2, L=6.0).to_dict()
+    assert d["numerics"] == {"unit": 0.5}
+    res = ns.solve(ns.Model.from_dict(d), diagnostics=False)
+    p = res.panels
+    assert p is not None and p["resolved"] and p["route"] in ("a priori", "refined") and res.compiled.exact
+    bp = p["breakpoints"]
+    assert res.numerics.breakpoints == bp and res.numerics.nodes == p["nodes"]
+    assert all(abs(b / 0.5 - round(b / 0.5)) < 1e-12 for b in bp)            # on the unit lattice
+    assert {5.5, 5.0} <= set(bp) and bp[:3] == [0.0, 0.5, 1.0]
+    assert max(p["tails"]) <= res.settings.auto_grid_tol
+    given = ns.solve(ns.Model.from_dict({**d, "numerics": {"unit": 0.5, "nodes": 6, "unit_range": 3.0}}), diagnostics=False)
+    assert given.panels is None and given.compiled.N == 6 * len(given.compiled.grid.breakpoints[:-1])

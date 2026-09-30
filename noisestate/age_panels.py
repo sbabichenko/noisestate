@@ -1,44 +1,48 @@
 """Age panels for a stationary model, chosen automatically: placed from the model's lags and window before the first
 solve, refined where the kernels' Chebyshev tails say the panels do not resolve them, within a budget.
 
-The stationary engine holds every kernel in shock age on panels [b_0, b_1], ..., [b_{P-1}, L], numerics.nodes Chebyshev-
-Lobatto nodes each (grid.py).  A model whose numerics give none of nodes, unit_range and breakpoints (the unit may be given:
-it names the lags' common unit) gets its panels here; any of the three given is the expert's grid, solved as given.
+The stationary engine holds every kernel in shock age on panels [b_0, b_1], ..., [b_{P-1}, L], numerics.nodes
+Chebyshev-Lobatto nodes each (grid.py).  A model whose numerics give none of nodes, unit_range and breakpoints (the unit
+may be given: it names the lags' common unit) gets its panels here; any of the three given is the expert's grid, solved
+as given.
 
-1. A priori (prior).  Without lags or delays: one panel [0, L] at 16 nodes, the engine's default.  With lags: unit panels
-   (width the unit u, by default the smallest lag) through max(the largest lag, UNIT_SPAN u), then panels growing by GROWTH
-   (1.5), cut at L - lag for every lag and at L - j u for j up to EDGE_UNITS (the kernels are cut off at L, so a read at a
-   lag, or at a sum of lags, breaks at L less it), at AUTO_NODES (12) nodes, every cut snapped to the unit lattice (the multiples of u from 0 and back from L, where the kernels break:
-   a lag's echoes and the window's edge read at the lags; a delayed row's panels, closed under the delay, stay whole
-   units).  The exact-shift path (stationary.Compiled.exact) makes such panels as good as the kernels' smoothness allows:
-   a lag is an argument of the quadratures, not a resampling, so nothing needs the unit panels beyond the lags themselves
-   (Chapter 5's market: unit panels through 2 tau, growth 1.5 on the lattice, 12 nodes, N = 132, kernels 2.6e-8 from a
-   576-node uniform reference and the cost 3.2e-10 in one round, where the former default, 224 nodes resampled, was at
-   8.4e-8 and the shipped 168 nodes at 1.9e-6 and 2.6e-8; growth 2 left the tail's panels at 2.7e-6).  A model whose lags the exact path does not carry (instant observations, level rows,
-   monitoring, risk aversion: stationary.Compiled._exact_mode) keeps the engine's former defaults, unit panels through
-   eight units then doubling, at 16 nodes: resampled shifts need the unit panels.
+1. A priori (prior).  Without lags or delays: one panel [0, L] at 16 nodes, the engine's default.  With lags: unit
+   panels (width the unit u, by default the smallest lag) through max(the largest lag, UNIT_SPAN u), then panels growing
+   by GROWTH (1.5), cut at L - lag for every lag and at L - j u for j up to EDGE_UNITS (the kernels are cut off at L, so
+   a read at a lag, or at a sum of lags, breaks at L less it), every cut snapped to the unit lattice (the multiples of u
+   from 0 and back from L, where the kernels break: a lag's echoes and the window's edge read at the lags; a delayed
+   row's panels, closed under the delay, stay whole units), at AUTO_NODES (12) nodes.  The exact shifts
+   (stationary.Compiled.exact) make such panels as good as the kernels' smoothness allows: a lag is an argument of the
+   quadratures, not a resampling, so nothing needs unit panels beyond the lags themselves.  Chapter 5's market: unit
+   panels through 2 tau, 132 nodes in one round, kernels 2.6e-8 from a 576-node uniform reference and the cost 3e-10,
+   where the former default (224 nodes, resampled) was at 8.4e-8 and the shipped 168 nodes at 1.9e-6 and 2.6e-8; growth
+   2 left the tail's panels at 2.7e-6.  A model whose lags the exact path does not carry (instant observations, level
+   rows, monitoring, risk aversion: stationary.Compiled._exact_mode) keeps the engine's former defaults, unit panels
+   through eight units then doubling, at 16 nodes: resampled shifts need the unit panels.
 
 2. A posteriori (tails).  Every kernel of the result -- each agent's maps on each row, and the world's kernel of every
-   primary on every shock -- is expanded in Chebyshev polynomials on every panel, and the panel's indicator is the largest
-   of |c_{n-2}| + |c_{n-1}| over the kernels, relative to the kernel's peak over all ages and shocks.  It tracks the error
-   against a uniform reference within a few times on Chapter 5's grids (it overstates it where the coefficients decay
-   fast).  A result whose largest indicator is at most settings.auto_grid_tol (1e-7) is accepted.  Otherwise the panels
-   above it are cut in two at the lattice point nearest their middle (a panel of one unit is not cut: the lags' panels,
-   and a transition reads a past's panels on the unit lattice), or where that cannot help -- only unit panels above it, a model on the resampling path (bisected panels
-   would not be aligned with the lags) or with a delayed row (its panels are closed under the delay, which splits a cut
-   off the unit lattice below the unit) -- every panel gets two more nodes; the model is solved again from the last maps
-   interpolated onto the new grid, at most MAX_ROUNDS times.
+   primary on every shock -- is expanded in Chebyshev polynomials on every panel, and the panel's indicator is the
+   largest of |c_{n-2}| + |c_{n-1}| over the kernels, relative to the kernel's peak over all ages and shocks.  It tracks
+   the error against a uniform reference within a few times on Chapter 5's grids (it overstates it where the
+   coefficients decay fast, and understates a kink the panel does not cut, which the lattice and the edge cuts place on
+   breakpoints).  A result whose largest indicator is at most settings.auto_grid_tol (1e-7) is accepted.  Otherwise the
+   panels above it are cut in two at the lattice point nearest their middle (a panel of one unit is not cut: the lags'
+   panels, and a transition reads a past's panels on the unit lattice), or where that cannot help -- only unit panels
+   above it, a model on the resampling path (cut panels would not be aligned with the lags) or with a delayed row (its
+   panels are closed under the delay) -- every panel gets two more nodes; the model is solved again from the last maps
+   interpolated onto the new grid, at most MAX_ROUNDS times, without the checks, which the grid kept gets once.
 
-3. The budget is time_panels': no automatic grid passes settings.auto_panels_max unknowns (nU nR N of the largest agent)
-   or an estimated peak memory of settings.auto_panels_memory MB (time_panels' estimate over the answering agents, a
-   tie's representative once).  Where the next round would pass it, the best result so
-   far is returned with res.panels["resolved"] False and res.panels["suggested"] the breakpoints of that next round, which
-   res.sharpen() solves.
+3. The budget is time_panels': no automatic grid passes settings.auto_panels_max unknowns (nU nR N of the largest
+   agent) or an estimated peak memory of settings.auto_panels_memory MB (time_panels' estimate over the answering agents,
+   a tie's representative once).  Where the next round would pass it, the best result so far is returned with
+   res.panels["resolved"] False and res.panels["suggested"] the breakpoints of that next round, which res.sharpen()
+   solves.
 
-res.panels = {"route": "a priori" | "refined", "unit", "nodes", "breakpoints", "tails" (per panel, the accepted grid's),
+res.panels = {"route": "a priori" | "refined", "unit", "nodes", "breakpoints", "tails" (per panel, the kept grid's),
 "history" [(panels, N, largest tail, representation error or None (the checks run on the grid kept only), the first
-agent's cost, evaluations)], "evaluations" (per round), "resolved", "suggested"}; res.numerics.breakpoints and nodes are the grid used (a solve with them reproduces the result).
-suggest(model) gives the a priori grid without solving.
+agent's cost, evaluations)], "evaluations" (per round), "resolved", "suggested"}; res.numerics.breakpoints and nodes are
+the grid used (a solve with them reproduces the result).  suggest(model) gives the a priori grid without solving;
+sweep() on a model without a grid chooses the first point's panels here and keeps them.
 """
 from __future__ import annotations
 
